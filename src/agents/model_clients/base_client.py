@@ -1,4 +1,4 @@
-from ollama import AsyncClient as AsyncOllamaClient
+from ollama_chat import AsyncClient as AsyncOllamaClient
 
 
 class BaseClient:

@@ -19,4 +19,4 @@ main_mcp = FastMCP("IDU Fast MCP Server", lifespan=main_app_lifespan)
 main_mcp.mount(urban_api_mcp)
 main_mcp.mount(geometry_mcp)
 
-mcp_app = main_mcp.http_app()
+mcp_app = main_mcp.http_app("/mcp")

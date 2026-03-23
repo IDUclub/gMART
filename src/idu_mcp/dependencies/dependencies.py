@@ -8,6 +8,7 @@ from src.idu_mcp.contexts.geom_contexts.create_restrictions_context import Restr
 from .init_dependencies import init_dependencies
 from .tool_deps import BaseDep, UrbanApiToolsDeps
 from .tool_deps.geom_tools_deps import GeomToolsDeps
+from ..tools_services.geometry_tools import GeometryTools
 
 mcp_deps: dict[str, BaseDep] = init_dependencies()
 
@@ -33,8 +34,8 @@ def get_urban_api_tools() -> UrbanApiToolsDeps:
     return mcp_deps["urban_api_tools"].urban_api_tools
 
 
-def get_geom_tools() -> GeomToolsDeps:
-    return mcp_deps["geom_tools"].geom_tools
+def get_geom_tools() -> GeometryTools:
+    return mcp_deps["geom_tools"]
 
 
 def get_scenario_id(ctx: Context) -> int:
