@@ -1,0 +1,28 @@
+# IDE
+.idea
+.vscode
+
+# Py Cache
+__pycache__/
+
+# Network certificates
+*.crt
+DECFILE
+
+# ENV files
+.env.idu_mcp.development
+.env.idu_mcp.develop
+.env.idu_mcp.dev
+.env.idu_mcp.prod
+.env.idu_mcp.production
+.env.agents.development
+.env.agents.develop
+.env.agents.dev
+.env.agents.prod
+.env.agents.production
+
+# UV
+*.lock
+
+# Data Files
+/data
