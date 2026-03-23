@@ -35,7 +35,7 @@ jobs:
           NOW: ${{ steps.date.outputs.now }}
         run: |
           docker build -t "$AGENTS_IMAGE_NAME:$NOW" -f docker/Dockerfile-agents .
-          docker build -t "$MCP_IMAGE_NAME:$NOW" -f docker/Dockerfile-idu_mcp .
+          docker build -t "$MCP_IMAGE_NAME:$NOW" -f docker/Dockerfile-mcp .
 
       - name: Push images
         env:
