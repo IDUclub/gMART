@@ -68,4 +68,4 @@ jobs:
           echo "MCP_IMAGE=$MCP_IMAGE_NAME:$NOW" >> $GITHUB_ENV
 
       - name: Run containers
-        run: docker compose -f docker-compose.actions.yml up -d
+        run: docker compose -f docker-compose.actions.yaml up -d
