@@ -30,12 +30,19 @@ class UrbanApiClient:
             for name in names
         ]
         results = await asyncio.gather(*tasks)
-        final_results = [res[0] for res in results]
-        return {
-            i["name"]: i["service_type_id"]
-            for i in final_results
-            if i and i["name"] in names
-        }
+        final_results = [res[0] for res in results if res]
+        if "service" in endpoint:
+            return {
+                i["name"]: i["service_type_id"]
+                for i in final_results
+                if i and i["name"] in names
+            }
+        else:
+            return {
+                i["name"]: i["physical_object_type_id"]
+                for i in final_results
+                if i and i["name"] in names
+            }
 
     async def get_service_name_id(self, names: list[str], token: str) -> dict[str, int]:
         """
@@ -100,7 +107,7 @@ class UrbanApiClient:
 
         tasks = [
             self.json_handler.get(
-                f"api/v1/scenarios/{scenario_id}/physical_object_with_geometry",
+                f"api/v1/scenarios/{scenario_id}/physical_objects_with_geometry",
                 params={"physical_object_type_id": physical_object_id},
                 auth_token=token,
             )

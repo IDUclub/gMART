@@ -27,11 +27,13 @@ class GeometryTools:
         """
 
         original_crs = layer.crs
+        if not original_crs:
+            layer.set_crs(4326, inplace=True)
         if layer.crs != 4326:
             layer.to_crs(4326, inplace=True)
         layer.to_crs(layer.estimate_utm_crs(), inplace=True)
         result = layer.buffer(buffer_size, cap_style=buffer_type)
-        return result.to_crs(original_crs)
+        return result.to_crs(4326)
 
     def generate_geometry_buffers(
         self,
@@ -48,8 +50,9 @@ class GeometryTools:
         """
 
         objects_geoms = {
-            k: gpd.GeoDataFrame.from_features(v) for k, v in objects_geoms.items()
+            k.lower(): gpd.GeoDataFrame.from_features(v) for k, v in objects_geoms.items()
         }
+        buffer_info = {k.lower(): v for k, v in buffer_info.items()}
         result_layers = {
             k: self.create_buffer(
                 objects_geoms[k],
@@ -98,7 +101,7 @@ class GeometryTools:
         generators = []
         objects = []
         for k, v in layers.items():
-            current_layer = gpd.GeoDataFrame.from_features(v)
+            current_layer = gpd.GeoDataFrame.from_features(v, crs=4326)
             current_layer["name"] = k
             if k in restriction_generators:
                 generators.append(current_layer)
@@ -109,17 +112,16 @@ class GeometryTools:
 
         generators, objects = pd.concat(generators), pd.concat(objects)
         joined = (
-            objects.sjon(generators)
+            objects.sjoin(generators)
             .reset_index(drop=False)
             .dissolve(
                 "index", aggfunc={"name_left": "first", "name_right": lambda x: set(x)}
             )
         )
-
-        return generators.to_crs(generators.estimate_utm_crs()), joined.to_crs(
-            joined.estimate_utm_crs()
-        )
-
+        generators = generators.to_crs(generators.estimate_utm_crs())
+        if len(joined) > 0:
+            joined.to_crs(joined.estimate_utm_crs())
+        return generators, joined
     def create_restrictions(
         self,
         layers: dict[str, dict],

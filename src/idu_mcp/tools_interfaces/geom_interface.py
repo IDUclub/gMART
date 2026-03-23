@@ -1,7 +1,8 @@
 from typing import Literal
 
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
 from fastmcp.dependencies import Depends
+from fastmcp.server.dependencies import CurrentContext
 from geojson_pydantic import FeatureCollection
 
 from src.idu_mcp.dependencies.dependencies import get_restrictions_context
@@ -50,8 +51,8 @@ geometry_mcp = FastMCP("GEOMETRY MCP")
     tags={"geometry", "buffers"},
 )
 async def create_buffers(
-    buffer_info: dict[str, int | Literal["round", "flat", "square"]],
-    context: BufferContext = Depends(get_buffers_context),
+    buffer_info: dict,
+    ctx: Context = CurrentContext(),
     geom_tools: GeometryTools = Depends(get_geom_tools),
 ) -> dict[str, FeatureCollection]:
     """
@@ -63,9 +64,9 @@ async def create_buffers(
     Returns:
         dict[str, FeatureCollection]: layer of objects which restricts which objects.
     """
-
+    objects = ctx.request_context.meta.objects
     return await geom_tools.async_generate_geometry_buffers(
-        buffer_info, context.objects
+        buffer_info, objects
     )
 
 
@@ -110,10 +111,11 @@ async def create_restrictions(
     generators: list[str],
     objects: list[str],
     restrictions: dict[str, dict[str, str | list[str]]],
-    context: RestrictionsContext = Depends(get_restrictions_context),
+    ctx: Context = CurrentContext(),
     geom_tools: GeometryTools = Depends(get_geom_tools),
 ) -> tuple[dict, dict]:
 
+    layers = ctx.request_context.meta.layers
     return await geom_tools.async_create_restrictions(
-        context.layers, generators, objects, restrictions
+        layers, generators, objects, restrictions
     )

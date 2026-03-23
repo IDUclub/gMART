@@ -1,6 +1,6 @@
 from typing import Any, AsyncGenerator
 
-from ollama import ChatResponse
+from ollama_chat import ChatResponse
 
 from src.agents.model_clients.base_client import BaseClient
 
