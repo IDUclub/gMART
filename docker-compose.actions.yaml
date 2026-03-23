@@ -1,7 +1,7 @@
 services:
   idu_agents:
-    image: ${AGENTS-IMAGE}
-    container_name: ${AGENTS-CONTAINER_NAME}
+    image: ${AGENTS_IMAGE}
+    container_name: ${AGENTS_CONTAINER_NAME}
     restart: always
     ports:
       - "80:80"
@@ -9,8 +9,8 @@ services:
       - ./env/.env.agents.production
 
   idu_mcp:
-    image: ${MCP-IMAGE}
-    container_name: ${MCP-CONTAINER_NAME}
+    image: ${MCP_IMAGE}
+    container_name: ${MCP_CONTAINER_NAME}
     restart: always
     ports:
       - "8000:8000"
