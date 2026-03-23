@@ -61,4 +61,4 @@ jobs:
           echo "AGENTS_IMAGE=$AGENTS_IMAGE_NAME:$NOW" >> $GITHUB_ENV
 
       - name: Run containers
-        run: docker compose -f docker-compose.actions.yaml up -d "$AGENTS_CONTAINER_NAME"
+        run: docker compose -f docker-compose.actions.yaml up -d idu_agents
