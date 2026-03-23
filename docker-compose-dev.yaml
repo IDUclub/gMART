@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+
+  idu_dev_agents:
+    build:
+      context: .
+      dockerfile: docker/dev/Dockerfile-agents-dev
+    container_name: agents-dev
+    ports:
+      - "80:80"
+    env_file:
+      - env/development/.env.agents.development
+
+  idu_dev_fastmcp:
+    build:
+      context: .
+      dockerfile: docker/dev/Dockerfile-mcp-dev
+    container_name: idumcp-dev
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./env/development/.env.idu_mcp.development

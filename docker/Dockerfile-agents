@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+COPY pyproject.toml ./
+RUN uv pip install --system .
+
+COPY src/agents ./src/agents
+
+ENV FASTAPI_WORKERS=4
+ENV PORT=80
+
+EXPOSE 80
+
+CMD ["sh", "-c", "uvicorn src.agents.main:app --host 0.0.0.0 --port ${PORT} --workers ${FASTAPI_WORKERS:-4}"]
