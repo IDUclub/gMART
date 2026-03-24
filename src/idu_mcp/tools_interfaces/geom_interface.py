@@ -1,13 +1,8 @@
-from typing import Literal
-
 from fastmcp import FastMCP, Context
 from fastmcp.dependencies import Depends
 from fastmcp.server.dependencies import CurrentContext
 from geojson_pydantic import FeatureCollection
 
-from src.idu_mcp.dependencies.dependencies import get_restrictions_context
-from src.idu_mcp.contexts.geom_contexts.create_restrictions_context import RestrictionsContext
-from src.idu_mcp.contexts.geom_contexts.create_buffers_context import BufferContext
 from src.idu_mcp.dependencies.dependencies import get_buffers_context, get_geom_tools
 from src.idu_mcp.tools_services.geometry_tools import GeometryTools
 
@@ -15,6 +10,7 @@ geometry_mcp = FastMCP("GEOMETRY MCP")
 
 
 @geometry_mcp.tool(
+    name="CreateBuffers",
     title="Создать буферы слоёв",
     description="""Генерирует геометрические буферы вокруг входных объектов.
     Буферы создаются только для тех слоёв, которые могут использоваться в дальнейшем для наложения ограничений
@@ -59,11 +55,12 @@ async def create_buffers(
     Create buffers for layers.
     Args:
         buffer_info (dict[str, int | Literal["round", "flat", "square"]]): Buffer info, containing buffer type and buffer size.
-        context (BufferContext): Context for mcp tool call.
+        ctx (Context): Context for mcp tool call.
         geom_tools (GeometryTools): GeometryTools instance.
     Returns:
         dict[str, FeatureCollection]: layer of objects which restricts which objects.
     """
+
     objects = ctx.request_context.meta.objects
     return await geom_tools.async_generate_geometry_buffers(
         buffer_info, objects
@@ -71,7 +68,8 @@ async def create_buffers(
 
 
 @geometry_mcp.tool(
-    title="Создать ограничения на основе правил",
+    name="CreateRestrictions",
+    title="Создать пространственные ограничения",
     description="""Создаёт геометрические «ограничения» (restrictions) для объектов, 
     находящихся в зоне влияния «генераторов» (objects that can impose restrictions).
     
@@ -114,6 +112,18 @@ async def create_restrictions(
     ctx: Context = CurrentContext(),
     geom_tools: GeometryTools = Depends(get_geom_tools),
 ) -> tuple[dict, dict]:
+    """
+    Function forms layers by provided restrictions.
+    Args:
+        generators (list[str]): list of restriction generators names.
+        objects (list[str]): list of all needed objects.
+        restrictions (dict[str, dict[str, str | list[str]]]): info with restriction rules.
+        ctx (Context): tool call context. Forms from CurrentContext().
+        geom_tools (GeometryTools): GeometryTools instance.
+    Returns:
+        tuple[dict, dict]: tuple of layers where firs FeatureCollection is restricted objects layer
+        and second FeatureCollection is generators layer.
+    """
 
     layers = ctx.request_context.meta.layers
     return await geom_tools.async_create_restrictions(

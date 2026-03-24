@@ -1,5 +1,7 @@
 import asyncio
 
+from watchfiles import awatch
+
 from src.idu_mcp.common.api_handlers.json_api_handler import JsonApiHandler
 
 LIVING_BUILDINGS_ID = 4
@@ -114,3 +116,35 @@ class UrbanApiClient:
             for physical_object_id in physical_objects
         ]
         return await asyncio.gather(*tasks)
+
+    async def get_available_scenario_services(self, scenario_id: int, token: str) -> list[str]:
+        """
+        Function returns list of available service types names.
+        Args:
+            scenario_id (int): Scenario ID from Urban API.
+            token (str): Auth token.
+        Returns:
+            list[str]: List of available for scenario service type names.
+        """
+
+        service_types = await self.json_handler.get(
+            f"api/v1/scenarios/{scenario_id}/service_types",
+            auth_token=token
+        )
+        return [service_type["name"] for service_type in service_types]
+
+    async def get_available_physical_objects(self, scenario_id: int, token: str) -> list[str]:
+        """
+        Function returns list of available physical objects types names.
+        Args:
+            scenario_id (int): Scenario ID from Urban API.
+            token (str): Auth token.
+        Returns:
+            list[str]: List of available for scenario physical objects type names.
+        """
+
+        physical_objects_types = await self.json_handler.get(
+            f"api/v1/scenarios/{scenario_id}/physical_object_types",
+            auth_token=token
+        )
+        return [physical_object_type["name"] for physical_object_type in physical_objects_types]
