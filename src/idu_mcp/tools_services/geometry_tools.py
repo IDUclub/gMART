@@ -153,12 +153,14 @@ class GeometryTools:
             )
             objects.loc[common, "restriction_name"] += f"&{v['title']}"
             objects.loc[common, "restriction_description"] += f"&{v['description']}"
-        objects[["restriction_name", "restriction_description"]] = objects[
+        objects["restriction_name"] = objects[
             "restriction_name"
-        ].apply(apply_strip, symbol="&"), objects["restriction_description"].apply(
+        ].apply(apply_strip, symbol="&")
+        objects["restriction_description"] = objects["restriction_description"].apply(
             apply_strip, symbol="&"
         )
-        return json.loads(objects.to_json()), json.loads(objects.to_json())
+        objects.drop(columns=["name_left", "name_right"], inplace=True)
+        return json.loads(objects.to_json()), json.loads(generators.to_json())
 
     async def async_create_restrictions(
         self,
