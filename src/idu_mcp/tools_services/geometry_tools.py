@@ -12,6 +12,7 @@ class GeometryTools:
     def __init__(self):
         pass
 
+    #TODO add restrict style
     @staticmethod
     def create_buffer(
         layer: gpd.GeoDataFrame, buffer_size: int, buffer_type: BufferTypeEnum

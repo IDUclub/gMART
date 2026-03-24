@@ -1,8 +1,8 @@
 from typing import Any, AsyncGenerator
 
-from ollama_chat import ChatResponse
+from ollama import ChatResponse
 
-from src.agents.model_clients.base_client import BaseClient
+from src.agents.model_clients.base_client import BaseLlmClient
 
 from .base_llm_service import BaseLlmService
 
@@ -11,16 +11,16 @@ class SimpleLlmService(BaseLlmService):
     """
     Class for handling simple LLM messages and chats. Inherits from BaseLlmService.
     Attributes:
-        llm_client (BaseClient):BaseClient for communicating with LLM.
+        llm_client (BaseLlmClient):BaseClient for communicating with LLM.
     """
 
-    def __init__(self, llm_client: BaseClient):
+    def __init__(self, llm_host: str):
         """
         Initialization function for SimpleLlmService. Inherits from BaseService.
         Args:
-            llm_client (BaseClient): BaseClient for communicating with LLM.
+            llm_host (str): Ollama host.
         """
-        super().__init__(llm_client)
+        super().__init__(llm_host=llm_host)
 
     async def generate_message(self, user_request: str, model: str) -> dict[str, Any]:
         """
