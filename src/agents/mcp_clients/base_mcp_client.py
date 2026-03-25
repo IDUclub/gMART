@@ -68,7 +68,8 @@ class BaseMcpClient:
             list[Prompt] | list[dict]: list of available prompts.
         """
 
-        return await self.mcp_client.list_prompts()
+        async with self.mcp_client:
+            return await self.mcp_client.list_prompts()
 
     # TODO enhance exception handling
     async def execute_tool(self, tool_name: str, arguments: dict, meta: dict):

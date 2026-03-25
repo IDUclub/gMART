@@ -1,4 +1,5 @@
 from fastmcp import Client as McpClient
+from mcp import GetPromptResult
 
 from .base_mcp_client import BaseMcpClient
 
@@ -59,23 +60,37 @@ class IduMcpClient(BaseMcpClient):
 
     async def get_create_buffer_tool(self) -> list[dict]:
         """
-        Function retrieves geometry tool
-        :return:
+        Function retrieves geometry tool create_buffer_tool.
+        Returns:
+            list[dict]: list of create buffer tool
         """
 
-    async def get_prompts_by_name(self, prompts_names: list[str]) -> list[dict]:
+        return await self.load_ollama_tools(tags=["buffers"])
+
+    async def get_create_restriction_tool(self) -> list[dict]:
+        """
+        Function retrieves geometry tool create_restrictions_tool.
+        Returns:
+            list[dict]: list of create buffer tool
+        """
+
+        return await self.load_ollama_tools(tags=["restrictions"])
+
+    async def get_prompts_by_name(self, prompts_names: list[str], arguments: dict | None = None) -> list[GetPromptResult]:
         """
         Function filters prompts from mcp server by name.
         Args:
-            prompts_names (list[str]): prompts names to filter by
+            prompts_names (list[str]): Prompts names to filter by
+            arguments (dict | None): Key arguments as dict to pass to prompt. Default to None.
         Returns:
             list[dict]: filtered prompts from mcp server.
         """
 
-        prompts = await self.get_prompts()
-        return [
-            prompt for prompt in prompts if prompt["name"] in prompts_names
-        ]
+        result = []
+        for prompt_name in prompts_names:
+            prompt = await self.mcp_client.get_prompt(prompt_name, arguments)
+            result.append(prompt)
+        return result
 
     async def get_services_example_prompts(self) -> list[dict]:
         """
@@ -84,14 +99,37 @@ class IduMcpClient(BaseMcpClient):
             list[dict]: list of service examples street
         """
 
-        return await self.get_prompts_by_name(["GetServicesExample", "NoGetServicesExample"])
+        result = await self.get_prompts_by_name(["GetServicesExample", "NoGetServicesExample"])
+        messages_list = [res.model_dump()["messages"] for res in result]
+        return [message for messages in messages_list for message in messages]
 
-
-    async def get_physical_objects_example_prompts(self):
+    async def get_physical_objects_example_prompts(self) -> list[dict]:
         """
         Function returns physical objects prompts examples.
         Returns:
              list[dict]: list of physical objects examples.
         """
 
-        return await self.get_prompts_by_name(["GetPhysicalObjectsExample", "NoGetPhysicalObjectsExample"])
+        result = await self.get_prompts_by_name(["GetPhysicalObjectsExample", "NoGetPhysicalObjectsExample"])
+        messages_list = [res.model_dump()["messages"] for res in result]
+        return [message for messages in messages_list for message in messages]
+
+    async def get_available_services_prompt(self, scenario_id: int) -> str:
+        """
+        Function returns available services prompt.
+        Returns:
+            str: prompt with available services.
+        """
+
+        result = await self.get_prompts_by_name(["GetAvailableServices"], {"scenario_id": scenario_id})
+        return result[0].model_dump()["messages"][0]["content"]["text"]
+
+    async def get_available_physical_objects_prompt(self, scenario_id: int) -> str:
+        """
+        Function returns available physical_objects for scenario.
+        Returns:
+            str: prompt with available services.
+        """
+
+        result = await self.get_prompts_by_name(["GetAvailablePhysicalObjects"], {"scenario_id": scenario_id})
+        return result[0].model_dump()["messages"][0]["content"]["text"]

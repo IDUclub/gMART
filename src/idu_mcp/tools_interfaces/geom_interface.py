@@ -3,7 +3,7 @@ from fastmcp.dependencies import Depends
 from fastmcp.server.dependencies import CurrentContext
 from geojson_pydantic import FeatureCollection
 
-from src.idu_mcp.dependencies.dependencies import get_buffers_context, get_geom_tools
+from src.idu_mcp.dependencies.dependencies import get_geom_tools
 from src.idu_mcp.tools_services.geometry_tools import GeometryTools
 
 geometry_mcp = FastMCP("GEOMETRY MCP")
