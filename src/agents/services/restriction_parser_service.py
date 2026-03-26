@@ -24,7 +24,7 @@ class RestrictionParserService(BaseLlmService):
     @staticmethod
     async def execute_tool(mcp_client: IduMcpClient, tool_call: dict, meta: dict) -> dict[str, dict]:
         """
-        Function executes urban api tool and returns possible result
+        Function executes  tool and returns possible result.
         Args:
             mcp_client (IduMcpClient): IduMcpClient instance.
             tool_call (dict): Dict mcp tool call info computable with Ollama.
@@ -37,9 +37,43 @@ class RestrictionParserService(BaseLlmService):
         args = tool_call["function"]["arguments"]
         if isinstance(args, str):
             args = json.loads(args)
-        result = await mcp_client.execute_tool(tool_name, args, meta=meta)
+        return await mcp_client.execute_tool(tool_name, args, meta=meta)
+        # dict_res = json.loads(result.content[0].text)
+        # return dict_res
+
+    async def execute_one_response_tool(self, mcp_client: IduMcpClient, tool_call: dict, meta: dict) -> dict[str, dict]:
+        """
+        Function executes urban api tool and returns possible result
+        Args:
+            mcp_client (IduMcpClient): IduMcpClient instance.
+            tool_call (dict): Dict mcp tool call info computable with Ollama.
+            meta (dict): Metadata for tool.
+        Returns:
+            dict[str, dict]: Dict with name - FeatureCollection info.
+        """
+
+        result = await self.execute_tool(mcp_client, tool_call, meta)
         dict_res = json.loads(result.content[0].text)
         return dict_res
+
+    async def execute_restriction_tool(self, mcp_client: IduMcpClient, tool_call: dict, meta: dict) -> dict[str | dict]:
+        """
+        Function executes restriction formation tool and returns possible result.
+        Args:
+            mcp_client (IduMcpClient): IduMcpClient instance.
+            tool_call (dict): Dict mcp tool call info computable with Ollama.
+            meta (dict): Metadata for tool.
+        Returns:
+            dict[str, dict]: Dict with name - FeatureCollection info.
+        """
+
+        result = await self.execute_tool(mcp_client, tool_call, meta)
+        objects = json.loads(result.content[0].text)[0]
+        generators = json.loads(result.content[0].text)[1]
+        return {
+            "objects": objects,
+            "generators": generators
+        }
 
     #TODO enhance data getter to async gather pipeline
     async def run_services_retrieval(
@@ -82,7 +116,7 @@ class RestrictionParserService(BaseLlmService):
                 tools=urban_service_tools
             )
             if tool_calls:=response["message"].get("tool_calls"):
-                return await self.execute_tool(
+                return await self.execute_one_response_tool(
                     mcp_client,
                     tool_calls[0],
                     meta
@@ -134,7 +168,7 @@ class RestrictionParserService(BaseLlmService):
                 tools=urban_service_tools
             )
             if tool_calls:=response["message"].get("tool_calls"):
-                return await self.execute_tool(
+                return await self.execute_one_response_tool(
                     mcp_client,
                     tool_calls[0],
                     meta
@@ -177,7 +211,7 @@ class RestrictionParserService(BaseLlmService):
                 tools=create_buffers_tools
             )
             if tool_calls := response["message"].get("tool_calls"):
-                return await self.execute_tool(
+                return await self.execute_one_response_tool(
                     mcp_client,
                     tool_calls[0],
                     meta
@@ -224,7 +258,7 @@ class RestrictionParserService(BaseLlmService):
                 tools=create_restriction_tools
             )
             if tool_calls := response["message"].get("tool_calls"):
-                result = await self.execute_tool(
+                result = await self.execute_one_response_tool(
                     mcp_client,
                     tool_calls[0],
                     meta
@@ -243,7 +277,7 @@ class RestrictionParserService(BaseLlmService):
         scenario_id: int,
     ) -> AsyncGenerator:
         """
-        Run pipline fo forming restrictions
+        Run pipline fo forming restrictions.
         Returns:
             AsyncGenerator
         """
@@ -305,4 +339,12 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Извлечение нормативных ограничений завершено."
             }
         }
+        for name, restriction in restrictions.items():
+            yield {
+                "type": "FeatureCollection",
+                "content": {
+                    "name": name,
+                    "layer": restriction
+                }
+            }
         pass
