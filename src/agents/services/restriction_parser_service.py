@@ -2,13 +2,14 @@ import json
 from typing import AsyncGenerator
 
 from loguru import logger
-from pyexpat import features
 
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from .base_llm_service import BaseLlmService
 
 
+# TODO add planning system
 #TODO add full streaming for all llm responses
+#TODO add union tool execution function
 class RestrictionParserService(BaseLlmService):
 
     def __init__(self, ollama_host: str):
@@ -21,19 +22,18 @@ class RestrictionParserService(BaseLlmService):
         super().__init__(ollama_host)
 
     @staticmethod
-    async def execute_urban_api_tool(mcp_client: IduMcpClient, tool_call: dict, scenario_id: int) -> dict[str | dict]:
+    async def execute_tool(mcp_client: IduMcpClient, tool_call: dict, meta: dict) -> dict[str, dict]:
         """
         Function executes urban api tool and returns possible result
         Args:
             mcp_client (IduMcpClient): IduMcpClient instance.
             tool_call (dict): Dict mcp tool call info computable with Ollama.
-            scenario_id (int): Scenario ID from Urban API.
+            meta (dict): Metadata for tool.
         Returns:
-            dict[str | dict]: dict with name - FeatureCollection info.
+            dict[str, dict]: Dict with name - FeatureCollection info.
         """
 
         tool_name = tool_call["function"]["name"]
-        meta = {"scenario_id": scenario_id}
         args = tool_call["function"]["arguments"]
         if isinstance(args, str):
             args = json.loads(args)
@@ -48,7 +48,18 @@ class RestrictionParserService(BaseLlmService):
             user_prompt: dict[str, str],
             model: str,
             scenario_id: int,
-    ) -> dict | str:
+    ) -> dict[str, dict] | str:
+        """
+        Function runs service data extraction from Urban API.
+        Args:
+            mcp_client (IduMcpClient): IduMcpClient instance.
+            user_prompt (dict[str, str]): User message info.
+            model (str): Model name to run extraction on.
+            scenario_id (int): Scenario ID from Urban API.
+        Returns:
+            dict[str, dict] | str: Either dict with layer name as ley and FeatureCollection as value,
+            message with info why no service was retrieved.
+        """
 
         instructions = """Исходя из запроса пользователя получи данные по сервисам для формирования ограничений\n" \
                        \nВыбирай из списка сервисов: школа, поликлиника."
@@ -59,6 +70,7 @@ class RestrictionParserService(BaseLlmService):
         available_services_prompt = await mcp_client.get_available_services_prompt(scenario_id)
         system_prompt = {"role": "system", "content": instructions + available_services_prompt}
         urban_service_tools = await mcp_client.get_urban_api_service_tool()
+        meta = {"scenario_id": scenario_id}
         try:
             response = await self.llm_client.chat(
                 model = model,
@@ -70,12 +82,12 @@ class RestrictionParserService(BaseLlmService):
                 tools=urban_service_tools
             )
             if tool_calls:=response["message"].get("tool_calls"):
-                return await self.execute_urban_api_tool(
+                return await self.execute_tool(
                     mcp_client,
                     tool_calls[0],
-                    scenario_id
+                    meta
                 )
-            return response
+            return response["message"]["content"]
         except Exception as e:
             logger.exception(e)
             raise
@@ -87,6 +99,17 @@ class RestrictionParserService(BaseLlmService):
             model: str,
             scenario_id: int,
     ) -> str | dict:
+        """
+        Function runs physical objects data extraction from Urban API.
+        Args:
+            mcp_client (IduMcpClient): IduMcpClient instance.
+            user_prompt (dict[str, str]): User message info.
+            model (str): Model name to run extraction on.
+            scenario_id (int): Scenario ID from Urban API.
+        Returns:
+            dict[str, dict] | str: Either dict with layer name as ley and FeatureCollection as value,
+            message with info why no physical objects was retrieved.
+        """
 
         instructions = """Исходя из запроса пользователя получи данные по физическим объектам для формирования ограничений.
                        \nВыбирай из списка сервисов: школа, поликлиника."
@@ -99,6 +122,7 @@ class RestrictionParserService(BaseLlmService):
         available_physical_objects_prompt = await mcp_client.get_available_physical_objects_prompt(scenario_id)
         system_prompt = {"role": "system", "content": instructions + available_physical_objects_prompt}
         urban_service_tools = await mcp_client.get_urban_api_physical_objects_tool()
+        meta = {"scenario_id": scenario_id}
         try:
             response = await self.llm_client.chat(
                 model = model,
@@ -110,10 +134,10 @@ class RestrictionParserService(BaseLlmService):
                 tools=urban_service_tools
             )
             if tool_calls:=response["message"].get("tool_calls"):
-                return await self.execute_urban_api_tool(
+                return await self.execute_tool(
                     mcp_client,
                     tool_calls[0],
-                    scenario_id
+                    meta
                 )
             else:
                 return response["message"]["content"]
@@ -121,11 +145,95 @@ class RestrictionParserService(BaseLlmService):
             logger.exception(e)
             raise
 
-    async def run_buffer_construction(self):
-        pass
+    async def run_buffer_construction(
+            self,
+            mcp_client: IduMcpClient,
+            user_prompt: dict[str, str],
+            model: str,
+            objects: dict[str, dict]
+    ) -> dict[str, dict]:
+        """
+        Function runs building buffers.
+        Args:
+            mcp_client (IduMcpClient): IduMcpClient instance.
+            user_prompt (dict[str, str]): User prompt info.
+            model (str): Model name to run generation on.
+            objects (dict[str, dict]): Layers with layer name as key and FeatureCollection as value.
+        Returns:
+            dict[str, dict]:  Dict with layer name as ley and FeatureCollection as value.
+        """
 
-    async def run_restriction_execution(self):
-        pass
+        instructions = f"Сгенерируй нужные буферы для запроса пользователя для слоёв c именами: {list(objects.keys())}"
+        system_prompt = {"role": "system", "content": instructions}
+        create_buffers_tools = await mcp_client.get_create_buffer_tool()
+        meta = {"objects": objects}
+        try:
+            response = await self.llm_client.chat(
+                model=model,
+                messages=[
+                    system_prompt,
+                    user_prompt,
+                ],
+                tools=create_buffers_tools
+            )
+            if tool_calls := response["message"].get("tool_calls"):
+                return await self.execute_tool(
+                    mcp_client,
+                    tool_calls[0],
+                    meta
+                )
+            else:
+                return response["message"]["content"]
+        except Exception as e:
+            logger.exception(e)
+            raise
+
+
+    async def run_restriction_execution(
+            self,
+            mcp_client: IduMcpClient,
+            user_prompt: dict[str, str],
+            model: str,
+            layers: dict[str, dict]
+    ) -> dict[str, dict]:
+        """
+        Function runs building buffers.
+        Args:
+            mcp_client (IduMcpClient): IduMcpClient instance.
+            user_prompt (dict[str, str]): User prompt info.
+            model (str): Model name to run generation on.
+            layers (dict[str, dict]): Layers with layer name as key and FeatureCollection as value.
+        Returns:
+            dict[str, dict]:  Dict with layer name as ley and FeatureCollection as value.
+        """
+
+        instructions = f"""
+        Буферы необходимых слоёв были сгенерированы были сгенерированы. 
+        Сгенерируй ограничения исходя из запроса пользователя. 
+        Доступные названия слоёв для формирования ограничений: {layers.keys()}"""
+        system_prompt = {"role": "system", "content": instructions}
+        create_restriction_tools = await mcp_client.get_create_restriction_tool()
+        meta = {"layers": layers}
+        try:
+            response = await self.llm_client.chat(
+                model=model,
+                messages=[
+                    system_prompt,
+                    user_prompt,
+                ],
+                tools=create_restriction_tools
+            )
+            if tool_calls := response["message"].get("tool_calls"):
+                result = await self.execute_tool(
+                    mcp_client,
+                    tool_calls[0],
+                    meta
+                )
+            else:
+                return response["message"]["content"]
+        except Exception as e:
+            logger.exception(e)
+            raise
 
     async def run_restriction_execution_pipline(
         self,
@@ -141,7 +249,60 @@ class RestrictionParserService(BaseLlmService):
         """
 
         user_prompt = {"role": "user", "content": user_query}
+        yield {
+            "type": "status",
+            "content": {
+                "status": "data_retrievement",
+                "text": "Получаю необходимые сервисы и физические объекты"
+            }
+        }
         services = await self.run_services_retrieval(mcp_client, user_prompt, model, scenario_id)
         physical_objects = await self.run_physical_objects_retrieval(mcp_client, user_prompt, model, scenario_id)
         layers = {**services, **physical_objects}
+        yield {
+            "type": "status",
+            "content": {
+                "status": "data_retrievement",
+                "text": f"Получил необходимые сервисы и физические объекты {list(layers.keys())}"
+            }
+        }
+        yield {
+            "type": "status",
+            "content": {
+                "status": "buffer_creation",
+                "text": "Начинаю построение буферов зон с ограничениями"
+            }
+        }
+        buffers = await self.run_buffer_construction(mcp_client, user_prompt, model, layers)
+        yield {
+            "type": "status",
+            "content": {
+                "status": "buffer_creation",
+                "text": "Построил необходимые буферы с ограничениями."
+            }
+        }
+        for name, buffer in buffers.items():
+            yield {
+                "type": "feature_collection",
+                "content": {
+                    "name": name,
+                    "feature_collection": buffer
+                }
+            }
+        layers.update(buffers)
+        yield {
+            "type": "status",
+            "content": {
+                "status": "restriction_creation",
+                "text": "Начинаю извлечение нормативных ограничений."
+            }
+        }
+        restrictions = await self.run_restriction_execution(mcp_client, user_prompt, model, layers)
+        yield {
+            "type": "status",
+            "content": {
+                "status": "restriction_creation",
+                "text": "Извлечение нормативных ограничений завершено."
+            }
+        }
         pass

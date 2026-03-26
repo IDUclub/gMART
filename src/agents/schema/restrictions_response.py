@@ -28,5 +28,5 @@ class FeatureCollectionResponse(BaseModel):
 
 class RestrictionsResponse(BaseModel):
 
-    type: Literal["status", "chunk", "layer"]
+    type: Literal["status", "chunk", "feature_collection"]
     content: StatusResponse | TextResponse | FeatureCollectionResponse
