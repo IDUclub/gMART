@@ -1,14 +1,12 @@
 from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
 from src.agents.model_clients.base_client import BaseLlmClient
 
-from .base_service import BaseService
 
-
-class BaseLlmService(BaseService, BaseLlmClient):
+class BaseLlmService(BaseLlmClient):
 
     def __init__(self, llm_host: str):
         """
-        Initialization function for BaseLlmService. Inherits from BaseService.
+        Initialization function for BaseLlmService. Inherits from BaseLlmClient.
         Args:
             llm_host (str): Ollama host.
         """

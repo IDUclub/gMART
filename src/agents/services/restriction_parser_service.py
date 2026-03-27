@@ -7,14 +7,14 @@ from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from .base_llm_service import BaseLlmService
 
 
-# TODO add planning system
+#TODO add planning system
 #TODO add full streaming for all llm responses
 #TODO add union tool execution function
 class RestrictionParserService(BaseLlmService):
 
     def __init__(self, ollama_host: str):
         """
-        Initialization function for SimpleLlmService. Inherits from BaseService.
+        Initialization function for SimpleLlmService. Inherits from BaseLlmService.
         Args:
             ollama_host (str): Ollama host.
         """
@@ -38,8 +38,6 @@ class RestrictionParserService(BaseLlmService):
         if isinstance(args, str):
             args = json.loads(args)
         return await mcp_client.execute_tool(tool_name, args, meta=meta)
-        # dict_res = json.loads(result.content[0].text)
-        # return dict_res
 
     async def execute_one_response_tool(self, mcp_client: IduMcpClient, tool_call: dict, meta: dict) -> dict[str, dict]:
         """
@@ -53,8 +51,8 @@ class RestrictionParserService(BaseLlmService):
         """
 
         result = await self.execute_tool(mcp_client, tool_call, meta)
-        dict_res = json.loads(result.content[0].text)
-        return dict_res
+        # dict_res = json.loads(result.content[0].text)
+        return result
 
     async def execute_restriction_tool(self, mcp_client: IduMcpClient, tool_call: dict, meta: dict) -> dict[str | dict]:
         """
@@ -99,7 +97,8 @@ class RestrictionParserService(BaseLlmService):
                        \nВыбирай из списка сервисов: школа, поликлиника."
                        Используй именно предложенное сочетание как название сервиса. 
                        Если исходя из запроса пользователя получение сервисов не требуется, 
-                       то не вызывай инструмент, а просто верни сообщение.\n"""
+                       то не вызывай инструмент, а просто верни сообщение, что извлечение сервисов не требуется
+                       и почему оно не требуется.\n"""
         services_prompts = await mcp_client.get_services_example_prompts()
         available_services_prompt = await mcp_client.get_available_services_prompt(scenario_id)
         system_prompt = {"role": "system", "content": instructions + available_services_prompt}
@@ -292,7 +291,10 @@ class RestrictionParserService(BaseLlmService):
         }
         services = await self.run_services_retrieval(mcp_client, user_prompt, model, scenario_id)
         physical_objects = await self.run_physical_objects_retrieval(mcp_client, user_prompt, model, scenario_id)
-        layers = {**services, **physical_objects}
+        layers = {
+            **(services if isinstance(services, dict) else {}),
+            **(physical_objects if isinstance(physical_objects, dict) else {}),
+        }
         yield {
             "type": "status",
             "content": {
@@ -341,10 +343,10 @@ class RestrictionParserService(BaseLlmService):
         }
         for name, restriction in restrictions.items():
             yield {
-                "type": "FeatureCollection",
+                "type": "feature_collection",
                 "content": {
                     "name": name,
                     "layer": restriction
                 }
             }
-        pass
+        yield {"type": "chunk", "content": "Слои сформированы."}

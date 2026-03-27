@@ -32,10 +32,16 @@ def load_config() -> AgentsAppConfig:
 
     for extension in ENV_EXTENSIONS:
         if try_load(extension):
-            return AgentsAppConfig(ollama_api_url=os.getenv("OLLAMA_API_URL"))
+            return AgentsAppConfig(
+                ollama_api_url=os.getenv("OLLAMA_API_URL"),
+                idu_mcp_url=os.getenv("IDU_MCP_SERVER")
+            )
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
     try:
-        return AgentsAppConfig(ollama_api_url=os.getenv("OLLAMA_API_URL"))
+        return AgentsAppConfig(
+            ollama_api_url=os.getenv("OLLAMA_API_URL"),
+            idu_mcp_url=os.getenv("IDU_MCP_SERVER")
+        )
     except ValueError:
         raise
     except Exception as e:

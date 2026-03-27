@@ -1,9 +1,5 @@
-from agents.services.base_service import BaseService
-
-
-class ChatHistoryService(BaseService):
+class ChatHistoryService:
 
     def __init__(self):
 
-        super().__init__()
         pass

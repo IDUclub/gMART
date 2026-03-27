@@ -1,3 +1,5 @@
+from dataclasses import asdict, is_dataclass
+
 from fastmcp import Client as MCPClient
 from loguru import logger
 from mcp import ListToolsResult, Tool
@@ -31,11 +33,12 @@ class BaseMcpClient:
                     for tool in tools
                     if hasattr(tool, "meta")
                     and tool.meta
-                    and tool.meta.get("_fastmcp", {})
-                    and tag in tool.meta.get("_fastmcp", {}).get("tags", [])
+                    and tool.meta.get("fastmcp", {})
+                    and tag in tool.meta.get("fastmcp", {}).get("tags", [])
+                    and tool not in result_list
                 ]
             )
-        return list(set(result_list))
+        return list(result_list)
 
     async def load_ollama_tools(self, tags: list[str] | None = None) -> list[dict]:
         """
@@ -78,6 +81,8 @@ class BaseMcpClient:
             async with self.mcp_client as mcp:
                 result = await mcp.call_tool(tool_name, arguments, meta=meta)
                 logger.info(f"Executed tool with meta {result.meta}")
+                if is_dataclass(result.data):
+                    return asdict(result.data)
                 return result.data
         except Exception as e:
             logger.exception(e)

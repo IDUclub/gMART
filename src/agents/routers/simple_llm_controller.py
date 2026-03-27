@@ -8,7 +8,7 @@ from src.agents.dto.llm_request_dto import SimpleRequestDTO
 from src.agents.schema.chunk_llm_response import ChunkLlmResponse
 from src.agents.services.simple_llm_service import SimpleLlmService
 
-llm_router = APIRouter(prefix="/llm")
+llm_router = APIRouter(prefix="/llm", tags=["simple_llm"])
 
 
 @llm_router.get("/available_models", response_model=list[str])

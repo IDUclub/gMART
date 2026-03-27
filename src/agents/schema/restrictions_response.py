@@ -5,10 +5,18 @@ from pydantic import BaseModel
 
 
 class StatusResponse(BaseModel):
+    """
+    Class for status response.
+    Attributes:
+        status (Literal["data_retrievement", "buffer_creation","restriction_formation","context_preparation",]): status
+        stage name.
+        text (str): Status message.
+    """
 
     status: Literal[
         "data_retrievement",
-        "buffer_creation" "restriction_formation",
+        "buffer_creation",
+        "restriction_formation",
         "context_preparation",
     ]
     text: str
@@ -23,7 +31,7 @@ class TextResponse(BaseModel):
 class FeatureCollectionResponse(BaseModel):
 
     name: str
-    layer: FeatureCollection
+    feature_collection: FeatureCollection
 
 
 class RestrictionsResponse(BaseModel):
