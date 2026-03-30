@@ -37,7 +37,7 @@ class GeometryTools:
         layer["buffer_size"] = buffer_size
         layer["restriction_title"] = title
         layer["geometry"] = layer.buffer(buffer_size, cap_style=buffer_type)
-        return layer[["geometry", "name", "buffer_size", "title"]].to_crs(4326)
+        return layer[["geometry", "name", "buffer_size", "restriction_title"]].to_crs(4326)
 
     def generate_geometry_buffers(
         self,
