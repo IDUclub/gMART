@@ -99,7 +99,9 @@ class RestrictionParserService(BaseLlmService):
 
         instructions = """Исходя из запроса пользователя получи данные по сервисам для формирования ограничений\n" \
                        \nВыбирай из списка сервисов: школа, поликлиника."
-                       Используй именно предложенное сочетание как название сервиса. 
+                       Используй именно предложенное сочетание как название сервиса. Ты можешь выбирать несколько
+                       сервисов, если они подходят по смыслу.
+                       Старайся выбрать как можно больше подходящих по смыслу сервисов.
                        Если исходя из запроса пользователя получение сервисов не требуется, 
                        то не вызывай инструмент, а просто верни сообщение, что извлечение сервисов не требуется
                        и почему оно не требуется.\n"""
@@ -148,12 +150,12 @@ class RestrictionParserService(BaseLlmService):
             message with info why no physical objects was retrieved.
         """
 
-        instructions = """Исходя из запроса пользователя получи данные по физическим объектам для формирования ограничений.
-                       \nВыбирай из списка сервисов: школа, поликлиника."
-                       Используй именно предложенное сочетание как название сервиса. 
+        instructions = """Исходя из запроса пользователя получи данные по физическим объектам для формирования ограничений.\n
+                       Используй именно предложенное сочетание как название физического объекта. 
+                       Ты можешь выбирать несколько физических объектов, если они подходят по смыслу под запрос пользователя.
+                       Старайся выбрать как можно больше подходящих по смыслу физических объектов.
                        Если исходя из запроса пользователя получение физических объектов не требуется, 
                        то не вызывай инструмент, а просто верни сообщение.\n
-                       Используй максимально подходящие по смыслу к запросу пользователя физические объекты.\n
                        """
         physical_objects_prompts = await mcp_client.get_physical_objects_example_prompts()
         available_physical_objects_prompt = await mcp_client.get_available_physical_objects_prompt(scenario_id)
@@ -188,7 +190,7 @@ class RestrictionParserService(BaseLlmService):
             user_prompt: dict[str, str],
             model: str,
             objects: dict[str, dict]
-    ) -> dict[str, dict]:
+    ) -> tuple[dict[str, dict], str, list[dict]] | str:
         """
         Function runs building buffers.
         Args:
@@ -197,34 +199,59 @@ class RestrictionParserService(BaseLlmService):
             model (str): Model name to run generation on.
             objects (dict[str, dict]): Layers with layer name as key and FeatureCollection as value.
         Returns:
-            dict[str, dict]:  Dict with layer name as ley and FeatureCollection as value.
-        """
+            [dict[str, dict] | str, list[dict]] | str:  Tuple with first value as a result value as dict with
+            name as keys and values as FeatureCollections and third value as formed messages to LLM.
+            If no tool was called returns explanation why."""
 
-        instructions = f"Сгенерируй нужные буферы для запроса пользователя для слоёв c именами: {list(objects.keys())}"
+        instructions = f"""Сгенерируй нужные буферы для запроса пользователя для слоёв c именами: 
+        {list(objects.keys())}. Выбирай только из этих типов объектов.\n
+        Используй все типы объектов, которые могут относится к объектам, создающим ограничения.
+        Не передавай в генерацию объекты, на которые воздействуют ограничения.
+        """
         system_prompt = {"role": "system", "content": instructions}
         create_buffers_tools = await mcp_client.get_create_buffer_tool()
         meta = {"objects": objects}
+        messages = [system_prompt, user_prompt,]
         try:
             response = await self.llm_client.chat(
                 model=model,
-                messages=[
-                    system_prompt,
-                    user_prompt,
-                ],
+                messages=messages,
                 tools=create_buffers_tools
             )
             if tool_calls := response["message"].get("tool_calls"):
-                return await self.execute_one_response_tool(
+                tool_result = await self.execute_one_response_tool(
                     mcp_client,
                     tool_calls[0],
                     meta
                 )
+                return tool_result, tool_calls, messages
             else:
                 return response["message"]["content"]
         except Exception as e:
             logger.exception(e)
             raise
 
+    async def explain_tool_call(self, model: str, tool_call: list, query: list[dict]) -> str:
+        """
+        Function executes llm explanation for called tool.
+        Args:
+            model (str): Model name to run generation on.
+            tool_call (list): Info about called tools.
+            query (list[dict]): Info with provided query for llm.
+        Returns:
+            str: explanation why tool was called with this params.
+        """
+
+        instructions = f"""Объясни, почему ты выбрал именно такие параметры:{tool_call}
+        Для следующего запроса: {query}.
+        Объясни только логику выбора.
+        """
+
+        result = await self.llm_client.chat(
+            model=model,
+            messages=[{"role": "system", "content": instructions}]
+        )
+        return result["message"]["content"]
 
     async def run_restriction_execution(
             self,
@@ -232,7 +259,7 @@ class RestrictionParserService(BaseLlmService):
             user_prompt: dict[str, str],
             model: str,
             layers: dict[str, dict]
-    ) -> dict[str, dict]:
+    ) -> tuple[dict[str, dict], str, list] | str:
         """
         Function runs building buffers.
         Args:
@@ -241,7 +268,9 @@ class RestrictionParserService(BaseLlmService):
             model (str): Model name to run generation on.
             layers (dict[str, dict]): Layers with layer name as key and FeatureCollection as value.
         Returns:
-            dict[str, dict]:  Dict with layer name as ley and FeatureCollection as value.
+            [dict[str, dict] | str, list[dict]] | str:  Tuple with first value as a result value as dict with
+            name as keys and values as FeatureCollections and third value as formed messages to LLM.
+            If no tool was called returns explanation why.
         """
 
         final_names = []
@@ -263,22 +292,21 @@ class RestrictionParserService(BaseLlmService):
         Используй все возможные объекты, которые могут относится к этим ограничениям."""
         system_prompt = {"role": "system", "content": instructions}
         create_restriction_tools = await mcp_client.get_create_restriction_tool()
+        messages = [system_prompt, user_prompt,]
         meta = {"layers": layers}
         try:
             response = await self.llm_client.chat(
                 model=model,
-                messages=[
-                    system_prompt,
-                    user_prompt,
-                ],
+                messages=messages,
                 tools=create_restriction_tools
             )
             if tool_calls := response["message"].get("tool_calls"):
-                return await self.execute_one_response_tool(
+                tool_result = await self.execute_one_response_tool(
                     mcp_client,
                     tool_calls[0],
                     meta
                 )
+                return tool_result, tool_calls, messages
             else:
                 return response["message"]["content"]
         except Exception as e:
@@ -326,12 +354,20 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Начинаю построение буферов зон с ограничениями"
             }
         }
-        buffers = await self.run_buffer_construction(mcp_client, user_prompt, model, layers)
+        buffers, tool_call, messages = await self.run_buffer_construction(mcp_client, user_prompt, model, layers)
         yield {
             "type": "status",
             "content": {
                 "status": "buffer_creation",
                 "text": "Построил необходимые буферы с ограничениями."
+            }
+        }
+        explanation = await self.explain_tool_call(model, tool_call, messages)
+        yield {
+            "type": "chunk",
+            "content": {
+                "text": explanation,
+                "done": False
             }
         }
         for name, buffer in buffers.items():
@@ -350,12 +386,20 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Начинаю извлечение нормативных ограничений."
             }
         }
-        restrictions = await self.run_restriction_execution(mcp_client, user_prompt, model, layers)
+        restrictions, tool_call, messages = await self.run_restriction_execution(mcp_client, user_prompt, model, layers)
+        explanation = await self.explain_tool_call(model ,tool_call, messages)
         yield {
             "type": "status",
             "content": {
                 "status": "restriction_formation",
                 "text": "Извлечение нормативных ограничений завершено."
+            }
+        }
+        yield {
+            "type": "chunk",
+            "content": {
+                "text": explanation,
+                "done": False
             }
         }
         for name, restriction in restrictions.items():
