@@ -1,6 +1,7 @@
 from fastmcp import Client as MCPClient
 from loguru import logger
 from mcp import ListToolsResult, Tool
+from mcp.server.fastmcp.prompts import Prompt
 
 
 class BaseMcpClient:
@@ -30,26 +31,46 @@ class BaseMcpClient:
                     for tool in tools
                     if hasattr(tool, "meta")
                     and tool.meta
-                    and tool.meta.get("_fastmcp", {})
-                    and tag in tool.meta.get("_fastmcp", {}).get("tags", [])
+                    and tool.meta.get("fastmcp", {})
+                    and tag in tool.meta.get("fastmcp", {}).get("tags", [])
+                    and tool not in result_list
                 ]
             )
-        return list(set(result_list))
+        return list(result_list)
 
-    async def load_tools(self, tags: list[str]) -> list[Tool] | ListToolsResult:
+    async def load_ollama_tools(self, tags: list[str] | None = None) -> list[dict]:
         """
         Function returns available tools.
         Args:
-            tags (list[str]): List of tags to filter tools by.
+            tags (list[str] | None): List of tags to filter tools by. Default to None.
         Returns:
-            ListToolsResult: List of available tools filtered by tags.
+            list[dict]: List of available tools filtered by tags in ollama computable format.
         """
 
         async with self.mcp_client as client:
             tools = await client.list_tools()
             if tags:
-                return await self.__filter_tools_by_tag__(tools, tags)
-            return tools
+                tools = await self.__filter_tools_by_tag__(tools, tags)
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.inputSchema
+                    }
+                } for tool in tools
+            ]
+
+    async def get_prompts(self) -> list[Prompt] | list[dict]:
+        """
+        Function returns available for mcp server prompts templates.
+        Returns:
+            list[Prompt] | list[dict]: list of available prompts.
+        """
+
+        async with self.mcp_client:
+            return await self.mcp_client.list_prompts()
 
     # TODO enhance exception handling
     async def execute_tool(self, tool_name: str, arguments: dict, meta: dict):

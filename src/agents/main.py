@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 
-import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from loguru import logger
@@ -11,6 +10,7 @@ from src.agents.__version__ import APP_DESCRIPTION, APP_TITLE, APP_VERSION
 from src.agents.common.middlewares.exception_handler import ExceptionHandlerMiddleware
 from src.agents.dependencies.dependencies import app_deps
 from src.agents.routers.simple_llm_controller import llm_router
+from src.agents.routers.restriction_parser_controller import restriction_router
 
 
 @asynccontextmanager
@@ -46,3 +46,4 @@ async def ping_server():
 
 
 app.include_router(llm_router)
+app.include_router(restriction_router)

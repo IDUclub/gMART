@@ -1,5 +1,7 @@
 import asyncio
 
+from watchfiles import awatch
+
 from src.idu_mcp.common.api_handlers.json_api_handler import JsonApiHandler
 
 LIVING_BUILDINGS_ID = 4
@@ -30,12 +32,19 @@ class UrbanApiClient:
             for name in names
         ]
         results = await asyncio.gather(*tasks)
-        final_results = [res[0] for res in results]
-        return {
-            i["name"]: i["service_type_id"]
-            for i in final_results
-            if i and i["name"] in names
-        }
+        final_results = [res[0] for res in results if res]
+        if "service" in endpoint:
+            return {
+                i["name"]: i["service_type_id"]
+                for i in final_results
+                if i and i["name"] in names
+            }
+        else:
+            return {
+                i["name"]: i["physical_object_type_id"]
+                for i in final_results
+                if i and i["name"] in names
+            }
 
     async def get_service_name_id(self, names: list[str], token: str) -> dict[str, int]:
         """
@@ -100,10 +109,42 @@ class UrbanApiClient:
 
         tasks = [
             self.json_handler.get(
-                f"api/v1/scenarios/{scenario_id}/physical_object_with_geometry",
+                f"api/v1/scenarios/{scenario_id}/physical_objects_with_geometry",
                 params={"physical_object_type_id": physical_object_id},
                 auth_token=token,
             )
             for physical_object_id in physical_objects
         ]
         return await asyncio.gather(*tasks)
+
+    async def get_available_scenario_services(self, scenario_id: int, token: str) -> list[str]:
+        """
+        Function returns list of available service types names.
+        Args:
+            scenario_id (int): Scenario ID from Urban API.
+            token (str): Auth token.
+        Returns:
+            list[str]: List of available for scenario service type names.
+        """
+
+        service_types = await self.json_handler.get(
+            f"api/v1/scenarios/{scenario_id}/service_types",
+            auth_token=token
+        )
+        return [service_type["name"] for service_type in service_types]
+
+    async def get_available_physical_objects(self, scenario_id: int, token: str) -> list[str]:
+        """
+        Function returns list of available physical objects types names.
+        Args:
+            scenario_id (int): Scenario ID from Urban API.
+            token (str): Auth token.
+        Returns:
+            list[str]: List of available for scenario physical objects type names.
+        """
+
+        physical_objects_types = await self.json_handler.get(
+            f"api/v1/scenarios/{scenario_id}/physical_object_types",
+            auth_token=token
+        )
+        return [physical_object_type["name"] for physical_object_type in physical_objects_types]

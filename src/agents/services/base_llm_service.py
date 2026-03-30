@@ -1,20 +1,17 @@
 from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
-from src.agents.model_clients.base_client import BaseClient
-
-from .base_service import BaseService
+from src.agents.model_clients.base_client import BaseLlmClient
 
 
-class BaseLlmService(BaseService):
+class BaseLlmService(BaseLlmClient):
 
-    def __init__(self, llm_client: BaseClient):
+    def __init__(self, llm_host: str):
         """
-        Initialization function for BaseLlmService. Inherits from BaseService.
+        Initialization function for BaseLlmService. Inherits from BaseLlmClient.
         Args:
-            llm_client (BaseClient): BaseClient for communicating with LLM.
+            llm_host (str): Ollama host.
         """
 
-        super().__init__()
-        self.llm_client = llm_client
+        super().__init__(host=llm_host)
 
     async def get_models(self, only_running: bool = False):
         """
@@ -23,8 +20,7 @@ class BaseLlmService(BaseService):
             only_running (bool, optional): If True, get only running models. Defaults to False.
         """
 
-        client = await self.llm_client.get_client()
-        models = await client.ps() if only_running else await client.list()
+        models = await self.llm_client.ps() if only_running else await self.llm_client.list()
         return [model["model"] for model in models["models"]]
 
     async def validate_model(self, model_name: str):
