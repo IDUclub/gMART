@@ -111,7 +111,7 @@ async def create_restrictions(
     restrictions: dict[str, dict[str, str | list[str]]],
     ctx: Context = CurrentContext(),
     geom_tools: GeometryTools = Depends(get_geom_tools),
-) -> tuple[dict, dict]:
+) -> dict[str, FeatureCollection]:
     """
     Function forms layers by provided restrictions.
     Args:
@@ -121,7 +121,7 @@ async def create_restrictions(
         ctx (Context): tool call context. Forms from CurrentContext().
         geom_tools (GeometryTools): GeometryTools instance.
     Returns:
-        tuple[dict, dict]: tuple of layers where firs FeatureCollection is restricted objects layer
+        dict[str, dict]: tuple of layers where firs FeatureCollection is restricted objects layer
         and second FeatureCollection is generators layer.
     """
 

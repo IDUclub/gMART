@@ -1,5 +1,3 @@
-from dataclasses import asdict, is_dataclass
-
 from fastmcp import Client as MCPClient
 from loguru import logger
 from mcp import ListToolsResult, Tool
@@ -81,8 +79,6 @@ class BaseMcpClient:
             async with self.mcp_client as mcp:
                 result = await mcp.call_tool(tool_name, arguments, meta=meta)
                 logger.info(f"Executed tool with meta {result.meta}")
-                if is_dataclass(result.data):
-                    return asdict(result.data)
                 return result.data
         except Exception as e:
             logger.exception(e)

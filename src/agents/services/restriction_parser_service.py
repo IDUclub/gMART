@@ -1,5 +1,6 @@
 import json
 from typing import AsyncGenerator
+from dataclasses import is_dataclass, asdict
 
 from loguru import logger
 
@@ -51,7 +52,10 @@ class RestrictionParserService(BaseLlmService):
         """
 
         result = await self.execute_tool(mcp_client, tool_call, meta)
-        # dict_res = json.loads(result.content[0].text)
+        if isinstance(result, dict):
+            for key, value in result.items():
+                if is_dataclass(value):
+                    result[key] = asdict(value)
         return result
 
     async def execute_restriction_tool(self, mcp_client: IduMcpClient, tool_call: dict, meta: dict) -> dict[str | dict]:
@@ -240,10 +244,23 @@ class RestrictionParserService(BaseLlmService):
             dict[str, dict]:  Dict with layer name as ley and FeatureCollection as value.
         """
 
+        final_names = []
+        original_layers_names = [i for i in layers]
+        for i in original_layers_names:
+            if i.islower():
+                final_names.append(i)
+            else:
+                if i.lower() in original_layers_names:
+                    continue
+                else:
+                    final_names.append(i)
         instructions = f"""
         Буферы необходимых слоёв были сгенерированы были сгенерированы. 
-        Сгенерируй ограничения исходя из запроса пользователя. 
-        Доступные названия слоёв для формирования ограничений: {layers.keys()}"""
+        Сгенерируй ограничения исходя из запроса пользователя.
+        Название функции передавай точно также, как оно определeно.
+        Доступные названия слоёв для формирования ограничений: {final_names}. 
+        Используй эти названия именно так как они указаны как ключ для создания ограничений именно в том виде, в котором они представлены. 
+        Используй все возможные объекты, которые могут относится к этим ограничениям."""
         system_prompt = {"role": "system", "content": instructions}
         create_restriction_tools = await mcp_client.get_create_restriction_tool()
         meta = {"layers": layers}
@@ -257,7 +274,7 @@ class RestrictionParserService(BaseLlmService):
                 tools=create_restriction_tools
             )
             if tool_calls := response["message"].get("tool_calls"):
-                result = await self.execute_one_response_tool(
+                return await self.execute_one_response_tool(
                     mcp_client,
                     tool_calls[0],
                     meta
@@ -329,7 +346,7 @@ class RestrictionParserService(BaseLlmService):
         yield {
             "type": "status",
             "content": {
-                "status": "restriction_creation",
+                "status": "restriction_formation",
                 "text": "Начинаю извлечение нормативных ограничений."
             }
         }
@@ -337,7 +354,7 @@ class RestrictionParserService(BaseLlmService):
         yield {
             "type": "status",
             "content": {
-                "status": "restriction_creation",
+                "status": "restriction_formation",
                 "text": "Извлечение нормативных ограничений завершено."
             }
         }
@@ -346,7 +363,7 @@ class RestrictionParserService(BaseLlmService):
                 "type": "feature_collection",
                 "content": {
                     "name": name,
-                    "layer": restriction
+                    "feature_collection": restriction
                 }
             }
-        yield {"type": "chunk", "content": "Слои сформированы."}
+        yield {"type": "chunk", "content": {"text": "Слои сформированы.", "done": True}}

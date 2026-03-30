@@ -129,7 +129,7 @@ class GeometryTools:
         generators: list[str],
         objects: list[str],
         restrictions: dict[str, dict[str, str | list[str]]],
-    ) -> tuple[dict, dict]:
+    ) -> dict[str, dict]:
         """
         Function generates restrictions for provided objects.
         Args:
@@ -140,7 +140,7 @@ class GeometryTools:
             as key and dict with fields  "title" and "description" containing restriction info and field "to" which
             contains list of str names of objects effected by restriction.
         Returns:
-            tuple[dict, dict]: two layers with restricted objects and generated restrictions.
+            dict[str, dict]: two layers with restricted objects and generated restrictions as dict.
         """
 
         def apply_strip(string_to_strip: str, symbol: str) -> str:
@@ -161,7 +161,10 @@ class GeometryTools:
             apply_strip, symbol="&"
         )
         objects.drop(columns=["name_left", "name_right"], inplace=True)
-        return json.loads(objects.to_json()), json.loads(generators.to_json())
+        return {
+            "objects": json.loads(objects.to_json()),
+            "generators": json.loads(generators.to_json())
+        }
 
     async def async_create_restrictions(
         self,
@@ -169,7 +172,7 @@ class GeometryTools:
         generators: list[str],
         objects: list[str],
         restrictions: dict[str, dict[str, str]],
-    ):
+    ) -> dict[str | dict]:
         """
         Function generates restrictions for provided objects.
         Args:
