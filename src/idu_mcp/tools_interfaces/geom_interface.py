@@ -17,7 +17,7 @@ geometry_mcp = FastMCP("GEOMETRY MCP")
     
     Входные параметры:
     Параметр | Тип	| Обязателен | Описание
-    buffer_info |	dict[str, int |	Literal["round", "flat", "square"]]
+    buffer_info |	dict[str, int |	Literal["round", "flat", "square"] | str]
     
     Выходные данные:
     
@@ -30,8 +30,8 @@ geometry_mcp = FastMCP("GEOMETRY MCP")
     
     {
       "buffer_info": {
-        "жилая застройка": { "buffer_size": 150, "buffer_type": "round" },
-        "промышленная зона": { "buffer_size": 300, "buffer_type": "square" }
+        "жилая застройка": {"buffer_size": 150, "buffer_type": "round", "title": "Ограничение от промышленных объектов в радиусе 150 метров"},
+        "промышленная зона": { "buffer_size": 300, "buffer_type": "square", "title": "Ограничение от водных объектов в радиусе 300 метров"}
       }
     }
     
@@ -54,7 +54,7 @@ async def create_buffers(
     """
     Create buffers for layers.
     Args:
-        buffer_info (dict[str, int | Literal["round", "flat", "square"]]): Buffer info, containing buffer type and buffer size.
+        buffer_info (dict[str, int | Literal["round", "flat", "square"] | str]): Buffer info, containing buffer type and buffer size.
         ctx (Context): Context for mcp tool call.
         geom_tools (GeometryTools): GeometryTools instance.
     Returns:

@@ -15,7 +15,7 @@ class GeometryTools:
     #TODO add restrict style
     @staticmethod
     def create_buffer(
-        layer: gpd.GeoDataFrame, buffer_size: int, buffer_type: BufferTypeEnum
+        layer: gpd.GeoDataFrame, buffer_size: int, buffer_type: BufferTypeEnum, title: str
     ) -> gpd.GeoDataFrame:
         """
         Function generates buffer for provided layer.
@@ -23,6 +23,7 @@ class GeometryTools:
             layer (gpd.GeoDataFrame): GeoDataFrame of objects layer.
             buffer_size (int): Buffer size in meters for layer objects.
             buffer_type (BufferTypeEnum): Buffer type to generate. Possible values: "round", "square", "flat".
+            title (str): Generating restriction name, close to description.
         Returns:
             gpd.GeoDataFrame: GeoDataFrame of buffered objects.
         """
@@ -33,8 +34,10 @@ class GeometryTools:
         if layer.crs != 4326:
             layer.to_crs(4326, inplace=True)
         layer.to_crs(layer.estimate_utm_crs(), inplace=True)
-        result = layer.buffer(buffer_size, cap_style=buffer_type)
-        return result.to_crs(4326)
+        layer["buffer_size"] = buffer_size
+        layer["restriction_title"] = title
+        layer["geometry"] = layer.buffer(buffer_size, cap_style=buffer_type)
+        return layer[["geometry", "name", "buffer_size", "restriction_title"]].to_crs(4326)
 
     def generate_geometry_buffers(
         self,
@@ -59,6 +62,7 @@ class GeometryTools:
                 objects_geoms[k],
                 buffer_info[k]["buffer_size"],
                 buffer_info[k]["buffer_type"],
+                buffer_info[k]["title"],
             )
             for k in buffer_info
         }
