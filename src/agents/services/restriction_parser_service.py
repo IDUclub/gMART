@@ -2,10 +2,15 @@ import json
 from typing import AsyncGenerator
 from dataclasses import is_dataclass, asdict
 
+import pandas as pd
 from loguru import logger
+import geopandas as gpd
+
+from ollama import ChatResponse
 
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from .base_llm_service import BaseLlmService
+from .service_entities import GeometryToolCallResult
 
 
 #TODO add planning system
@@ -190,7 +195,7 @@ class RestrictionParserService(BaseLlmService):
             user_prompt: dict[str, str],
             model: str,
             objects: dict[str, dict]
-    ) -> tuple[dict[str, dict], str, list[dict]] | str:
+    ) -> GeometryToolCallResult | str:
         """
         Function runs building buffers.
         Args:
@@ -199,8 +204,9 @@ class RestrictionParserService(BaseLlmService):
             model (str): Model name to run generation on.
             objects (dict[str, dict]): Layers with layer name as key and FeatureCollection as value.
         Returns:
-            [dict[str, dict] | str, list[dict]] | str:  Tuple with first value as a result value as dict with
-            name as keys and values as FeatureCollections and third value as formed messages to LLM.
+            GeometryToolCallResult | str:  Instance of GeometryToolCallResult with first tool_result as a result from
+            tool call as dict with name as keys and values as FeatureCollections, tool_calls as list on dict with info
+            about provided params to tool call and third messages as formed messages to LLM.
             If no tool was called returns explanation why."""
 
         instructions = f"""Сгенерируй нужные буферы для запроса пользователя для слоёв c именами: 
@@ -224,7 +230,7 @@ class RestrictionParserService(BaseLlmService):
                     tool_calls[0],
                     meta
                 )
-                return tool_result, tool_calls, messages
+                return GeometryToolCallResult(tool_result, tool_calls, messages)
             else:
                 return response["message"]["content"]
         except Exception as e:
@@ -259,7 +265,7 @@ class RestrictionParserService(BaseLlmService):
             user_prompt: dict[str, str],
             model: str,
             layers: dict[str, dict]
-    ) -> tuple[dict[str, dict], str, list] | str:
+    ) -> GeometryToolCallResult | str:
         """
         Function runs building buffers.
         Args:
@@ -289,7 +295,10 @@ class RestrictionParserService(BaseLlmService):
         Название функции передавай точно также, как оно определeно.
         Доступные названия слоёв для формирования ограничений: {final_names}. 
         Используй эти названия именно так как они указаны как ключ для создания ограничений именно в том виде, в котором они представлены. 
-        Используй все возможные объекты, которые могут относится к этим ограничениям."""
+        Используй все возможные объекты, которые могут относится к этим ограничениям.
+        Если в запросе пользователя нет прямого указания на отношения объектов (какие объекты оказывают 
+        какие ограничения на какие объекты), то вместо вызова инструмента верни пустой ответ.
+        """
         system_prompt = {"role": "system", "content": instructions}
         create_restriction_tools = await mcp_client.get_create_restriction_tool()
         messages = [system_prompt, user_prompt,]
@@ -306,12 +315,149 @@ class RestrictionParserService(BaseLlmService):
                     tool_calls[0],
                     meta
                 )
-                return tool_result, tool_calls, messages
+                return GeometryToolCallResult(tool_result, tool_calls, messages)
             else:
                 return response["message"]["content"]
         except Exception as e:
             logger.exception(e)
             raise
+
+    @staticmethod
+    async def generate_generators_summary(generators: gpd.GeoDataFrame) -> str:
+        """
+        Function forms summary for generators GeoDataFrame. Generators should be passed in local crs.
+        Args:
+            generators (gpd.GeoDataFrame): Layer with objects containing attributes "name", "restriction_title",
+            "geometry".
+        Returns:
+            str: json repr of context as json str
+        """
+
+        generators["area"] = generators.area
+        generators["num"] = 1
+        return json.dumps(
+            generators.groupby("name", as_index=False).agg(
+                {
+                    "name": "first",
+                    "area": "sum",
+                    "num": "sum"
+                }
+            ).rename(
+                columns={
+                    "name": "Название",
+                    "area": "Площадь кв.м",
+                    "num": "Количество"
+                }
+            ).to_dict(orient="records")
+        )
+
+    @staticmethod
+    async def generate_objects_summary(objects: gpd.GeoDataFrame) -> str:
+        """
+        Function forms summary for objects GeoDataFrame. Objects should be passed in local crs.
+        Args:
+            objects (gpd.GeoDataFrame): Layer with objects containing attributes "restriction_name",
+            "restriction_description", "geometry".
+        Returns:
+            str: json repr of context as json str
+        """
+
+        objects["area"] = objects.area
+        objects["num"] = 1
+        return json.dumps(
+            objects.groupby("restriction_name", as_index=False).agg(
+                {
+                    "restriction_description": "first",
+                    "area": "sum",
+                    "num": "sum"
+                }
+            ).rename(
+                columns={
+                    "restriction_name": "Наименование ограничения",
+                    "restriction_description": "Описание ограничения",
+                    "area": "Площадь объектов кв.м",
+                    "num": "Количество объектов"
+                }
+            ).to_dict(orient="records")
+        )
+
+    async def generate_buffers_context(self, buffers: dict) -> str:
+        """
+        Function forms context for response based only on generated buffers.
+        Args:
+            buffers (dict): Dict with key as buffer layer name and FeatureCollection as value.
+        Returns:
+            str: formed context for generated buffers.
+        """
+
+        gdf_list = []
+        for name, buffer in buffers.items():
+            current_buffer_gdf = gpd.GeoDataFrame.from_features(buffer, crs=4326)
+            current_buffer_gdf["name"] = name
+            gdf_list.append(current_buffer_gdf)
+        buffers_gdf = pd.concat(gdf_list)
+        buffers_summary = await self.generate_generators_summary(buffers_gdf.to_crs(buffers_gdf.estimate_utm_crs()))
+        return f"""Сводная информация по сгенерированным буферам ограничений: 
+        \n{buffers_summary}
+        """
+
+    async def generate_restrictions_context(self, generators: dict, objects: dict) -> str:
+        """
+        Function generates context for restriction llm response from generated layers.
+        Args:
+            generators (dict): Layer of generating restriction geometries as FeatureCollection.
+            objects (dict): Layer of objects restricted by generators objects.
+        Returns:
+            str: Stats from provided layers
+        """
+        if generators["features"]:
+            generators_gdf = gpd.GeoDataFrame.from_features(generators, crs=4326)
+            generators_summary = await self.generate_generators_summary(generators_gdf.to_crs(generators_gdf.estimate_utm_crs()))
+        else:
+            generators_summary = ""
+        if objects["features"]:
+            objects_gdf = gpd.GeoDataFrame.from_features(objects, crs=4326)
+            objects_summary = await self.generate_objects_summary(objects_gdf.to_crs(generators_gdf.estimate_utm_crs()))
+        else:
+            objects_summary = ""
+        return f"""Сводная информация по сформированным ограничениям:\n
+        Генераторы ограничений:
+        \n{generators_summary}
+        \nОбъекты, подверженные ограничениям:
+        \n{objects_summary}"""
+
+    async def generate_final_response(self,model: str, user_query: str, context: str) -> AsyncGenerator[dict[str, str], None]:
+        """
+        Generate final response for user request based on generated context.
+        Args:
+            model (str): Model name to run generation on.
+            user_query (str): Original user_request.
+            context (str): Generated context for user request based on tools results.
+        Returns:
+            AsyncGenerator[dict[str, Any], None]: generator for chunks from ollama api.
+        """
+
+        messages = [
+            {
+                "role": "system",
+                "content": f"Дай комментарий к запросу пользователя на основе контекста статистики сгенерированных слоёв"
+            },
+            {
+                "role": "user",
+                "content": user_query
+            }
+        ]
+        async for part in await self.llm_client.chat(model, messages, stream=True):
+            part: ChatResponse
+            yield {
+                "type": "chunk",
+                "content": {
+                    "text": part.message.content,
+                    "done": part.done
+                }
+            }
+            if part.done:
+                break
 
     async def run_restriction_execution_pipline(
         self,
@@ -335,7 +481,39 @@ class RestrictionParserService(BaseLlmService):
             }
         }
         services = await self.run_services_retrieval(mcp_client, user_prompt, model, scenario_id)
+        if isinstance(services, dict):
+            yield {
+                "type": "status",
+                "content": {
+                    "status": "data_retrievement",
+                    "text": "Были получены следующие сервисы."
+                }
+            }
+            for name, service_layer in services.items():
+                yield {
+                    "type": "feature_collection",
+                    "content": {
+                        "name": name,
+                        "feature_collection": service_layer
+                    },
+                }
         physical_objects = await self.run_physical_objects_retrieval(mcp_client, user_prompt, model, scenario_id)
+        if isinstance(physical_objects, dict):
+            yield {
+                "type": "status",
+                "content": {
+                    "status": "data_retrievement",
+                    "text": "Были получены следующие физические объекты."
+                }
+            }
+            for name, physical_object_layer in physical_objects.items():
+                yield {
+                    "type": "feature_collection",
+                    "content": {
+                        "name": name,
+                        "feature_collection": physical_object_layer
+                    },
+                }
         layers = {
             **(services if isinstance(services, dict) else {}),
             **(physical_objects if isinstance(physical_objects, dict) else {}),
@@ -354,7 +532,7 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Начинаю построение буферов зон с ограничениями"
             }
         }
-        buffers, tool_call, messages = await self.run_buffer_construction(mcp_client, user_prompt, model, layers)
+        buffers_result: GeometryToolCallResult = await self.run_buffer_construction(mcp_client, user_prompt, model, layers)
         yield {
             "type": "status",
             "content": {
@@ -362,7 +540,7 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Построил необходимые буферы с ограничениями."
             }
         }
-        explanation = await self.explain_tool_call(model, tool_call, messages)
+        explanation = await self.explain_tool_call(model, buffers_result.tool_calls, buffers_result.messages)
         yield {
             "type": "chunk",
             "content": {
@@ -370,7 +548,7 @@ class RestrictionParserService(BaseLlmService):
                 "done": False
             }
         }
-        for name, buffer in buffers.items():
+        for name, buffer in buffers_result.tool_result.items():
             yield {
                 "type": "feature_collection",
                 "content": {
@@ -378,7 +556,7 @@ class RestrictionParserService(BaseLlmService):
                     "feature_collection": buffer
                 }
             }
-        layers.update(buffers)
+        layers.update(buffers_result.tool_result)
         yield {
             "type": "status",
             "content": {
@@ -386,28 +564,35 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Начинаю извлечение нормативных ограничений."
             }
         }
-        restrictions, tool_call, messages = await self.run_restriction_execution(mcp_client, user_prompt, model, layers)
-        explanation = await self.explain_tool_call(model ,tool_call, messages)
-        yield {
-            "type": "status",
-            "content": {
-                "status": "restriction_formation",
-                "text": "Извлечение нормативных ограничений завершено."
-            }
-        }
-        yield {
-            "type": "chunk",
-            "content": {
-                "text": explanation,
-                "done": False
-            }
-        }
-        for name, restriction in restrictions.items():
+        restriction_result: GeometryToolCallResult | str = await self.run_restriction_execution(mcp_client, user_prompt, model, layers)
+        if isinstance(restriction_result, GeometryToolCallResult):
+            explanation = await self.explain_tool_call(model ,restriction_result.tool_calls, restriction_result.messages)
             yield {
-                "type": "feature_collection",
+                "type": "status",
                 "content": {
-                    "name": name,
-                    "feature_collection": restriction
+                    "status": "restriction_formation",
+                    "text": "Извлечение нормативных ограничений завершено."
                 }
             }
-        yield {"type": "chunk", "content": {"text": "Слои сформированы.", "done": True}}
+            yield {
+                "type": "chunk",
+                "content": {
+                    "text": explanation,
+                    "done": False
+                }
+            }
+            for name, restriction in restriction_result.tool_result.items():
+                yield {
+                    "type": "feature_collection",
+                    "content": {
+                        "name": name,
+                        "feature_collection": restriction
+                    }
+                }
+            generators = restriction_result.tool_result["generators"]
+            objects = restriction_result.tool_result["objects"]
+            context = await self.generate_restrictions_context(generators, objects)
+        else:
+            context = await self.generate_buffers_context(buffers_result.tool_result)
+        async for chunk in self.generate_final_response(model, user_query, context):
+            yield chunk
