@@ -6,6 +6,7 @@ from loguru import logger
 
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from .base_llm_service import BaseLlmService
+from .service_entities import GeometryToolCallResult
 
 
 #TODO add planning system
@@ -190,7 +191,7 @@ class RestrictionParserService(BaseLlmService):
             user_prompt: dict[str, str],
             model: str,
             objects: dict[str, dict]
-    ) -> tuple[dict[str, dict], str, list[dict]] | str:
+    ) -> GeometryToolCallResult | str:
         """
         Function runs building buffers.
         Args:
@@ -199,8 +200,9 @@ class RestrictionParserService(BaseLlmService):
             model (str): Model name to run generation on.
             objects (dict[str, dict]): Layers with layer name as key and FeatureCollection as value.
         Returns:
-            [dict[str, dict] | str, list[dict]] | str:  Tuple with first value as a result value as dict with
-            name as keys and values as FeatureCollections and third value as formed messages to LLM.
+            GeometryToolCallResult | str:  Instance of GeometryToolCallResult with first tool_result as a result from
+            tool call as dict with name as keys and values as FeatureCollections, tool_calls as list on dict with info
+            about provided params to tool call and third messages as formed messages to LLM.
             If no tool was called returns explanation why."""
 
         instructions = f"""Сгенерируй нужные буферы для запроса пользователя для слоёв c именами: 
@@ -224,7 +226,7 @@ class RestrictionParserService(BaseLlmService):
                     tool_calls[0],
                     meta
                 )
-                return tool_result, tool_calls, messages
+                return GeometryToolCallResult(tool_result, tool_calls, messages)
             else:
                 return response["message"]["content"]
         except Exception as e:
@@ -259,7 +261,7 @@ class RestrictionParserService(BaseLlmService):
             user_prompt: dict[str, str],
             model: str,
             layers: dict[str, dict]
-    ) -> tuple[dict[str, dict], str, list] | str:
+    ) -> GeometryToolCallResult | str:
         """
         Function runs building buffers.
         Args:
@@ -289,7 +291,10 @@ class RestrictionParserService(BaseLlmService):
         Название функции передавай точно также, как оно определeно.
         Доступные названия слоёв для формирования ограничений: {final_names}. 
         Используй эти названия именно так как они указаны как ключ для создания ограничений именно в том виде, в котором они представлены. 
-        Используй все возможные объекты, которые могут относится к этим ограничениям."""
+        Используй все возможные объекты, которые могут относится к этим ограничениям.
+        Если в запросе пользователя нет прямого указания на отношения объектов (какие объекты оказывают 
+        какие ограничения на какие объекты), то вместо вызова инструмента верни пустой ответ.
+        """
         system_prompt = {"role": "system", "content": instructions}
         create_restriction_tools = await mcp_client.get_create_restriction_tool()
         messages = [system_prompt, user_prompt,]
@@ -306,7 +311,7 @@ class RestrictionParserService(BaseLlmService):
                     tool_calls[0],
                     meta
                 )
-                return tool_result, tool_calls, messages
+                return GeometryToolCallResult(tool_result, tool_calls, messages)
             else:
                 return response["message"]["content"]
         except Exception as e:
@@ -354,7 +359,7 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Начинаю построение буферов зон с ограничениями"
             }
         }
-        buffers, tool_call, messages = await self.run_buffer_construction(mcp_client, user_prompt, model, layers)
+        buffers_result: GeometryToolCallResult = await self.run_buffer_construction(mcp_client, user_prompt, model, layers)
         yield {
             "type": "status",
             "content": {
@@ -362,7 +367,7 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Построил необходимые буферы с ограничениями."
             }
         }
-        explanation = await self.explain_tool_call(model, tool_call, messages)
+        explanation = await self.explain_tool_call(model, buffers_result.tool_calls, buffers_result.messages)
         yield {
             "type": "chunk",
             "content": {
@@ -370,7 +375,7 @@ class RestrictionParserService(BaseLlmService):
                 "done": False
             }
         }
-        for name, buffer in buffers.items():
+        for name, buffer in buffers_result.tool_result.items():
             yield {
                 "type": "feature_collection",
                 "content": {
@@ -378,7 +383,7 @@ class RestrictionParserService(BaseLlmService):
                     "feature_collection": buffer
                 }
             }
-        layers.update(buffers)
+        layers.update(buffers_result.tool_result)
         yield {
             "type": "status",
             "content": {
@@ -386,28 +391,29 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Начинаю извлечение нормативных ограничений."
             }
         }
-        restrictions, tool_call, messages = await self.run_restriction_execution(mcp_client, user_prompt, model, layers)
-        explanation = await self.explain_tool_call(model ,tool_call, messages)
-        yield {
-            "type": "status",
-            "content": {
-                "status": "restriction_formation",
-                "text": "Извлечение нормативных ограничений завершено."
-            }
-        }
-        yield {
-            "type": "chunk",
-            "content": {
-                "text": explanation,
-                "done": False
-            }
-        }
-        for name, restriction in restrictions.items():
+        restriction_result: GeometryToolCallResult | str = await self.run_restriction_execution(mcp_client, user_prompt, model, layers)
+        if isinstance(restriction_result, GeometryToolCallResult):
+            explanation = await self.explain_tool_call(model ,restriction_result.tool_calls, restriction_result.messages)
             yield {
-                "type": "feature_collection",
+                "type": "status",
                 "content": {
-                    "name": name,
-                    "feature_collection": restriction
+                    "status": "restriction_formation",
+                    "text": "Извлечение нормативных ограничений завершено."
                 }
             }
+            yield {
+                "type": "chunk",
+                "content": {
+                    "text": explanation,
+                    "done": False
+                }
+            }
+            for name, restriction in restriction_result.tool_result.items():
+                yield {
+                    "type": "feature_collection",
+                    "content": {
+                        "name": name,
+                        "feature_collection": restriction
+                    }
+                }
         yield {"type": "chunk", "content": {"text": "Слои сформированы.", "done": True}}
