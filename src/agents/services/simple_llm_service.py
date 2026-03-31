@@ -33,9 +33,8 @@ class SimpleLlmService(BaseLlmService):
         """
 
         await self.validate_model(model)
-        client = await self.llm_client.get_client()
         messages = [{"role": "user", "content": user_request}]
-        return await client.chat(model, messages, stream=False)
+        return await self.llm_client.chat(model, messages, stream=False)
 
     async def generate_stream_message(
         self, user_request: str, model: str
@@ -49,9 +48,8 @@ class SimpleLlmService(BaseLlmService):
             AsyncGenerator[dict[str, Any], None]: generator for chunks from ollama api.
         """
 
-        client = await self.llm_client.get_client()
         messages = [{"role": "user", "content": user_request}]
-        async for part in await client.chat(model, messages, stream=True):
+        async for part in await self.llm_client.chat(model, messages, stream=True):
             part: ChatResponse
             if part.done:
                 yield {"type": "Text", "content": part.message.content}

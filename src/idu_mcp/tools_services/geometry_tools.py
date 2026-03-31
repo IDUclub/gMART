@@ -166,8 +166,8 @@ class GeometryTools:
         )
         objects.drop(columns=["name_left", "name_right"], inplace=True)
         return {
-            "objects": json.loads(objects.to_json()),
-            "generators": json.loads(generators.to_json())
+            "objects": json.loads(objects.to_crs(4326).to_json()),
+            "generators": json.loads(generators.to_crs(4326).to_json())
         }
 
     async def async_create_restrictions(
