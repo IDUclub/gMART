@@ -102,17 +102,54 @@ class RestrictionParserService(BaseLlmService):
             message with info why no service was retrieved.
         """
 
-        instructions = """Исходя из запроса пользователя получи данные по сервисам для формирования ограничений\n" \
-                       \nВыбирай из списка сервисов: школа, поликлиника."
-                       Используй именно предложенное сочетание как название сервиса. Ты можешь выбирать несколько
-                       сервисов, если они подходят по смыслу.
-                       Старайся выбрать как можно больше подходящих по смыслу сервисов.
-                       Если исходя из запроса пользователя получение сервисов не требуется, 
-                       то не вызывай инструмент, а просто верни сообщение, что извлечение сервисов не требуется
-                       и почему оно не требуется.\n"""
-        services_prompts = await mcp_client.get_services_example_prompts()
+        form_request_instructions = """Ты должен определить, какие сервисы из предложенного списка необходимы для 
+            обработки запроса пользователя.
+
+            Тебе будут переданы:
+            - запрос пользователя;
+            - список сервисов.
+            
+            Правила:
+            1. Проанализируй каждый сервис из списка отдельно.
+            2. Если сервис необходим для дальнейшей обработки запроса, верни для него true.
+            3. Если сервис не нужен, верни false.
+            4. Используй только сервисы из переданного списка.
+            5. Нельзя добавлять новые сервисы.
+            6. Нельзя удалять сервисы из ответа.
+            7. Нельзя переименовывать сервисы.
+            8. Для каждого сервиса нужно вернуть только булево значение: true или false.
+            9. Не выбирай сервис только из-за тематической близости слов.
+            10. Выбирай объект только если он действительно нужен для выполнения запроса.
+            
+            Верни строго JSON-объект следующего вида:
+            {
+              "объект_1": true,
+              "объект_2": false
+            }
+            \n
+            """
         available_services_prompt = await mcp_client.get_available_services_prompt(scenario_id)
-        system_prompt = {"role": "system", "content": instructions + available_services_prompt}
+        try:
+            response = await self.llm_client.chat(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": form_request_instructions + available_services_prompt
+                    },
+                    user_prompt
+                ],
+            )
+        except Exception as e:
+            logger.exception(e)
+            raise
+        instructions = f"""Извлеки инструмент с необходимыми сервисами. 
+        Если true, то сервис нужен, если false, то сервис не нужен.
+        Сервисы:
+        {response.message.content}
+        """
+        services_prompts = await mcp_client.get_services_example_prompts()
+        system_prompt = {"role": "system", "content": instructions}
         urban_service_tools = await mcp_client.get_urban_api_service_tool()
         meta = {"scenario_id": scenario_id}
         try:
@@ -155,16 +192,53 @@ class RestrictionParserService(BaseLlmService):
             message with info why no physical objects was retrieved.
         """
 
-        instructions = """Исходя из запроса пользователя получи данные по физическим объектам для формирования ограничений.\n
-                       Используй именно предложенное сочетание как название физического объекта. 
-                       Ты можешь выбирать несколько физических объектов, если они подходят по смыслу под запрос пользователя.
-                       Старайся выбрать как можно больше подходящих по смыслу физических объектов.
-                       Если исходя из запроса пользователя получение физических объектов не требуется, 
-                       то не вызывай инструмент, а просто верни сообщение.\n
-                       """
-        physical_objects_prompts = await mcp_client.get_physical_objects_example_prompts()
+        form_request_instructions = """Ты должен определить, какие физические объекты из предложенного списка необходимы для обработки запроса пользователя.
+
+            Тебе будут переданы:
+            - запрос пользователя;
+            - список физических объектов.
+            
+            Правила:
+            1. Проанализируй каждый объект из списка отдельно.
+            2. Если объект необходим для дальнейшей обработки запроса, верни для него true.
+            3. Если объект не нужен, верни false.
+            4. Используй только объекты из переданного списка.
+            5. Нельзя добавлять новые объекты.
+            6. Нельзя удалять объекты из ответа.
+            7. Нельзя переименовывать объекты.
+            8. Для каждого объекта нужно вернуть только булево значение: true или false.
+            9. Не выбирай объект только из-за тематической близости слов.
+            10. Выбирай объект только если он действительно нужен для выполнения запроса.
+            
+            Верни строго JSON-объект следующего вида:
+            {
+              "объект_1": true,
+              "объект_2": false
+            }
+            \n
+            """
         available_physical_objects_prompt = await mcp_client.get_available_physical_objects_prompt(scenario_id)
-        system_prompt = {"role": "system", "content": instructions + available_physical_objects_prompt}
+        try:
+            response = await self.llm_client.chat(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": form_request_instructions + available_physical_objects_prompt
+                    },
+                    user_prompt
+                ],
+            )
+        except Exception as e:
+            logger.exception(e)
+            raise
+        instructions = f"""Извлеки инструмент с необходимыми физическими объектами. 
+        Если true, то физический объект нужен, если false, то физический объект не нужен.
+        Физические объекты:
+        {response.message.content}
+        """
+        # physical_objects_prompts = await mcp_client.get_physical_objects_example_prompts()
+        system_prompt = {"role": "system", "content": instructions}
         urban_service_tools = await mcp_client.get_urban_api_physical_objects_tool()
         meta = {"scenario_id": scenario_id}
         try:
@@ -172,7 +246,7 @@ class RestrictionParserService(BaseLlmService):
                 model = model,
                 messages=[
                     system_prompt,
-                    *physical_objects_prompts,
+                    # *physical_objects_prompts,
                     user_prompt,
                 ],
                 tools=urban_service_tools
@@ -209,10 +283,23 @@ class RestrictionParserService(BaseLlmService):
             about provided params to tool call and third messages as formed messages to LLM.
             If no tool was called returns explanation why."""
 
-        instructions = f"""Сгенерируй нужные буферы для запроса пользователя для слоёв c именами: 
-        {list(objects.keys())}. Выбирай только из этих типов объектов.\n
-        Используй все типы объектов, которые могут относится к объектам, создающим ограничения.
-        Не передавай в генерацию объекты, на которые воздействуют ограничения.
+        instructions = f"""Определи, какие слои нужно передать в инструмент построения буферов ограничений.
+
+        Выбирай только слои-источники ограничения — то есть объекты, от которых должна строиться буферная зона.
+        Не выбирай слои, которые являются объектами воздействия ограничения.
+        
+        Правила:
+        - используй только названия из списка допустимых слоёв;
+        - не добавляй новые названия;
+        - не переименовывай названия;
+        - не включай слой, если он не является источником ограничения;
+        - если подходящих слоёв нет, верни пустой список;
+        - ответ должен быть пригоден для прямой передачи в инструмент.
+        
+        Допустимые слои:
+        {list(objects.keys())}
+        
+        Обязательно вызови соответствующий инструмент.
         """
         system_prompt = {"role": "system", "content": instructions}
         create_buffers_tools = await mcp_client.get_create_buffer_tool()
@@ -456,8 +543,6 @@ class RestrictionParserService(BaseLlmService):
                     "done": part.done
                 }
             }
-            if part.done:
-                break
 
     async def run_restriction_execution_pipline(
         self,

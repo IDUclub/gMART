@@ -126,13 +126,13 @@ async def get_available_services(
 
     token = get_access_token()
     available_names = await urban_api_client.get_available_scenario_services(scenario_id, token)
-    return f"Выбирай из списка сервисов: {', '.join([name.lower() for name in available_names])}"
+    return f"Список сервисов: {', '.join([name.lower() for name in available_names])}"
 
 @mcp.prompt(name="GetAvailablePhysicalObjects", tags={"physical_objects"})
 async def get_available_physical_objects(
         scenario_id: int = Field(description="Scenario ID from Urban API"),
         urban_api_client = Depends(get_urban_api_client)
-):
+) -> str:
     """
     Function retrieves prompt for data retrieval with available services names.
     Args:
@@ -142,4 +142,4 @@ async def get_available_physical_objects(
 
     token = get_access_token()
     available_names = await urban_api_client.get_available_physical_objects(scenario_id, token)
-    return f"Выбирай из списка физических объектов: {', '.join([name.lower() for name in available_names])}"
+    return f"Список физических объектов: {', '.join([name.lower() for name in available_names])}"
