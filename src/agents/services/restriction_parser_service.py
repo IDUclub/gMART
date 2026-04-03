@@ -1,10 +1,13 @@
+import traceback
+import asyncio
 import json
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Awaitable
 from dataclasses import is_dataclass, asdict
 
 import pandas as pd
 from loguru import logger
 import geopandas as gpd
+from fastapi import Request
 
 from ollama import ChatResponse
 

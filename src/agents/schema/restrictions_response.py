@@ -1,7 +1,9 @@
 from typing import Literal
 
 from geojson_pydantic import FeatureCollection
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from src.agents.common.exceptions.sse_exceptions import SseBaseError
 
 
 class StatusResponse(BaseModel):
@@ -24,7 +26,7 @@ class StatusResponse(BaseModel):
 
 class TextResponse(BaseModel):
 
-    text: str
+    text: str = Field(default="")
     done: bool
 
 
@@ -36,5 +38,5 @@ class FeatureCollectionResponse(BaseModel):
 
 class RestrictionsResponse(BaseModel):
 
-    type: Literal["status", "chunk", "feature_collection"]
-    content: StatusResponse | TextResponse | FeatureCollectionResponse
+    type: Literal["status", "chunk", "feature_collection", "error"]
+    content: StatusResponse | TextResponse | FeatureCollectionResponse | SseBaseError
