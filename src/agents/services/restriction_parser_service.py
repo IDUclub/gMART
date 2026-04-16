@@ -1,13 +1,10 @@
-import traceback
-import asyncio
 import json
-from typing import AsyncGenerator, Awaitable
+from typing import AsyncGenerator
 from dataclasses import is_dataclass, asdict
 
 import pandas as pd
 from loguru import logger
 import geopandas as gpd
-from fastapi import Request
 
 from ollama import ChatResponse
 
@@ -368,7 +365,6 @@ class RestrictionParserService(BaseLlmService):
             name as keys and values as FeatureCollections and third value as formed messages to LLM.
             If no tool was called returns explanation why.
         """
-
         final_names = []
         original_layers_names = [i for i in layers]
         for i in original_layers_names:
@@ -560,6 +556,7 @@ class RestrictionParserService(BaseLlmService):
             AsyncGenerator
         """
 
+        logger.info(f"Starting restriction execution for request {user_query} with scenario_id {scenario_id}")
         user_prompt = {"role": "user", "content": user_query}
         yield {
             "type": "status",
