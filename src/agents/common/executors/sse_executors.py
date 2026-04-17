@@ -57,7 +57,7 @@ async def stream_with_error_handling(
             },
         }
         yield {
-            "type": "done",
+            "type": "chunk",
             "content": {
                 "done": True,
                 "success": False,

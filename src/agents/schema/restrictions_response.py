@@ -26,7 +26,7 @@ class StatusResponse(BaseModel):
 
 class TextResponse(BaseModel):
 
-    text: str = Field(default="")
+    text: str
     done: bool
 
 
