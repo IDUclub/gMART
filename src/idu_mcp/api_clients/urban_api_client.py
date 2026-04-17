@@ -57,7 +57,7 @@ class UrbanApiClient:
             dict[str, int]: dictionary with service name as key and id as value
         """
 
-        return await self.get_name_id(f"api/v1/service_types", names, token)
+        return await self.get_name_id(f"v1/service_types", names, token)
 
     async def get_physical_objects_name_id(
         self, names: list[str], token: str
@@ -73,7 +73,7 @@ class UrbanApiClient:
             dict[str, int]: dictionary with physical objects name as key and id as value
         """
 
-        return await self.get_name_id(f"api/v1/physical_object_types", names, token)
+        return await self.get_name_id(f"v1/physical_object_types", names, token)
 
     async def get_services(
         self, scenario_id: int, services: list[int], token: str
@@ -88,7 +88,7 @@ class UrbanApiClient:
 
         tasks = [
             self.json_handler.get(
-                f"api/v1/scenarios/{scenario_id}/services_with_geometry",
+                f"v1/scenarios/{scenario_id}/services_with_geometry",
                 params={"service_type_id": service_id},
                 auth_token=token,
             )
@@ -109,7 +109,7 @@ class UrbanApiClient:
 
         tasks = [
             self.json_handler.get(
-                f"api/v1/scenarios/{scenario_id}/physical_objects_with_geometry",
+                f"v1/scenarios/{scenario_id}/physical_objects_with_geometry",
                 params={"physical_object_type_id": physical_object_id},
                 auth_token=token,
             )
@@ -128,7 +128,7 @@ class UrbanApiClient:
         """
 
         service_types = await self.json_handler.get(
-            f"api/v1/scenarios/{scenario_id}/service_types",
+            f"/v1/scenarios/{scenario_id}/service_types",
             auth_token=token
         )
         return [service_type["name"] for service_type in service_types]
@@ -144,7 +144,7 @@ class UrbanApiClient:
         """
 
         physical_objects_types = await self.json_handler.get(
-            f"api/v1/scenarios/{scenario_id}/physical_object_types",
+            f"v1/scenarios/{scenario_id}/physical_object_types",
             auth_token=token
         )
         return [physical_object_type["name"] for physical_object_type in physical_objects_types]
