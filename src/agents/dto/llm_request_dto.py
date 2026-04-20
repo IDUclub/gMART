@@ -14,4 +14,5 @@ class SimpleRequestDTO(BaseModel):
         examples=["gpt-oss:20b"],
         description="Model name to generate request on",
     )
+    temperature: float = Field(default=1.0, examples=[0.75], description="Model temperature for pipeline generation.")
     request: str = Field(examples=["Почему небо синее?"], description="Request message")

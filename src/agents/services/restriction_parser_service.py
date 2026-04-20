@@ -3,6 +3,7 @@ from typing import AsyncGenerator
 from dataclasses import is_dataclass, asdict
 
 import pandas as pd
+from docutils.nodes import system_message
 from loguru import logger
 import geopandas as gpd
 
@@ -89,6 +90,7 @@ class RestrictionParserService(BaseLlmService):
             user_prompt: dict[str, str],
             model: str,
             scenario_id: int,
+            temperature: float
     ) -> dict[str, dict] | str:
         """
         Function runs service data extraction from Urban API.
@@ -97,6 +99,7 @@ class RestrictionParserService(BaseLlmService):
             user_prompt (dict[str, str]): User message info.
             model (str): Model name to run extraction on.
             scenario_id (int): Scenario ID from Urban API.
+            temperature (float): Temperature value for llm generation.
         Returns:
             dict[str, dict] | str: Either dict with layer name as ley and FeatureCollection as value,
             message with info why no service was retrieved.
@@ -104,6 +107,7 @@ class RestrictionParserService(BaseLlmService):
 
         form_request_instructions = """Ты должен определить, какие сервисы из предложенного списка необходимы для 
             обработки запроса пользователя.
+            Запрос пользователя подразумевает построение ограничений первым шагом, поэтому если есть сервисы, от которых необходимо построить ограничения для выполнения запроса пользователя, их необходимо получить.
 
             Тебе будут переданы:
             - запрос пользователя;
@@ -155,6 +159,7 @@ class RestrictionParserService(BaseLlmService):
         try:
             response = await self.llm_client.chat(
                 model = model,
+                options={"temperature": temperature},
                 messages=[
                     system_prompt,
                     *services_prompts,
@@ -179,6 +184,7 @@ class RestrictionParserService(BaseLlmService):
             user_prompt: dict[str, str],
             model: str,
             scenario_id: int,
+            temperature: float
     ) -> str | dict:
         """
         Function runs physical objects data extraction from Urban API.
@@ -187,13 +193,15 @@ class RestrictionParserService(BaseLlmService):
             user_prompt (dict[str, str]): User message info.
             model (str): Model name to run extraction on.
             scenario_id (int): Scenario ID from Urban API.
+            temperature (float): Temperature value for model.
         Returns:
             dict[str, dict] | str: Either dict with layer name as ley and FeatureCollection as value,
             message with info why no physical objects was retrieved.
         """
 
         form_request_instructions = """Ты должен определить, какие физические объекты из предложенного списка необходимы для обработки запроса пользователя.
-
+            Запрос пользователя подразумевает построение ограничений первым шагом, поэтому если есть объекты, от которых необходимо построить ограничения для выполнения запроса пользователя, их необходимо получить.
+            
             Тебе будут переданы:
             - запрос пользователя;
             - список физических объектов.
@@ -221,6 +229,7 @@ class RestrictionParserService(BaseLlmService):
         try:
             response = await self.llm_client.chat(
                 model=model,
+                options={"temperature": temperature},
                 messages=[
                     {
                         "role": "system",
@@ -244,6 +253,7 @@ class RestrictionParserService(BaseLlmService):
         try:
             response = await self.llm_client.chat(
                 model = model,
+                options={"temperature": temperature},
                 messages=[
                     system_prompt,
                     # *physical_objects_prompts,
@@ -268,7 +278,8 @@ class RestrictionParserService(BaseLlmService):
             mcp_client: IduMcpClient,
             user_prompt: dict[str, str],
             model: str,
-            objects: dict[str, dict]
+            objects: dict[str, dict],
+            temperature: float
     ) -> GeometryToolCallResult | str:
         """
         Function runs building buffers.
@@ -277,6 +288,7 @@ class RestrictionParserService(BaseLlmService):
             user_prompt (dict[str, str]): User prompt info.
             model (str): Model name to run generation on.
             objects (dict[str, dict]): Layers with layer name as key and FeatureCollection as value.
+            temperature (float): Model temperature for generation.
         Returns:
             GeometryToolCallResult | str:  Instance of GeometryToolCallResult with first tool_result as a result from
             tool call as dict with name as keys and values as FeatureCollections, tool_calls as list on dict with info
@@ -308,6 +320,7 @@ class RestrictionParserService(BaseLlmService):
         try:
             response = await self.llm_client.chat(
                 model=model,
+                options={"temperature": temperature},
                 messages=messages,
                 tools=create_buffers_tools
             )
@@ -324,13 +337,14 @@ class RestrictionParserService(BaseLlmService):
             logger.exception(e)
             raise
 
-    async def explain_tool_call(self, model: str, tool_call: list, query: list[dict]) -> str:
+    async def explain_tool_call(self, model: str, tool_call: list, query: list[dict], temperature: float) -> str:
         """
         Function executes llm explanation for called tool.
         Args:
             model (str): Model name to run generation on.
             tool_call (list): Info about called tools.
             query (list[dict]): Info with provided query for llm.
+            temperature (float): Temperature for model generation.
         Returns:
             str: explanation why tool was called with this params.
         """
@@ -342,6 +356,7 @@ class RestrictionParserService(BaseLlmService):
 
         result = await self.llm_client.chat(
             model=model,
+            options={"temperature": temperature},
             messages=[{"role": "system", "content": instructions}]
         )
         return result["message"]["content"]
@@ -351,7 +366,8 @@ class RestrictionParserService(BaseLlmService):
             mcp_client: IduMcpClient,
             user_prompt: dict[str, str],
             model: str,
-            layers: dict[str, dict]
+            layers: dict[str, dict],
+            temperature: float
     ) -> GeometryToolCallResult | str:
         """
         Function runs building buffers.
@@ -360,11 +376,13 @@ class RestrictionParserService(BaseLlmService):
             user_prompt (dict[str, str]): User prompt info.
             model (str): Model name to run generation on.
             layers (dict[str, dict]): Layers with layer name as key and FeatureCollection as value.
+            temperature (float): Temperature for model generation.
         Returns:
             [dict[str, dict] | str, list[dict]] | str:  Tuple with first value as a result value as dict with
             name as keys and values as FeatureCollections and third value as formed messages to LLM.
             If no tool was called returns explanation why.
         """
+
         final_names = []
         original_layers_names = [i for i in layers]
         for i in original_layers_names:
@@ -392,6 +410,7 @@ class RestrictionParserService(BaseLlmService):
         try:
             response = await self.llm_client.chat(
                 model=model,
+                options={"temperature": temperature},
                 messages=messages,
                 tools=create_restriction_tools
             )
@@ -543,9 +562,53 @@ class RestrictionParserService(BaseLlmService):
                 }
             }
 
+    async def reformulate_user_request(self, user_input: str, model: str,) -> str:
+        """
+        Function parses user request in to more strict format.
+        Args:
+            user_input (str): Original user input.
+            model (str): Model name to run generation on.
+        Returns:
+            str: Reformulated user request.
+        """
+
+        response_structure = {
+          "intent": "string",
+          "entities": "list[str]",
+          "constraints": "list[str]",
+        }
+        system_instruction = f"""
+        Извлеки структуру запроса пользователя.
+        
+        Строго верни JSON следующего формата:
+        {response_structure}
+        
+        Правила:
+        - Не добавляй ничего от себя
+        - Не интерпретируй, если не уверен — оставь поле пустым
+        - Используй только слова из запроса
+        - Никакого текста вне JSON
+        
+        Запрос пользователя:
+        {user_input}"""
+
+        prompt = {"role": "user", "content": system_instruction}
+        try:
+            response = await self.llm_client.chat(
+                model=model,
+                options={"temperature": 0.5},
+                messages=[prompt],
+            )
+            logger.info(f"Reformulated user request to format {response['message']['content']}")
+            return response["message"]["content"]
+        except Exception as e:
+            logger.exception(e)
+            raise
+
     async def run_restriction_execution_pipline(
         self,
         mcp_client: IduMcpClient,
+        temperature: float,
         model: str,
         user_query: str,
         scenario_id: int,
@@ -556,6 +619,7 @@ class RestrictionParserService(BaseLlmService):
             AsyncGenerator
         """
 
+        user_query = await self.reformulate_user_request(user_query, model)
         logger.info(f"Starting restriction execution for request {user_query} with scenario_id {scenario_id}")
         user_prompt = {"role": "user", "content": user_query}
         yield {
@@ -565,7 +629,7 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Получаю необходимые сервисы и физические объекты"
             }
         }
-        services = await self.run_services_retrieval(mcp_client, user_prompt, model, scenario_id)
+        services = await self.run_services_retrieval(mcp_client, user_prompt, model, scenario_id, temperature)
         if isinstance(services, dict):
             yield {
                 "type": "status",
@@ -582,7 +646,7 @@ class RestrictionParserService(BaseLlmService):
                         "feature_collection": service_layer
                     },
                 }
-        physical_objects = await self.run_physical_objects_retrieval(mcp_client, user_prompt, model, scenario_id)
+        physical_objects = await self.run_physical_objects_retrieval(mcp_client, user_prompt, model, scenario_id, temperature)
         if isinstance(physical_objects, dict):
             yield {
                 "type": "status",
@@ -617,7 +681,7 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Начинаю построение буферов зон с ограничениями"
             }
         }
-        buffers_result: GeometryToolCallResult = await self.run_buffer_construction(mcp_client, user_prompt, model, layers)
+        buffers_result: GeometryToolCallResult = await self.run_buffer_construction(mcp_client, user_prompt, model, layers, temperature)
         yield {
             "type": "status",
             "content": {
@@ -625,7 +689,7 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Построил необходимые буферы с ограничениями."
             }
         }
-        explanation = await self.explain_tool_call(model, buffers_result.tool_calls, buffers_result.messages)
+        explanation = await self.explain_tool_call(model, buffers_result.tool_calls, buffers_result.messages, temperature)
         yield {
             "type": "chunk",
             "content": {
@@ -649,9 +713,9 @@ class RestrictionParserService(BaseLlmService):
                 "text": "Начинаю извлечение нормативных ограничений."
             }
         }
-        restriction_result: GeometryToolCallResult | str = await self.run_restriction_execution(mcp_client, user_prompt, model, layers)
+        restriction_result: GeometryToolCallResult | str = await self.run_restriction_execution(mcp_client, user_prompt, model, layers, temperature)
         if isinstance(restriction_result, GeometryToolCallResult):
-            explanation = await self.explain_tool_call(model ,restriction_result.tool_calls, restriction_result.messages)
+            explanation = await self.explain_tool_call(model ,restriction_result.tool_calls, restriction_result.messages, temperature)
             yield {
                 "type": "status",
                 "content": {

@@ -27,6 +27,7 @@ async def generate_restrictions_response(
             mcp_client=idu_mcp_client,
             model=user_request.model,
             user_query=user_request.request,
-            scenario_id=user_request.scenario_id
+            scenario_id=user_request.scenario_id,
+            temperature=user_request.temperature
     ):
         yield RestrictionsResponse(**chunk)
