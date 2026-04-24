@@ -6,6 +6,7 @@ from pydantic import Field
 
 from src.idu_mcp.api_clients.urban_api_client import UrbanApiClient
 from src.idu_mcp.dependencies.dependencies import get_urban_api_client
+from src.idu_mcp.dependencies.auth_dependencies import extract_token
 
 mcp = FastMCP(name="RestrictionsPromptService")
 
@@ -115,22 +116,24 @@ async def get_physical_objects_example_prompt() -> list[Message]:
 @mcp.prompt(name="GetAvailableServices", tags={"services"})
 async def get_available_services(
         scenario_id: int = Field(description="Scenario ID from Urban API"),
+        token: str = Depends(extract_token),
         urban_api_client: UrbanApiClient = Depends(get_urban_api_client),
 ) -> str:
     """
     Function retrieves prompt for data retrieval with available services names.
     Args:
         scenario_id (int): Scenario ID from Urban API.
+        token (str): Auth Bearer token from request to access data from Urban API.
         urban_api_client (UrbanApiClient): UrbanApiClient instance from dependencies.
     """
 
-    token = get_access_token()
     available_names = await urban_api_client.get_available_scenario_services(scenario_id, token)
     return f"Список сервисов: {', '.join([name.lower() for name in available_names])}"
 
 @mcp.prompt(name="GetAvailablePhysicalObjects", tags={"physical_objects"})
 async def get_available_physical_objects(
         scenario_id: int = Field(description="Scenario ID from Urban API"),
+        token: str = Depends(extract_token),
         urban_api_client = Depends(get_urban_api_client)
 ) -> str:
     """
@@ -140,6 +143,5 @@ async def get_available_physical_objects(
         urban_api_client (UrbanApiClient): UrbanApiClient instance from dependencies.
     """
 
-    token = get_access_token()
     available_names = await urban_api_client.get_available_physical_objects(scenario_id, token)
     return f"Список физических объектов: {', '.join([name.lower() for name in available_names])}"
