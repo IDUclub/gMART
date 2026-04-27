@@ -56,7 +56,12 @@ async def stream_with_error_handling(
         logger.exception(exc)
         if rerun:
             logger.info("Trying to re-run pipeline")
+            yield {
+                "type": "status",
+                "message": "При извлечении запроса произошла ошибка. Производится попытка перезапуска запроса."
+            }
             try:
+                yield {"type": "status"}
                 async for item in generator(model=model, *args, **kwargs):
                     if await request.is_disconnected():
                         logger.warning("Client disconnected during stream")
@@ -88,7 +93,7 @@ async def stream_with_error_handling(
             },
         ]
         async for chunk in llm_client.execute_request(model, messages):
-            if chunk["done"]:
+            if chunk["content"]["done"]:
                 chunk["content"]["done"] = False
             yield chunk
         yield {
