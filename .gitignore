@@ -26,3 +26,6 @@ DECFILE
 
 # Data Files
 /data
+
+# Logs
+*.log
