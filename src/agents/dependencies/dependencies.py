@@ -9,6 +9,7 @@ from src.agents.services.simple_llm_service import SimpleLlmService
 from .init_dependencies import init_dependencies
 from ..mcp_clients.idu_mcp_client import IduMcpClient
 from ..services.restriction_parser_service import RestrictionParserService
+from ..services.system_service import SystemService
 
 app_deps: dict[
     str, AgentsAppConfig | SimpleLlmService | RestrictionParserService
@@ -50,3 +51,7 @@ async def get_restriction_parser_service() -> RestrictionParserService:
     if not isinstance(restriction_parser_service, RestrictionParserService):
         raise TypeError("Expected SimpleLlmService, got {}".format(type(restriction_parser_service)))
     return app_deps["restriction_parser_service"]
+
+async def get_system_service() -> SystemService:
+
+    return app_deps["system_service"]
