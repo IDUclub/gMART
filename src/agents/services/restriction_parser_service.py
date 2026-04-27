@@ -1,9 +1,9 @@
+import ast
 import json
 from typing import AsyncGenerator
 from dataclasses import is_dataclass, asdict
 
 import pandas as pd
-from docutils.nodes import system_message
 from loguru import logger
 import geopandas as gpd
 
@@ -531,7 +531,8 @@ class RestrictionParserService(BaseLlmService):
         \nОбъекты, подверженные ограничениям:
         \n{objects_summary}"""
 
-    async def generate_final_response(self,model: str, user_query: str, context: str) -> AsyncGenerator[dict[str, str], None]:
+    async def generate_final_response(self,model: str, user_query: str, context: str) -> AsyncGenerator[
+        dict[str, str | dict[str, str | None | bool]], None]:
         """
         Generate final response for user request based on generated context.
         Args:
@@ -607,7 +608,9 @@ class RestrictionParserService(BaseLlmService):
                 messages=[prompt],
             )
             logger.info(f"Reformulated user request to format {response['message']['content']}")
-            return response["message"]["content"]
+            reformulated = ast.literal_eval(response["message"]["content"])
+            reformulated["original"] = user_input
+            return json.dumps(reformulated)
         except Exception as e:
             logger.exception(e)
             raise

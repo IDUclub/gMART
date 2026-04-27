@@ -24,8 +24,9 @@ async def generate_restrictions_response(
     async for chunk in stream_with_error_handling(
             restriction_service.run_restriction_execution_pipline,
             request,
+            restriction_service,
+            user_request.model,
             mcp_client=idu_mcp_client,
-            model=user_request.model,
             user_query=user_request.request,
             scenario_id=user_request.scenario_id,
             temperature=user_request.temperature
