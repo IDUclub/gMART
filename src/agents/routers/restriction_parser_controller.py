@@ -26,6 +26,7 @@ async def generate_restrictions_response(
             request,
             restriction_service,
             user_request.model,
+            rerun=False,
             mcp_client=idu_mcp_client,
             user_query=user_request.request,
             scenario_id=user_request.scenario_id,

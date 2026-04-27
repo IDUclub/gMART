@@ -17,6 +17,7 @@ class StatusResponse(BaseModel):
 
     status: Literal[
         "data_retrievement",
+        "plan_explanation",
         "buffer_creation",
         "restriction_formation",
         "context_preparation",

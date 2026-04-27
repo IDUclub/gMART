@@ -1,4 +1,4 @@
-APP_VERSION = "0.1.7"
+APP_VERSION = "0.2.0"
 APP_TITLE = "Agents REST APP"
 APP_DESCRIPTION = """
 This app provides rest interface for accessing different agents. Agents connects to IDU MCP server. App provides  
