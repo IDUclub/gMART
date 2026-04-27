@@ -73,12 +73,13 @@ class BaseMcpClient:
             return await self.mcp_client.list_prompts()
 
     # TODO enhance exception handling
-    async def execute_tool(self, tool_name: str, arguments: dict, meta: dict):
+    async def execute_tool(self, tool_name: str, arguments: dict, meta: dict, log: bool = False):
 
         try:
             async with self.mcp_client as mcp:
                 result = await mcp.call_tool(tool_name, arguments, meta=meta)
-                logger.info(f"Executed tool with meta {result.meta}")
+                if log:
+                    logger.info(f"Executed tool with meta {result.meta} and data {result.data}")
                 return result.data
         except Exception as e:
             logger.exception(e)
