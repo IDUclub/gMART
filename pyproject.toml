@@ -1,6 +1,6 @@
 [project]
 name = "pfinder"
-version = "0.1.0"
+version = "0.2.0"
 description = "First look on fastmcp with uv"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
