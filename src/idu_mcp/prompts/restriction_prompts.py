@@ -140,6 +140,7 @@ async def get_available_physical_objects(
     Function retrieves prompt for data retrieval with available services names.
     Args:
         scenario_id (int): Scenario ID from Urban API.
+        token (str): Access token for Urban API.
         urban_api_client (UrbanApiClient): UrbanApiClient instance from dependencies.
     """
 
