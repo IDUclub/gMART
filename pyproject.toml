@@ -1,6 +1,6 @@
 [project]
 name = "pfinder"
-version = "0.2.0"
+version = "0.3.0"
 description = "First look on fastmcp with uv"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
@@ -15,6 +15,7 @@ dependencies = [
     "loguru>=0.7.3",
     "ollama>=0.6.1",
     "pandas>=3.0.2",
+    "python-a2a>=0.5.10",
     "uvicorn>=0.42.0",
 ]
 
@@ -28,5 +29,3 @@ dev = [
     "mapclassify (>=2.10.0,<3.0.0)",
     "pre-commit>=4.6.0",
 ]
-
-
