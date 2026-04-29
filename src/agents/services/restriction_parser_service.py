@@ -35,7 +35,7 @@ class RestrictionParserService(BaseLlmService):
         scenario_id: int,
     ) -> AsyncGenerator:
         logger.info(
-            f"Starting restriction execution for request {user_query} with scenario_id {scenario_id}"
+            f"Starting restriction execution for request {user_query}"
         )
 
         yield self._status(

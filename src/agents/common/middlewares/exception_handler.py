@@ -1,11 +1,13 @@
 """Exception handling middleware is defined here."""
 
 import traceback
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from src.agents.common.exceptions.a2a_exceptions import A2AJsonRpcError
 from src.agents.common.exceptions.base_exceptions import AgentsBaseException
 
 
@@ -68,6 +70,12 @@ class ExceptionHandlerMiddleware(
             return await call_next(request)
         except AgentsBaseException as e:
             raise e.http_repr() from e
+        except A2AJsonRpcError as e:
+            request_info = await self.prepare_request_info(request)
+            return JSONResponse(
+                status_code=200,
+                content=self.a2a_error_response(e, request_info.get("body")),
+            )
         except Exception as e:
             request_info = await self.prepare_request_info(request)
             return JSONResponse(
@@ -80,3 +88,34 @@ class ExceptionHandlerMiddleware(
                     "traceback": traceback.format_exc().splitlines(),
                 },
             )
+
+    @staticmethod
+    def a2a_error_response(
+        error: A2AJsonRpcError,
+        request_body,
+    ) -> dict:
+        """
+        Convert A2A errors to JSON-RPC error envelope.
+        Args:
+            error (A2AJsonRpcError): A2A error.
+            request_body: Parsed request body if available.
+        Returns:
+            dict: JSON-RPC error response.
+        """
+
+        request_id = None
+        if isinstance(request_body, dict):
+            request_id = request_body.get("id")
+
+        error_body = {
+            "code": error.code,
+            "message": error.message,
+        }
+        if error.data is not None:
+            error_body["data"] = error.data
+
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id if request_id is not None else str(uuid4()),
+            "error": error_body,
+        }
