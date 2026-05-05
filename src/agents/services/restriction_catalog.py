@@ -47,8 +47,12 @@ class RestrictionPlanBuilder:
         scenario_id: int,
     ) -> tuple[list[str], list[str]]:
         services_prompt = await mcp_client.get_available_services_prompt(scenario_id)
-        physical_objects_prompt = await mcp_client.get_available_physical_objects_prompt(scenario_id)
-        return parse_catalog_prompt(services_prompt), parse_catalog_prompt(physical_objects_prompt)
+        physical_objects_prompt = (
+            await mcp_client.get_available_physical_objects_prompt(scenario_id)
+        )
+        return parse_catalog_prompt(services_prompt), parse_catalog_prompt(
+            physical_objects_prompt
+        )
 
     async def build_plan(
         self,
@@ -103,7 +107,9 @@ class RestrictionPlanBuilder:
             )
 
         self._plan_cache[cache_key] = plan
-        logger.info(f"Built restriction plan: {plan.model_dump_json(ensure_ascii=False)}")
+        logger.info(
+            f"Built restriction plan: {plan.model_dump_json(ensure_ascii=False)}"
+        )
         return plan
 
     def validate_and_canonicalize_plan(
@@ -117,13 +123,26 @@ class RestrictionPlanBuilder:
             "service": services_catalog,
             "physical_object": physical_objects_catalog,
         }
-        source_candidates, target_candidates = self._collect_entity_candidates(plan, catalogs)
-        source_entities, source_aliases = self._canonicalize_entities(source_candidates, catalogs)
-        target_entities, target_aliases = self._canonicalize_entities(target_candidates, catalogs)
-        aliases = self._build_alias_map(plan, catalogs, source_entities + target_entities, source_aliases | target_aliases)
+        source_candidates, target_candidates = self._collect_entity_candidates(
+            plan, catalogs
+        )
+        source_entities, source_aliases = self._canonicalize_entities(
+            source_candidates, catalogs
+        )
+        target_entities, target_aliases = self._canonicalize_entities(
+            target_candidates, catalogs
+        )
+        aliases = self._build_alias_map(
+            plan,
+            catalogs,
+            source_entities + target_entities,
+            source_aliases | target_aliases,
+        )
 
         buffer_rules = self._canonicalize_buffer_rules(plan.buffer_rules, aliases)
-        restriction_rules = self._canonicalize_restriction_rules(plan.restriction_rules, aliases)
+        restriction_rules = self._canonicalize_restriction_rules(
+            plan.restriction_rules, aliases
+        )
         mode, clarification = self._validate_mode(
             plan,
             source_entities,
@@ -135,9 +154,13 @@ class RestrictionPlanBuilder:
         return RestrictionPlan(
             mode=mode,
             source_entities=source_entities,
-            target_entities=target_entities if mode == RestrictionTaskMode.RESTRICTIONS else [],
+            target_entities=(
+                target_entities if mode == RestrictionTaskMode.RESTRICTIONS else []
+            ),
             buffer_rules=buffer_rules,
-            restriction_rules=restriction_rules if mode == RestrictionTaskMode.RESTRICTIONS else [],
+            restriction_rules=(
+                restriction_rules if mode == RestrictionTaskMode.RESTRICTIONS else []
+            ),
             selection_reasons=plan.selection_reasons,
             confidence=plan.confidence,
             clarification_question=clarification,
@@ -183,8 +206,12 @@ class RestrictionPlanBuilder:
     ) -> str:
         response_structure = {
             "mode": "buffers_only | restrictions | needs_clarification",
-            "source_entities": [{"name": "string", "entity_type": "service | physical_object"}],
-            "target_entities": [{"name": "string", "entity_type": "service | physical_object"}],
+            "source_entities": [
+                {"name": "string", "entity_type": "service | physical_object"}
+            ],
+            "target_entities": [
+                {"name": "string", "entity_type": "service | physical_object"}
+            ],
             "buffer_rules": [
                 {
                     "source_name": "string",
@@ -291,9 +318,13 @@ class RestrictionPlanBuilder:
         source_candidates = list(plan.source_entities)
         target_candidates = list(plan.target_entities)
         for rule in plan.buffer_rules:
-            source_candidates.extend(self._infer_entity_refs(rule.source_name, catalogs))
+            source_candidates.extend(
+                self._infer_entity_refs(rule.source_name, catalogs)
+            )
         for rule in plan.restriction_rules:
-            source_candidates.extend(self._infer_entity_refs(rule.source_name, catalogs))
+            source_candidates.extend(
+                self._infer_entity_refs(rule.source_name, catalogs)
+            )
             for target_name in rule.target_names:
                 target_candidates.extend(self._infer_entity_refs(target_name, catalogs))
         return source_candidates, target_candidates
@@ -324,7 +355,6 @@ class RestrictionPlanBuilder:
     ) -> bool:
         return any(self._canonical_name(name, catalog) for catalog in catalogs.values())
 
-
     def _canonicalize_entities(
         self,
         entities: list[EntityRef],
@@ -334,7 +364,9 @@ class RestrictionPlanBuilder:
         aliases: dict[str, list[str]] = {}
         seen = set()
         for entity in entities:
-            matches = self._resolve_catalog_names(entity.name, catalogs[entity.entity_type])
+            matches = self._resolve_catalog_names(
+                entity.name, catalogs[entity.entity_type]
+            )
             if not matches:
                 continue
             aliases[normalize_name(entity.name)] = matches
@@ -354,7 +386,9 @@ class RestrictionPlanBuilder:
         aliases: dict[str, list[str]],
     ) -> dict[str, list[str]]:
         for alias_name in self._iter_rule_names(plan):
-            inferred_names = [entity.name for entity in self._infer_entity_refs(alias_name, catalogs)]
+            inferred_names = [
+                entity.name for entity in self._infer_entity_refs(alias_name, catalogs)
+            ]
             if inferred_names:
                 normalized_alias = normalize_name(alias_name)
                 aliases[normalized_alias] = list(

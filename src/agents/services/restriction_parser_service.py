@@ -34,9 +34,7 @@ class RestrictionParserService(BaseLlmService):
         user_query: str,
         scenario_id: int,
     ) -> AsyncGenerator:
-        logger.info(
-            f"Starting restriction execution for request {user_query}"
-        )
+        logger.info(f"Starting restriction execution for request {user_query}")
 
         yield self._status(
             "data_retrievement",
@@ -44,16 +42,24 @@ class RestrictionParserService(BaseLlmService):
         )
         plan = await self._build_plan(mcp_client, model, user_query, scenario_id)
         if plan.mode == RestrictionTaskMode.NEEDS_CLARIFICATION:
-            yield self._status("context_preparation", "Нужно уточнение параметров запроса.")
-            yield self._chunk(plan.clarification_question or "Уточните параметры запроса.", done=True)
+            yield self._status(
+                "context_preparation", "Нужно уточнение параметров запроса."
+            )
+            yield self._chunk(
+                plan.clarification_question or "Уточните параметры запроса.", done=True
+            )
             return
 
         yield self._status("plan_explanation", "Объясняю, почему выбраны эти параметры")
-        async for chunk in self.generate_plan_explanation(model, user_query, plan, temperature):
+        async for chunk in self.generate_plan_explanation(
+            model, user_query, plan, temperature
+        ):
             yield chunk
         yield self._chunk("\n\n", done=False)
 
-        yield self._status("data_retrievement", "Получаю необходимые слои по утвержденному плану")
+        yield self._status(
+            "data_retrievement", "Получаю необходимые слои по утвержденному плану"
+        )
         layers = await self.tool_executor.retrieve_layers_for_plan(
             mcp_client,
             plan,
@@ -62,9 +68,15 @@ class RestrictionParserService(BaseLlmService):
         for item in self._feature_collections(layers):
             yield item
 
-        yield self._status("buffer_creation", "Начинаю построение буферов зон с ограничениями")
-        buffers_result = await self.tool_executor.run_buffer_plan(mcp_client, plan, layers)
-        yield self._status("buffer_creation", "Построил необходимые буферы с ограничениями.")
+        yield self._status(
+            "buffer_creation", "Начинаю построение буферов зон с ограничениями"
+        )
+        buffers_result = await self.tool_executor.run_buffer_plan(
+            mcp_client, plan, layers
+        )
+        yield self._status(
+            "buffer_creation", "Построил необходимые буферы с ограничениями."
+        )
         for item in self._feature_collections(buffers_result.tool_result):
             yield item
 
@@ -94,7 +106,9 @@ class RestrictionParserService(BaseLlmService):
                 restriction_result.tool_result["objects"],
             )
 
-        async for chunk in self.generate_final_response(model, user_query, context, temperature):
+        async for chunk in self.generate_final_response(
+            model, user_query, context, temperature
+        ):
             yield chunk
 
     async def _build_plan(
@@ -104,9 +118,11 @@ class RestrictionParserService(BaseLlmService):
         user_query: str,
         scenario_id: int,
     ) -> RestrictionPlan:
-        services_catalog, physical_objects_catalog = await self.plan_builder.get_entity_catalogs(
-            mcp_client,
-            scenario_id,
+        services_catalog, physical_objects_catalog = (
+            await self.plan_builder.get_entity_catalogs(
+                mcp_client,
+                scenario_id,
+            )
         )
         return await self.plan_builder.build_plan(
             model,

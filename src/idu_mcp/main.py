@@ -3,8 +3,8 @@ from fastmcp.server.lifespan import lifespan
 from loguru import logger
 
 from src.idu_mcp.dependencies.dependencies import mcp_deps
-from src.idu_mcp.tools_interfaces import geometry_mcp, urban_api_mcp
 from src.idu_mcp.prompts.restriction_prompts import mcp as restrictions_prompts_mcp
+from src.idu_mcp.tools_interfaces import geometry_mcp, urban_api_mcp
 
 
 @lifespan

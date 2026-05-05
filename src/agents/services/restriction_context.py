@@ -18,7 +18,9 @@ class RestrictionContextBuilder:
         \n{buffers_summary}
         """
 
-    async def generate_restrictions_context(self, generators: dict, objects: dict) -> str:
+    async def generate_restrictions_context(
+        self, generators: dict, objects: dict
+    ) -> str:
         target_crs = None
         if generators["features"]:
             generators_gdf = gpd.GeoDataFrame.from_features(generators, crs=4326)
@@ -32,7 +34,9 @@ class RestrictionContextBuilder:
         if objects["features"]:
             objects_gdf = gpd.GeoDataFrame.from_features(objects, crs=4326)
             target_crs = target_crs or objects_gdf.estimate_utm_crs()
-            objects_summary = await self.generate_objects_summary(objects_gdf.to_crs(target_crs))
+            objects_summary = await self.generate_objects_summary(
+                objects_gdf.to_crs(target_crs)
+            )
         else:
             objects_summary = ""
 
@@ -78,7 +82,9 @@ class RestrictionContextBuilder:
         )
 
     @staticmethod
-    def _feature_collection_to_gdf(name: str, feature_collection: dict) -> gpd.GeoDataFrame:
+    def _feature_collection_to_gdf(
+        name: str, feature_collection: dict
+    ) -> gpd.GeoDataFrame:
         gdf = gpd.GeoDataFrame.from_features(feature_collection, crs=4326)
         gdf["name"] = name
         return gdf

@@ -80,7 +80,9 @@ class A2AParamsDTO(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     message: A2AMessageDTO | None = Field(default=None)
-    id: str | int | None = Field(default=None, description="Task id for task operations.")
+    id: str | int | None = Field(
+        default=None, description="Task id for task operations."
+    )
     taskId: str | int | None = Field(default=None, description="Alternative task id.")
     contextId: str | None = Field(default=None, description="A2A context id.")
     metadata: dict[str, Any] | None = Field(

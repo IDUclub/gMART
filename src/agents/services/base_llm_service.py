@@ -2,9 +2,9 @@ import json
 
 from ollama import AsyncClient as AsyncOllamaClient
 
+from src.agents.api_clients.chat_storage_client import ChatStorageApiClient
 from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
 from src.agents.model_clients.base_client import BaseLlmClient
-from src.agents.api_clients.chat_storage_client import ChatStorageApiClient
 
 
 class BaseLlmService(BaseLlmClient):
@@ -17,10 +17,7 @@ class BaseLlmService(BaseLlmClient):
 
     """
 
-    def __init__(self,
-                 llm_host: str,
-                 chat_storage_client: ChatStorageApiClient
-                 ):
+    def __init__(self, llm_host: str, chat_storage_client: ChatStorageApiClient):
         """
         Initialization function for BaseLlmService. Inherits from BaseLlmClient.
         Args:
@@ -38,7 +35,9 @@ class BaseLlmService(BaseLlmClient):
             only_running (bool, optional): If True, get only running models. Defaults to False.
         """
 
-        models = await self.llm_client.ps() if only_running else await self.llm_client.list()
+        models = (
+            await self.llm_client.ps() if only_running else await self.llm_client.list()
+        )
         return [model["model"] for model in models["models"]]
 
     async def validate_model(self, model_name: str):
@@ -54,14 +53,14 @@ class BaseLlmService(BaseLlmClient):
         if model_name not in available_models:
             raise ModelNotFound(model_name, available_models)
 
-    #TODO revise chat title generation after full generation or update chat name after full generation
+    # TODO revise chat title generation after full generation or update chat name after full generation
     async def generate_chat_title(
-            self,
-            model_name: str,
-            user_query: str,
-            additional_instructions: str,
-            existing_names: list[str],
-            max_retries: int = 5
+        self,
+        model_name: str,
+        user_query: str,
+        additional_instructions: str,
+        existing_names: list[str],
+        max_retries: int = 5,
     ) -> str:
         """
         Function generates chat title with provided model name based on user request and additional instruction, provided by service.
@@ -130,7 +129,9 @@ class BaseLlmService(BaseLlmClient):
         Одна строка с названием чата.
         """.strip()
 
-        title = await self.llm_client.generate(model=model_name, prompt=prompt, stream=False)
+        title = await self.llm_client.generate(
+            model=model_name, prompt=prompt, stream=False
+        )
         if title not in existing_names:
             return title
         return await self.generate_chat_title(
@@ -138,7 +139,7 @@ class BaseLlmService(BaseLlmClient):
             user_query,
             additional_instructions,
             existing_names,
-            max_retries=max_retries-1
+            max_retries=max_retries - 1,
         )
 
     async def create_chat(self, token: str):

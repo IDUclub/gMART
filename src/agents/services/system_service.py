@@ -1,5 +1,6 @@
 from pathlib import Path
 
+
 class SystemService:
 
     def __init__(self, log_path: Path):

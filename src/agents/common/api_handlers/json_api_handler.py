@@ -151,7 +151,9 @@ class JsonApiHandler:
                 )
         url = f'{self.base_url}/{endpoint.lstrip("/")}'
         params = await self._check_request_params(params)
-        async with session.post(url=url, headers=headers, params=params, json=data) as response:
+        async with session.post(
+            url=url, headers=headers, params=params, json=data
+        ) as response:
             result = await self._check_response_status(response)
             if isinstance(result, (list, dict)):
                 return result

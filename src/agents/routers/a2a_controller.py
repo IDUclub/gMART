@@ -95,7 +95,9 @@ async def _stream_json_rpc_events(
         yield {"data": json.dumps(event, ensure_ascii=False)}
 
 
-def _payload_to_plain_data(payload: A2AJsonRpcPayloadDTO) -> dict[str, Any] | list[dict[str, Any]]:
+def _payload_to_plain_data(
+    payload: A2AJsonRpcPayloadDTO,
+) -> dict[str, Any] | list[dict[str, Any]]:
     """
     Function converts A2A DTO to plain dict data.
     Args:

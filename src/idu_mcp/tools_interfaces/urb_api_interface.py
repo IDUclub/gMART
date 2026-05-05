@@ -1,8 +1,8 @@
 from typing import Annotated
 
-from fastmcp import FastMCP, Context
+from fastmcp import Context, FastMCP
 from fastmcp.dependencies import Depends
-from fastmcp.server.dependencies import get_access_token, CurrentContext
+from fastmcp.server.dependencies import CurrentContext, get_access_token
 from geojson_pydantic import FeatureCollection
 
 from src.idu_mcp.common.auth.token_verifier import AnyTokenVerifier

@@ -1,21 +1,30 @@
 """
 Module aimed to handle requests to ChatStorage service REST API.
 """
+
 from typing import Any
 
+from src.agents.api_clients.chat_storage_client.entities import (
+    MessageUploadType,
+    RoleEnum,
+)
+from src.agents.api_clients.chat_storage_client.responses import (
+    ChatCreated,
+    MessageAdded,
+)
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
-from src.agents.api_clients.chat_storage_client.responses import ChatCreated, MessageAdded
-from src.agents.api_clients.chat_storage_client.entities import RoleEnum, MessageUploadType
 
 
-#TODO add https statuses handling
+# TODO add https statuses handling
 class ChatStorageApiClient:
 
     def __init__(self, json_handler: JsonApiHandler) -> None:
         self.json_handler = json_handler
         self.__name__ = "ChatStorageApiClient"
 
-    async def create_chat(self, token: str, title: str, scenario_id: int | None = None , **kwargs: Any) -> ChatCreated:
+    async def create_chat(
+        self, token: str, title: str, scenario_id: int | None = None, **kwargs: Any
+    ) -> ChatCreated:
         """
         Function creates chat with provided parameters.
         Args:
@@ -31,11 +40,18 @@ class ChatStorageApiClient:
         chat = await self.json_handler.post(
             endpoint="/api/v1/chat_history/create_chats",
             auth_token=token,
-            data={k: v for k, v in data_to_post.items() if v}
+            data={k: v for k, v in data_to_post.items() if v},
         )
         return ChatCreated(chat_id=chat["chat_id"], title=chat["title"])
 
-    async def add_single_message(self, token: str, chat_id: str, role: RoleEnum | str, content: str, **kwargs: Any) -> MessageAdded:
+    async def add_single_message(
+        self,
+        token: str,
+        chat_id: str,
+        role: RoleEnum | str,
+        content: str,
+        **kwargs: Any,
+    ) -> MessageAdded:
         """
         Function adds single message to chat storage.
         Args:
@@ -49,14 +65,20 @@ class ChatStorageApiClient:
         message = await self.json_handler.post(
             endpoint=f"/api/v1/chat_history/{chat_id}/message",
             auth_token=token,
-            data={"role": RoleEnum.parse(role).value, "content": content, "meta": kwargs}
+            data={
+                "role": RoleEnum.parse(role).value,
+                "content": content,
+                "meta": kwargs,
+            },
         )
         return MessageAdded(
             chat_id=message["message_id"],
             message_id=message["chat_id"],
-            message_type=MessageUploadType.TEXT
+            message_type=MessageUploadType.TEXT,
         )
 
-    async def add_parts_message(self, token: str, chat_id: str, role: RoleEnum | str, parts: list, **kwargs):
+    async def add_parts_message(
+        self, token: str, chat_id: str, role: RoleEnum | str, parts: list, **kwargs
+    ):
 
         pass

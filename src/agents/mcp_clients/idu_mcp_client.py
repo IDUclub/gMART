@@ -4,13 +4,13 @@ from mcp import GetPromptResult
 from .base_mcp_client import BaseMcpClient
 
 
-#TODO add prompts cache
+# TODO add prompts cache
 class IduMcpClient(BaseMcpClient):
 
     def __init__(self, mcp_client: McpClient):
         super().__init__(mcp_client)
 
-    async def get_urban_api_tools(self) ->list[dict]:
+    async def get_urban_api_tools(self) -> list[dict]:
         """
         Function retrieves urban_api tools from IDU MCP server.
         Returns:
@@ -76,7 +76,9 @@ class IduMcpClient(BaseMcpClient):
 
         return await self.load_ollama_tools(tags=["restrictions"])
 
-    async def get_prompts_by_name(self, prompts_names: list[str], arguments: dict | None = None) -> list[GetPromptResult]:
+    async def get_prompts_by_name(
+        self, prompts_names: list[str], arguments: dict | None = None
+    ) -> list[GetPromptResult]:
         """
         Function filters prompts from mcp server by name.
         Args:
@@ -100,10 +102,14 @@ class IduMcpClient(BaseMcpClient):
             list[dict]: list of service examples street
         """
 
-        result = await self.get_prompts_by_name(["GetServicesExample", "NoGetServicesExample"])
+        result = await self.get_prompts_by_name(
+            ["GetServicesExample", "NoGetServicesExample"]
+        )
         messages_list = [res.model_dump()["messages"] for res in result]
         return [
-            {"role": message["role"], "content": message["content"]["text"]} for messages in messages_list for message in messages
+            {"role": message["role"], "content": message["content"]["text"]}
+            for messages in messages_list
+            for message in messages
         ]
 
     async def get_physical_objects_example_prompts(self) -> list[dict]:
@@ -113,10 +119,14 @@ class IduMcpClient(BaseMcpClient):
              list[dict]: list of physical objects examples.
         """
 
-        result = await self.get_prompts_by_name(["GetPhysicalObjectsExample", "NoGetPhysicalObjectsExample"])
+        result = await self.get_prompts_by_name(
+            ["GetPhysicalObjectsExample", "NoGetPhysicalObjectsExample"]
+        )
         messages_list = [res.model_dump()["messages"] for res in result]
         return [
-            {"role": message["role"], "content": message["content"]["text"]} for messages in messages_list for message in messages
+            {"role": message["role"], "content": message["content"]["text"]}
+            for messages in messages_list
+            for message in messages
         ]
 
     async def get_available_services_prompt(self, scenario_id: int) -> str:
@@ -126,7 +136,9 @@ class IduMcpClient(BaseMcpClient):
             str: prompt with available services.
         """
 
-        result = await self.get_prompts_by_name(["GetAvailableServices"], {"scenario_id": scenario_id})
+        result = await self.get_prompts_by_name(
+            ["GetAvailableServices"], {"scenario_id": scenario_id}
+        )
         return result[0].model_dump()["messages"][0]["content"]["text"]
 
     async def get_available_physical_objects_prompt(self, scenario_id: int) -> str:
@@ -136,5 +148,7 @@ class IduMcpClient(BaseMcpClient):
             str: prompt with available services.
         """
 
-        result = await self.get_prompts_by_name(["GetAvailablePhysicalObjects"], {"scenario_id": scenario_id})
+        result = await self.get_prompts_by_name(
+            ["GetAvailablePhysicalObjects"], {"scenario_id": scenario_id}
+        )
         return result[0].model_dump()["messages"][0]["content"]["text"]

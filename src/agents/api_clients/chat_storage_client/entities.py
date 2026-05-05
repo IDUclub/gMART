@@ -4,6 +4,7 @@ Module is aimed for enum entities for ChatStorage.
 
 from enum import StrEnum
 
+
 class BaseChatStorageStringEnum(StrEnum):
 
     @classmethod
@@ -36,6 +37,7 @@ class RoleEnum(BaseChatStorageStringEnum):
     USER = "user"
     SYSTEM = "system"
     ASSISTANT = "assistant"
+
 
 class MessageUploadType(BaseChatStorageStringEnum):
     """

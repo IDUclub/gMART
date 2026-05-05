@@ -4,7 +4,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 http_bearer = HTTPBearer()
 
 
-async def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)) -> str:
+async def verify_bearer_token(
+    credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
+) -> str:
     """
     Function retrieves Bearer token from headers.
     Args:

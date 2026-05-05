@@ -19,6 +19,7 @@ class ChatCreated:
     chat_id: str
     title: str
 
+
 @dataclass(frozen=True)
 class MessageAdded:
     """
