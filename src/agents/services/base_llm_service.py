@@ -1,8 +1,19 @@
 import json
+from dataclasses import asdict
 
+from api_clients.chat_storage_client.entities import RoleEnum
+from api_clients.chat_storage_client.request_models import (
+    StatusPartRequest,
+    TextPartRequest,
+    ToolCallPartRequest,
+)
+from api_clients.chat_storage_client.responses import ChatHistory
+from loguru import logger
 from ollama import AsyncClient as AsyncOllamaClient
 
-from src.agents.api_clients.chat_storage_client import ChatStorageApiClient
+from src.agents.api_clients.chat_storage_client.chat_storage_client import (
+    ChatStorageApiClient,
+)
 from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
 from src.agents.model_clients.base_client import BaseLlmClient
 
@@ -12,9 +23,8 @@ class BaseLlmService(BaseLlmClient):
     Base class for llm services. Inherits from BaseLlmClient.
     Attributes:
         host (str): Ollama host.
-        chat_storage_client (ChatStorageClient): Chat storage API client instance.
+        chat_storage_client (ChatStorageApiClient): Chat storage API client instance.
         llm_client (AsyncOllamaClient): Asynchronous ollama client.
-
     """
 
     def __init__(self, llm_host: str, chat_storage_client: ChatStorageApiClient):
@@ -142,11 +152,104 @@ class BaseLlmService(BaseLlmClient):
             max_retries=max_retries - 1,
         )
 
-    async def create_chat(self, token: str):
-        pass
+    # TODO add error handling for functions
+    async def create_chat(
+        self,
+        token: str,
+        model_name: str,
+        user_query: str,
+        additional_instructions: str,
+        scenario_id: int | None = None,
+        **kwargs,
+    ) -> tuple[str, str]:
+        """
+        Function creates chat via ChatStorage API and loads user message as first message.
+        Args:
+            token (str): User token from Urban API.
+            model_name (str): Model name for current request.
+            user_query (str): First user query for chat.
+            additional_instructions (str): Internal instructions for first requested service.
+            scenario_id (int | None): Scenario ID from Urban API.
+            **kwargs(Any): Any kwargs to save as meta to chat.
+        Returns:
+            tuple[str, str]: Tuple with chat_id as first value and chat title as second.
+        """
 
-    async def add_message(self, token: str):
-        pass
+        existing_names = await self.chat_storage_client.get_user_chats_titles(token)
+        title = await self.generate_chat_title(
+            model_name, user_query, additional_instructions, existing_names
+        )
+        chat_info = await self.chat_storage_client.create_chat(
+            token, title, scenario_id, **kwargs
+        )
+        logger.info(f"Created chat with {asdict(chat_info)}")
+        await self.add_single_message(
+            token, chat_info.chat_id, RoleEnum.USER, text=user_query, **kwargs
+        )
+        return chat_info.chat_id, chat_info.title
 
-    async def get_chat(self, token: str, chat_id: str):
-        pass
+    async def add_single_message(
+        self, token: str, chat_id: str, role: RoleEnum, text: str, **kwargs
+    ) -> None:
+        """
+        Function adds single text message to chat storage.
+        Args:
+            token (str): User token from Urban API.
+            chat_id (str): String representation of chat uuid.
+            role (RoleEnum): Role of message creator. Available values: "user", "assistant", "system".
+            text (str): Message text.
+            **kwargs (Any): Any kwargs to save as message meta.
+        Returns:
+            None: Data successfully uploaded.
+        """
+
+        message_info = await self.chat_storage_client.add_single_message(
+            token, chat_id, role, text, **kwargs
+        )
+        logger.info(f"Added message with {asdict(message_info)}")
+
+    async def add_complex_message(
+        self,
+        token: str,
+        chat_id: str,
+        role: RoleEnum,
+        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        **kwargs,
+    ):
+        """
+        Function adds single text message to chat storage.
+        Args:
+            token (str): User token from Urban API.
+            chat_id (str): String representation of chat uuid.
+            role (RoleEnum): Role of message creator. Available values: "user", "assistant", "system".
+            parts (list[TextPartRequest | StatusPartRequest | ToolCallPartRequest]): Message parts as dto objects.
+            **kwargs (Any): Any kwargs to save as message meta.
+        Returns:
+            None: Data successfully uploaded.
+        """
+
+        message_info = await self.chat_storage_client.add_parts_message(
+            token, chat_id, role, parts, **kwargs
+        )
+        logger.info(f"Added messages with {asdict(message_info)}")
+
+    async def get_chat_messages(self, token: str, chat_id: str) -> ChatHistory:
+        """
+        Receive chat messages from ChatStorage service.
+        Args:
+            token (str): User token from Urban API.
+            chat_id (str): String representation of chat uuid.
+        Returns:
+            list[dict]: List of chat messages.
+        """
+
+        chat_info = await self.chat_storage_client.get_chat(token, chat_id)
+        data_to_log = {
+            "chat_id": chat_info.chat_id,
+            "title": chat_info.title,
+            "created_at": chat_info.created_at,
+            "updated_at": chat_info.updated_at,
+            "metadata": chat_info.metadata,
+        }
+        logger.info(f"Chat with {json.dumps(data_to_log, indent=4)}")
+        return chat_info

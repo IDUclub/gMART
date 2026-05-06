@@ -37,7 +37,26 @@ class FeatureCollectionResponse(BaseModel):
     feature_collection: FeatureCollection
 
 
+class ChatCreatedEvent(BaseModel):
+
+    storage_event_type: Literal["chat_created"]
+    chat_id: str
+    chat_title: str
+
+
+class ServiceEvent(BaseModel):
+
+    event_type: Literal["storage_event"]
+    event: ChatCreatedEvent
+
+
 class RestrictionsResponse(BaseModel):
 
-    type: Literal["status", "chunk", "feature_collection", "error"]
-    content: StatusResponse | TextResponse | FeatureCollectionResponse | SseBaseError
+    type: Literal["status", "chunk", "feature_collection", "error", "service_event"]
+    content: (
+        StatusResponse
+        | TextResponse
+        | FeatureCollectionResponse
+        | SseBaseError
+        | ServiceEvent
+    )

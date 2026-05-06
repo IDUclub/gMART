@@ -8,8 +8,14 @@ from src.agents.api_clients.chat_storage_client.entities import (
     MessageUploadType,
     RoleEnum,
 )
+from src.agents.api_clients.chat_storage_client.request_models import (
+    StatusPartRequest,
+    TextPartRequest,
+    ToolCallPartRequest,
+)
 from src.agents.api_clients.chat_storage_client.responses import (
     ChatCreated,
+    ChatHistory,
     MessageAdded,
 )
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
@@ -21,6 +27,51 @@ class ChatStorageApiClient:
     def __init__(self, json_handler: JsonApiHandler) -> None:
         self.json_handler = json_handler
         self.__name__ = "ChatStorageApiClient"
+
+    @staticmethod
+    async def _message_created(
+        message: dict, creation_type: MessageUploadType
+    ) -> MessageAdded:
+        """
+        Function creates message response based on response from ChatStorage service.
+        Args:
+            message (dict): Response from ChatStorage service.
+            creation_type (MessageUploadType): Created
+        """
+
+        return MessageAdded(
+            chat_id=message["message_id"],
+            message_id=message["chat_id"],
+            message_type=creation_type,
+        )
+
+    async def get_user_chats_titles(self, token: str) -> list[str]:
+        """
+        Function returns unique chat titles for user.
+        Args:
+            token (str): Token from Urban API.
+        Returns:
+            list[str]: List of existing unique chat titles for user.
+        """
+
+        return await self.json_handler.get(
+            endpoint="/api/v1/chats/titles", auth_token=token
+        )
+
+    async def get_chat(self, token: str, chat_id: str) -> ChatHistory:
+        """
+        Function retrieves chat messages from ChatStorage service.
+        Args:
+            token (str): User token from Urban API.
+            chat_id (str): String chat uuid representation.
+        Returns:
+            ChatHistory: ChatHistory dataclass instance with chat history info.
+        """
+
+        chat = await self.json_handler.get(
+            endpoint=f"/api/v1/chat_history/{chat_id}", auth_token=token
+        )
+        return ChatHistory(**chat)
 
     async def create_chat(
         self, token: str, title: str, scenario_id: int | None = None, **kwargs: Any
@@ -60,6 +111,8 @@ class ChatStorageApiClient:
             role (RoleEnum | str): Message role as RoleEnum. Available values: "user", "system", "assistant".
             content (str): Message to post as string.
             **kwargs (Any): Additional parameters for chat creation passed to meta.
+        Returns:
+            MessageAdded: Dataclass with created message info.
         """
 
         message = await self.json_handler.post(
@@ -71,14 +124,35 @@ class ChatStorageApiClient:
                 "meta": kwargs,
             },
         )
-        return MessageAdded(
-            chat_id=message["message_id"],
-            message_id=message["chat_id"],
-            message_type=MessageUploadType.TEXT,
-        )
+        return await self._message_created(message, MessageUploadType.TEXT)
 
     async def add_parts_message(
-        self, token: str, chat_id: str, role: RoleEnum | str, parts: list, **kwargs
-    ):
+        self,
+        token: str,
+        chat_id: str,
+        role: RoleEnum | str,
+        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        **kwargs,
+    ) -> MessageAdded:
+        """
+        Function adds single message to chat storage.
+        Args:
+            token (str): Authorization token from Urban API.
+            chat_id (str): String representation of chat uuid.
+            role (RoleEnum | str): Message role as RoleEnum. Available values: "user", "system", "assistant".
+            parts(list[TextPartRequest | StatusPartRequest | ToolCallPartRequest]): List of pydantic dto models to post.
+            **kwargs (Any): Additional parameters for chat creation passed to meta.
+        Returns:
+            MessageAdded: Dataclass with created message info.
+        """
 
-        pass
+        message = await self.json_handler.post(
+            endpoint=f"api/v1/chat_history/{chat_id}/message",
+            auth_token=token,
+            data={
+                "role": RoleEnum.parse(role).value,
+                "parts": [part.model_dump() for part in parts],
+                "meta": kwargs,
+            },
+        )
+        return await self._message_created(message, MessageUploadType.PARTS)

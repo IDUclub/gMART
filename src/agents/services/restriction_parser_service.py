@@ -4,8 +4,12 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from loguru import logger
+from ollama import AsyncClient as AsyncOllamaClient
 from ollama import ChatResponse
 
+from src.agents.api_clients.chat_storage_client.chat_storage_client import (
+    ChatStorageApiClient,
+)
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.restriction_catalog import RestrictionPlanBuilder
 from src.agents.services.restriction_context import RestrictionContextBuilder
@@ -20,8 +24,25 @@ if TYPE_CHECKING:
 
 
 class RestrictionParserService(BaseLlmService):
-    def __init__(self, ollama_host: str):
-        super().__init__(ollama_host)
+    """
+    Service for running restriction execution pipelines. Inherits from BaseLlmService.
+    Attributes:
+        host (str): Ollama host.
+        chat_storage_client (ChatStorageApiClient)
+        llm_client (AsyncOllamaClient): Asynchronous ollama client.
+    """
+
+    def __init__(
+        self, ollama_host: str, chat_storage_client: ChatStorageApiClient
+    ) -> None:
+        """
+        Initialization function for RestrictionParserService.
+        Args:
+            ollama_host (str): Ollama host.
+            chat_storage_client (ChatStorageApiClient): ChatStorageApiClient instance for saving chat content.
+        """
+
+        super().__init__(ollama_host, chat_storage_client)
         self.plan_builder = RestrictionPlanBuilder(self.llm_client)
         self.tool_executor = RestrictionToolExecutor()
         self.context_builder = RestrictionContextBuilder()
@@ -33,8 +54,26 @@ class RestrictionParserService(BaseLlmService):
         model: str,
         user_query: str,
         scenario_id: int,
+        chat_id: str | None = None,
     ) -> AsyncGenerator:
-        logger.info(f"Starting restriction execution for request {user_query}")
+
+        if not chat_id:
+            logger.info(f"No chat id provided in request, creating a new chat.")
+            chat_id, title = await self.create_chat(
+                mcp_client.mcp_client.transport.auth.token.get_secret_value(),
+                model,
+                user_query,
+                additional_instructions="""Первый запрос пользователя был отправлен к сервису 
+                            создания слоёв с ограничениями ихз запроса пользователя.
+                            """,
+                scenario_id=scenario_id,
+            )
+            yield self._chat_created_event(chat_id, title)
+
+        current_message = []  # current message buffer parts.
+        logger.info(
+            f"Starting restriction execution for request {user_query} for chat id {chat_id}"
+        )
 
         yield self._status(
             "data_retrievement",
@@ -197,6 +236,17 @@ class RestrictionParserService(BaseLlmService):
         ):
             part: ChatResponse
             yield self._chunk(part.message.content or "", done=part.done)
+
+    @staticmethod
+    def _chat_created_event(chat_id: str, chat_title: str) -> dict:
+        return {
+            "event_type": "storage_event",
+            "event": {
+                "storage_event_type": "chat_created",
+                "chat_id": chat_id,
+                "chat_title": chat_title,
+            },
+        }
 
     @staticmethod
     def _status(status: str, text: str) -> dict:

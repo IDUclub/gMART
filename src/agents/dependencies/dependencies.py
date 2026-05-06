@@ -2,14 +2,12 @@ from fastapi import Depends
 from fastmcp import Client
 
 from src.agents.common.auth.auth import verify_bearer_token
-from src.agents.common.config.app_config import AgentsAppConfig
+from src.agents.dependencies.init_dependencies import init_dependencies
+from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.a2a_service import A2AService
+from src.agents.services.restriction_parser_service import RestrictionParserService
 from src.agents.services.simple_llm_service import SimpleLlmService
-
-from ..mcp_clients.idu_mcp_client import IduMcpClient
-from ..services.restriction_parser_service import RestrictionParserService
-from ..services.system_service import SystemService
-from .init_dependencies import init_dependencies
+from src.agents.services.system_service import SystemService
 
 app_deps: dict[str, object] = init_dependencies()
 
@@ -72,5 +70,10 @@ async def get_a2a_service() -> A2AService:
 
 
 async def get_system_service() -> SystemService:
+    """
+    Function returns SystemService instance.
+    Returns:
+        SystemService: SystemService instance for current app.
+    """
 
     return app_deps["system_service"]
