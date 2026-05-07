@@ -2,6 +2,9 @@ from typing import Any, AsyncGenerator
 
 from ollama import ChatResponse
 
+from src.agents.api_clients.chat_storage_client.chat_storage_client import (
+    ChatStorageApiClient,
+)
 from src.agents.model_clients.base_client import BaseLlmClient
 
 from .base_llm_service import BaseLlmService
@@ -12,15 +15,17 @@ class SimpleLlmService(BaseLlmService):
     Class for handling simple LLM messages and chats. Inherits from BaseLlmService.
     Attributes:
         llm_client (BaseLlmClient):BaseClient for communicating with LLM.
+        chat_storage_client (ChatStorageApiClient): Instance of ChatStorageApiClient for current app.
     """
 
-    def __init__(self, llm_host: str):
+    def __init__(self, llm_host: str, chat_storage_client: ChatStorageApiClient):
         """
         Initialization function for SimpleLlmService. Inherits from BaseService.
         Args:
             llm_host (str): Ollama host.
+            chat_storage_client (ChatStorageApiClient): Instance of ChatStorageApiClient.
         """
-        super().__init__(llm_host=llm_host)
+        super().__init__(llm_host=llm_host, chat_storage_client=chat_storage_client)
 
     async def generate_message(self, user_request: str, model: str) -> dict[str, Any]:
         """

@@ -21,3 +21,34 @@ services:
       - "8000:8000"
     env_file:
       - ./env/.env.idu_mcp.example
+
+  chat_storage:
+    image: leondetur/chat-storage:0.1.2
+    container_name: chat_storage
+    restart: unless-stopped
+    environment:
+      MONGO_URL: mongo:27017
+      MONGO_USER: mongo
+      MONGO_PASSWORD: mongo
+      MONGO_DB: chat_history
+      IDU_MCP_URL: http://idu_mcp:8000/mcp
+      AUTH_VERIFY: true
+      AUTH_SERVER_URL: https://keycloak.idu.actcognitive.org/realms/IDU
+      AUTH_CLIENT_ID: chat-storage
+      AUTH_VALID_AUDIENCES: "urban-api, account"
+      CHATSTORAGE_LOG_DIR: runtime/logs
+      CHATSTORAGE_LOG_FILE: api.log
+
+  mongo:
+    image: mongo:8.0.21-rc1-noble
+    container_name: mongo_db
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin
+      MONGO_INITDB_DATABASE: chat_history
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./mongo/data:/data/db
+      - ./mongo/init:/docker-entrypoint-initdb.d:ro

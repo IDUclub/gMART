@@ -142,8 +142,8 @@ class BaseLlmService(BaseLlmClient):
         title = await self.llm_client.generate(
             model=model_name, prompt=prompt, stream=False
         )
-        if title not in existing_names:
-            return title
+        if title.response not in existing_names:
+            return title.response
         return await self.generate_chat_title(
             model_name,
             user_query,

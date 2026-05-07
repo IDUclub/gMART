@@ -46,28 +46,61 @@ class RestrictionToolExecutor:
         mcp_client: IduMcpClient,
         plan: RestrictionPlan,
         scenario_id: int,
-    ) -> dict[str, dict]:
+    ) -> GeometryToolCallResult:
         entities_by_type = self._entities_by_type(
             [*plan.source_entities, *plan.target_entities]
         )
         layers: dict[str, dict] = {}
+        tool_calls: list[dict] = []
         meta = {"scenario_id": scenario_id}
 
-        await self._update_layers(
-            layers,
-            mcp_client,
-            "GetServices",
-            {"services_names": entities_by_type["service"]},
-            meta,
+        self._append_if_present(
+            tool_calls,
+            await self._update_layers(
+                layers,
+                mcp_client,
+                "GetServices",
+                {"services_names": entities_by_type["service"]},
+                meta,
+            ),
         )
-        await self._update_layers(
-            layers,
-            mcp_client,
-            "GetPhysicalObjects",
-            {"physical_objects_names": entities_by_type["physical_object"]},
-            meta,
+        self._append_if_present(
+            tool_calls,
+            await self._update_layers(
+                layers,
+                mcp_client,
+                "GetPhysicalObjects",
+                {"physical_objects_names": entities_by_type["physical_object"]},
+                meta,
+            ),
         )
-        return layers
+        return GeometryToolCallResult(
+            tool_result=layers,
+            tool_calls=tool_calls,
+            messages=[
+                {"role": "system", "content": plan.model_dump_json(ensure_ascii=False)}
+            ],
+        )
+
+    async def _update_layers(
+        self,
+        layers: dict[str, dict],
+        mcp_client: IduMcpClient,
+        tool_name: str,
+        arguments: dict,
+        meta: dict,
+    ) -> dict | None:
+        if not next(iter(arguments.values())):
+            return None
+        layers.update(
+            await self.execute_named_tool(mcp_client, tool_name, arguments, meta)
+        )
+        return {"function": {"name": tool_name, "arguments": arguments}}
+
+    @staticmethod
+    def _append_if_present(items: list, item) -> None:
+        if item is not None:
+            items.append(item)
 
     async def run_buffer_plan(
         self,
@@ -111,20 +144,6 @@ class RestrictionToolExecutor:
             meta={"layers": layers},
         )
         return self._tool_result("CreateRestrictions", arguments, tool_result, plan)
-
-    async def _update_layers(
-        self,
-        layers: dict[str, dict],
-        mcp_client: IduMcpClient,
-        tool_name: str,
-        arguments: dict,
-        meta: dict,
-    ) -> None:
-        if not next(iter(arguments.values())):
-            return
-        layers.update(
-            await self.execute_named_tool(mcp_client, tool_name, arguments, meta)
-        )
 
     @staticmethod
     def _entities_by_type(entities: list[EntityRef]) -> dict[str, list[str]]:

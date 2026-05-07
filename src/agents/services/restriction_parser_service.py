@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
@@ -68,6 +69,9 @@ class RestrictionParserService(BaseLlmService):
     ) -> AsyncGenerator:
         token = mcp_client.mcp_client.transport.auth.token.get_secret_value()
         text_buffer: list[str] = []
+        message_parts: list[
+            TextPartRequest | StatusPartRequest | ToolCallPartRequest
+        ] = []
 
         async for item in self._run_restriction_execution_pipline(
             mcp_client=mcp_client,
@@ -79,18 +83,14 @@ class RestrictionParserService(BaseLlmService):
         ):
             chat_id = self._chat_id_from_storage_event(item) or chat_id
             if item.get("type") == "tool_call":
-                await self._flush_text_buffer(
-                    token,
-                    chat_id,
+                self._flush_text_buffer_to_parts(
                     text_buffer,
-                    scenario_id=scenario_id,
+                    message_parts,
                 )
-                await self._add_tool_calls_to_chat(
-                    token,
-                    chat_id,
+                self._add_tool_calls_to_parts(
+                    message_parts,
                     item.get("content", {}).get("tool_calls", []),
                     execution_mode=item.get("content", {}).get("execution_mode", ""),
-                    scenario_id=scenario_id,
                 )
                 continue
 
@@ -99,36 +99,33 @@ class RestrictionParserService(BaseLlmService):
                 if content.get("text"):
                     text_buffer.append(content["text"])
                 if content.get("done"):
-                    await self._flush_text_buffer(
-                        token,
-                        chat_id,
+                    self._flush_text_buffer_to_parts(
                         text_buffer,
-                        scenario_id=scenario_id,
+                        message_parts,
                     )
                 yield item
                 continue
 
-            await self._flush_text_buffer(
-                token,
-                chat_id,
+            self._flush_text_buffer_to_parts(
                 text_buffer,
-                scenario_id=scenario_id,
+                message_parts,
             )
-            await self._add_pipeline_item_to_chat(
-                token,
-                chat_id,
-                item,
-                scenario_id=scenario_id,
-            )
+            part = self._pipeline_item_to_chat_part(item)
+            if part is not None:
+                message_parts.append(part)
             yield item
 
         if text_buffer:
-            await self._flush_text_buffer(
-                token,
-                chat_id,
+            self._flush_text_buffer_to_parts(
                 text_buffer,
-                scenario_id=scenario_id,
+                message_parts,
             )
+        self._schedule_add_message_parts_to_chat(
+            token,
+            chat_id,
+            message_parts,
+            scenario_id=scenario_id,
+        )
 
     async def _run_restriction_execution_pipline(
         self,
@@ -182,11 +179,13 @@ class RestrictionParserService(BaseLlmService):
         yield self._status(
             "data_retrievement", "Получаю необходимые слои по утвержденному плану"
         )
-        layers = await self.tool_executor.retrieve_layers_for_plan(
+        layers_result = await self.tool_executor.retrieve_layers_for_plan(
             mcp_client,
             plan,
             scenario_id,
         )
+        yield self._tool_call("data_retrievement", layers_result.tool_calls)
+        layers = layers_result.tool_result
         for item in self._feature_collections(layers):
             yield item
 
@@ -237,87 +236,85 @@ class RestrictionParserService(BaseLlmService):
         ):
             yield chunk
 
-    async def _add_pipeline_item_to_chat(
+    async def _add_message_parts_to_chat(
         self,
         token: str,
         chat_id: str | None,
-        item: dict,
+        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
         **metadata,
     ) -> None:
-        part = self._pipeline_item_to_chat_part(item)
-        if not chat_id or part is None:
+        if not chat_id or not parts:
             return
         await self.add_complex_message(
             token,
             chat_id,
             RoleEnum.ASSISTANT,
-            [part],
+            parts,
             **metadata,
         )
 
-    async def _add_text_to_chat(
+    def _schedule_add_message_parts_to_chat(
         self,
         token: str,
         chat_id: str | None,
-        text: str,
+        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
         **metadata,
     ) -> None:
-        if not chat_id or not text:
+        if not chat_id or not parts:
             return
-        await self.add_complex_message(
-            token,
-            chat_id,
-            RoleEnum.ASSISTANT,
-            [TextPartRequest(kind="text", payload=TextPayload(text=text))],
-            **metadata,
+        task = asyncio.create_task(
+            self._add_message_parts_to_chat(
+                token,
+                chat_id,
+                parts.copy(),
+                **metadata,
+            )
         )
+        task.add_done_callback(self._log_message_upload_result)
 
-    async def _flush_text_buffer(
-        self,
-        token: str,
-        chat_id: str | None,
+    @staticmethod
+    def _log_message_upload_result(task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except Exception as exc:
+            logger.exception(f"Failed to upload restriction response message: {exc}")
+
+    @staticmethod
+    def _flush_text_buffer_to_parts(
         text_buffer: list[str],
-        **metadata,
+        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
     ) -> None:
         if not text_buffer:
             return
-        await self._add_text_to_chat(
-            token,
-            chat_id,
-            "".join(text_buffer),
-            **metadata,
+        parts.append(
+            TextPartRequest(
+                kind="text",
+                payload=TextPayload(text="".join(text_buffer)),
+            )
         )
         text_buffer.clear()
 
-    async def _add_tool_calls_to_chat(
+    def _add_tool_calls_to_parts(
         self,
-        token: str,
-        chat_id: str | None,
+        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
         tool_calls: list[dict],
         execution_mode: str,
-        **metadata,
     ) -> None:
-        if not chat_id or not tool_calls:
+        if not tool_calls:
             return
 
         calls = [
             self._tool_call_to_chat_storage_call(step, tool_call)
             for step, tool_call in enumerate(tool_calls, start=1)
         ]
-        await self.add_complex_message(
-            token,
-            chat_id,
-            RoleEnum.ASSISTANT,
-            [
-                ToolCallPartRequest(
-                    kind="tool_call",
-                    payload=ToolCallPayload(
-                        execution_mode=execution_mode,
-                        calls=calls,
-                    ),
-                )
-            ],
-            **metadata,
+        parts.append(
+            ToolCallPartRequest(
+                kind="tool_call",
+                payload=ToolCallPayload(
+                    execution_mode=execution_mode,
+                    calls=calls,
+                ),
+            )
         )
 
     @staticmethod

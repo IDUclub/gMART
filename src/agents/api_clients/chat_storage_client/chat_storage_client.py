@@ -55,7 +55,7 @@ class ChatStorageApiClient:
         """
 
         return await self.json_handler.get(
-            endpoint="/api/v1/chats/titles", auth_token=token
+            endpoint="/api/v1/chat_history/chats/titles", auth_token=token
         )
 
     async def get_chat(self, token: str, chat_id: str) -> ChatHistory:
@@ -89,7 +89,7 @@ class ChatStorageApiClient:
 
         data_to_post = {"title": title, "scenario_id": scenario_id, "meta": kwargs}
         chat = await self.json_handler.post(
-            endpoint="/api/v1/chat_history/create_chats",
+            endpoint="/api/v1/chat_history/create_chat",
             auth_token=token,
             data={k: v for k, v in data_to_post.items() if v},
         )
