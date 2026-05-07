@@ -10,6 +10,16 @@ from ollama import ChatResponse
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
+from src.agents.api_clients.chat_storage_client.entities import RoleEnum
+from src.agents.api_clients.chat_storage_client.request_models import (
+    StatusPartRequest,
+    StatusPayload,
+    TextPartRequest,
+    TextPayload,
+    ToolCall,
+    ToolCallPartRequest,
+    ToolCallPayload,
+)
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.restriction_catalog import RestrictionPlanBuilder
 from src.agents.services.restriction_context import RestrictionContextBuilder
@@ -56,11 +66,85 @@ class RestrictionParserService(BaseLlmService):
         scenario_id: int,
         chat_id: str | None = None,
     ) -> AsyncGenerator:
+        token = mcp_client.mcp_client.transport.auth.token.get_secret_value()
+        text_buffer: list[str] = []
 
+        async for item in self._run_restriction_execution_pipline(
+            mcp_client=mcp_client,
+            temperature=temperature,
+            model=model,
+            user_query=user_query,
+            scenario_id=scenario_id,
+            chat_id=chat_id,
+        ):
+            chat_id = self._chat_id_from_storage_event(item) or chat_id
+            if item.get("type") == "tool_call":
+                await self._flush_text_buffer(
+                    token,
+                    chat_id,
+                    text_buffer,
+                    scenario_id=scenario_id,
+                )
+                await self._add_tool_calls_to_chat(
+                    token,
+                    chat_id,
+                    item.get("content", {}).get("tool_calls", []),
+                    execution_mode=item.get("content", {}).get("execution_mode", ""),
+                    scenario_id=scenario_id,
+                )
+                continue
+
+            if item.get("type") == "chunk":
+                content = item.get("content", {})
+                if content.get("text"):
+                    text_buffer.append(content["text"])
+                if content.get("done"):
+                    await self._flush_text_buffer(
+                        token,
+                        chat_id,
+                        text_buffer,
+                        scenario_id=scenario_id,
+                    )
+                yield item
+                continue
+
+            await self._flush_text_buffer(
+                token,
+                chat_id,
+                text_buffer,
+                scenario_id=scenario_id,
+            )
+            await self._add_pipeline_item_to_chat(
+                token,
+                chat_id,
+                item,
+                scenario_id=scenario_id,
+            )
+            yield item
+
+        if text_buffer:
+            await self._flush_text_buffer(
+                token,
+                chat_id,
+                text_buffer,
+                scenario_id=scenario_id,
+            )
+
+    async def _run_restriction_execution_pipline(
+        self,
+        mcp_client: IduMcpClient,
+        temperature: float,
+        model: str,
+        user_query: str,
+        scenario_id: int,
+        chat_id: str | None = None,
+    ) -> AsyncGenerator:
+
+        token = mcp_client.mcp_client.transport.auth.token.get_secret_value()
         if not chat_id:
             logger.info(f"No chat id provided in request, creating a new chat.")
             chat_id, title = await self.create_chat(
-                mcp_client.mcp_client.transport.auth.token.get_secret_value(),
+                token,
                 model,
                 user_query,
                 additional_instructions="""Первый запрос пользователя был отправлен к сервису 
@@ -70,7 +154,6 @@ class RestrictionParserService(BaseLlmService):
             )
             yield self._chat_created_event(chat_id, title)
 
-        current_message = []  # current message buffer parts.
         logger.info(
             f"Starting restriction execution for request {user_query} for chat id {chat_id}"
         )
@@ -113,6 +196,7 @@ class RestrictionParserService(BaseLlmService):
         buffers_result = await self.tool_executor.run_buffer_plan(
             mcp_client, plan, layers
         )
+        yield self._tool_call("buffer_creation", buffers_result.tool_calls)
         yield self._status(
             "buffer_creation", "Построил необходимые буферы с ограничениями."
         )
@@ -134,6 +218,9 @@ class RestrictionParserService(BaseLlmService):
                 layers,
                 buffers_result.tool_result,
             )
+            yield self._tool_call(
+                "restriction_formation", restriction_result.tool_calls
+            )
             yield self._status(
                 "restriction_formation",
                 "Извлечение нормативных ограничений завершено.",
@@ -149,6 +236,134 @@ class RestrictionParserService(BaseLlmService):
             model, user_query, context, temperature
         ):
             yield chunk
+
+    async def _add_pipeline_item_to_chat(
+        self,
+        token: str,
+        chat_id: str | None,
+        item: dict,
+        **metadata,
+    ) -> None:
+        part = self._pipeline_item_to_chat_part(item)
+        if not chat_id or part is None:
+            return
+        await self.add_complex_message(
+            token,
+            chat_id,
+            RoleEnum.ASSISTANT,
+            [part],
+            **metadata,
+        )
+
+    async def _add_text_to_chat(
+        self,
+        token: str,
+        chat_id: str | None,
+        text: str,
+        **metadata,
+    ) -> None:
+        if not chat_id or not text:
+            return
+        await self.add_complex_message(
+            token,
+            chat_id,
+            RoleEnum.ASSISTANT,
+            [TextPartRequest(kind="text", payload=TextPayload(text=text))],
+            **metadata,
+        )
+
+    async def _flush_text_buffer(
+        self,
+        token: str,
+        chat_id: str | None,
+        text_buffer: list[str],
+        **metadata,
+    ) -> None:
+        if not text_buffer:
+            return
+        await self._add_text_to_chat(
+            token,
+            chat_id,
+            "".join(text_buffer),
+            **metadata,
+        )
+        text_buffer.clear()
+
+    async def _add_tool_calls_to_chat(
+        self,
+        token: str,
+        chat_id: str | None,
+        tool_calls: list[dict],
+        execution_mode: str,
+        **metadata,
+    ) -> None:
+        if not chat_id or not tool_calls:
+            return
+
+        calls = [
+            self._tool_call_to_chat_storage_call(step, tool_call)
+            for step, tool_call in enumerate(tool_calls, start=1)
+        ]
+        await self.add_complex_message(
+            token,
+            chat_id,
+            RoleEnum.ASSISTANT,
+            [
+                ToolCallPartRequest(
+                    kind="tool_call",
+                    payload=ToolCallPayload(
+                        execution_mode=execution_mode,
+                        calls=calls,
+                    ),
+                )
+            ],
+            **metadata,
+        )
+
+    @staticmethod
+    def _pipeline_item_to_chat_part(
+        item: dict,
+    ) -> TextPartRequest | StatusPartRequest | None:
+        item_type = item.get("type")
+        content = item.get("content") or {}
+
+        if item_type == "status":
+            return StatusPartRequest(
+                kind="status",
+                payload=StatusPayload(
+                    status=content.get("status", ""),
+                    text=content.get("text", ""),
+                ),
+            )
+
+        if item_type == "chunk":
+            text = content.get("text") or ""
+            if not text:
+                return None
+            return TextPartRequest(kind="text", payload=TextPayload(text=text))
+
+        return None
+
+    @staticmethod
+    def _tool_call_to_chat_storage_call(step: int, tool_call: dict) -> ToolCall:
+        function_call = tool_call.get("function") or {}
+        tool_name = (
+            tool_call.get("tool_name")
+            or tool_call.get("name")
+            or function_call.get("name")
+        )
+        arguments = tool_call.get("arguments") or function_call.get("arguments") or {}
+        if not tool_name:
+            raise ValueError(f"Tool call without tool name: {tool_call}")
+        return ToolCall(step=step, tool_name=tool_name, arguments=arguments)
+
+    @staticmethod
+    def _chat_id_from_storage_event(item: dict) -> str | None:
+        event_container = item.get("content") or item
+        event = event_container.get("event") or {}
+        if event.get("storage_event_type") == "chat_created":
+            return event.get("chat_id")
+        return None
 
     async def _build_plan(
         self,
@@ -240,11 +455,14 @@ class RestrictionParserService(BaseLlmService):
     @staticmethod
     def _chat_created_event(chat_id: str, chat_title: str) -> dict:
         return {
-            "event_type": "storage_event",
-            "event": {
-                "storage_event_type": "chat_created",
-                "chat_id": chat_id,
-                "chat_title": chat_title,
+            "type": "service_event",
+            "content": {
+                "event_type": "storage_event",
+                "event": {
+                    "storage_event_type": "chat_created",
+                    "chat_id": chat_id,
+                    "chat_title": chat_title,
+                },
             },
         }
 
@@ -265,6 +483,16 @@ class RestrictionParserService(BaseLlmService):
             "content": {
                 "text": text,
                 "done": done,
+            },
+        }
+
+    @staticmethod
+    def _tool_call(execution_mode: str, tool_calls: list[dict]) -> dict:
+        return {
+            "type": "tool_call",
+            "content": {
+                "execution_mode": execution_mode,
+                "tool_calls": tool_calls,
             },
         }
 

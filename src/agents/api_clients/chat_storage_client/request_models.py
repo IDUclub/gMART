@@ -25,7 +25,7 @@ class TextPartRequest(BaseModel):
     payload: TextPayload
 
 
-class StatusPayload:
+class StatusPayload(BaseModel):
     """
     Pydantic model for status part payload.
     Attributes:
