@@ -1,8 +1,7 @@
 from src.idu_mcp.api_clients.urban_api_client import UrbanApiClient
 from src.idu_mcp.common.api_handlers.json_api_handler import JsonApiHandler
+from src.idu_mcp.dependencies.tool_deps.base_tool_dep import BaseDep
 from src.idu_mcp.tools_services.urb_api_tools import UrbanApiTool
-
-from .base_tool_dep import BaseDep
 
 
 class UrbanApiToolsDeps(BaseDep):

@@ -1,6 +1,5 @@
+from src.idu_mcp.dependencies.tool_deps.base_tool_dep import BaseDep
 from src.idu_mcp.tools_services.geometry_tools import GeometryTools
-
-from .base_tool_dep import BaseDep
 
 
 class GeomToolsDeps(BaseDep):

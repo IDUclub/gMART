@@ -5,7 +5,6 @@ from mcp.server.fastmcp.prompts import Prompt
 
 
 class BaseMcpClient:
-
     def __init__(self, mcp_client: MCPClient):
 
         self.mcp_client: MCPClient = mcp_client
@@ -57,9 +56,10 @@ class BaseMcpClient:
                     "function": {
                         "name": tool.name,
                         "description": tool.description,
-                        "parameters": tool.inputSchema
-                    }
-                } for tool in tools
+                        "parameters": tool.inputSchema,
+                    },
+                }
+                for tool in tools
             ]
 
     async def get_prompts(self) -> list[Prompt] | list[dict]:
@@ -73,13 +73,17 @@ class BaseMcpClient:
             return await self.mcp_client.list_prompts()
 
     # TODO enhance exception handling
-    async def execute_tool(self, tool_name: str, arguments: dict, meta: dict, log: bool = False):
+    async def execute_tool(
+        self, tool_name: str, arguments: dict, meta: dict, log: bool = False
+    ):
 
         try:
             async with self.mcp_client as mcp:
                 result = await mcp.call_tool(tool_name, arguments, meta=meta)
                 if log:
-                    logger.info(f"Executed tool with meta {result.meta} and data {result.data}")
+                    logger.info(
+                        f"Executed tool with meta {result.meta} and data {result.data}"
+                    )
                 return result.data
         except Exception as e:
             logger.exception(e)

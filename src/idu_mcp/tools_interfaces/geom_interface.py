@@ -1,4 +1,4 @@
-from fastmcp import FastMCP, Context
+from fastmcp import Context, FastMCP
 from fastmcp.dependencies import Depends
 from fastmcp.server.dependencies import CurrentContext
 from geojson_pydantic import FeatureCollection
@@ -62,9 +62,7 @@ async def create_buffers(
     """
 
     objects = ctx.request_context.meta.objects
-    return await geom_tools.async_generate_geometry_buffers(
-        buffer_info, objects
-    )
+    return await geom_tools.async_generate_geometry_buffers(buffer_info, objects)
 
 
 @geometry_mcp.tool(

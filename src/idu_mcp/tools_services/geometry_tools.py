@@ -4,18 +4,20 @@ import json
 import geopandas as gpd
 import pandas as pd
 
-from src.idu_mcp.tools_services.entites import BufferTypeEnum
+from src.idu_mcp.tools_services.entites.buffer_type_enum import BufferTypeEnum
 
 
 class GeometryTools:
-
     def __init__(self):
         pass
 
-    #TODO add restrict style
+    # TODO add restrict style
     @staticmethod
     def create_buffer(
-        layer: gpd.GeoDataFrame, buffer_size: int, buffer_type: BufferTypeEnum, title: str
+        layer: gpd.GeoDataFrame,
+        buffer_size: int,
+        buffer_type: BufferTypeEnum,
+        title: str,
     ) -> gpd.GeoDataFrame:
         """
         Function generates buffer for provided layer.
@@ -37,7 +39,9 @@ class GeometryTools:
         layer["buffer_size"] = buffer_size
         layer["restriction_title"] = title
         layer["geometry"] = layer.buffer(buffer_size, cap_style=buffer_type)
-        return layer[["geometry", "name", "buffer_size", "restriction_title"]].to_crs(4326)
+        return layer[["geometry", "name", "buffer_size", "restriction_title"]].to_crs(
+            4326
+        )
 
     def generate_geometry_buffers(
         self,
@@ -54,7 +58,8 @@ class GeometryTools:
         """
 
         objects_geoms = {
-            k.lower(): gpd.GeoDataFrame.from_features(v) for k, v in objects_geoms.items()
+            k.lower(): gpd.GeoDataFrame.from_features(v)
+            for k, v in objects_geoms.items()
         }
         buffer_info = {k.lower(): v for k, v in buffer_info.items()}
         result_layers = {
@@ -120,13 +125,15 @@ class GeometryTools:
             objects.sjoin(generators)
             .reset_index(drop=False)
             .dissolve(
-                "index", aggfunc={"name_left": "first", "name_right": lambda x: set(x)}
+                "index",
+                aggfunc={"name_left": "first", "name_right": lambda x: set(x)},
             )
         )
         generators = generators.to_crs(generators.estimate_utm_crs())
         if len(joined) > 0:
             joined.to_crs(joined.estimate_utm_crs())
         return generators, joined
+
     def create_restrictions(
         self,
         layers: dict[str, dict],
@@ -158,16 +165,16 @@ class GeometryTools:
             )
             objects.loc[common, "restriction_name"] += f"&{v['title']}"
             objects.loc[common, "restriction_description"] += f"&{v['description']}"
-        objects["restriction_name"] = objects[
-            "restriction_name"
-        ].apply(apply_strip, symbol="&")
+        objects["restriction_name"] = objects["restriction_name"].apply(
+            apply_strip, symbol="&"
+        )
         objects["restriction_description"] = objects["restriction_description"].apply(
             apply_strip, symbol="&"
         )
         objects.drop(columns=["name_left", "name_right"], inplace=True)
         return {
             "objects": json.loads(objects.to_crs(4326).to_json()),
-            "generators": json.loads(generators.to_crs(4326).to_json())
+            "generators": json.loads(generators.to_crs(4326).to_json()),
         }
 
     async def async_create_restrictions(

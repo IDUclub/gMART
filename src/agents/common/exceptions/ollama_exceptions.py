@@ -1,4 +1,4 @@
-from .base_exceptions import AgentsNotFound
+from src.agents.common.exceptions.base_exceptions import AgentsNotFound
 
 
 class ModelNotFound(AgentsNotFound):
@@ -28,5 +28,8 @@ class ModelNotFound(AgentsNotFound):
         self.message = f"{self.model} {self.base_message}"
         super().__init__(
             self.message,
-            {"requested_model": self.model, "available_models": self.available_models},
+            {
+                "requested_model": self.model,
+                "available_models": self.available_models,
+            },
         )

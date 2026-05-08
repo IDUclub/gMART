@@ -3,7 +3,7 @@ import os
 from dotenv import find_dotenv, load_dotenv
 from loguru import logger
 
-from .mcp_config import IduFastMcpConfig
+from src.idu_mcp.common.config.mcp_config import IduFastMcpConfig
 
 ENV_EXTENSIONS = [
     "",
@@ -34,15 +34,17 @@ def load_config() -> IduFastMcpConfig:
     for extension in ENV_EXTENSIONS:
         if try_load(extension):
             return IduFastMcpConfig(
-                urban_api_url=os.getenv("URBAN_API_URL"), workers=os.getenv("WORKERS")
+                urban_api_url=os.getenv("URBAN_API_URL"),
+                workers=os.getenv("WORKERS"),
             )
 
     logger.warning("No new configurations found in env file or no env file foound")
     try:
         return IduFastMcpConfig(
-            urban_api_url=os.getenv("URBAN_API_URL"), workers=os.getenv("WORKERS")
+            urban_api_url=os.getenv("URBAN_API_URL"),
+            workers=os.getenv("WORKERS"),
         )
     except Exception as e:
         raise Exception(
-            "Failed to initialize app configuration. Error: {}".format(repr(e))
+            f"Failed to initialize app configuration. Error: {repr(e)}"
         ) from e

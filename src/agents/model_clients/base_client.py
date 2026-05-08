@@ -1,4 +1,5 @@
-from ollama import AsyncClient as AsyncOllamaClient, ChatResponse
+from ollama import AsyncClient as AsyncOllamaClient
+from ollama import ChatResponse
 
 
 class BaseLlmClient:
@@ -25,8 +26,5 @@ class BaseLlmClient:
             part: ChatResponse
             yield {
                 "type": "chunk",
-                "content": {
-                    "text": part.message.content,
-                    "done": part.done
-                }
+                "content": {"text": part.message.content, "done": part.done},
             }

@@ -1,5 +1,7 @@
-from .restriction_entities import GeometryToolCallResult
-from .restriction_plan import (
+from src.agents.services.service_entities.restriction_entities import (
+    GeometryToolCallResult,
+)
+from src.agents.services.service_entities.restriction_plan import (
     BufferRule,
     EntityRef,
     RestrictionPlan,

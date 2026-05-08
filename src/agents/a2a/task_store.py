@@ -5,7 +5,6 @@ from typing import Any
 
 from python_a2a.models.task import Task, TaskState, TaskStatus
 
-
 A2ATaskData = dict[str, Any]
 A2AArtifactData = dict[str, Any]
 A2AMessageData = dict[str, Any]
@@ -129,7 +128,9 @@ class A2ATaskStore:
         if append:
             for existing in artifacts:
                 if existing.get("artifactId") == artifact_id:
-                    existing.setdefault("parts", []).extend(copy.deepcopy(artifact.get("parts", [])))
+                    existing.setdefault("parts", []).extend(
+                        copy.deepcopy(artifact.get("parts", []))
+                    )
                     return copy.deepcopy(existing)
 
         artifacts.append(copy.deepcopy(artifact))

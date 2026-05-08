@@ -1,4 +1,5 @@
-from typing import Annotated, AsyncIterable
+from collections.abc import AsyncIterable
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.sse import EventSourceResponse

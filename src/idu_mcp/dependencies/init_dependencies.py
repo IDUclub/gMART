@@ -1,7 +1,10 @@
 from src.idu_mcp.common.config.mcp_config_loader import load_config
+from src.idu_mcp.dependencies.tool_deps.base_tool_dep import BaseDep
+from src.idu_mcp.dependencies.tool_deps.server_deps import ServerDeps
+from src.idu_mcp.dependencies.tool_deps.urban_api_tools_deps import (
+    UrbanApiToolsDeps,
+)
 from src.idu_mcp.tools_services.geometry_tools import GeometryTools
-
-from .tool_deps import BaseDep, ServerDeps, UrbanApiToolsDeps
 
 
 def init_dependencies() -> dict[str, BaseDep]:

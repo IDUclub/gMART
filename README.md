@@ -5,3 +5,7 @@
 ---
 
 ## Project structure
+
+## Documentation
+
+- [Frontend integration guide](docs/frontend-service.md)

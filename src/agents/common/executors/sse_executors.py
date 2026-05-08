@@ -58,7 +58,7 @@ async def stream_with_error_handling(
             logger.info("Trying to re-run pipeline")
             yield {
                 "type": "status",
-                "message": "При извлечении запроса произошла ошибка. Производится попытка перезапуска запроса."
+                "message": "При извлечении запроса произошла ошибка. Производится попытка перезапуска запроса.",
             }
             try:
                 yield {"type": "status"}
@@ -70,14 +70,14 @@ async def stream_with_error_handling(
 
                     yield item
             except Exception as retry_exc:
-                logger.error("Unhandled Exception. Couldn't re-un pipeline on retry, needs manual check.")
+                logger.error(
+                    "Unhandled Exception. Couldn't re-un pipeline on retry, needs manual check."
+                )
                 logger.exception(retry_exc)
                 exc = retry_exc
 
-        tb_str = "".join(
-            traceback.format_exception(type(exc), exc, exc.__traceback__)
-        )
-        #TODO pass all history of generated prompts and messages.
+        tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        # TODO pass all history of generated prompts and messages.
         messages = [
             {
                 "role": "system",
@@ -89,7 +89,7 @@ async def stream_with_error_handling(
                 Объясни пользователю что случилось простым языком, не вдаваясь в технические детали.
                 Если проблема может быть исправлена более точным запросом, укажи на это и скажи, как его можно
                 переформулировать.
-                """
+                """,
             },
         ]
         async for chunk in llm_client.execute_request(model, messages):
