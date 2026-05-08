@@ -24,7 +24,9 @@ class RestrictionToolExecutor:
         if isinstance(value, BaseModel):
             return value.model_dump(mode="json")
         if isinstance(value, dict):
-            return {k: RestrictionToolExecutor.to_plain_data(v) for k, v in value.items()}
+            return {
+                k: RestrictionToolExecutor.to_plain_data(v) for k, v in value.items()
+            }
         if isinstance(value, list):
             return [RestrictionToolExecutor.to_plain_data(v) for v in value]
         return value
@@ -44,26 +46,64 @@ class RestrictionToolExecutor:
         mcp_client: IduMcpClient,
         plan: RestrictionPlan,
         scenario_id: int,
-    ) -> dict[str, dict]:
-        entities_by_type = self._entities_by_type([*plan.source_entities, *plan.target_entities])
+    ) -> GeometryToolCallResult:
+        entities_by_type = self._entities_by_type(
+            [*plan.source_entities, *plan.target_entities]
+        )
         layers: dict[str, dict] = {}
+        tool_calls: list[dict] = []
         meta = {"scenario_id": scenario_id}
 
-        await self._update_layers(
-            layers,
-            mcp_client,
-            "GetServices",
-            {"services_names": entities_by_type["service"]},
-            meta,
+        self._append_if_present(
+            tool_calls,
+            await self._update_layers(
+                layers,
+                mcp_client,
+                "GetServices",
+                {"services_names": entities_by_type["service"]},
+                meta,
+            ),
         )
-        await self._update_layers(
-            layers,
-            mcp_client,
-            "GetPhysicalObjects",
-            {"physical_objects_names": entities_by_type["physical_object"]},
-            meta,
+        self._append_if_present(
+            tool_calls,
+            await self._update_layers(
+                layers,
+                mcp_client,
+                "GetPhysicalObjects",
+                {"physical_objects_names": entities_by_type["physical_object"]},
+                meta,
+            ),
         )
-        return layers
+        return GeometryToolCallResult(
+            tool_result=layers,
+            tool_calls=tool_calls,
+            messages=[
+                {
+                    "role": "system",
+                    "content": plan.model_dump_json(ensure_ascii=False),
+                }
+            ],
+        )
+
+    async def _update_layers(
+        self,
+        layers: dict[str, dict],
+        mcp_client: IduMcpClient,
+        tool_name: str,
+        arguments: dict,
+        meta: dict,
+    ) -> dict | None:
+        if not next(iter(arguments.values())):
+            return None
+        layers.update(
+            await self.execute_named_tool(mcp_client, tool_name, arguments, meta)
+        )
+        return {"function": {"name": tool_name, "arguments": arguments}}
+
+    @staticmethod
+    def _append_if_present(items: list, item) -> None:
+        if item is not None:
+            items.append(item)
 
     async def run_buffer_plan(
         self,
@@ -93,7 +133,11 @@ class RestrictionToolExecutor:
     ) -> GeometryToolCallResult:
         layers = {**base_layers, **buffers}
         arguments = self._build_restriction_arguments(plan, list(layers), list(buffers))
-        if not arguments["generators"] or not arguments["objects"] or not arguments["restrictions"]:
+        if (
+            not arguments["generators"]
+            or not arguments["objects"]
+            or not arguments["restrictions"]
+        ):
             raise ValueError("No valid restriction relations found in the plan")
 
         tool_result = await self.execute_named_tool(
@@ -103,18 +147,6 @@ class RestrictionToolExecutor:
             meta={"layers": layers},
         )
         return self._tool_result("CreateRestrictions", arguments, tool_result, plan)
-
-    async def _update_layers(
-        self,
-        layers: dict[str, dict],
-        mcp_client: IduMcpClient,
-        tool_name: str,
-        arguments: dict,
-        meta: dict,
-    ) -> None:
-        if not next(iter(arguments.values())):
-            return
-        layers.update(await self.execute_named_tool(mcp_client, tool_name, arguments, meta))
 
     @staticmethod
     def _entities_by_type(entities: list[EntityRef]) -> dict[str, list[str]]:
@@ -152,7 +184,9 @@ class RestrictionToolExecutor:
 
         for rule in plan.restriction_rules:
             generator_key = self._resolve_layer_key(buffer_keys, rule.source_name)
-            generator_key = generator_key or self._resolve_layer_key(layer_keys, rule.source_name)
+            generator_key = generator_key or self._resolve_layer_key(
+                layer_keys, rule.source_name
+            )
             target_keys = self._resolve_target_keys(layer_keys, rule.target_names)
             if not generator_key or not target_keys:
                 continue
@@ -172,7 +206,9 @@ class RestrictionToolExecutor:
             "restrictions": restrictions,
         }
 
-    def _resolve_target_keys(self, layer_keys: list[str], target_names: list[str]) -> list[str]:
+    def _resolve_target_keys(
+        self, layer_keys: list[str], target_names: list[str]
+    ) -> list[str]:
         return [
             target_key
             for target_name in target_names
@@ -199,5 +235,10 @@ class RestrictionToolExecutor:
         return GeometryToolCallResult(
             tool_result=tool_result,
             tool_calls=[{"function": {"name": tool_name, "arguments": arguments}}],
-            messages=[{"role": "system", "content": plan.model_dump_json(ensure_ascii=False)}],
+            messages=[
+                {
+                    "role": "system",
+                    "content": plan.model_dump_json(ensure_ascii=False),
+                }
+            ],
         )

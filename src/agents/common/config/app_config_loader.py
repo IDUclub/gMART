@@ -3,7 +3,7 @@ import os
 from dotenv import find_dotenv, load_dotenv
 from loguru import logger
 
-from .app_config import AgentsAppConfig
+from src.agents.common.config.app_config import AgentsAppConfig
 
 ENV_EXTENSIONS = [
     "agents",
@@ -34,13 +34,15 @@ def load_config() -> AgentsAppConfig:
         if try_load(extension):
             return AgentsAppConfig(
                 ollama_api_url=os.getenv("OLLAMA_API_URL"),
-                idu_mcp_url=os.getenv("IDU_MCP_SERVER")
+                idu_mcp_url=os.getenv("IDU_MCP_SERVER"),
+                chat_storage_url=os.getenv("CHAT_STORAGE"),
             )
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
     try:
         return AgentsAppConfig(
             ollama_api_url=os.getenv("OLLAMA_API_URL"),
-            idu_mcp_url=os.getenv("IDU_MCP_SERVER")
+            idu_mcp_url=os.getenv("IDU_MCP_SERVER"),
+            chat_storage_url=os.getenv("CHAT_STORAGE"),
         )
     except ValueError:
         raise

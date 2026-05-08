@@ -21,11 +21,11 @@ DECFILE
 .env.agents.prod
 .env.agents.production
 
-# UV
-*.lock
-
 # Data Files
 /data
 
 # Logs
 *.log
+
+# mongo
+/mongo

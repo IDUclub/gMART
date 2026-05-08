@@ -11,13 +11,15 @@ ENV PYTHONUNBUFFERED=1
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-COPY pyproject.toml ./
-RUN uv pip install --system .
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev
 
 COPY src/agents ./src/agents
 
 ENV FASTAPI_WORKERS=4
 ENV PORT=80
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 80
 

@@ -11,13 +11,14 @@ ENV PYTHONUNBUFFERED=1
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-COPY pyproject.toml ./
-RUN uv pip install --system .
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev
 
 COPY src/idu_mcp ./src/idu_mcp
 
 ENV FASTMCP_WORKERS=1
 ENV PORT=8000
+ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 

@@ -4,6 +4,7 @@ import traceback
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
+from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -50,11 +51,15 @@ class ExceptionHandlerMiddleware(
         try:
             request_info["body"] = await request.json()
             return request_info
-        except:
+        except Exception as e:
+            logger.error("Faced error during request_info parsing")
+            logger.exception(e)
             try:
                 request_info["body"] = str(await request.body())
                 return request_info
-            except:
+            except Exception as e:
+                logger.error("Couldn't pars request body as str")
+                logger.exception(e)
                 request_info["body"] = "Could not read request body"
                 return request_info
 

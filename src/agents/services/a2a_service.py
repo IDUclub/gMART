@@ -18,8 +18,9 @@ from src.agents.common.exceptions.a2a_exceptions import (
     A2ATaskNotFoundError,
 )
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
-from src.agents.services.restriction_parser_service import RestrictionParserService
-
+from src.agents.services.restriction_parser_service import (
+    RestrictionParserService,
+)
 
 A2AData = dict[str, Any]
 A2AResponse = A2AData | list[A2AData]
@@ -35,7 +36,11 @@ class A2AService:
         executor (RestrictionAgentExecutor): Restriction agent executor.
     """
 
-    STREAMING_METHODS = {"SendStreamingMessage", "message/stream", "tasks/sendSubscribe"}
+    STREAMING_METHODS = {
+        "SendStreamingMessage",
+        "message/stream",
+        "tasks/sendSubscribe",
+    }
 
     def __init__(
         self,
@@ -75,7 +80,10 @@ class A2AService:
             bool: True if request method is streaming.
         """
 
-        return isinstance(payload, dict) and payload.get("method") in self.STREAMING_METHODS
+        return (
+            isinstance(payload, dict)
+            and payload.get("method") in self.STREAMING_METHODS
+        )
 
     async def handle_json_rpc(
         self,
@@ -93,9 +101,11 @@ class A2AService:
 
         if isinstance(payload, list):
             return [
-                await self._handle_single_json_rpc(item, mcp_client)
-                if isinstance(item, dict)
-                else self._error(None, A2AInvalidRequestError())
+                (
+                    await self._handle_single_json_rpc(item, mcp_client)
+                    if isinstance(item, dict)
+                    else self._error(None, A2AInvalidRequestError())
+                )
                 for item in payload
             ]
         if not isinstance(payload, dict):
@@ -192,9 +202,14 @@ class A2AService:
             return self.task_store.list_tasks(include_artifacts=include_artifacts)
         if method in {"CancelTask", "tasks/cancel"}:
             return self._cancel_task(params)
-        if method in {"GetExtendedAgentCard", "agent/getAuthenticatedExtendedCard"}:
+        if method in {
+            "GetExtendedAgentCard",
+            "agent/getAuthenticatedExtendedCard",
+        }:
             base_url = str(params.get("baseUrl", "")).rstrip("/")
-            return self.get_agent_card(base_url) if base_url else self.get_agent_card("")
+            return (
+                self.get_agent_card(base_url) if base_url else self.get_agent_card("")
+            )
         raise A2AMethodNotFoundError(method)
 
     def _get_task(self, params: A2AData) -> A2AData:

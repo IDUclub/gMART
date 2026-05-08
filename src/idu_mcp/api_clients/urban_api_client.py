@@ -1,14 +1,11 @@
 import asyncio
 
-from watchfiles import awatch
-
 from src.idu_mcp.common.api_handlers.json_api_handler import JsonApiHandler
 
 LIVING_BUILDINGS_ID = 4
 
 
 class UrbanApiClient:
-
     def __init__(self, json_handler: JsonApiHandler) -> None:
         self.json_handler = json_handler
         self.__name__ = "UrbanAPIClient"
@@ -57,7 +54,7 @@ class UrbanApiClient:
             dict[str, int]: dictionary with service name as key and id as value
         """
 
-        return await self.get_name_id(f"v1/service_types", names, token)
+        return await self.get_name_id("v1/service_types", names, token)
 
     async def get_physical_objects_name_id(
         self, names: list[str], token: str
@@ -73,7 +70,7 @@ class UrbanApiClient:
             dict[str, int]: dictionary with physical objects name as key and id as value
         """
 
-        return await self.get_name_id(f"v1/physical_object_types", names, token)
+        return await self.get_name_id("v1/physical_object_types", names, token)
 
     async def get_services(
         self, scenario_id: int, services: list[int], token: str
@@ -117,7 +114,9 @@ class UrbanApiClient:
         ]
         return await asyncio.gather(*tasks)
 
-    async def get_available_scenario_services(self, scenario_id: int, token: str) -> list[str]:
+    async def get_available_scenario_services(
+        self, scenario_id: int, token: str
+    ) -> list[str]:
         """
         Function returns list of available service types names.
         Args:
@@ -128,12 +127,13 @@ class UrbanApiClient:
         """
 
         service_types = await self.json_handler.get(
-            f"/v1/scenarios/{scenario_id}/service_types",
-            auth_token=token
+            f"/v1/scenarios/{scenario_id}/service_types", auth_token=token
         )
         return [service_type["name"] for service_type in service_types]
 
-    async def get_available_physical_objects(self, scenario_id: int, token: str) -> list[str]:
+    async def get_available_physical_objects(
+        self, scenario_id: int, token: str
+    ) -> list[str]:
         """
         Function returns list of available physical objects types names.
         Args:
@@ -145,6 +145,9 @@ class UrbanApiClient:
 
         physical_objects_types = await self.json_handler.get(
             f"v1/scenarios/{scenario_id}/physical_object_types",
-            auth_token=token
+            auth_token=token,
         )
-        return [physical_object_type["name"] for physical_object_type in physical_objects_types]
+        return [
+            physical_object_type["name"]
+            for physical_object_type in physical_objects_types
+        ]

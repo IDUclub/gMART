@@ -9,8 +9,9 @@ from python_a2a.models.task import TaskState
 
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
-from src.agents.services.restriction_parser_service import RestrictionParserService
-
+from src.agents.services.restriction_parser_service import (
+    RestrictionParserService,
+)
 
 A2AData = dict[str, Any]
 A2AEventData = dict[str, Any]
@@ -127,7 +128,9 @@ class RestrictionAgentExecutor:
         yield self._status_update(task_id, context_id, status, final=False)
 
         try:
-            async for item in self.restriction_service.run_restriction_execution_pipline(
+            async for (
+                item
+            ) in self.restriction_service.run_restriction_execution_pipline(
                 mcp_client=mcp_client,
                 temperature=execution["temperature"],
                 model=execution["model"],
@@ -138,9 +141,11 @@ class RestrictionAgentExecutor:
                 if event is None:
                     continue
                 if "artifactUpdate" in event:
-                    emitted_text = emitted_text or event["artifactUpdate"]["artifact"].get(
-                        "artifactId"
-                    ) == "restriction-agent-text"
+                    emitted_text = (
+                        emitted_text
+                        or event["artifactUpdate"]["artifact"].get("artifactId")
+                        == "restriction-agent-text"
+                    )
                 yield event
                 if item.get("type") == "error":
                     return
@@ -246,7 +251,9 @@ class RestrictionAgentExecutor:
         request_data = self._extract_request_data(params, message)
         scenario_id = request_data.get("scenario_id")
         if scenario_id is None:
-            raise ValueError("scenario_id is required in params.metadata or a data part")
+            raise ValueError(
+                "scenario_id is required in params.metadata or a data part"
+            )
 
         user_query = request_data.get("request") or user_query
         user_query = self._hide_inline_ids(str(user_query))
@@ -269,7 +276,9 @@ class RestrictionAgentExecutor:
             "message": message,
             "metadata": request_data,
             "model": request_data.get("model") or self.DEFAULT_MODEL,
-            "temperature": float(request_data.get("temperature", self.DEFAULT_TEMPERATURE)),
+            "temperature": float(
+                request_data.get("temperature", self.DEFAULT_TEMPERATURE)
+            ),
             "scenario_id": int(scenario_id),
             "user_query": user_query,
         }
@@ -321,7 +330,14 @@ class RestrictionAgentExecutor:
             if isinstance(part_data, dict):
                 data.update(part_data)
 
-        for key in ("scenario_id", "scenarioId", "model", "temperature", "request", "userQuery"):
+        for key in (
+            "scenario_id",
+            "scenarioId",
+            "model",
+            "temperature",
+            "request",
+            "userQuery",
+        ):
             if key in params:
                 data[key] = params[key]
 
@@ -361,7 +377,12 @@ class RestrictionAgentExecutor:
         return {
             "role": "user",
             "parts": [
-                {"type": "text", "text": RestrictionAgentExecutor._hide_inline_ids(str(part["text"]))}
+                {
+                    "type": "text",
+                    "text": RestrictionAgentExecutor._hide_inline_ids(
+                        str(part["text"])
+                    ),
+                }
                 for part in message.get("parts", [])
                 if isinstance(part, dict) and part.get("text")
             ],
@@ -486,7 +507,9 @@ class RestrictionAgentExecutor:
             A2AData: GeoJSON artifact.
         """
 
-        safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "-", layer_name).strip("-").lower() or "layer"
+        safe_name = (
+            re.sub(r"[^a-zA-Z0-9_-]+", "-", layer_name).strip("-").lower() or "layer"
+        )
         return {
             "artifactId": f"geojson-{safe_name}",
             "name": layer_name,

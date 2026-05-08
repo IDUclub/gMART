@@ -7,8 +7,8 @@ aggents_dev_runner.py
 Makefile
 .pre-commit-config.yaml
 README.md
-poetry.lock
-uv.lock
 .env.agents.development
 .env.idu_mcp.development
+.env.agents.
+**/dev
 /data

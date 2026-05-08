@@ -72,7 +72,7 @@ class JsonApiHandler:
         headers: dict | None = None,
         params: dict | None = None,
         session: aiohttp.ClientSession | None = None,
-    ) -> dict | list:
+    ) -> dict | list | None:
         """Function to get data from api
         Args:
             endpoint (str): Endpoint url
@@ -81,7 +81,7 @@ class JsonApiHandler:
             params (dict | None): Query parameters
             session (aiohttp.ClientSession | None): Session to use
         Returns:
-            dict | list: Response data as python object
+            dict | list | None: Response data as python object
         """
 
         if auth_token:
@@ -100,6 +100,62 @@ class JsonApiHandler:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         params = await self._check_request_params(params)
         async with session.get(url=url, headers=headers, params=params) as response:
+            result = await self._check_response_status(response)
+            if isinstance(result, (list, dict)):
+                return result
+            if not result:
+                if isinstance(result, list):
+                    return result
+                elif isinstance(result, dict):
+                    return result
+                return await self.get(
+                    endpoint=endpoint,
+                    headers=headers,
+                    params=params,
+                    session=session,
+                )
+            return result
+
+    async def post(
+        self,
+        endpoint: str,
+        auth_token: str | None = None,
+        headers: dict | None = None,
+        params: dict | None = None,
+        data: dict | None = None,
+        session: aiohttp.ClientSession | None = None,
+    ) -> dict | list | None:
+        """Function to post data to api.
+        Args:
+            endpoint (str): Endpoint url.
+            auth_token (str | None): Authorization token.defaults to None.
+            headers (dict | None): Headers.
+            params (dict | None): Query parameters.
+            data (dict | None): Data to post to API.
+            session (aiohttp.ClientSession | None): Session to use.
+        Returns:
+            dict | list | None: Response data as python object.
+        """
+
+        if auth_token:
+            if headers is None:
+                headers = {"Authorization": f"Bearer {auth_token}"}
+            else:
+                headers.update({"Authorization": auth_token})
+        if not session:
+            async with aiohttp.ClientSession() as session:
+                return await self.post(
+                    endpoint=endpoint,
+                    headers=headers,
+                    params=params,
+                    data=data,
+                    session=session,
+                )
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        params = await self._check_request_params(params)
+        async with session.post(
+            url=url, headers=headers, params=params, json=data
+        ) as response:
             result = await self._check_response_status(response)
             if isinstance(result, (list, dict)):
                 return result
