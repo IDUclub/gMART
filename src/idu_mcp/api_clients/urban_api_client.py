@@ -1,14 +1,11 @@
 import asyncio
 
-from watchfiles import awatch
-
 from src.idu_mcp.common.api_handlers.json_api_handler import JsonApiHandler
 
 LIVING_BUILDINGS_ID = 4
 
 
 class UrbanApiClient:
-
     def __init__(self, json_handler: JsonApiHandler) -> None:
         self.json_handler = json_handler
         self.__name__ = "UrbanAPIClient"
@@ -57,7 +54,7 @@ class UrbanApiClient:
             dict[str, int]: dictionary with service name as key and id as value
         """
 
-        return await self.get_name_id(f"v1/service_types", names, token)
+        return await self.get_name_id("v1/service_types", names, token)
 
     async def get_physical_objects_name_id(
         self, names: list[str], token: str
@@ -73,7 +70,7 @@ class UrbanApiClient:
             dict[str, int]: dictionary with physical objects name as key and id as value
         """
 
-        return await self.get_name_id(f"v1/physical_object_types", names, token)
+        return await self.get_name_id("v1/physical_object_types", names, token)
 
     async def get_services(
         self, scenario_id: int, services: list[int], token: str
@@ -147,7 +144,8 @@ class UrbanApiClient:
         """
 
         physical_objects_types = await self.json_handler.get(
-            f"v1/scenarios/{scenario_id}/physical_object_types", auth_token=token
+            f"v1/scenarios/{scenario_id}/physical_object_types",
+            auth_token=token,
         )
         return [
             physical_object_type["name"]

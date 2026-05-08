@@ -2,7 +2,6 @@ import aiohttp
 
 
 class JsonApiHandler:
-
     def __init__(
         self,
         base_url: str,
@@ -43,7 +42,10 @@ class JsonApiHandler:
                 response_info = await response.text()
             return response_info
         else:
-            return {"status": response.status, "response_info": await response.text()}
+            return {
+                "status": response.status,
+                "response_info": await response.text(),
+            }
 
     @staticmethod
     async def _check_request_params(
@@ -95,7 +97,7 @@ class JsonApiHandler:
                     params=params,
                     session=session,
                 )
-        url = f'{self.base_url}/{endpoint.lstrip("/")}'
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
         params = await self._check_request_params(params)
         async with session.get(url=url, headers=headers, params=params) as response:
             result = await self._check_response_status(response)
@@ -149,7 +151,7 @@ class JsonApiHandler:
                     data=data,
                     session=session,
                 )
-        url = f'{self.base_url}/{endpoint.lstrip("/")}'
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
         params = await self._check_request_params(params)
         async with session.post(
             url=url, headers=headers, params=params, json=data

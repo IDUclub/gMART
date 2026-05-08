@@ -1,13 +1,12 @@
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from ollama import ChatResponse
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
-from src.agents.model_clients.base_client import BaseLlmClient
-
-from .base_llm_service import BaseLlmService
+from src.agents.services.base_llm_service import BaseLlmService
 
 
 class SimpleLlmService(BaseLlmService):

@@ -3,7 +3,7 @@ import os
 from dotenv import find_dotenv, load_dotenv
 from loguru import logger
 
-from .app_config import AgentsAppConfig
+from src.agents.common.config.app_config import AgentsAppConfig
 
 ENV_EXTENSIONS = [
     "agents",

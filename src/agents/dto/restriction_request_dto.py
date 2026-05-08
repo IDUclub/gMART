@@ -1,6 +1,6 @@
 from pydantic import Field
 
-from .llm_request_dto import SimpleRequestDTO
+from src.agents.dto.llm_request_dto import SimpleRequestDTO
 
 
 class RestrictionRequestDTO(SimpleRequestDTO):

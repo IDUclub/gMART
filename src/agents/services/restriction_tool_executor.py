@@ -78,7 +78,10 @@ class RestrictionToolExecutor:
             tool_result=layers,
             tool_calls=tool_calls,
             messages=[
-                {"role": "system", "content": plan.model_dump_json(ensure_ascii=False)}
+                {
+                    "role": "system",
+                    "content": plan.model_dump_json(ensure_ascii=False),
+                }
             ],
         )
 
@@ -233,6 +236,9 @@ class RestrictionToolExecutor:
             tool_result=tool_result,
             tool_calls=[{"function": {"name": tool_name, "arguments": arguments}}],
             messages=[
-                {"role": "system", "content": plan.model_dump_json(ensure_ascii=False)}
+                {
+                    "role": "system",
+                    "content": plan.model_dump_json(ensure_ascii=False),
+                }
             ],
         )

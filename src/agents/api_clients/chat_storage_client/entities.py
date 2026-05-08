@@ -6,7 +6,6 @@ from enum import StrEnum
 
 
 class BaseChatStorageStringEnum(StrEnum):
-
     @classmethod
     def parse(cls, value: str):
         """

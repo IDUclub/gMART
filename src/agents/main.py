@@ -8,7 +8,9 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from src.agents.__version__ import APP_DESCRIPTION, APP_TITLE, APP_VERSION
 from src.agents.common.logging.log_config import config_logger
-from src.agents.common.middlewares.exception_handler import ExceptionHandlerMiddleware
+from src.agents.common.middlewares.exception_handler import (
+    ExceptionHandlerMiddleware,
+)
 from src.agents.dependencies.dependencies import app_deps
 from src.agents.routers.a2a_controller import a2a_router
 from src.agents.routers.restriction_parser_controller import restriction_router
@@ -25,7 +27,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    version=APP_VERSION, title=APP_TITLE, description=APP_DESCRIPTION, lifespan=lifespan
+    version=APP_VERSION,
+    title=APP_TITLE,
+    description=APP_DESCRIPTION,
+    lifespan=lifespan,
 )
 
 

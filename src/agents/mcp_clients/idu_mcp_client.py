@@ -1,12 +1,11 @@
 from fastmcp import Client as McpClient
 from mcp import GetPromptResult
 
-from .base_mcp_client import BaseMcpClient
+from src.agents.mcp_clients.base_mcp_client import BaseMcpClient
 
 
 # TODO add prompts cache
 class IduMcpClient(BaseMcpClient):
-
     def __init__(self, mcp_client: McpClient):
         super().__init__(mcp_client)
 

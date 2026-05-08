@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastmcp import Context, FastMCP
 from fastmcp.dependencies import Depends
-from fastmcp.server.dependencies import CurrentContext, get_access_token
+from fastmcp.server.dependencies import CurrentContext
 from geojson_pydantic import FeatureCollection
 
 from src.idu_mcp.common.auth.token_verifier import AnyTokenVerifier
@@ -27,7 +27,10 @@ tools_tags = {"data", "urban_api"}
     
     Структура ответа: dict[str (название сервиса), FeatureCollection (слой с сервисами в формате GeoJSON)].""",
     tags=tools_tags,
-    annotations={"title": "GET physical objects for scenario", "readOnlyHint": True},
+    annotations={
+        "title": "GET physical objects for scenario",
+        "readOnlyHint": True,
+    },
     meta={"author": "LeonDeTur"},
 )
 async def get_services_by_name(
@@ -68,7 +71,10 @@ async def get_services_by_name(
     
     Структуры ответа: dict[str (название сервиса), FeatureCollection (слой с физическими объектами в формате geojson)]""",
     tags=tools_tags,
-    annotations={"title": "GET physical objects for scenario", "readOnlyHint": True},
+    annotations={
+        "title": "GET physical objects for scenario",
+        "readOnlyHint": True,
+    },
     meta={"author": "LeonDeTur"},
 )
 async def get_physical_objects_by_name(
@@ -92,5 +98,8 @@ async def get_physical_objects_by_name(
 
     scenario_id = int(ctx.request_context.meta.scenario_id)
     return await urban_api_tools.get_entity_by_names(
-        scenario_id, physical_objects_names, ObjectTypeEnum.PHYSICAL_OBJECT, token
+        scenario_id,
+        physical_objects_names,
+        ObjectTypeEnum.PHYSICAL_OBJECT,
+        token,
     )

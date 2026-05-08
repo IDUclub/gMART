@@ -18,7 +18,9 @@ from src.agents.common.exceptions.a2a_exceptions import (
     A2ATaskNotFoundError,
 )
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
-from src.agents.services.restriction_parser_service import RestrictionParserService
+from src.agents.services.restriction_parser_service import (
+    RestrictionParserService,
+)
 
 A2AData = dict[str, Any]
 A2AResponse = A2AData | list[A2AData]
@@ -200,7 +202,10 @@ class A2AService:
             return self.task_store.list_tasks(include_artifacts=include_artifacts)
         if method in {"CancelTask", "tasks/cancel"}:
             return self._cancel_task(params)
-        if method in {"GetExtendedAgentCard", "agent/getAuthenticatedExtendedCard"}:
+        if method in {
+            "GetExtendedAgentCard",
+            "agent/getAuthenticatedExtendedCard",
+        }:
             base_url = str(params.get("baseUrl", "")).rstrip("/")
             return (
                 self.get_agent_card(base_url) if base_url else self.get_agent_card("")

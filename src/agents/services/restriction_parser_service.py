@@ -5,7 +5,6 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from ollama import AsyncClient as AsyncOllamaClient
 from ollama import ChatResponse
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
@@ -24,7 +23,9 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.restriction_catalog import RestrictionPlanBuilder
 from src.agents.services.restriction_context import RestrictionContextBuilder
-from src.agents.services.restriction_tool_executor import RestrictionToolExecutor
+from src.agents.services.restriction_tool_executor import (
+    RestrictionToolExecutor,
+)
 from src.agents.services.service_entities.restriction_plan import (
     RestrictionPlan,
     RestrictionTaskMode,
@@ -139,7 +140,7 @@ class RestrictionParserService(BaseLlmService):
 
         token = mcp_client.mcp_client.transport.auth.token.get_secret_value()
         if not chat_id:
-            logger.info(f"No chat id provided in request, creating a new chat.")
+            logger.info("No chat id provided in request, creating a new chat.")
             chat_id, title = await self.create_chat(
                 token,
                 model,
@@ -165,7 +166,8 @@ class RestrictionParserService(BaseLlmService):
                 "context_preparation", "Нужно уточнение параметров запроса."
             )
             yield self._chunk(
-                plan.clarification_question or "Уточните параметры запроса.", done=True
+                plan.clarification_question or "Уточните параметры запроса.",
+                done=True,
             )
             return
 
@@ -177,7 +179,8 @@ class RestrictionParserService(BaseLlmService):
         yield self._chunk("\n\n", done=False)
 
         yield self._status(
-            "data_retrievement", "Получаю необходимые слои по утвержденному плану"
+            "data_retrievement",
+            "Получаю необходимые слои по утвержденному плану",
         )
         layers_result = await self.tool_executor.retrieve_layers_for_plan(
             mcp_client,
@@ -369,11 +372,12 @@ class RestrictionParserService(BaseLlmService):
         user_query: str,
         scenario_id: int,
     ) -> RestrictionPlan:
-        services_catalog, physical_objects_catalog = (
-            await self.plan_builder.get_entity_catalogs(
-                mcp_client,
-                scenario_id,
-            )
+        (
+            services_catalog,
+            physical_objects_catalog,
+        ) = await self.plan_builder.get_entity_catalogs(
+            mcp_client,
+            scenario_id,
         )
         return await self.plan_builder.build_plan(
             model,

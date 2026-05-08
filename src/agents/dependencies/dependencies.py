@@ -5,7 +5,9 @@ from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.init_dependencies import init_dependencies
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.a2a_service import A2AService
-from src.agents.services.restriction_parser_service import RestrictionParserService
+from src.agents.services.restriction_parser_service import (
+    RestrictionParserService,
+)
 from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.system_service import SystemService
 
@@ -21,13 +23,13 @@ def get_simple_llm_service() -> SimpleLlmService:
 
     simple_llm_service: SimpleLlmService = app_deps["simple_llm_service"]
     if not isinstance(simple_llm_service, SimpleLlmService):
-        raise TypeError(
-            "Expected SimpleLlmService, got {}".format(type(simple_llm_service))
-        )
+        raise TypeError(f"Expected SimpleLlmService, got {type(simple_llm_service)}")
     return simple_llm_service
 
 
-async def get_idu_mcp_client(token: str = Depends(verify_bearer_token)) -> IduMcpClient:
+async def get_idu_mcp_client(
+    token: str = Depends(verify_bearer_token),
+) -> IduMcpClient:
     """
     Function returns IduMcpClient instance with provided authorization.
     Args:
@@ -51,7 +53,7 @@ async def get_restriction_parser_service() -> RestrictionParserService:
     ]
     if not isinstance(restriction_parser_service, RestrictionParserService):
         raise TypeError(
-            "Expected SimpleLlmService, got {}".format(type(restriction_parser_service))
+            f"Expected SimpleLlmService, got {type(restriction_parser_service)}"
         )
     return app_deps["restriction_parser_service"]
 
@@ -65,7 +67,7 @@ async def get_a2a_service() -> A2AService:
 
     a2a_service = app_deps["a2a_service"]
     if not isinstance(a2a_service, A2AService):
-        raise TypeError("Expected A2AService, got {}".format(type(a2a_service)))
+        raise TypeError(f"Expected A2AService, got {type(a2a_service)}")
     return a2a_service
 
 

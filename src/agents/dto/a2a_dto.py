@@ -112,7 +112,12 @@ class A2AJsonRpcRequestDTO(BaseModel):
     id: str | int | None = Field(default=None, examples=["check-1"])
     method: str | None = Field(
         default=None,
-        examples=["SendMessage", "SendStreamingMessage", "GetTask", "ListTasks"],
+        examples=[
+            "SendMessage",
+            "SendStreamingMessage",
+            "GetTask",
+            "ListTasks",
+        ],
         description="A2A JSON-RPC method.",
     )
     params: A2AParamsDTO = Field(

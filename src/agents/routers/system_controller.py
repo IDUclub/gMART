@@ -10,7 +10,9 @@ system_router = APIRouter(prefix="/system", tags=["system"])
 
 
 @system_router.get("/logs")
-async def get_system_logs(system_service: SystemService = Depends(get_system_service)):
+async def get_system_logs(
+    system_service: SystemService = Depends(get_system_service),
+):
     """
     Get FastAPI APP custom logs from last startup.
     """

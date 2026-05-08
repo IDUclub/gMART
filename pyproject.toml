@@ -17,7 +17,9 @@ dependencies = [
     "pandas>=3.0.2",
     "python-a2a>=0.5.10",
     "uvicorn>=0.46.0",
-    "pydantic>=2.13.3",
+    "pydantic>=2.13.4",
+    "fastmcp-docs>=1.0.0",
+    "starlette>=1.0.0",
 ]
 
 [dependency-groups]
@@ -30,3 +32,8 @@ dev = [
     "mapclassify (>=2.10.0,<3.0.0)",
     "pre-commit>=4.6.0",
 ]
+
+# docformatter
+[tool.docformatter]
+wrap-summaries = 72
+wrap-descriptions = 72

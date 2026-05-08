@@ -1,7 +1,6 @@
 from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
 from fastmcp.prompts import Message
-from fastmcp.server.dependencies import get_access_token
 from pydantic import Field
 
 from src.idu_mcp.api_clients.urban_api_client import UrbanApiClient

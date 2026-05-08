@@ -1,9 +1,12 @@
 from src.idu_mcp.api_clients.urban_api_client import UrbanApiClient
+from src.idu_mcp.dependencies.init_dependencies import init_dependencies
+from src.idu_mcp.dependencies.tool_deps.base_tool_dep import BaseDep
+from src.idu_mcp.dependencies.tool_deps.geom_tools_deps import GeomToolsDeps
+from src.idu_mcp.dependencies.tool_deps.urban_api_tools_deps import (
+    UrbanApiToolsDeps,
+)
 from src.idu_mcp.tools_services.geometry_tools import GeometryTools
 from src.idu_mcp.tools_services.urb_api_tools import UrbanApiTool
-
-from .init_dependencies import init_dependencies
-from .tool_deps import BaseDep, GeomToolsDeps, UrbanApiToolsDeps
 
 mcp_deps: dict[str, BaseDep | UrbanApiToolsDeps | GeomToolsDeps] = init_dependencies()
 

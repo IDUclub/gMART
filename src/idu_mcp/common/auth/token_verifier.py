@@ -3,7 +3,6 @@ from fastmcp.server.auth import AccessToken, TokenVerifier
 
 
 class AnyTokenVerifier(TokenVerifier):
-
     async def verify_token(self, token: str) -> AccessToken:
         if not token:
             raise AuthorizationError("Bearer token is required")

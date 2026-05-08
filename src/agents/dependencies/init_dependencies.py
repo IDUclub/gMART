@@ -11,7 +11,9 @@ from src.agents.common.config.app_config_loader import load_config
 from src.agents.common.logging.log_config import config_logger
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.a2a_service import A2AService
-from src.agents.services.restriction_parser_service import RestrictionParserService
+from src.agents.services.restriction_parser_service import (
+    RestrictionParserService,
+)
 from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.system_service import SystemService
 

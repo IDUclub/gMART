@@ -9,7 +9,9 @@ from python_a2a.models.task import TaskState
 
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
-from src.agents.services.restriction_parser_service import RestrictionParserService
+from src.agents.services.restriction_parser_service import (
+    RestrictionParserService,
+)
 
 A2AData = dict[str, Any]
 A2AEventData = dict[str, Any]

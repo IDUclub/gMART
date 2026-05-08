@@ -3,11 +3,10 @@ Module for converting data from ChatStorage service to python objects.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
 
-from sklearn.metrics import cohen_kappa_score
-
-from src.agents.api_clients.chat_storage_client.entities import MessageUploadType
+from src.agents.api_clients.chat_storage_client.entities import (
+    MessageUploadType,
+)
 
 
 @dataclass(frozen=True)

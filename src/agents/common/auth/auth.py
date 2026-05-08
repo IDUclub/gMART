@@ -29,7 +29,8 @@ async def verify_bearer_token(
 
     if not token:
         raise HTTPException(
-            status_code=400, detail="Token is missing in the authorization header"
+            status_code=400,
+            detail="Token is missing in the authorization header",
         )
 
     return token

@@ -5,7 +5,6 @@ from mcp.server.fastmcp.prompts import Prompt
 
 
 class BaseMcpClient:
-
     def __init__(self, mcp_client: MCPClient):
 
         self.mcp_client: MCPClient = mcp_client

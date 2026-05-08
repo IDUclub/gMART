@@ -1,19 +1,18 @@
 import json
 from dataclasses import asdict
 
-from api_clients.chat_storage_client.entities import RoleEnum
-from api_clients.chat_storage_client.request_models import (
-    StatusPartRequest,
-    TextPartRequest,
-    ToolCallPartRequest,
-)
-from api_clients.chat_storage_client.responses import ChatHistory
 from loguru import logger
-from ollama import AsyncClient as AsyncOllamaClient
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
+from src.agents.api_clients.chat_storage_client.entities import RoleEnum
+from src.agents.api_clients.chat_storage_client.request_models import (
+    StatusPartRequest,
+    TextPartRequest,
+    ToolCallPartRequest,
+)
+from src.agents.api_clients.chat_storage_client.responses import ChatHistory
 from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
 from src.agents.model_clients.base_client import BaseLlmClient
 

@@ -69,7 +69,13 @@ class RestrictionContextBuilder:
         objects["num"] = 1
         return json.dumps(
             objects.groupby("restriction_name", as_index=False)
-            .agg({"restriction_description": "first", "area": "sum", "num": "sum"})
+            .agg(
+                {
+                    "restriction_description": "first",
+                    "area": "sum",
+                    "num": "sum",
+                }
+            )
             .rename(
                 columns={
                     "restriction_name": "Наименование ограничения",

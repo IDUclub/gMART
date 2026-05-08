@@ -23,7 +23,6 @@ from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
 
 # TODO add https statuses handling
 class ChatStorageApiClient:
-
     def __init__(self, json_handler: JsonApiHandler) -> None:
         self.json_handler = json_handler
         self.__name__ = "ChatStorageApiClient"
@@ -74,7 +73,11 @@ class ChatStorageApiClient:
         return ChatHistory(**chat)
 
     async def create_chat(
-        self, token: str, title: str, scenario_id: int | None = None, **kwargs: Any
+        self,
+        token: str,
+        title: str,
+        scenario_id: int | None = None,
+        **kwargs: Any,
     ) -> ChatCreated:
         """
         Function creates chat with provided parameters.
@@ -87,7 +90,11 @@ class ChatStorageApiClient:
             dict[str, str]: Dict with "chat_id" and "title" data from created chat.
         """
 
-        data_to_post = {"title": title, "scenario_id": scenario_id, "meta": kwargs}
+        data_to_post = {
+            "title": title,
+            "scenario_id": scenario_id,
+            "meta": kwargs,
+        }
         chat = await self.json_handler.post(
             endpoint="/api/v1/chat_history/create_chat",
             auth_token=token,

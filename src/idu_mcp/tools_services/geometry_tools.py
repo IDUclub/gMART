@@ -4,11 +4,10 @@ import json
 import geopandas as gpd
 import pandas as pd
 
-from src.idu_mcp.tools_services.entites import BufferTypeEnum
+from src.idu_mcp.tools_services.entites.buffer_type_enum import BufferTypeEnum
 
 
 class GeometryTools:
-
     def __init__(self):
         pass
 
@@ -126,7 +125,8 @@ class GeometryTools:
             objects.sjoin(generators)
             .reset_index(drop=False)
             .dissolve(
-                "index", aggfunc={"name_left": "first", "name_right": lambda x: set(x)}
+                "index",
+                aggfunc={"name_left": "first", "name_right": lambda x: set(x)},
             )
         )
         generators = generators.to_crs(generators.estimate_utm_crs())
