@@ -433,6 +433,7 @@ class RestrictionParserService(BaseLlmService):
             *(history or []),
             {"role": "user", "content": user_query},
         ]
+        response_buffer: list[str] = []
         async for part in await self.llm_client.chat(
             model,
             messages,
@@ -441,7 +442,9 @@ class RestrictionParserService(BaseLlmService):
         ):
             part: ChatResponse
             if part.message.content:
+                response_buffer.append(part.message.content)
                 yield self._chunk(part.message.content, done=False)
+        logger.debug(f"LLM plan explanation [{model}]: {''.join(response_buffer)}")
 
     async def generate_final_response(
         self,
@@ -466,6 +469,7 @@ class RestrictionParserService(BaseLlmService):
             *(history or []),
             {"role": "user", "content": user_query},
         ]
+        response_buffer: list[str] = []
         async for part in await self.llm_client.chat(
             model,
             messages,
@@ -473,7 +477,10 @@ class RestrictionParserService(BaseLlmService):
             stream=True,
         ):
             part: ChatResponse
+            if part.message.content:
+                response_buffer.append(part.message.content)
             yield self._chunk(part.message.content or "", done=part.done)
+        logger.debug(f"LLM final response [{model}]: {''.join(response_buffer)}")
 
     @staticmethod
     def _chat_created_event(chat_id: str, chat_title: str) -> dict:

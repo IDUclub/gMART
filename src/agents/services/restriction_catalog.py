@@ -194,10 +194,10 @@ class RestrictionPlanBuilder:
             options={"temperature": 0},
             messages=messages,
         )
+        content = response["message"]["content"]
+        logger.debug(f"LLM plan response [{model}]: {content}")
         try:
-            return RestrictionPlan.model_validate_json(
-                strip_json_fence(response["message"]["content"])
-            )
+            return RestrictionPlan.model_validate_json(strip_json_fence(content))
         except (ValidationError, json.JSONDecodeError) as e:
             logger.exception(e)
             raise ValueError("Model returned invalid restriction plan") from e
@@ -256,7 +256,7 @@ class RestrictionPlanBuilder:
             ],
             "confidence": 0.0,
             "clarification_question": None,
-            "original": user_query,
+            "original": "<запрос пользователя>",
         }
         return f"""
         Сформируй детерминированный план выполнения GIS-запроса.
