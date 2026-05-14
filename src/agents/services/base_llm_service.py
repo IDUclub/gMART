@@ -252,3 +252,44 @@ class BaseLlmService(BaseLlmClient):
         }
         logger.info(f"Chat with {json.dumps(data_to_log, indent=4)}")
         return chat_info
+
+    @staticmethod
+    def build_llm_history(
+        messages: list[dict],
+        max_messages: int = 10,
+    ) -> list[dict]:
+        """
+        Convert chat storage messages to a compact Ollama-compatible list.
+        Only text content is extracted; status and tool-call parts are skipped
+        so that internal pipeline details don't pollute the LLM context.
+
+        Args:
+            messages: Raw message dicts from ChatHistory.messages.
+            max_messages: Maximum number of messages to keep (most recent).
+        Returns:
+            list[dict]: Messages in {"role": ..., "content": ...} format.
+        """
+        result: list[dict] = []
+        for msg in messages:
+            role = msg.get("role")
+            if role not in ("user", "assistant"):
+                continue
+
+            # TEXT-type message — plain string content
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                result.append({"role": role, "content": content.strip()})
+                continue
+
+            # PARTS-type message — extract text parts only
+            parts = msg.get("parts") or []
+            texts = [
+                part["payload"]["text"]
+                for part in parts
+                if part.get("kind") == "text" and part.get("payload", {}).get("text")
+            ]
+            combined = "\n".join(texts).strip()
+            if combined:
+                result.append({"role": role, "content": combined})
+
+        return result[-max_messages:]

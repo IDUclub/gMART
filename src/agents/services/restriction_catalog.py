@@ -61,6 +61,7 @@ class RestrictionPlanBuilder:
         scenario_id: int,
         services_catalog: list[str],
         physical_objects_catalog: list[str],
+        history: list[dict] | None = None,
     ) -> RestrictionPlan:
         cache_key = self._plan_cache_key(
             model,
@@ -74,7 +75,9 @@ class RestrictionPlanBuilder:
 
         raw_plan = await self._request_plan(
             model,
-            self._build_prompt(user_query, services_catalog, physical_objects_catalog),
+            self._build_prompt(services_catalog, physical_objects_catalog),
+            user_query=user_query,
+            history=history,
         )
         plan = self.validate_and_canonicalize_plan(
             raw_plan,
@@ -89,6 +92,8 @@ class RestrictionPlanBuilder:
             physical_objects_catalog,
         )
         if unresolved_names:
+            # Repair pass: full context is embedded in the system prompt,
+            # history is not needed here.
             raw_plan = await self._request_plan(
                 model,
                 self._build_repair_prompt(
@@ -104,6 +109,11 @@ class RestrictionPlanBuilder:
                 user_query,
                 services_catalog,
                 physical_objects_catalog,
+            )
+
+        if plan.mode == RestrictionTaskMode.NEEDS_CLARIFICATION:
+            plan = self._enrich_clarification(
+                plan, services_catalog, physical_objects_catalog
             )
 
         self._plan_cache[cache_key] = plan
@@ -167,11 +177,22 @@ class RestrictionPlanBuilder:
             original=user_query,
         )
 
-    async def _request_plan(self, model: str, prompt: str) -> RestrictionPlan:
+    async def _request_plan(
+        self,
+        model: str,
+        prompt: str,
+        user_query: str | None = None,
+        history: list[dict] | None = None,
+    ) -> RestrictionPlan:
+        messages: list[dict] = [{"role": "system", "content": prompt}]
+        if history:
+            messages.extend(history)
+        if user_query:
+            messages.append({"role": "user", "content": user_query})
         response = await self.llm_client.chat(
             model=model,
             options={"temperature": 0},
-            messages=[{"role": "system", "content": prompt}],
+            messages=messages,
         )
         try:
             return RestrictionPlan.model_validate_json(
@@ -200,7 +221,6 @@ class RestrictionPlanBuilder:
 
     @staticmethod
     def _build_prompt(
-        user_query: str,
         services_catalog: list[str],
         physical_objects_catalog: list[str],
     ) -> str:
@@ -269,8 +289,19 @@ class RestrictionPlanBuilder:
         - Если пользователь не указал title, сформируй короткое название из запроса.
         - confidence укажи от 0 до 1.
 
-        Запрос пользователя:
-        {user_query}
+        Строгие правила соответствия объектов:
+        - Объект из каталога обязан семантически напрямую соответствовать тому, что запросил пользователь.
+          Критерий: пользователь, прочитав название из каталога, должен согласиться, что именно это он и имел в виду.
+        - Запрещено подставлять широкую категорию-родитель вместо конкретного запрошенного типа.
+          Пример нарушения: пользователь просит «школы» или «продуктовые магазины» — выбирать «нежилые здания» нельзя,
+          даже если школы или магазины формально являются нежилыми зданиями.
+        - Если в каталоге нет объекта, явно и непосредственно соответствующего запросу, — не подбирай замену
+          и не используй широкие или косвенно подходящие категории. Используй mode = "needs_clarification".
+        - В clarification_question при mode = "needs_clarification" обязательно:
+            1. Укажи, какие именно запрошенные объекты не найдены в каталоге.
+            2. Перечисли все доступные объекты из обоих каталогов.
+            3. Попроси пользователя переформулировать запрос целиком, включая все параметры
+               (объекты, расстояние, тип анализа).
         """
 
     @staticmethod
@@ -307,7 +338,16 @@ class RestrictionPlanBuilder:
         - Для каждого source entity должна быть отдельная buffer_rule с тем же радиусом, типом буфера и названием.
         - Для restriction_rules замени обобщающие source_name и target_names на конкретные доступные имена.
         - Обнови selection_reasons так, чтобы они объясняли уже исправленный выбор простым языком.
-        - Если подходящих имён в доступных списках нет, верни mode = "needs_clarification".
+
+        Строгие правила соответствия объектов:
+        - Объект из каталога обязан семантически напрямую соответствовать тому, что запросил пользователь.
+          Критерий: пользователь, прочитав название из каталога, должен согласиться, что именно это он и имел в виду.
+        - Запрещено заменять конкретный запрошенный тип широкой категорией-родителем.
+          Пример нарушения: «нежилые здания» вместо «школы» — даже если школы формально являются нежилыми зданиями.
+        - Если подходящего объекта нет в каталоге, используй mode = "needs_clarification".
+          В clarification_question обязательно: укажи, каких именно объектов нет; перечисли все доступные объекты
+          из обоих каталогов; попроси пользователя переформулировать запрос полностью, включая все параметры
+          (объекты, расстояние, тип анализа).
         """
 
     def _collect_entity_candidates(
@@ -478,6 +518,40 @@ class RestrictionPlanBuilder:
                 or "Уточните, на какие объекты должны накладываться ограничения.",
             )
         return plan.mode, plan.clarification_question
+
+    @staticmethod
+    def _enrich_clarification(
+        plan: RestrictionPlan,
+        services_catalog: list[str],
+        physical_objects_catalog: list[str],
+    ) -> RestrictionPlan:
+        base_question = (plan.clarification_question or "").strip()
+
+        catalog_lines: list[str] = []
+        if services_catalog:
+            catalog_lines.append(
+                "Доступные сервисы: " + ", ".join(services_catalog) + "."
+            )
+        if physical_objects_catalog:
+            catalog_lines.append(
+                "Доступные физические объекты: "
+                + ", ".join(physical_objects_catalog)
+                + "."
+            )
+
+        suffix_parts: list[str] = []
+        if catalog_lines:
+            suffix_parts.append("\n".join(catalog_lines))
+        suffix_parts.append(
+            "Пожалуйста, переформулируйте запрос полностью, включая все параметры"
+            " (объекты, расстояние, тип анализа)."
+        )
+        suffix = "\n\n".join(suffix_parts)
+
+        full_question = (
+            f"{base_question}\n\n{suffix}".strip() if base_question else suffix
+        )
+        return plan.model_copy(update={"clarification_question": full_question})
 
     @staticmethod
     def _canonical_name(name: str, catalog: list[str]) -> str | None:

@@ -36,6 +36,7 @@ class SelectionReason(BaseModel):
         "target_entities",
         "buffer_rules",
         "restriction_rules",
+        "needs_clarification",
     ]
     reason: str
 
