@@ -139,13 +139,14 @@ class RestrictionParserService(BaseLlmService):
     ) -> AsyncGenerator:
 
         token = mcp_client.mcp_client.transport.auth.token.get_secret_value()
+        original_chat_id = chat_id
         if not chat_id:
             logger.info("No chat id provided in request, creating a new chat.")
             chat_id, title = await self.create_chat(
                 token,
                 model,
                 user_query,
-                additional_instructions="""Первый запрос пользователя был отправлен к сервису 
+                additional_instructions="""Первый запрос пользователя был отправлен к сервису
                             создания слоёв с ограничениями ихз запроса пользователя.
                             """,
                 scenario_id=scenario_id,
@@ -156,11 +157,26 @@ class RestrictionParserService(BaseLlmService):
             f"Starting restriction execution for request {user_query} for chat id {chat_id}"
         )
 
+        llm_history: list[dict] = []
+        if original_chat_id:
+            try:
+                chat_info = await self.get_chat_messages(token, original_chat_id)
+                llm_history = self.build_llm_history(chat_info.messages)
+                logger.info(
+                    f"Loaded {len(llm_history)} messages from chat history for context"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"Failed to fetch chat history, proceeding without it: {exc}"
+                )
+
         yield self._status(
             "data_retrievement",
             "Получаю каталоги сервисов и физических объектов",
         )
-        plan = await self._build_plan(mcp_client, model, user_query, scenario_id)
+        plan = await self._build_plan(
+            mcp_client, model, user_query, scenario_id, history=llm_history
+        )
         if plan.mode == RestrictionTaskMode.NEEDS_CLARIFICATION:
             yield self._status(
                 "context_preparation", "Нужно уточнение параметров запроса."
@@ -173,7 +189,7 @@ class RestrictionParserService(BaseLlmService):
 
         yield self._status("plan_explanation", "Объясняю, почему выбраны эти параметры")
         async for chunk in self.generate_plan_explanation(
-            model, user_query, plan, temperature
+            model, user_query, plan, temperature, history=llm_history
         ):
             yield chunk
         yield self._chunk("\n\n", done=False)
@@ -235,7 +251,7 @@ class RestrictionParserService(BaseLlmService):
             )
 
         async for chunk in self.generate_final_response(
-            model, user_query, context, temperature
+            model, user_query, context, temperature, history=llm_history
         ):
             yield chunk
 
@@ -371,6 +387,7 @@ class RestrictionParserService(BaseLlmService):
         model: str,
         user_query: str,
         scenario_id: int,
+        history: list[dict] | None = None,
     ) -> RestrictionPlan:
         (
             services_catalog,
@@ -385,6 +402,7 @@ class RestrictionParserService(BaseLlmService):
             scenario_id,
             services_catalog,
             physical_objects_catalog,
+            history=history,
         )
 
     async def generate_plan_explanation(
@@ -393,6 +411,7 @@ class RestrictionParserService(BaseLlmService):
         user_query: str,
         plan: RestrictionPlan,
         temperature: float,
+        history: list[dict] | None = None,
     ) -> AsyncGenerator[dict[str, str | dict[str, str | None | bool]], None]:
         messages = [
             {
@@ -411,8 +430,10 @@ class RestrictionParserService(BaseLlmService):
                 {self._plan_summary(plan)}
                 """,
             },
+            *(history or []),
             {"role": "user", "content": user_query},
         ]
+        response_buffer: list[str] = []
         async for part in await self.llm_client.chat(
             model,
             messages,
@@ -421,7 +442,9 @@ class RestrictionParserService(BaseLlmService):
         ):
             part: ChatResponse
             if part.message.content:
+                response_buffer.append(part.message.content)
                 yield self._chunk(part.message.content, done=False)
+        logger.debug(f"LLM plan explanation [{model}]: {''.join(response_buffer)}")
 
     async def generate_final_response(
         self,
@@ -429,6 +452,7 @@ class RestrictionParserService(BaseLlmService):
         user_query: str,
         context: str,
         temperature: float,
+        history: list[dict] | None = None,
     ) -> AsyncGenerator[dict[str, str | dict[str, str | None | bool]], None]:
         messages = [
             {
@@ -442,8 +466,10 @@ class RestrictionParserService(BaseLlmService):
                 {context}
                 """,
             },
+            *(history or []),
             {"role": "user", "content": user_query},
         ]
+        response_buffer: list[str] = []
         async for part in await self.llm_client.chat(
             model,
             messages,
@@ -451,7 +477,10 @@ class RestrictionParserService(BaseLlmService):
             stream=True,
         ):
             part: ChatResponse
+            if part.message.content:
+                response_buffer.append(part.message.content)
             yield self._chunk(part.message.content or "", done=part.done)
+        logger.debug(f"LLM final response [{model}]: {''.join(response_buffer)}")
 
     @staticmethod
     def _chat_created_event(chat_id: str, chat_title: str) -> dict:
