@@ -149,6 +149,15 @@ class RestrictionParserService(BaseLlmService):
             logger.info(f"Reconnect for request_id={request_id}, replaying events")
             for event in await self.state_store.get_buffered_events(request_id):
                 yield event
+            # Restore chat_id from persisted state so history is available
+            # even if the client didn't re-send the query parameter.
+            if not chat_id:
+                stored_state = await self.state_store.get_state(request_id)
+                if stored_state and stored_state.get("chat_id"):
+                    chat_id = stored_state["chat_id"]
+                    logger.info(
+                        f"Restored chat_id={chat_id} from state for request_id={request_id}"
+                    )
         else:
             request_id = request_id or self.state_store.new_request_id()
 
