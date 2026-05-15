@@ -5,6 +5,7 @@ from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.init_dependencies import init_dependencies
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.a2a_service import A2AService
+from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.restriction_parser_service import (
     RestrictionParserService,
 )
@@ -27,6 +28,14 @@ def get_simple_llm_service() -> SimpleLlmService:
     return simple_llm_service
 
 
+def get_pipeline_state_store() -> PipelineStateStore:
+    """Returns the shared PipelineStateStore (Redis-backed)."""
+    store: PipelineStateStore = app_deps["pipeline_state_store"]
+    if not isinstance(store, PipelineStateStore):
+        raise TypeError(f"Expected PipelineStateStore, got {type(store)}")
+    return store
+
+
 async def get_idu_mcp_client(
     token: str = Depends(verify_bearer_token),
 ) -> IduMcpClient:
@@ -38,7 +47,8 @@ async def get_idu_mcp_client(
         IduMcpClient: IduMcpClient instance for IDU MCP Server.
     """
 
-    return IduMcpClient(Client(app_deps["app_config"].IDU_MCP_URL, auth=token))
+    mcp_url: str = app_deps["app_config"].IDU_MCP_URL
+    return IduMcpClient(Client(mcp_url, auth=token), mcp_url=mcp_url)
 
 
 async def get_restriction_parser_service() -> RestrictionParserService:

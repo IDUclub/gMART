@@ -36,6 +36,7 @@ def load_config() -> AgentsAppConfig:
                 ollama_api_url=os.getenv("OLLAMA_API_URL"),
                 idu_mcp_url=os.getenv("IDU_MCP_SERVER"),
                 chat_storage_url=os.getenv("CHAT_STORAGE"),
+                redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
             )
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
     try:
@@ -43,6 +44,7 @@ def load_config() -> AgentsAppConfig:
             ollama_api_url=os.getenv("OLLAMA_API_URL"),
             idu_mcp_url=os.getenv("IDU_MCP_SERVER"),
             chat_storage_url=os.getenv("CHAT_STORAGE"),
+            redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
         )
     except ValueError:
         raise

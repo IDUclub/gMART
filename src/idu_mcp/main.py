@@ -3,6 +3,8 @@ from fastmcp import FastMCP
 from fastmcp.server.lifespan import lifespan
 from fastmcp_docs import FastMCPDocs
 from loguru import logger
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from src.idu_mcp.dependencies.dependencies import mcp_deps
@@ -52,4 +54,9 @@ async def redirect_to_docs(request):
     return RedirectResponse(url="/docs")
 
 
+async def health(request: Request) -> JSONResponse:
+    return JSONResponse({"status": "ok"})
+
+
 mcp_app.routes.insert(0, Route("/", endpoint=redirect_to_docs))
+mcp_app.routes.insert(0, Route("/health", endpoint=health))
