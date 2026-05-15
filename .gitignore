@@ -10,6 +10,7 @@ __pycache__/
 DECFILE
 
 # ENV files
+.env
 .env.idu_mcp.development
 .env.idu_mcp.develop
 .env.idu_mcp.dev

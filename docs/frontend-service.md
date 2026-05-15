@@ -4,14 +4,15 @@
 
 ## Назначение сервиса
 
-`agents` - FastAPI-сервис, который дает фронтенду HTTP-интерфейс к LLM-агентам и геопространственному пайплайну ограничений. Для построения слоев сервис обращается к `idu_mcp`, а `idu_mcp` уже работает с Urban API и геометрическими инструментами.
+`agents` — FastAPI-сервис, который даёт фронтенду HTTP-интерфейс к LLM-агентам и геопространственному пайплайну ограничений. Для построения слоёв сервис обращается к `idu_mcp`, а `idu_mcp` уже работает с Urban API и геометрическими инструментами.
 
 Основной пользовательский сценарий для фронта:
 
 1. Пользователь вводит текстовый запрос на построение ограничений.
 2. Фронт открывает SSE-поток `GET /restrictions/generate_restrictions/stream`.
-3. Сервис постепенно присылает статусы, текстовые чанки, GeoJSON-слои и служебные события.
-4. Фронт отображает прогресс, дописывает текст ответа и добавляет полученные GeoJSON-слои на карту.
+3. Первым событием приходит `pipeline_started` с уникальным `request_id` — его нужно сохранить.
+4. Сервис постепенно присылает статусы, текстовые чанки, GeoJSON-слои и служебные события.
+5. Фронт отображает прогресс, дописывает текст ответа и добавляет полученные GeoJSON-слои на карту.
 
 ## Базовые URL
 
@@ -39,13 +40,14 @@ make build
 
 Сервису `agents` нужны переменные окружения:
 
-- `OLLAMA_API_URL` - URL Ollama API.
-- `IDU_MCP_SERVER` - URL MCP-сервера, например `http://idu_mcp:8000/mcp`.
-- `CHAT_STORAGE` - URL сервиса хранения чатов.
+- `OLLAMA_API_URL` — URL Ollama API.
+- `IDU_MCP_SERVER` — URL MCP-сервера, например `http://idu_mcp:8000/mcp`.
+- `CHAT_STORAGE` — URL сервиса хранения чатов.
+- `REDIS_URL` — URL Redis, например `redis://:password@pipeline_storage:6379`.
 
 Сервису `idu_mcp` нужна переменная:
 
-- `URBAN_API_URL` - URL Urban API.
+- `URBAN_API_URL` — URL Urban API.
 
 ## Авторизация
 
@@ -55,7 +57,9 @@ make build
 Authorization: Bearer <access_token>
 ```
 
-Токен не валидируется внутри `agents`: сервис извлекает Bearer-токен и передает его дальше в `idu_mcp`/Urban API. Если заголовка нет, FastAPI вернет ошибку авторизации.
+Токен не валидируется внутри `agents`: сервис извлекает Bearer-токен и передаёт его дальше в `idu_mcp`/Urban API. Если заголовка нет, сервис вернёт `401`.
+
+Токен **короткоживущий**: он может истечь прямо в процессе выполнения пайплайна. В этом случае сервис пришлёт событие `token_expired` и продолжит ждать новый токен через отдельный эндпоинт (см. [Обновление токена](#обновление-токена-token_expired)).
 
 Обязательно передавайте токен для:
 
@@ -71,14 +75,12 @@ Authorization: Bearer <access_token>
 Ответ:
 
 ```json
-{
-  "status": "ok"
-}
+{ "status": "ok" }
 ```
 
 ### `GET /system/logs`
 
-Скачивает лог-файл текущего запуска приложения. Используется для диагностики, в пользовательском интерфейсе обычно не нужен.
+Скачивает лог-файл текущего запуска приложения. Используется для диагностики.
 
 ## LLM endpoints
 
@@ -86,66 +88,43 @@ Authorization: Bearer <access_token>
 
 Возвращает список моделей Ollama.
 
-Query-параметры:
-
 | Параметр | Тип | По умолчанию | Описание |
 | --- | --- | --- | --- |
-| `only_active` | `boolean` | `false` | Если `true`, вернуть только модели, загруженные в VRAM сервера. |
-
-Пример:
-
-```http
-GET /llm/available_models?only_active=false
-```
+| `only_active` | `boolean` | `false` | Если `true`, вернуть только модели, загруженные в VRAM. |
 
 Ответ:
 
 ```json
-[
-  "gpt-oss:20b"
-]
+["gpt-oss:20b"]
 ```
 
 ### `GET /llm/message`
 
 Одноразовый запрос к модели без стриминга.
 
-Query-параметры:
-
 | Параметр | Тип | По умолчанию | Описание |
 | --- | --- | --- | --- |
-| `request` | `string` | обязательный | Текст пользовательского запроса. |
+| `request` | `string` | обязательный | Текст запроса. |
 | `model` | `string` | `gpt-oss:20b` | Имя модели Ollama. |
-| `temperature` | `number` | `1.0` | Сейчас поле есть в DTO, но в реализации этого эндпоинта не используется. |
-
-Пример:
-
-```http
-GET /llm/message?model=gpt-oss:20b&request=Почему%20небо%20синее%3F
-```
-
-Ответ проксирует объект ответа Ollama.
+| `temperature` | `number` | `1.0` | Температура генерации. |
 
 ### `GET /llm/message/stream`
 
-SSE-версия простого LLM-запроса.
+SSE-версия простого LLM-запроса. Параметры те же, что у `/llm/message`.
 
-Query-параметры такие же, как у `/llm/message`.
-
-Каждое SSE-событие содержит JSON:
+Каждое SSE-событие:
 
 ```json
-{
-  "type": "Text",
-  "content": "фрагмент ответа"
-}
+{ "type": "Text", "content": "фрагмент ответа" }
 ```
+
+---
 
 ## Restrictions endpoint
 
 ### `GET /restrictions/generate_restrictions/stream`
 
-Основной эндпоинт для фронта. Запускает пайплайн построения ограничений и возвращает результат через Server-Sent Events.
+Основной эндпоинт. Запускает пайплайн построения ограничений и возвращает результат через Server-Sent Events.
 
 Headers:
 
@@ -157,25 +136,56 @@ Query-параметры:
 
 | Параметр | Тип | По умолчанию | Описание |
 | --- | --- | --- | --- |
-| `request` | `string` | обязательный | Пользовательский запрос, например `Построй зону ограничения вокруг школ 200 метров`. |
+| `request` | `string` | обязательный | Текст запроса, например `Построй зону ограничения вокруг школ 200 метров`. |
 | `scenario_id` | `number` | обязательный | ID сценария в Urban API. |
-| `chat_id` | `string \| null` | `null` | UUID чата из Chat Storage. Если не передан, сервис создаст новый чат и пришлет `service_event`. |
 | `model` | `string` | `gpt-oss:20b` | Имя модели Ollama. |
 | `temperature` | `number` | `1.0` | Температура генерации. |
+| `chat_id` | `string \| null` | `null` | UUID чата из Chat Storage. Если не передан, сервис создаст новый чат и пришлёт `service_event`. |
+| `request_id` | `string \| null` | `null` | UUID пайплайна для переподключения. Передаётся только при повторном подключении. |
 
-Пример URL:
+### `POST /restrictions/{request_id}/token`
+
+Эндпоинт для обновления токена в работающем пайплайне. Вызывается после получения события `token_expired`.
 
 ```http
-GET /restrictions/generate_restrictions/stream?scenario_id=772&model=gpt-oss:20b&temperature=0.7&request=%D0%9F%D0%BE%D1%81%D1%82%D1%80%D0%BE%D0%B9%20%D0%B7%D0%BE%D0%BD%D1%83%20%D0%BE%D0%B3%D1%80%D0%B0%D0%BD%D0%B8%D1%87%D0%B5%D0%BD%D0%B8%D1%8F%20%D0%B2%D0%BE%D0%BA%D1%80%D1%83%D0%B3%20%D1%88%D0%BA%D0%BE%D0%BB%20200%20%D0%BC%D0%B5%D1%82%D1%80%D0%BE%D0%B2
+POST /restrictions/550e8400-e29b-41d4-a716-446655440001/token
+Content-Type: application/json
+
+{ "token": "<новый_access_token>" }
 ```
 
-### Типы SSE-событий
+Ответ:
 
-События приходят в поле `data` стандартного SSE-сообщения. Значение `data` - JSON одного из типов ниже.
+```json
+{ "status": "ok", "request_id": "550e8400-e29b-41d4-a716-446655440001" }
+```
 
-#### `status`
+Если пайплайн не ожидает токен (нет активной подписки) — возвращает `404`.
 
-Прогресс пайплайна. Используйте для индикатора статуса.
+---
+
+## Типы SSE-событий
+
+События приходят в поле `data` стандартного SSE-сообщения. Значение `data` — JSON одного из типов ниже.
+
+### `pipeline_started`
+
+**Первое событие в каждом новом запросе.** Содержит `request_id`, который необходимо сохранить для переподключения и обновления токена.
+
+```json
+{
+  "type": "pipeline_started",
+  "content": {
+    "request_id": "550e8400-e29b-41d4-a716-446655440001"
+  }
+}
+```
+
+> ⚠️ Сохраните `request_id` сразу при получении этого события.
+
+### `status`
+
+Прогресс пайплайна. Используйте для индикатора текущего шага.
 
 ```json
 {
@@ -187,17 +197,19 @@ GET /restrictions/generate_restrictions/stream?scenario_id=772&model=gpt-oss:20b
 }
 ```
 
-Возможные `content.status`:
+Возможные значения `content.status`:
 
-- `data_retrievement`
-- `plan_explanation`
-- `buffer_creation`
-- `restriction_formation`
-- `context_preparation`
+| Значение | Описание |
+| --- | --- |
+| `data_retrievement` | Получение каталогов и слоёв из Urban API |
+| `plan_explanation` | LLM объясняет выбранные параметры |
+| `buffer_creation` | Построение буферных зон |
+| `restriction_formation` | Извлечение нормативных ограничений |
+| `context_preparation` | Подготовка контекста для финального ответа |
 
-#### `chunk`
+### `chunk`
 
-Текстовая часть ответа ассистента.
+Текстовая часть ответа ассистента. Конкатенируйте `content.text` по мере поступления.
 
 ```json
 {
@@ -209,9 +221,9 @@ GET /restrictions/generate_restrictions/stream?scenario_id=772&model=gpt-oss:20b
 }
 ```
 
-Фронт должен конкатенировать `content.text`. Когда `content.done === true`, текстовый ответ завершен.
+При `content.done === true` текстовый ответ завершён.
 
-#### `feature_collection`
+### `feature_collection`
 
 GeoJSON-слой, который нужно добавить на карту.
 
@@ -228,11 +240,27 @@ GeoJSON-слой, который нужно добавить на карту.
 }
 ```
 
-`content.feature_collection` соответствует GeoJSON `FeatureCollection`. `content.name` можно использовать как название слоя в UI.
+`content.name` можно использовать как название слоя. Пустой `features` — валидный результат ("объектов не найдено").
 
-#### `service_event`
+### `tool_call`
 
-Служебное событие. Сейчас используется для создания нового чата, если фронт не передал `chat_id`.
+Информация о MCP-инструментах, вызванных в текущем шаге. Можно использовать для расширенного отображения прогресса.
+
+```json
+{
+  "type": "tool_call",
+  "content": {
+    "execution_mode": "data_retrievement",
+    "tool_calls": [
+      { "tool_name": "GetServices", "arguments": { "scenario_id": 772 } }
+    ]
+  }
+}
+```
+
+### `service_event`
+
+Служебное событие о действии в Chat Storage. Сейчас используется только для создания нового чата.
 
 ```json
 {
@@ -248,11 +276,41 @@ GeoJSON-слой, который нужно добавить на карту.
 }
 ```
 
-После получения `chat_created` сохраните `chat_id` и передавайте его в следующие запросы этого диалога.
+Сохраните `chat_id` и передавайте его в следующие запросы этого диалога.
 
-#### `error`
+### `token_expired`
 
-Ошибка внутри SSE-пайплайна.
+Токен истёк в процессе выполнения пайплайна. **Не закрывайте SSE-соединение.** Вместо этого получите новый токен и отправьте его через `POST /restrictions/{request_id}/token`.
+
+```json
+{
+  "type": "token_expired",
+  "content": {
+    "request_id": "550e8400-e29b-41d4-a716-446655440001",
+    "message": "Токен истёк. Пожалуйста, обновите токен."
+  }
+}
+```
+
+### `pipeline_suspended`
+
+Токен так и не был обновлён в течение отведённого времени (360 секунд / 6 минут). Пайплайн сохранил чекпоинт и завершил работу. SSE-поток закрывается.
+
+```json
+{
+  "type": "pipeline_suspended",
+  "content": {
+    "request_id": "550e8400-e29b-41d4-a716-446655440001",
+    "message": "Выполнение приостановлено: токен не был обновлён вовремя. Переподключитесь с тем же request_id, чтобы продолжить."
+  }
+}
+```
+
+После получения этого события переподключитесь с тем же `request_id` и новым токеном.
+
+### `error`
+
+Необработанная ошибка внутри SSE-пайплайна.
 
 ```json
 {
@@ -264,70 +322,216 @@ GeoJSON-слой, который нужно добавить на карту.
 }
 ```
 
-Фронту лучше показать пользователю дружелюбное сообщение, а технические детали отправить в клиентский лог или систему мониторинга. После `error` сервис дополнительно отправляет завершающий `chunk` с `done: true`.
+Показывайте пользователю дружелюбное сообщение. После `error` сервис дополнительно отправляет завершающий `chunk` с `done: true`.
 
-### Пример клиента для SSE
+---
 
-`EventSource` не позволяет добавить `Authorization` header. Поэтому для защищенного потока используйте `fetch` и читайте `ReadableStream`.
+## Основные флоу
+
+### Флоу 1 — Обычный запрос (новый чат)
+
+```
+Фронт                                    Сервер
+  |                                         |
+  |-- GET /stream?request=...&scenario_id=772 -->|
+  |                                         |
+  |<-- pipeline_started { request_id } -----|  ← сохранить request_id
+  |<-- service_event { chat_created, chat_id } -|  ← сохранить chat_id
+  |<-- status { data_retrievement } --------|
+  |<-- status { plan_explanation } ---------|
+  |<-- chunk { text, done:false } ----------|  ← накапливать текст
+  |<-- chunk { text, done:false } ----------|
+  |<-- chunk { text, done:true } -----------|  ← текст завершён
+  |<-- status { data_retrievement } --------|
+  |<-- tool_call { ... } -------------------|
+  |<-- feature_collection { name, geojson } |  ← добавить на карту
+  |<-- status { buffer_creation } ----------|
+  |<-- feature_collection { name, geojson } |  ← добавить на карту
+  |<-- chunk { text, done:true } -----------|  ← финальный ответ
+  |                                         |
+  |  [поток завершён]                       |
+```
+
+### Флоу 2 — Продолжение диалога (существующий чат)
+
+Передайте `chat_id` из предыдущего запроса:
+
+```
+GET /stream?request=...&scenario_id=772&chat_id=550e8400-...
+```
+
+Сервис загрузит историю чата и учтёт её в контексте LLM. Событие `service_event/chat_created` в этом случае не придёт.
+
+### Флоу 3 — Обновление токена
+
+Если токен истёк в процессе выполнения:
+
+```
+Фронт                                    Сервер
+  |                                         |
+  |  [SSE-поток открыт]                     |
+  |<-- token_expired { request_id } --------|  ← НЕ закрывать поток
+  |                                         |
+  |-- POST /restrictions/{request_id}/token -->|
+  |   { "token": "<новый_токен>" }          |
+  |<-- { "status": "ok" } ------------------|
+  |                                         |
+  |  [пайплайн продолжается]                |
+  |<-- status { ... } ----------------------|
+  |<-- chunk / feature_collection / ... ----|
+```
+
+### Флоу 4 — Переподключение после разрыва
+
+Если соединение разорвалось и `request_id` был сохранён:
+
+```
+Фронт                                    Сервер
+  |                                         |
+  |  [разрыв соединения]                    |
+  |                                         |
+  |-- GET /stream?request=...               |
+  |       &scenario_id=772                  |
+  |       &request_id=550e8400-... -------->|  ← тот же request_id
+  |                                         |
+  |<-- [повтор всех событий из буфера] -----|  ← все предыдущие события
+  |<-- [продолжение с последнего чекпоинта]-|  ← уже выполненные шаги пропускаются
+  |<-- chunk / feature_collection / ... ----|
+```
+
+> **Важно:** если разрыв произошёл *до* получения `pipeline_started`, `request_id` неизвестен — начинайте новый запрос без `request_id`.
+
+### Флоу 5 — Пайплайн приостановлен (`pipeline_suspended`)
+
+Если токен не был обновлён вовремя (> 360 сек / 6 мин):
+
+```
+Фронт                                    Сервер
+  |                                         |
+  |<-- token_expired { request_id } --------|
+  |  [нет ответа 60 секунд]                 |
+  |<-- pipeline_suspended { request_id } ---|  ← поток завершится
+  |                                         |
+  |  [получить новый токен]                 |
+  |                                         |
+  |-- GET /stream?request=...               |
+  |       &scenario_id=772                  |
+  |       &request_id=550e8400-... -------->|  ← переподключение
+  |  { Authorization: Bearer <новый_токен> }|
+  |                                         |
+  |<-- [повтор буфера + продолжение] -------|
+```
+
+---
+
+## TypeScript-типы и пример клиента
 
 ```ts
-type RestrictionEvent =
-  | {
-      type: "status";
-      content: {
-        status:
-          | "data_retrievement"
-          | "plan_explanation"
-          | "buffer_creation"
-          | "restriction_formation"
-          | "context_preparation";
-        text: string;
-      };
-    }
-  | { type: "chunk"; content: { text: string; done: boolean } }
-  | {
-      type: "feature_collection";
-      content: { name: string; feature_collection: GeoJSON.FeatureCollection };
-    }
-  | {
-      type: "service_event";
-      content: {
-        event_type: "storage_event";
-        event: {
-          storage_event_type: "chat_created";
-          chat_id: string;
-          chat_title: string;
-        };
-      };
-    }
-  | { type: "error"; content: { message: string; traceback?: string } };
+type PipelineStartedEvent = {
+  type: "pipeline_started";
+  content: { request_id: string };
+};
 
-async function streamRestrictions(params: {
+type StatusEvent = {
+  type: "status";
+  content: {
+    status:
+      | "data_retrievement"
+      | "plan_explanation"
+      | "buffer_creation"
+      | "restriction_formation"
+      | "context_preparation";
+    text: string;
+  };
+};
+
+type ChunkEvent = {
+  type: "chunk";
+  content: { text: string; done: boolean };
+};
+
+type FeatureCollectionEvent = {
+  type: "feature_collection";
+  content: { name: string; feature_collection: GeoJSON.FeatureCollection };
+};
+
+type ToolCallEvent = {
+  type: "tool_call";
+  content: { execution_mode: string; tool_calls: unknown[] };
+};
+
+type ServiceEvent = {
+  type: "service_event";
+  content: {
+    event_type: "storage_event";
+    event: {
+      storage_event_type: "chat_created";
+      chat_id: string;
+      chat_title: string;
+    };
+  };
+};
+
+type TokenExpiredEvent = {
+  type: "token_expired";
+  content: { request_id: string; message: string };
+};
+
+type PipelineSuspendedEvent = {
+  type: "pipeline_suspended";
+  content: { request_id: string; message: string };
+};
+
+type ErrorEvent = {
+  type: "error";
+  content: { message: string; traceback?: string };
+};
+
+type RestrictionEvent =
+  | PipelineStartedEvent
+  | StatusEvent
+  | ChunkEvent
+  | FeatureCollectionEvent
+  | ToolCallEvent
+  | ServiceEvent
+  | TokenExpiredEvent
+  | PipelineSuspendedEvent
+  | ErrorEvent;
+```
+
+```ts
+interface StreamRestrictionParams {
   baseUrl: string;
-  token: string;
   request: string;
   scenarioId: number;
+  getToken: () => string;           // вызывается перед каждым подключением
   chatId?: string;
   model?: string;
   temperature?: number;
+  requestId?: string;               // передать при переподключении
   onEvent: (event: RestrictionEvent) => void;
-}) {
+  onRequestId?: (requestId: string) => void;  // вызывается при pipeline_started
+  onChatId?: (chatId: string) => void;        // вызывается при chat_created
+}
+
+async function streamRestrictions(params: StreamRestrictionParams): Promise<void> {
   const url = new URL("/restrictions/generate_restrictions/stream", params.baseUrl);
   url.searchParams.set("request", params.request);
   url.searchParams.set("scenario_id", String(params.scenarioId));
   url.searchParams.set("model", params.model ?? "gpt-oss:20b");
   url.searchParams.set("temperature", String(params.temperature ?? 1));
-  if (params.chatId) url.searchParams.set("chat_id", params.chatId);
+  if (params.chatId)   url.searchParams.set("chat_id", params.chatId);
+  if (params.requestId) url.searchParams.set("request_id", params.requestId);
 
-  const response = await fetch(url, {
+  const response = await fetch(url.toString(), {
     headers: {
-      Authorization: `Bearer ${params.token}`,
+      Authorization: `Bearer ${params.getToken()}`,
       Accept: "text/event-stream",
     },
   });
 
   if (!response.ok || !response.body) {
-    throw new Error(`Restrictions stream failed: ${response.status}`);
+    throw new Error(`Stream failed: ${response.status}`);
   }
 
   const reader = response.body.getReader();
@@ -343,40 +547,96 @@ async function streamRestrictions(params: {
     buffer = messages.pop() ?? "";
 
     for (const message of messages) {
-      const dataLine = message
-        .split("\n")
-        .find((line) => line.startsWith("data:"));
-
+      const dataLine = message.split("\n").find((l) => l.startsWith("data:"));
       if (!dataLine) continue;
 
       const event = JSON.parse(dataLine.slice("data:".length).trim()) as RestrictionEvent;
       params.onEvent(event);
+
+      // Служебная обработка ключевых событий
+      if (event.type === "pipeline_started") {
+        params.onRequestId?.(event.content.request_id);
+      }
+
+      if (
+        event.type === "service_event" &&
+        event.content.event.storage_event_type === "chat_created"
+      ) {
+        params.onChatId?.(event.content.event.chat_id);
+      }
+
+      if (event.type === "token_expired") {
+        // Получите свежий токен (например, через refresh) и отправьте его
+        const newToken = params.getToken();
+        await fetch(
+          new URL(`/restrictions/${event.content.request_id}/token`, params.baseUrl).toString(),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: newToken }),
+          }
+        );
+        // SSE-поток продолжается сам — ничего закрывать не нужно
+      }
     }
   }
 }
 ```
 
-Рекомендуемая обработка на фронте:
+---
 
-- `status`: обновить текущий шаг прогресса.
-- `chunk`: добавить `text` к уже показанному ответу; при `done: true` завершить состояние генерации.
-- `feature_collection`: добавить слой на карту, используя `name` как заголовок.
-- `service_event/chat_created`: сохранить `chat_id`.
-- `error`: показать ошибку и остановить интерактивные индикаторы.
+## Рекомендации по обработке событий
+
+| Событие | Что делать |
+| --- | --- |
+| `pipeline_started` | Сохранить `request_id` (нужен для переподключения и обновления токена) |
+| `service_event/chat_created` | Сохранить `chat_id` для следующих запросов в этом диалоге |
+| `status` | Обновить индикатор прогресса |
+| `chunk` | Дописать `text` к ответу; при `done: true` — завершить генерацию |
+| `feature_collection` | Немедленно добавить слой на карту, не ждать конца потока |
+| `tool_call` | Опционально: показать, какие инструменты вызываются |
+| `token_expired` | **Не закрывать поток.** Получить новый токен и отправить `POST /restrictions/{request_id}/token` |
+| `pipeline_suspended` | Показать уведомление. Переподключиться с тем же `request_id` и новым токеном |
+| `error` | Показать пользователю дружелюбное сообщение; технические детали — в лог |
+
+---
+
+## Ошибки
+
+Обычные HTTP-ошибки возвращаются как JSON:
+
+```json
+{
+  "message": "Authorization header missing",
+  "input": null
+}
+```
+
+Для непойманных исключений middleware возвращает:
+
+```json
+{
+  "message": "Internal server error",
+  "error_type": "ValueError",
+  "request": { "method": "GET", "url": "...", "query_params": {} },
+  "detail": "...",
+  "traceback": []
+}
+```
+
+> Для SSE-потоков ошибки приходят как событие `type: "error"` внутри потока. Не полагайтесь только на HTTP status: поток может стартовать с `200 OK`, а затем завершиться ошибкой на одном из шагов.
+
+---
 
 ## A2A endpoint
 
 ### `GET /.well-known/agent-card.json`
 
-Возвращает карточку A2A-агента. Нужна для клиентов, которые умеют обнаруживать A2A-агентов автоматически.
-
-### `GET /.well-known/agent.json`
-
-Legacy alias для карточки A2A-агента.
+Карточка A2A-агента для автообнаружения.
 
 ### `POST /a2a`
 
-JSON-RPC endpoint для A2A-клиентов. Для обычного веб-фронта проще использовать `/restrictions/generate_restrictions/stream`, но `/a2a` полезен для интеграции с агентскими платформами.
+JSON-RPC endpoint для A2A-клиентов. Для обычного веб-фронта проще использовать `/restrictions/generate_restrictions/stream`.
 
 Headers:
 
@@ -395,87 +655,11 @@ Content-Type: application/json
   "params": {
     "message": {
       "role": "user",
-      "parts": [
-        {
-          "type": "text",
-          "text": "Построй зону ограничения вокруг школ 200 метров"
-        }
-      ],
-      "metadata": {
-        "scenario_id": 772,
-        "model": "gpt-oss:20b",
-        "temperature": 0.7
-      }
+      "parts": [{ "type": "text", "text": "Построй зону ограничения вокруг школ 200 метров" }],
+      "metadata": { "scenario_id": 772, "model": "gpt-oss:20b", "temperature": 0.7 }
     }
   }
 }
 ```
 
-Streaming-методы возвращают SSE, где `data` содержит JSON-RPC envelope:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "request-1",
-  "result": {
-    "artifactUpdate": {
-      "taskId": "...",
-      "contextId": "...",
-      "artifact": {
-        "artifactId": "geojson-schools-buffer-200m",
-        "name": "schools_buffer_200m",
-        "parts": [
-          {
-            "type": "data",
-            "data": {
-              "type": "FeatureCollection",
-              "features": []
-            },
-            "mediaType": "application/vnd.geo+json"
-          }
-        ]
-      },
-      "append": false,
-      "lastChunk": true
-    }
-  }
-}
-```
-
-Поддерживаемые методы:
-
-- `SendMessage`, `message/send`, `tasks/send` - выполнить задачу и вернуть финальный task.
-- `SendStreamingMessage`, `message/stream`, `tasks/sendSubscribe` - выполнить задачу в SSE-режиме.
-- `GetTask`, `tasks/get` - получить task по `id` или `taskId`.
-- `ListTasks`, `tasks/list` - получить список task.
-- `CancelTask`, `tasks/cancel` - отменить task.
-- `GetExtendedAgentCard`, `agent/getAuthenticatedExtendedCard` - получить расширенную agent card.
-
-## Ошибки
-
-Обычные HTTP-ошибки приходят в JSON-ответе. Для непойманных исключений middleware возвращает:
-
-```json
-{
-  "message": "Internal server error",
-  "error_type": "ValueError",
-  "request": {
-    "method": "GET",
-    "url": "...",
-    "query_params": {}
-  },
-  "detail": "...",
-  "traceback": []
-}
-```
-
-Для SSE-потоков ошибки приходят как событие `type: "error"` внутри потока. Не полагайтесь только на HTTP status: поток может стартовать с `200 OK`, а затем завершиться ошибкой на одном из шагов пайплайна.
-
-## Замечания для UI
-
-- Показывайте пользователю шаги пайплайна из `status`, потому что построение слоев может занимать заметное время.
-- Не блокируйте карту до окончания всего потока: `feature_collection` можно отображать сразу по мере получения.
-- Сохраняйте `chat_id` после `service_event/chat_created`, иначе каждый новый запрос будет создавать новый чат.
-- Обрабатывайте отключение пользователя: при закрытии страницы или отмене запроса прерывайте `fetch` через `AbortController`.
-- Для текстовых ответов используйте append-логику: один ответ приходит множеством `chunk`.
-- Для GeoJSON проверяйте `feature_collection.features.length`: пустой слой тоже может быть валидным результатом и должен отображаться как "нет объектов", а не как ошибка.
+Поддерживаемые методы: `SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `GetExtendedAgentCard`.

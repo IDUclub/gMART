@@ -11,6 +11,9 @@ from starlette.responses import JSONResponse
 from src.agents.common.exceptions.a2a_exceptions import A2AJsonRpcError
 from src.agents.common.exceptions.base_exceptions import AgentsBaseException
 
+# Status codes that should not expose internal details to the client.
+_CLIENT_ERROR_CODES = frozenset({400, 401, 403, 404, 409, 422})
+
 
 class ExceptionHandlerMiddleware(
     BaseHTTPMiddleware
@@ -74,7 +77,13 @@ class ExceptionHandlerMiddleware(
         try:
             return await call_next(request)
         except AgentsBaseException as e:
-            raise e.http_repr() from e
+            logger.warning(
+                f"{e.__class__.__name__} [{e.status_code}]: {e.message} | input={e.error_input!r}"
+            )
+            return JSONResponse(
+                status_code=e.status_code,
+                content={"message": e.message, "input": e.error_input},
+            )
         except A2AJsonRpcError as e:
             request_info = await self.prepare_request_info(request)
             return JSONResponse(

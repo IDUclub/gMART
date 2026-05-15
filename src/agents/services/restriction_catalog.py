@@ -183,6 +183,7 @@ class RestrictionPlanBuilder:
         prompt: str,
         user_query: str | None = None,
         history: list[dict] | None = None,
+        _retries: int = 2,
     ) -> RestrictionPlan:
         messages: list[dict] = [{"role": "system", "content": prompt}]
         if history:
@@ -191,7 +192,11 @@ class RestrictionPlanBuilder:
             messages.append({"role": "user", "content": user_query})
         response = await self.llm_client.chat(
             model=model,
-            options={"temperature": 0},
+            options={
+                "temperature": 0,
+                "num_predict": 4096,
+                "num_ctx": 16384,
+            },
             messages=messages,
         )
         content = response["message"]["content"]
@@ -199,6 +204,26 @@ class RestrictionPlanBuilder:
         try:
             return RestrictionPlan.model_validate_json(strip_json_fence(content))
         except (ValidationError, json.JSONDecodeError) as e:
+            if _retries > 0:
+                logger.warning(
+                    f"LLM returned invalid plan JSON (retries left: {_retries}), asking model to fix it. Error: {e}"
+                )
+                messages.append({"role": "assistant", "content": content})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Твой предыдущий ответ содержит невалидный или неполный JSON. "
+                            "Верни тот же план целиком в виде валидного JSON без markdown и без пояснений. "
+                            "Убедись, что JSON полный — все скобки и кавычки закрыты."
+                        ),
+                    }
+                )
+                return await self._request_plan(
+                    model=model,
+                    prompt=prompt,
+                    _retries=_retries - 1,
+                )
             logger.exception(e)
             raise ValueError("Model returned invalid restriction plan") from e
 

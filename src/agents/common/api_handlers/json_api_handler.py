@@ -1,4 +1,8 @@
 import aiohttp
+from loguru import logger
+
+from src.agents.common.exceptions.base_exceptions import AgentsUnauthorizedException
+from src.agents.common.exceptions.token_exceptions import TokenExpiredError
 
 
 class JsonApiHandler:
@@ -41,11 +45,15 @@ class JsonApiHandler:
             else:
                 response_info = await response.text()
             return response_info
-        else:
-            return {
-                "status": response.status,
-                "response_info": await response.text(),
-            }
+        elif 400 <= response.status < 500:
+            if response.status == 401:
+                info = await response.json()
+                logger.warning(info)
+                # TODO revise to more strict rule
+                if info["message"] == "Token expired.":
+                    raise TokenExpiredError
+                else:
+                    raise AgentsUnauthorizedException(message=info)
 
     @staticmethod
     async def _check_request_params(

@@ -1,8 +1,7 @@
 from collections.abc import AsyncIterable
-from distutils import log
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, logger
+from fastapi import APIRouter, Depends, Request
 from fastapi.sse import EventSourceResponse
 
 from src.agents.common.executors.sse_executors import (
@@ -45,5 +44,6 @@ async def generate_restrictions_response(
         scenario_id=user_request.scenario_id,
         chat_id=user_request.chat_id,
         temperature=user_request.temperature,
+        request_id=user_request.request_id,
     ):
         yield RestrictionsResponse(**chunk)

@@ -3,6 +3,19 @@ from loguru import logger
 from mcp import ListToolsResult, Tool
 from mcp.server.fastmcp.prompts import Prompt
 
+from src.agents.common.exceptions.token_exceptions import TokenExpiredError
+
+
+def _is_token_expired(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return (
+        "401" in msg
+        or "unauthorized" in msg
+        or "token expired" in msg
+        or "token_expired" in msg
+        or "authentication" in msg
+    )
+
 
 class BaseMcpClient:
     def __init__(self, mcp_client: MCPClient):
@@ -76,7 +89,6 @@ class BaseMcpClient:
     async def execute_tool(
         self, tool_name: str, arguments: dict, meta: dict, log: bool = False
     ):
-
         try:
             async with self.mcp_client as mcp:
                 result = await mcp.call_tool(tool_name, arguments, meta=meta)
@@ -86,5 +98,7 @@ class BaseMcpClient:
                     )
                 return result.data
         except Exception as e:
+            if _is_token_expired(e):
+                raise TokenExpiredError(str(e)) from e
             logger.exception(e)
             raise
