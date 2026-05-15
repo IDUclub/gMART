@@ -1,13 +1,27 @@
 from fastmcp import Client as McpClient
 from mcp import GetPromptResult
+from pydantic import SecretStr
 
-from src.agents.mcp_clients.base_mcp_client import BaseMcpClient
+from src.agents.common.exceptions.token_exceptions import TokenExpiredError
+from src.agents.mcp_clients.base_mcp_client import BaseMcpClient, _is_token_expired
 
 
 # TODO add prompts cache
 class IduMcpClient(BaseMcpClient):
-    def __init__(self, mcp_client: McpClient):
+    def __init__(self, mcp_client: McpClient, mcp_url: str = "") -> None:
         super().__init__(mcp_client)
+        self._mcp_url = mcp_url
+
+    def update_token(self, new_token: str) -> None:
+        """Replace the bearer token used for all subsequent MCP calls."""
+        if self._mcp_url:
+            self.mcp_client = McpClient(self._mcp_url, auth=new_token)
+        else:
+            # Fallback: try to patch the transport in-place
+            try:
+                self.mcp_client.transport.auth.token = SecretStr(new_token)
+            except AttributeError:
+                pass
 
     async def get_urban_api_tools(self) -> list[dict]:
         """
@@ -86,13 +100,17 @@ class IduMcpClient(BaseMcpClient):
         Returns:
             list[dict]: filtered prompts from mcp server.
         """
-
-        result = []
-        async with self.mcp_client as client:
-            for prompt_name in prompts_names:
-                prompt = await client.get_prompt(prompt_name, arguments)
-                result.append(prompt)
-        return result
+        try:
+            result = []
+            async with self.mcp_client as client:
+                for prompt_name in prompts_names:
+                    prompt = await client.get_prompt(prompt_name, arguments)
+                    result.append(prompt)
+            return result
+        except Exception as e:
+            if _is_token_expired(e):
+                raise TokenExpiredError(str(e)) from e
+            raise
 
     async def get_services_example_prompts(self) -> list[dict]:
         """

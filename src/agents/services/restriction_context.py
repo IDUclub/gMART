@@ -5,6 +5,10 @@ import pandas as pd
 
 
 class RestrictionContextBuilder:
+    """
+    Static class for building restriction context.
+    """
+
     async def generate_buffers_context(self, buffers: dict) -> str:
         buffer_layers = [
             self._feature_collection_to_gdf(name, buffer)
@@ -91,6 +95,13 @@ class RestrictionContextBuilder:
     def _feature_collection_to_gdf(
         name: str, feature_collection: dict
     ) -> gpd.GeoDataFrame:
+        """
+        Function loads FeatureCollection dictionaries to
+        :param name:
+        :param feature_collection:
+        :return:
+        """
+
         gdf = gpd.GeoDataFrame.from_features(feature_collection, crs=4326)
         gdf["name"] = name
         return gdf

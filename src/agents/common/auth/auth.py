@@ -1,5 +1,10 @@
-from fastapi import Depends, HTTPException
+from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from src.agents.common.exceptions.base_exceptions import (
+    AgentsInputException,
+    AgentsUnauthorizedException,
+)
 
 http_bearer = HTTPBearer()
 
@@ -8,29 +13,22 @@ async def verify_bearer_token(
     credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
 ) -> str:
     """
-    Function retrieves Bearer token from headers.
+    Retrieve the Bearer token from the Authorization header.
     Args:
         credentials (HTTPAuthorizationCredentials): Request credentials.
     Returns:
         str: Extracted Bearer token.
     Raises:
-         HTTPException:
-            - 401 if no credentials provided.
-            - 400 if no token in credentials provided.
+        AgentsUnauthorizedException: If no credentials are provided (401).
+        AgentsInputException: If the token is missing from credentials (400).
     """
 
     if not credentials:
-        raise HTTPException(
-            status_code=401,
-            detail="Authorization header missing",
-        )
+        raise AgentsUnauthorizedException("Authorization header missing")
 
-    token = credentials.credentials
+    token: str = credentials.credentials
 
     if not token:
-        raise HTTPException(
-            status_code=400,
-            detail="Token is missing in the authorization header",
-        )
+        raise AgentsInputException("Token is missing in the authorization header")
 
     return token

@@ -1,5 +1,6 @@
 from typing import Any
 
+import redis.asyncio as aioredis
 from fastmcp import Client
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
@@ -11,6 +12,7 @@ from src.agents.common.config.app_config_loader import load_config
 from src.agents.common.logging.log_config import config_logger
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.a2a_service import A2AService
+from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.restriction_parser_service import (
     RestrictionParserService,
 )
@@ -28,7 +30,8 @@ def init_dependencies() -> dict[
     | RestrictionParserService
     | A2AService
     | JsonApiHandler
-    | ChatStorageApiClient,
+    | ChatStorageApiClient
+    | PipelineStateStore,
 ]:
 
     logs_path = config_logger()
@@ -36,8 +39,10 @@ def init_dependencies() -> dict[
     idu_fastmcp_client = Client(app_config.IDU_MCP_URL)
     chat_storage_json_handler = JsonApiHandler(app_config.CHAT_STORAGE_URL)
     chat_storage_client = ChatStorageApiClient(chat_storage_json_handler)
+    redis_client = aioredis.from_url(app_config.REDIS_URL, decode_responses=True)
+    pipeline_state_store = PipelineStateStore(redis_client)
     restriction_parser_service = RestrictionParserService(
-        app_config.OLLAMA_URL, chat_storage_client
+        app_config.OLLAMA_URL, chat_storage_client, pipeline_state_store
     )
     return {
         "app_config": app_config,
@@ -51,4 +56,5 @@ def init_dependencies() -> dict[
         "a2a_service": A2AService(restriction_parser_service),
         "chat_storage_json_handler": chat_storage_json_handler,
         "chat_storage_client": chat_storage_client,
+        "pipeline_state_store": pipeline_state_store,
     }
