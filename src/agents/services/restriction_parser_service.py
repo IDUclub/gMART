@@ -318,7 +318,9 @@ class RestrictionParserService(BaseLlmService):
 
         yield self._buf(
             request_id,
-            self._tool_call("data_retrievement", layers_result.tool_calls, mcp_source="IDU_MCP_URL"),
+            self._tool_call(
+                "data_retrievement", layers_result.tool_calls, mcp_source="IDU_MCP_URL"
+            ),
         )
         for item in self._feature_collections(layers_result.tool_result):
             yield self._buf(request_id, item)
@@ -362,7 +364,9 @@ class RestrictionParserService(BaseLlmService):
 
         yield self._buf(
             request_id,
-            self._tool_call("buffer_creation", buffers_result.tool_calls, mcp_source="IDU_MCP_URL"),
+            self._tool_call(
+                "buffer_creation", buffers_result.tool_calls, mcp_source="IDU_MCP_URL"
+            ),
         )
         yield self._buf(
             request_id,

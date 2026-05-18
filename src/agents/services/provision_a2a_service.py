@@ -49,7 +49,8 @@ class ProvisionA2AService:
 
     def is_streaming_request(self, payload: Any) -> bool:
         return (
-            isinstance(payload, dict) and payload.get("method") in self.STREAMING_METHODS
+            isinstance(payload, dict)
+            and payload.get("method") in self.STREAMING_METHODS
         )
 
     async def handle_json_rpc(
@@ -61,7 +62,9 @@ class ProvisionA2AService:
         if isinstance(payload, list):
             return [
                 (
-                    await self._handle_single_json_rpc(item, idu_mcp_client, effects_mcp_client)
+                    await self._handle_single_json_rpc(
+                        item, idu_mcp_client, effects_mcp_client
+                    )
                     if isinstance(item, dict)
                     else self._error(None, A2AInvalidRequestError())
                 )
@@ -69,7 +72,9 @@ class ProvisionA2AService:
             ]
         if not isinstance(payload, dict):
             return self._error(None, A2AInvalidRequestError())
-        return await self._handle_single_json_rpc(payload, idu_mcp_client, effects_mcp_client)
+        return await self._handle_single_json_rpc(
+            payload, idu_mcp_client, effects_mcp_client
+        )
 
     async def stream_json_rpc(
         self,
@@ -93,7 +98,9 @@ class ProvisionA2AService:
                 yield self._success(request_id, result)
                 return
 
-            async for event in self.executor.stream(params, idu_mcp_client, effects_mcp_client):
+            async for event in self.executor.stream(
+                params, idu_mcp_client, effects_mcp_client
+            ):
                 yield self._success(request_id, event)
 
         except A2AJsonRpcError as exc:
@@ -112,7 +119,9 @@ class ProvisionA2AService:
             self._validate_json_rpc(payload)
             method = payload.get("method")
             params = self._extract_params(payload)
-            result = await self._dispatch(method, params, idu_mcp_client, effects_mcp_client)
+            result = await self._dispatch(
+                method, params, idu_mcp_client, effects_mcp_client
+            )
             return self._success(request_id, result)
         except A2AJsonRpcError as exc:
             return self._error(request_id, exc)
@@ -127,7 +136,9 @@ class ProvisionA2AService:
         effects_mcp_client: EffectsMcpClient,
     ) -> A2AResponse:
         if method in {"SendMessage", "message/send", "tasks/send"}:
-            return await self.executor.execute(params, idu_mcp_client, effects_mcp_client)
+            return await self.executor.execute(
+                params, idu_mcp_client, effects_mcp_client
+            )
         if method in self.STREAMING_METHODS:
             raise A2AStreamingEndpointRequiredError()
         if method in {"GetTask", "tasks/get"}:
@@ -140,7 +151,9 @@ class ProvisionA2AService:
             return self._cancel_task(params)
         if method in {"GetExtendedAgentCard", "agent/getAuthenticatedExtendedCard"}:
             base_url = str(params.get("baseUrl", "")).rstrip("/")
-            return self.get_agent_card(base_url) if base_url else self.get_agent_card("")
+            return (
+                self.get_agent_card(base_url) if base_url else self.get_agent_card("")
+            )
         raise A2AMethodNotFoundError(method)
 
     def _get_task(self, params: A2AData) -> A2AData:

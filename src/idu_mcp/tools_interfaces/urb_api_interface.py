@@ -104,6 +104,7 @@ async def get_physical_objects_by_name(
         token,
     )
 
+
 @urban_api_mcp.tool(
     name="GetServiceTypeIdByName",
     title="Получить ID сервиса по названию",
@@ -118,9 +119,9 @@ async def get_physical_objects_by_name(
     meta={"author": "LeonDeTur"},
 )
 async def get_service_type_id_by_name(
-        service_name: str,
-        token: str = Depends(extract_token),
-        urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
+    service_name: str,
+    token: str = Depends(extract_token),
+    urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
 ) -> int | None:
     """
     Urban API tools interface method to retrieve service ID by name.

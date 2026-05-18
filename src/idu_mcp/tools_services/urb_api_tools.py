@@ -77,5 +77,7 @@ class UrbanApiTool:
             int | None: Service type id. None if service not found.
         """
 
-        service_name_id = await self.client.get_service_name_id([service_name.capitalize()], token)
+        service_name_id = await self.client.get_service_name_id(
+            [service_name.capitalize()], token
+        )
         return service_name_id.get(service_name.capitalize())

@@ -1,6 +1,5 @@
-from fastmcp import Client as McpClient
-
 from base_mcp_client import BaseMcpClient
+from fastmcp import Client as McpClient
 
 
 class RestrictionMcpClient(BaseMcpClient):
@@ -9,5 +8,3 @@ class RestrictionMcpClient(BaseMcpClient):
 
         super().__init__(mcp_client)
         self._mcp_url = mcp_url
-
-    

@@ -1,8 +1,8 @@
 from fastmcp import Client as McpClient
 from pydantic import SecretStr
 
-from src.agents.mcp_clients.base_mcp_client import BaseMcpClient, _is_token_expired
 from src.agents.common.exceptions.token_exceptions import TokenExpiredError
+from src.agents.mcp_clients.base_mcp_client import BaseMcpClient, _is_token_expired
 
 
 class EffectsMcpClient(BaseMcpClient):
@@ -42,7 +42,9 @@ class EffectsMcpClient(BaseMcpClient):
             arguments["target_population"] = target_population
         meta = {"scenario_id": scenario_id, "project_id": project_id}
         try:
-            return await self.execute_tool("CalculateObjectEffects", arguments, meta=meta)
+            return await self.execute_tool(
+                "CalculateObjectEffects", arguments, meta=meta
+            )
         except Exception as exc:
             if _is_token_expired(exc):
                 raise TokenExpiredError(str(exc)) from exc

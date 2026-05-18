@@ -55,7 +55,9 @@ class ProvisionContextBuilder:
             ("До реализации проекта", "before_prove_data"),
             ("После реализации проекта", "after_prove_data"),
         ):
-            summary = self._summarize_layers(section_label, effects_result.get(key) or {})
+            summary = self._summarize_layers(
+                section_label, effects_result.get(key) or {}
+            )
             if summary:
                 lines.append(summary)
 

@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from pydantic import ValidationError
 
-from src.agents.services.restriction_catalog import parse_catalog_prompt, strip_json_fence
+from src.agents.services.restriction_catalog import (
+    parse_catalog_prompt,
+    strip_json_fence,
+)
 from src.agents.services.service_entities.provision_plan import (
     ProvisionPlan,
     ProvisionPlanMode,
@@ -47,7 +50,10 @@ class ProvisionPlanBuilder:
                 )
             else:
                 raw = raw.model_copy(update={"service_name": canonical})
-        if raw.mode == ProvisionPlanMode.NEEDS_CLARIFICATION and not raw.clarification_question:
+        if (
+            raw.mode == ProvisionPlanMode.NEEDS_CLARIFICATION
+            and not raw.clarification_question
+        ):
             raw = raw.model_copy(
                 update={
                     "clarification_question": self._clarification_text(
@@ -135,7 +141,11 @@ class ProvisionPlanBuilder:
 
     @staticmethod
     def _clarification_text(requested: str | None, services_catalog: list[str]) -> str:
-        catalog_str = ", ".join(services_catalog) if services_catalog else "нет доступных сервисов"
+        catalog_str = (
+            ", ".join(services_catalog)
+            if services_catalog
+            else "нет доступных сервисов"
+        )
         if requested:
             return (
                 f"Сервис «{requested}» не найден в каталоге сценария. "

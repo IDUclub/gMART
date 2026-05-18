@@ -35,7 +35,10 @@ from src.agents.services.pipeline_state import (
 from src.agents.services.provision_context import ProvisionContextBuilder
 from src.agents.services.provision_plan_builder import ProvisionPlanBuilder
 from src.agents.services.provision_tool_executor import ProvisionToolExecutor
-from src.agents.services.service_entities.provision_plan import ProvisionPlan, ProvisionPlanMode
+from src.agents.services.service_entities.provision_plan import (
+    ProvisionPlan,
+    ProvisionPlanMode,
+)
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
@@ -84,7 +87,9 @@ class ProvisionService(BaseLlmService):
             idu_mcp_client.mcp_client.transport.auth.token.get_secret_value()
         ]
         text_buffer: list[str] = []
-        message_parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest] = []
+        message_parts: list[
+            TextPartRequest | StatusPartRequest | ToolCallPartRequest
+        ] = []
 
         async for item in self._run_provision_pipeline(
             idu_mcp_client=idu_mcp_client,
@@ -149,7 +154,9 @@ class ProvisionService(BaseLlmService):
         chat_id: str | None = None,
         request_id: str | None = None,
     ) -> AsyncGenerator:
-        is_reconnect = request_id is not None and await self.state_store.exists(request_id)
+        is_reconnect = request_id is not None and await self.state_store.exists(
+            request_id
+        )
         if is_reconnect:
             logger.info(f"Reconnect for request_id={request_id}, replaying events")
             for event in await self.state_store.get_buffered_events(request_id):
@@ -238,12 +245,16 @@ class ProvisionService(BaseLlmService):
                 request_id, PipelineStep.RESOLVE_SERVICE, plan.model_dump(mode="json")
             )
         else:
-            plan = ProvisionPlan.model_validate(checkpoint[PipelineStep.RESOLVE_SERVICE])
+            plan = ProvisionPlan.model_validate(
+                checkpoint[PipelineStep.RESOLVE_SERVICE]
+            )
 
         if plan.mode == ProvisionPlanMode.NEEDS_CLARIFICATION:
             yield self._buf(
                 request_id,
-                self._status("service_lookup", "Не удалось определить сервис из запроса"),
+                self._status(
+                    "service_lookup", "Не удалось определить сервис из запроса"
+                ),
             )
             yield self._buf(
                 request_id,
@@ -294,7 +305,9 @@ class ProvisionService(BaseLlmService):
         service_type_id: int = svc_result.data["service_type_id"]
         yield self._buf(
             request_id,
-            self._tool_call("service_lookup", svc_result.tool_calls, mcp_source="IDU_MCP_URL"),
+            self._tool_call(
+                "service_lookup", svc_result.tool_calls, mcp_source="IDU_MCP_URL"
+            ),
         )
         yield self._buf(
             request_id,
@@ -391,7 +404,9 @@ class ProvisionService(BaseLlmService):
                     f"Token expired for request_id={request_id}, waiting for refresh"
                 )
                 yield self._token_expired_event(request_id)
-                await self.state_store.set_status(request_id, PipelineStatus.WAITING_TOKEN)
+                await self.state_store.set_status(
+                    request_id, PipelineStatus.WAITING_TOKEN
+                )
                 try:
                     new_token = await asyncio.wait_for(
                         self.state_store.wait_for_token(request_id),
@@ -400,10 +415,16 @@ class ProvisionService(BaseLlmService):
                     idu_mcp_client.update_token(new_token)
                     effects_mcp_client.update_token(new_token)
                     token_ref[0] = new_token
-                    await self.state_store.set_status(request_id, PipelineStatus.RUNNING)
-                    logger.info(f"Token refreshed for request_id={request_id}, retrying")
+                    await self.state_store.set_status(
+                        request_id, PipelineStatus.RUNNING
+                    )
+                    logger.info(
+                        f"Token refreshed for request_id={request_id}, retrying"
+                    )
                 except asyncio.TimeoutError:
-                    await self.state_store.set_status(request_id, PipelineStatus.SUSPENDED)
+                    await self.state_store.set_status(
+                        request_id, PipelineStatus.SUSPENDED
+                    )
                     yield self._pipeline_suspended_event(request_id)
                     raise PipelineSuspendedError(request_id)
 
@@ -426,7 +447,9 @@ class ProvisionService(BaseLlmService):
         services_catalog = await self.plan_builder.get_services_catalog(
             idu_mcp_client, scenario_id
         )
-        return await self.plan_builder.build_plan(model, user_query, services_catalog, history)
+        return await self.plan_builder.build_plan(
+            model, user_query, services_catalog, history
+        )
 
     # ------------------------------------------------------------------
     # LLM generation
@@ -480,7 +503,9 @@ class ProvisionService(BaseLlmService):
     ) -> None:
         if not chat_id or not parts:
             return
-        await self.add_complex_message(token, chat_id, RoleEnum.ASSISTANT, parts, **metadata)
+        await self.add_complex_message(
+            token, chat_id, RoleEnum.ASSISTANT, parts, **metadata
+        )
 
     def _schedule_add_message_parts_to_chat(
         self,
@@ -510,7 +535,9 @@ class ProvisionService(BaseLlmService):
     ) -> None:
         if not text_buffer:
             return
-        parts.append(TextPartRequest(kind="text", payload=TextPayload(text="".join(text_buffer))))
+        parts.append(
+            TextPartRequest(kind="text", payload=TextPayload(text="".join(text_buffer)))
+        )
         text_buffer.clear()
 
     def _add_tool_calls_to_parts(
@@ -549,7 +576,11 @@ class ProvisionService(BaseLlmService):
             )
         if item_type == "chunk":
             text = content.get("text") or ""
-            return TextPartRequest(kind="text", payload=TextPayload(text=text)) if text else None
+            return (
+                TextPartRequest(kind="text", payload=TextPayload(text=text))
+                if text
+                else None
+            )
         return None
 
     @staticmethod
@@ -662,7 +693,10 @@ class ProvisionService(BaseLlmService):
                             },
                         }
         effects_fc = effects_data.get("effects")
-        if isinstance(effects_fc, dict) and effects_fc.get("type") == "FeatureCollection":
+        if (
+            isinstance(effects_fc, dict)
+            and effects_fc.get("type") == "FeatureCollection"
+        ):
             yield {
                 "type": "feature_collection",
                 "content": {"name": "effects", "feature_collection": effects_fc},

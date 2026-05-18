@@ -43,7 +43,9 @@ class ProvisionAgentExecutor:
             execution["message"],
             execution["metadata"],
         )
-        async for _ in self._run_pipeline(execution, idu_mcp_client, effects_mcp_client):
+        async for _ in self._run_pipeline(
+            execution, idu_mcp_client, effects_mcp_client
+        ):
             pass
         return self.task_store.get_task(task["id"]) or task
 
@@ -61,7 +63,9 @@ class ProvisionAgentExecutor:
             execution["metadata"],
         )
         yield {"task": task}
-        async for event in self._run_pipeline(execution, idu_mcp_client, effects_mcp_client):
+        async for event in self._run_pipeline(
+            execution, idu_mcp_client, effects_mcp_client
+        ):
             yield event
 
     async def _run_pipeline(
@@ -77,7 +81,9 @@ class ProvisionAgentExecutor:
         status = self.task_store.set_status(
             task_id,
             TaskState.WAITING,
-            self._agent_message(context_id, task_id, "Starting the provision effects pipeline."),
+            self._agent_message(
+                context_id, task_id, "Starting the provision effects pipeline."
+            ),
         )
         yield self._status_update(task_id, context_id, status, final=False)
 
@@ -123,7 +129,9 @@ class ProvisionAgentExecutor:
             )
             yield self._status_update(task_id, context_id, status, final=True)
             if not emitted_text:
-                artifact = self._text_artifact("Provision effects pipeline failed.", append=False)
+                artifact = self._text_artifact(
+                    "Provision effects pipeline failed.", append=False
+                )
                 self.task_store.add_or_append_artifact(task_id, artifact, append=False)
                 yield self._artifact_update(task_id, context_id, artifact, append=False)
 
@@ -162,7 +170,9 @@ class ProvisionAgentExecutor:
                 task_id,
                 TaskState.FAILED,
                 self._agent_message(
-                    context_id, task_id, content.get("message", "Provision pipeline error")
+                    context_id,
+                    task_id,
+                    content.get("message", "Provision pipeline error"),
                 ),
             )
             return self._status_update(task_id, context_id, status, final=True)
@@ -178,7 +188,9 @@ class ProvisionAgentExecutor:
         project_id = request_data.get("project_id")
 
         if scenario_id is None:
-            raise ValueError("scenario_id is required in params.metadata or a data part")
+            raise ValueError(
+                "scenario_id is required in params.metadata or a data part"
+            )
         if project_id is None:
             raise ValueError("project_id is required in params.metadata or a data part")
 
@@ -203,7 +215,9 @@ class ProvisionAgentExecutor:
             "message": message,
             "metadata": request_data,
             "model": request_data.get("model") or self.DEFAULT_MODEL,
-            "temperature": float(request_data.get("temperature", self.DEFAULT_TEMPERATURE)),
+            "temperature": float(
+                request_data.get("temperature", self.DEFAULT_TEMPERATURE)
+            ),
             "scenario_id": int(scenario_id),
             "project_id": int(project_id),
             "user_query": user_query,
@@ -216,7 +230,10 @@ class ProvisionAgentExecutor:
             return dict(message)
         direct_text = params.get("request") or params.get("text")
         if direct_text:
-            return {"role": "user", "parts": [{"type": "text", "text": str(direct_text)}]}
+            return {
+                "role": "user",
+                "parts": [{"type": "text", "text": str(direct_text)}],
+            }
         raise ValueError("params.message is required")
 
     @staticmethod
@@ -230,8 +247,14 @@ class ProvisionAgentExecutor:
             if isinstance(part_data, dict):
                 data.update(part_data)
         for key in (
-            "scenario_id", "scenarioId", "project_id", "projectId",
-            "model", "temperature", "request", "userQuery",
+            "scenario_id",
+            "scenarioId",
+            "project_id",
+            "projectId",
+            "model",
+            "temperature",
+            "request",
+            "userQuery",
         ):
             if key in params:
                 data[key] = params[key]
@@ -272,7 +295,9 @@ class ProvisionAgentExecutor:
         return re.sub(r"\s{2,}", " ", text).strip()
 
     @staticmethod
-    def _status_update(task_id: str, context_id: str, status: A2AData, final: bool) -> A2AEventData:
+    def _status_update(
+        task_id: str, context_id: str, status: A2AData, final: bool
+    ) -> A2AEventData:
         return {
             "statusUpdate": {
                 "taskId": task_id,
@@ -298,7 +323,11 @@ class ProvisionAgentExecutor:
 
     @staticmethod
     def _agent_message(context_id: str, task_id: str, text: str) -> A2AData:
-        return {"role": "agent", "kind": "message", "parts": [{"type": "text", "text": text}]}
+        return {
+            "role": "agent",
+            "kind": "message",
+            "parts": [{"type": "text", "text": text}],
+        }
 
     @staticmethod
     def _text_artifact(text: str, append: bool) -> A2AData:

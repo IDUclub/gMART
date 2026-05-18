@@ -23,6 +23,7 @@ a2a_router = APIRouter(tags=["a2a"])
 
 # ── Agent card discovery ──────────────────────────────────────────────────────
 
+
 @restriction_a2a_router.get("/.well-known/agent-card.json", include_in_schema=False)
 @a2a_router.get("/.well-known/agent-card.json", include_in_schema=False)
 async def get_agent_card(
@@ -43,6 +44,7 @@ async def get_legacy_agent_card(
 
 # ── JSON-RPC handler (shared logic) ──────────────────────────────────────────
 
+
 async def _handle_restriction_a2a(
     payload: A2AJsonRpcPayloadDTO,
     a2a_service: A2AService,
@@ -57,6 +59,7 @@ async def _handle_restriction_a2a(
 
 
 # ── Canonical endpoint ────────────────────────────────────────────────────────
+
 
 @restriction_a2a_router.post(
     "/a2a",
@@ -80,6 +83,7 @@ async def handle_restriction_a2a_json_rpc(
 
 # ── Deprecated root-level endpoint ───────────────────────────────────────────
 
+
 @a2a_router.post(
     "/a2a",
     deprecated=True,
@@ -99,6 +103,7 @@ async def handle_a2a_json_rpc(
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 async def _stream_json_rpc_events(
     a2a_service: A2AService,
