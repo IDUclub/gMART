@@ -32,26 +32,26 @@ from src.agents.services.pipeline_state import (
     PipelineStatus,
     PipelineStep,
 )
-from src.agents.services.restriction_catalog import RestrictionPlanBuilder
-from src.agents.services.restriction_context import RestrictionContextBuilder
-from src.agents.services.restriction_tool_executor import RestrictionToolExecutor
-from src.agents.services.service_entities.restriction_plan import (
-    RestrictionPlan,
-    RestrictionTaskMode,
+from src.agents.services.provision_context import ProvisionContextBuilder
+from src.agents.services.provision_plan_builder import ProvisionPlanBuilder
+from src.agents.services.provision_tool_executor import ProvisionToolExecutor
+from src.agents.services.service_entities.provision_plan import (
+    ProvisionPlan,
+    ProvisionPlanMode,
 )
 
 if TYPE_CHECKING:
+    from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
     from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 
 
-class RestrictionParserService(BaseLlmService):
+class ProvisionService(BaseLlmService):
     """
-    Service for running restriction execution pipelines. Inherits from BaseLlmService.
-    Attributes:
-        host (str): Ollama host.
-        chat_storage_client (ChatStorageApiClient)
-        llm_client (AsyncOllamaClient): Asynchronous ollama client.
-        state_store (PipelineStateStore): Redis-backed pipeline state store.
+    Service for running provision effects pipelines.
+    Pipeline steps:
+        1. GET_SERVICE_ID  — resolve service_type_id via IDU MCP GetServices.
+        2. CALCULATE_EFFECTS — call CalculateObjectEffects on the effects MCP server.
+        3. FINAL_RESPONSE  — LLM analysis of pivot data.
     """
 
     def __init__(
@@ -62,36 +62,42 @@ class RestrictionParserService(BaseLlmService):
     ) -> None:
 
         super().__init__(ollama_host, chat_storage_client)
-        self.plan_builder = RestrictionPlanBuilder(self.llm_client)
-        self.tool_executor = RestrictionToolExecutor()
-        self.context_builder = RestrictionContextBuilder()
+        self.plan_builder = ProvisionPlanBuilder(self.llm_client)
+        self.tool_executor = ProvisionToolExecutor()
+        self.context_builder = ProvisionContextBuilder()
         self.state_store = state_store
 
-    async def run_restriction_execution_pipline(
+    # ------------------------------------------------------------------
+    # Public entry point (SSE outer wrapper — mirrors RestrictionParserService)
+    # ------------------------------------------------------------------
+
+    async def run_provision_pipeline(
         self,
-        mcp_client: IduMcpClient,
-        temperature: float,
+        idu_mcp_client: IduMcpClient,
+        effects_mcp_client: EffectsMcpClient,
         model: str,
+        temperature: float,
         user_query: str,
+        project_id: int,
         scenario_id: int,
         chat_id: str | None = None,
         request_id: str | None = None,
     ) -> AsyncGenerator:
-        # Mutable container so the inner pipeline can update the token on
-        # refresh and the outer generator sees the latest value.
         token_ref: list[str] = [
-            mcp_client.mcp_client.transport.auth.token.get_secret_value()
+            idu_mcp_client.mcp_client.transport.auth.token.get_secret_value()
         ]
         text_buffer: list[str] = []
         message_parts: list[
             TextPartRequest | StatusPartRequest | ToolCallPartRequest
         ] = []
 
-        async for item in self._run_restriction_execution_pipline(
-            mcp_client=mcp_client,
-            temperature=temperature,
+        async for item in self._run_provision_pipeline(
+            idu_mcp_client=idu_mcp_client,
+            effects_mcp_client=effects_mcp_client,
             model=model,
+            temperature=temperature,
             user_query=user_query,
+            project_id=project_id,
             scenario_id=scenario_id,
             chat_id=chat_id,
             request_id=request_id,
@@ -108,7 +114,6 @@ class RestrictionParserService(BaseLlmService):
                     mcp_source=content.get("mcp_source"),
                 )
                 continue
-
             if item.get("type") == "chunk":
                 content = item.get("content", {})
                 if content.get("text"):
@@ -117,7 +122,6 @@ class RestrictionParserService(BaseLlmService):
                     self._flush_text_buffer_to_parts(text_buffer, message_parts)
                 yield item
                 continue
-
             self._flush_text_buffer_to_parts(text_buffer, message_parts)
             part = self._pipeline_item_to_chat_part(item)
             if part is not None:
@@ -126,7 +130,6 @@ class RestrictionParserService(BaseLlmService):
 
         if text_buffer:
             self._flush_text_buffer_to_parts(text_buffer, message_parts)
-        # Use token_ref[0]: may have been refreshed during pipeline execution.
         self._schedule_add_message_parts_to_chat(
             token_ref[0],
             chat_id,
@@ -134,12 +137,18 @@ class RestrictionParserService(BaseLlmService):
             scenario_id=scenario_id,
         )
 
-    async def _run_restriction_execution_pipline(
+    # ------------------------------------------------------------------
+    # Inner pipeline
+    # ------------------------------------------------------------------
+
+    async def _run_provision_pipeline(
         self,
-        mcp_client: IduMcpClient,
-        temperature: float,
+        idu_mcp_client: IduMcpClient,
+        effects_mcp_client: EffectsMcpClient,
         model: str,
+        temperature: float,
         user_query: str,
+        project_id: int,
         scenario_id: int,
         token_ref: list[str],
         chat_id: str | None = None,
@@ -152,15 +161,10 @@ class RestrictionParserService(BaseLlmService):
             logger.info(f"Reconnect for request_id={request_id}, replaying events")
             for event in await self.state_store.get_buffered_events(request_id):
                 yield event
-            # Restore chat_id from persisted state so history is available
-            # even if the client didn't re-send the query parameter.
             if not chat_id:
-                stored_state = await self.state_store.get_state(request_id)
-                if stored_state and stored_state.get("chat_id"):
-                    chat_id = stored_state["chat_id"]
-                    logger.info(
-                        f"Restored chat_id={chat_id} from state for request_id={request_id}"
-                    )
+                stored = await self.state_store.get_state(request_id)
+                if stored and stored.get("chat_id"):
+                    chat_id = stored["chat_id"]
         else:
             request_id = request_id or self.state_store.new_request_id()
 
@@ -169,20 +173,21 @@ class RestrictionParserService(BaseLlmService):
             yield self._buf(request_id, self._pipeline_started_event(request_id))
 
             if not chat_id:
-                logger.info("No chat id provided, creating a new chat.")
                 chat_result: list[tuple[str, str]] = []
                 try:
                     async for event in self._retryable_step(
                         request_id,
-                        mcp_client,
+                        idu_mcp_client,
+                        effects_mcp_client,
                         token_ref,
                         lambda: self.create_chat(
                             token_ref[0],
                             model,
                             user_query,
-                            additional_instructions="""Первый запрос пользователя был отправлен к сервису
-                                создания слоёв с ограничениями ихз запроса пользователя.
-                                """,
+                            additional_instructions=(
+                                "Первый запрос пользователя был отправлен к сервису "
+                                "расчёта эффектов обеспеченности."
+                            ),
                             scenario_id=scenario_id,
                         ),
                         chat_result,
@@ -202,38 +207,33 @@ class RestrictionParserService(BaseLlmService):
                 temperature=temperature,
             )
 
-        logger.info(
-            f"Pipeline request_id={request_id} chat_id={chat_id} query={user_query!r}"
-        )
+        logger.info(f"Provision pipeline request_id={request_id} chat_id={chat_id}")
 
         llm_history: list[dict] = []
         if original_chat_id:
             try:
                 chat_info = await self.get_chat_messages(token_ref[0], original_chat_id)
                 llm_history = self.build_llm_history(chat_info.messages)
-                logger.info(f"Loaded {len(llm_history)} messages from chat history")
             except Exception as exc:
-                logger.warning(
-                    f"Failed to fetch chat history, proceeding without it: {exc}"
-                )
+                logger.warning(f"Failed to fetch chat history: {exc}")
 
         checkpoint = await self.state_store.get_checkpoint(request_id)
 
+        # ── Step 0: RESOLVE_SERVICE ───────────────────────────────────
         yield self._buf(
             request_id,
-            self._status(
-                "data_retrievement", "Получаю каталоги сервисов и физических объектов"
-            ),
+            self._status("service_lookup", "Определяю сервис и параметры из запроса"),
         )
-        if PipelineStep.PLAN not in checkpoint:
-            plan_out: list[RestrictionPlan] = []
+        if PipelineStep.RESOLVE_SERVICE not in checkpoint:
+            plan_out: list[ProvisionPlan] = []
             try:
                 async for event in self._retryable_step(
                     request_id,
-                    mcp_client,
+                    idu_mcp_client,
+                    effects_mcp_client,
                     token_ref,
-                    lambda: self._build_plan(
-                        mcp_client, model, user_query, scenario_id, llm_history
+                    lambda: self._resolve_service_plan(
+                        idu_mcp_client, model, user_query, scenario_id, llm_history
                     ),
                     plan_out,
                 ):
@@ -242,209 +242,137 @@ class RestrictionParserService(BaseLlmService):
                 return
             plan = plan_out[0]
             await self.state_store.save_checkpoint(
-                request_id, PipelineStep.PLAN, plan.model_dump(mode="json")
+                request_id, PipelineStep.RESOLVE_SERVICE, plan.model_dump(mode="json")
             )
         else:
-            plan = RestrictionPlan.model_validate(checkpoint[PipelineStep.PLAN])
+            plan = ProvisionPlan.model_validate(
+                checkpoint[PipelineStep.RESOLVE_SERVICE]
+            )
 
-        if plan.mode == RestrictionTaskMode.NEEDS_CLARIFICATION:
+        if plan.mode == ProvisionPlanMode.NEEDS_CLARIFICATION:
             yield self._buf(
                 request_id,
                 self._status(
-                    "context_preparation", "Нужно уточнение параметров запроса."
+                    "service_lookup", "Не удалось определить сервис из запроса"
                 ),
             )
             yield self._buf(
                 request_id,
                 self._chunk(
-                    plan.clarification_question or "Уточните параметры запроса.",
+                    plan.clarification_question
+                    or "Уточните, для какого сервиса рассчитать эффекты обеспеченности.",
                     done=True,
                 ),
             )
             await self.state_store.set_status(request_id, PipelineStatus.DONE)
             return
 
-        if PipelineStep.PLAN_EXPLANATION not in checkpoint:
-            yield self._buf(
-                request_id,
-                self._status(
-                    "plan_explanation", "Объясняю, почему выбраны эти параметры"
-                ),
-            )
-            async for chunk in self.generate_plan_explanation(
-                model, user_query, plan, temperature, history=llm_history
-            ):
-                yield self._buf(request_id, chunk)
-            yield self._buf(request_id, self._chunk("\n\n", done=False))
-            await self.state_store.save_checkpoint(
-                request_id, PipelineStep.PLAN_EXPLANATION, True
-            )
+        service_name: str = plan.service_name  # type: ignore[assignment]
+        target_population: int | None = plan.target_population
 
+        # ── Step 1: GET_SERVICE_ID ────────────────────────────────────
         yield self._buf(
             request_id,
-            self._status(
-                "data_retrievement", "Получаю необходимые слои по утверждённому плану"
-            ),
+            self._status("service_lookup", f"Ищу сервис «{service_name}» в каталоге"),
         )
-        if PipelineStep.LAYERS not in checkpoint:
-            layers_out: list[Any] = []
+        if PipelineStep.GET_SERVICE_ID not in checkpoint:
+            svc_out: list[Any] = []
             try:
                 async for event in self._retryable_step(
                     request_id,
-                    mcp_client,
+                    idu_mcp_client,
+                    effects_mcp_client,
                     token_ref,
-                    lambda: self.tool_executor.retrieve_layers_for_plan(
-                        mcp_client, plan, scenario_id
+                    lambda: self.tool_executor.get_service_id(
+                        idu_mcp_client, service_name, scenario_id
                     ),
-                    layers_out,
+                    svc_out,
                 ):
                     yield self._buf(request_id, event)
             except PipelineSuspendedError:
                 return
-            layers_result = layers_out[0]
+            svc_result = svc_out[0]
             await self.state_store.save_checkpoint(
-                request_id, PipelineStep.LAYERS, layers_result.tool_result
+                request_id, PipelineStep.GET_SERVICE_ID, svc_result.data
             )
         else:
-            from src.agents.services.service_entities.restriction_entities import (
-                GeometryToolCallResult,
+            from src.agents.services.provision_tool_executor import ProvisionStepResult
+
+            svc_result = ProvisionStepResult(
+                data=checkpoint[PipelineStep.GET_SERVICE_ID], tool_calls=[]
             )
 
-            layers_result = GeometryToolCallResult(
-                tool_result=checkpoint[PipelineStep.LAYERS],
-                tool_calls=[],
-                messages=[],
-            )
-
+        service_type_id: int = svc_result.data["service_type_id"]
         yield self._buf(
             request_id,
             self._tool_call(
-                "data_retrievement", layers_result.tool_calls, mcp_source="IDU_MCP_URL"
+                "service_lookup", svc_result.tool_calls, mcp_source="IDU_MCP_URL"
             ),
         )
-        for item in self._feature_collections(layers_result.tool_result):
-            yield self._buf(request_id, item)
-        layers = layers_result.tool_result
+        yield self._buf(
+            request_id,
+            self._status("service_lookup", f"Сервис найден: id={service_type_id}"),
+        )
 
+        # ── Step 2: CALCULATE_EFFECTS ─────────────────────────────────
         yield self._buf(
             request_id,
             self._status(
-                "buffer_creation", "Начинаю построение буферов зон с ограничениями"
+                "effects_calculation",
+                "Рассчитываю эффекты обеспеченности для сценария проекта",
             ),
         )
-        if PipelineStep.BUFFERS not in checkpoint:
-            buffers_out: list[Any] = []
+        if PipelineStep.CALCULATE_EFFECTS not in checkpoint:
+            eff_out: list[Any] = []
             try:
                 async for event in self._retryable_step(
                     request_id,
-                    mcp_client,
+                    idu_mcp_client,
+                    effects_mcp_client,
                     token_ref,
-                    lambda: self.tool_executor.run_buffer_plan(
-                        mcp_client, plan, layers
+                    lambda: self.tool_executor.calculate_effects(
+                        effects_mcp_client,
+                        service_type_id,
+                        scenario_id,
+                        project_id,
+                        target_population,
                     ),
-                    buffers_out,
+                    eff_out,
                 ):
                     yield self._buf(request_id, event)
             except PipelineSuspendedError:
                 return
-            buffers_result = buffers_out[0]
+            eff_result = eff_out[0]
             await self.state_store.save_checkpoint(
-                request_id, PipelineStep.BUFFERS, buffers_result.tool_result
+                request_id, PipelineStep.CALCULATE_EFFECTS, eff_result.data
             )
         else:
-            from src.agents.services.service_entities.restriction_entities import (
-                GeometryToolCallResult,
+            from src.agents.services.provision_tool_executor import ProvisionStepResult
+
+            eff_result = ProvisionStepResult(
+                data=checkpoint[PipelineStep.CALCULATE_EFFECTS], tool_calls=[]
             )
 
-            buffers_result = GeometryToolCallResult(
-                tool_result=checkpoint[PipelineStep.BUFFERS],
-                tool_calls=[],
-                messages=[],
-            )
-
+        effects_data: dict = eff_result.data
         yield self._buf(
             request_id,
             self._tool_call(
-                "buffer_creation", buffers_result.tool_calls, mcp_source="IDU_MCP_URL"
+                "effects_calculation",
+                eff_result.tool_calls,
+                mcp_source="OBJECTS_EFFECTS_MCP_URL",
             ),
         )
         yield self._buf(
             request_id,
-            self._status(
-                "buffer_creation", "Построил необходимые буферы с ограничениями."
-            ),
+            self._status("effects_calculation", "Расчёт эффектов завершён"),
         )
-        for item in self._feature_collections(buffers_result.tool_result):
+        for item in self._effects_feature_collections(effects_data):
             yield self._buf(request_id, item)
 
-        if plan.mode == RestrictionTaskMode.BUFFERS_ONLY:
-            context = await self.context_builder.generate_buffers_context(
-                buffers_result.tool_result
-            )
-        else:
-            yield self._buf(
-                request_id,
-                self._status(
-                    "restriction_formation",
-                    "Начинаю извлечение нормативных ограничений.",
-                ),
-            )
-            if PipelineStep.RESTRICTIONS not in checkpoint:
-                restr_out: list[Any] = []
-                try:
-                    async for event in self._retryable_step(
-                        request_id,
-                        mcp_client,
-                        token_ref,
-                        lambda: self.tool_executor.run_restriction_plan(
-                            mcp_client, plan, layers, buffers_result.tool_result
-                        ),
-                        restr_out,
-                    ):
-                        yield self._buf(request_id, event)
-                except PipelineSuspendedError:
-                    return
-                restriction_result = restr_out[0]
-                await self.state_store.save_checkpoint(
-                    request_id,
-                    PipelineStep.RESTRICTIONS,
-                    restriction_result.tool_result,
-                )
-            else:
-                from src.agents.services.service_entities.restriction_entities import (
-                    GeometryToolCallResult,
-                )
-
-                restriction_result = GeometryToolCallResult(
-                    tool_result=checkpoint[PipelineStep.RESTRICTIONS],
-                    tool_calls=[],
-                    messages=[],
-                )
-
-            yield self._buf(
-                request_id,
-                self._tool_call(
-                    "restriction_formation",
-                    restriction_result.tool_calls,
-                    mcp_source="IDU_MCP_URL",
-                ),
-            )
-            yield self._buf(
-                request_id,
-                self._status(
-                    "restriction_formation",
-                    "Извлечение нормативных ограничений завершено.",
-                ),
-            )
-            for item in self._feature_collections(restriction_result.tool_result):
-                yield self._buf(request_id, item)
-            context = await self.context_builder.generate_restrictions_context(
-                restriction_result.tool_result["generators"],
-                restriction_result.tool_result["objects"],
-            )
-
+        # ── Step 3: FINAL_RESPONSE ────────────────────────────────────
         if PipelineStep.FINAL_RESPONSE not in checkpoint:
-            async for chunk in self.generate_final_response(
+            context = self.context_builder.build_context(effects_data, service_name)
+            async for chunk in self._generate_analysis(
                 model, user_query, context, temperature, history=llm_history
             ):
                 yield self._buf(request_id, chunk)
@@ -454,28 +382,19 @@ class RestrictionParserService(BaseLlmService):
 
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
 
+    # ------------------------------------------------------------------
+    # Token-refresh retry wrapper (mirrors RestrictionParserService)
+    # ------------------------------------------------------------------
+
     async def _retryable_step(
         self,
         request_id: str,
-        mcp_client: IduMcpClient,
+        idu_mcp_client: IduMcpClient,
+        effects_mcp_client: EffectsMcpClient,
         token_ref: list[str],
         step_fn: Callable,
         result: list,
     ) -> AsyncGenerator[dict, None]:
-        """
-        Async-generator that executes any pipeline step with automatic
-        token-refresh on ``TokenExpiredError``.
-
-        Works for both MCP tool calls and HTTP API calls (chat storage, etc.)
-        — the caller must capture ``mcp_client`` and ``token_ref[0]`` from the
-        enclosing scope inside the ``step_fn`` lambda so they see the refreshed
-        values on retry.
-
-        Yields ``token_expired`` events while waiting for a new token.
-        On success, appends the result to ``result``.
-        On timeout, sets pipeline status to SUSPENDED, yields a
-        ``pipeline_suspended`` event, and raises ``PipelineSuspendedError``.
-        """
         while True:
             try:
                 result.append(await step_fn())
@@ -493,18 +412,16 @@ class RestrictionParserService(BaseLlmService):
                         self.state_store.wait_for_token(request_id),
                         timeout=TOKEN_REFRESH_TIMEOUT,
                     )
-                    mcp_client.update_token(new_token)
+                    idu_mcp_client.update_token(new_token)
+                    effects_mcp_client.update_token(new_token)
                     token_ref[0] = new_token
                     await self.state_store.set_status(
                         request_id, PipelineStatus.RUNNING
                     )
                     logger.info(
-                        f"Token refreshed for request_id={request_id}, retrying step"
+                        f"Token refreshed for request_id={request_id}, retrying"
                     )
                 except asyncio.TimeoutError:
-                    logger.warning(
-                        f"Token refresh timed out for request_id={request_id}, suspending"
-                    )
                     await self.state_store.set_status(
                         request_id, PipelineStatus.SUSPENDED
                     )
@@ -512,70 +429,50 @@ class RestrictionParserService(BaseLlmService):
                     raise PipelineSuspendedError(request_id)
 
     def _buf(self, request_id: str, event: dict) -> dict:
-        """Fire-and-forget: buffer the event to Redis and return it for yielding."""
         asyncio.create_task(self.state_store.buffer_event(request_id, event))
         return event
 
-    async def generate_plan_explanation(
+    # ------------------------------------------------------------------
+    # Service plan resolution
+    # ------------------------------------------------------------------
+
+    async def _resolve_service_plan(
         self,
+        idu_mcp_client: IduMcpClient,
         model: str,
         user_query: str,
-        plan: RestrictionPlan,
-        temperature: float,
+        scenario_id: int,
         history: list[dict] | None = None,
-    ) -> AsyncGenerator[dict[str, str | dict[str, str | None | bool]], None]:
-        messages = [
-            {
-                "role": "system",
-                "content": f"""Коротко и дружелюбно объясни пользователю, почему для его запроса выбраны такие параметры.
-                Пиши обычным человеческим языком, без технических терминов.
-                Не упоминай JSON, модель, инструмент, пайплайн, схему, поля или внутренние названия.
-                Не спорь с пользователем и не перегружай деталями.
-                Объясни:
-                - что выбрано как источник построения зон;
-                - какой радиус используется и откуда он взят;
-                - будут ли строиться только буферы или также ограничения для других объектов;
-                - если есть целевые объекты, почему они выбраны.
+    ) -> ProvisionPlan:
+        services_catalog = await self.plan_builder.get_services_catalog(
+            idu_mcp_client, scenario_id
+        )
+        return await self.plan_builder.build_plan(
+            model, user_query, services_catalog, history
+        )
 
-                Данные для объяснения:
-                {self._plan_summary(plan)}
-                """,
-            },
-            *(history or []),
-            {"role": "user", "content": user_query},
-        ]
-        response_buffer: list[str] = []
-        async for part in await self.llm_client.chat(
-            model,
-            messages,
-            options={"temperature": min(temperature, 0.4)},
-            stream=True,
-        ):
-            part: ChatResponse
-            if part.message.content:
-                response_buffer.append(part.message.content)
-                yield self._chunk(part.message.content, done=False)
-        logger.debug(f"LLM plan explanation [{model}]: {''.join(response_buffer)}")
+    # ------------------------------------------------------------------
+    # LLM generation
+    # ------------------------------------------------------------------
 
-    async def generate_final_response(
+    async def _generate_analysis(
         self,
         model: str,
         user_query: str,
         context: str,
         temperature: float,
         history: list[dict] | None = None,
-    ) -> AsyncGenerator[dict[str, str | dict[str, str | None | bool]], None]:
+    ) -> AsyncGenerator[dict, None]:
         messages = [
             {
                 "role": "system",
-                "content": f"""Дай комментарий к запросу пользователя на основе контекста статистики сгенерированных слоёв.
-                Ответ давай только в виде обычного текста. Внимательно анализируй предоставленную в контексте информацию.
-                В качестве отсылок используй только названия ограничений.
-
-                Контекст для ответа:
-
-                {context}
-                """,
+                "content": (
+                    "Проанализируй эффекты обеспеченности на основе сводных данных расчёта. "
+                    "Ответ формулируй как аналитический комментарий: что изменилось, "
+                    "насколько значимы изменения, какие выводы можно сделать. "
+                    "Используй только числа и факты из контекста.\n\n"
+                    f"Контекст расчёта:\n{context}"
+                ),
             },
             *(history or []),
             {"role": "user", "content": user_query},
@@ -591,7 +488,11 @@ class RestrictionParserService(BaseLlmService):
             if part.message.content:
                 response_buffer.append(part.message.content)
             yield self._chunk(part.message.content or "", done=part.done)
-        logger.debug(f"LLM final response [{model}]: {''.join(response_buffer)}")
+        logger.debug(f"LLM provision analysis [{model}]: {''.join(response_buffer)}")
+
+    # ------------------------------------------------------------------
+    # Chat storage helpers (mirrors RestrictionParserService)
+    # ------------------------------------------------------------------
 
     async def _add_message_parts_to_chat(
         self,
@@ -625,7 +526,7 @@ class RestrictionParserService(BaseLlmService):
         try:
             task.result()
         except Exception as exc:
-            logger.exception(f"Failed to upload restriction response message: {exc}")
+            logger.exception(f"Failed to upload provision response message: {exc}")
 
     @staticmethod
     def _flush_text_buffer_to_parts(
@@ -649,8 +550,8 @@ class RestrictionParserService(BaseLlmService):
         if not tool_calls:
             return
         calls = [
-            self._tool_call_to_chat_storage_call(step, tool_call)
-            for step, tool_call in enumerate(tool_calls, start=1)
+            self._tool_call_to_chat_storage_call(step, tc)
+            for step, tc in enumerate(tool_calls, start=1)
         ]
         parts.append(
             ToolCallPartRequest(
@@ -675,9 +576,11 @@ class RestrictionParserService(BaseLlmService):
             )
         if item_type == "chunk":
             text = content.get("text") or ""
-            if not text:
-                return None
-            return TextPartRequest(kind="text", payload=TextPayload(text=text))
+            return (
+                TextPartRequest(kind="text", payload=TextPayload(text=text))
+                if text
+                else None
+            )
         return None
 
     @staticmethod
@@ -701,32 +604,13 @@ class RestrictionParserService(BaseLlmService):
             return event.get("chat_id")
         return None
 
-    async def _build_plan(
-        self,
-        mcp_client: IduMcpClient,
-        model: str,
-        user_query: str,
-        scenario_id: int,
-        history: list[dict] | None = None,
-    ) -> RestrictionPlan:
-        services_catalog, physical_objects_catalog = (
-            await self.plan_builder.get_entity_catalogs(mcp_client, scenario_id)
-        )
-        return await self.plan_builder.build_plan(
-            model,
-            user_query,
-            scenario_id,
-            services_catalog,
-            physical_objects_catalog,
-            history=history,
-        )
+    # ------------------------------------------------------------------
+    # Event helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _pipeline_started_event(request_id: str) -> dict:
-        return {
-            "type": "pipeline_started",
-            "content": {"request_id": request_id},
-        }
+        return {"type": "pipeline_started", "content": {"request_id": request_id}}
 
     @staticmethod
     def _token_expired_event(request_id: str) -> dict:
@@ -786,37 +670,34 @@ class RestrictionParserService(BaseLlmService):
 
     @staticmethod
     def _feature_collections(layers: dict[str, dict]):
-        for name, feature_collection in layers.items():
-            yield {
-                "type": "feature_collection",
-                "content": {"name": name, "feature_collection": feature_collection},
-            }
+        for name, fc in layers.items():
+            if isinstance(fc, dict) and fc.get("type") == "FeatureCollection":
+                yield {
+                    "type": "feature_collection",
+                    "content": {"name": name, "feature_collection": fc},
+                }
 
     @staticmethod
-    def _plan_summary(plan: RestrictionPlan) -> dict:
-        return {
-            "mode": plan.mode.value,
-            "sources": [entity.name for entity in plan.source_entities],
-            "targets": [entity.name for entity in plan.target_entities],
-            "buffers": [
-                {
-                    "source": rule.source_name,
-                    "distance_m": rule.buffer_size,
-                    "title": rule.title,
-                }
-                for rule in plan.buffer_rules
-            ],
-            "restrictions": [
-                {
-                    "source": rule.source_name,
-                    "targets": rule.target_names,
-                    "title": rule.title,
-                    "description": rule.description,
-                }
-                for rule in plan.restriction_rules
-            ],
-            "selection_reasons": [
-                {"step": reason.step, "reason": reason.reason}
-                for reason in plan.selection_reasons
-            ],
-        }
+    def _effects_feature_collections(effects_data: dict):
+        """Yield feature_collection events from nested effects result structure."""
+        for group_key in ("before_prove_data", "after_prove_data"):
+            group = effects_data.get(group_key) or {}
+            if isinstance(group, dict):
+                for layer_name, fc in group.items():
+                    if isinstance(fc, dict) and fc.get("type") == "FeatureCollection":
+                        yield {
+                            "type": "feature_collection",
+                            "content": {
+                                "name": f"{group_key}.{layer_name}",
+                                "feature_collection": fc,
+                            },
+                        }
+        effects_fc = effects_data.get("effects")
+        if (
+            isinstance(effects_fc, dict)
+            and effects_fc.get("type") == "FeatureCollection"
+        ):
+            yield {
+                "type": "feature_collection",
+                "content": {"name": "effects", "feature_collection": effects_fc},
+            }
