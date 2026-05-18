@@ -1,6 +1,6 @@
 [project]
-name = "pfinder"
-version = "0.3.0"
+name = "gMART"
+version = "0.6.0"
 description = "First look on fastmcp with uv"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
@@ -8,7 +8,7 @@ dependencies = [
     "aiohttp>=3.13.5",
     "dotenv>=0.9.9",
     "fastapi>=0.136.1",
-    "fastmcp>=3.3.0",
+    "fastmcp>=3.3.1",
     "geojson-pydantic>=2.1.1",
     "geopandas>=1.1.3",
     "ipykernel>=7.2.0",
@@ -33,8 +33,3 @@ dev = [
     "mapclassify (>=2.10.0,<3.0.0)",
     "pre-commit>=4.6.0",
 ]
-
-# docformatter
-[tool.docformatter]
-wrap-summaries = 72
-wrap-descriptions = 72

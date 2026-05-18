@@ -91,7 +91,7 @@ async def get_physical_objects_by_name(
         physical_objects_names (list[str]): physical object names from db
         ctx (Context): Context for CurrentContext() tool call.
         token (str): Auth token to access Urban API data.
-        urban_api_tools (UrbanApiTool): Urban API tools instance
+        urban_api_tools (UrbanApiTool): Urban API tools instance.
     Returns:
         dict[str | FeatureCollection]: dict with physical object name as key and FeatureCollection as value
     """
@@ -103,3 +103,34 @@ async def get_physical_objects_by_name(
         ObjectTypeEnum.PHYSICAL_OBJECT,
         token,
     )
+
+
+@urban_api_mcp.tool(
+    name="GetServiceTypeIdByName",
+    title="Получить ID сервиса по названию",
+    description="""Получить id сервиса по названию. Название сервиса надо передавать в именительном падеже единственного
+    числа с заглавной буквы. Если сервис не был найден, инструмент ничего не возвращает.
+    """,
+    tags=tools_tags,
+    annotations={
+        "title": "GET service type id by name",
+        "readOnlyHint": True,
+    },
+    meta={"author": "LeonDeTur"},
+)
+async def get_service_type_id_by_name(
+    service_name: str,
+    token: str = Depends(extract_token),
+    urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
+) -> int | None:
+    """
+    Urban API tools interface method to retrieve service ID by name.
+    Args:
+        service_name (str): Service name as string from Urban API.
+        token (str): Auth token to access Urban API data.
+        urban_api_tools: Urban API tools instance.
+    Returns:
+        int: Retrieved service ID by name.
+    """
+
+    return await urban_api_tools.get_entity_id_by_name(service_name, token)

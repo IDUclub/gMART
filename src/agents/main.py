@@ -12,7 +12,9 @@ from src.agents.common.middlewares.exception_handler import (
     ExceptionHandlerMiddleware,
 )
 from src.agents.dependencies.dependencies import app_deps
-from src.agents.routers.a2a_controller import a2a_router
+from src.agents.routers.a2a_controller import a2a_router, restriction_a2a_router
+from src.agents.routers.provision_a2a_controller import provision_a2a_router
+from src.agents.routers.provision_controller import provision_router
 from src.agents.routers.restriction_parser_controller import restriction_router
 from src.agents.routers.simple_llm_controller import llm_router
 from src.agents.routers.system_controller import system_router
@@ -58,6 +60,9 @@ async def ping_server():
 
 app.include_router(llm_router)
 app.include_router(restriction_router)
+app.include_router(provision_router)
 app.include_router(token_refresh_router)
+app.include_router(restriction_a2a_router)
+app.include_router(provision_a2a_router)
 app.include_router(a2a_router)
 app.include_router(system_router)

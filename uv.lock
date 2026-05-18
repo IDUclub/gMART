@@ -985,14 +985,14 @@ wheels = [
 
 [[package]]
 name = "fastmcp"
-version = "3.3.0"
+version = "3.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastmcp-slim", extra = ["client", "server"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1a/b8/aff9378edc9438916ce5f06ac31bc1d60dd99e1a82411e186f1c38e20a8b/fastmcp-3.3.0.tar.gz", hash = "sha256:48c7fffdb6865cb9658ac02c2ff589caaaa3cd68e2cc37ed51402fa46e46c2eb", size = 28804871, upload-time = "2026-05-15T02:04:59.357Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3b/a9/5c5a01b6abd5346bf60b97cfd29e4a86661940c27dd562bfcda07fd03519/fastmcp-3.3.1.tar.gz", hash = "sha256:979362ea557de42a5f40342563c7e4b236bcc8e7cd192715f50030695d1a71cd", size = 28681699, upload-time = "2026-05-15T15:50:39.673Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ff/bd/4f21d58764e1f1e1237e29bc58bb1b5863fde2297796c8e96301d334fe2d/fastmcp-3.3.0-py3-none-any.whl", hash = "sha256:e6b1dc391a9fcc4b6a7f0bb7c2481d1aac8d03eefe818908c69909795a39d51b", size = 7903, upload-time = "2026-05-15T02:05:02.24Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/11/6b1bdada6ccfe647d615ae63f9106f8136aec17971e9361546af01c7d38e/fastmcp-3.3.1-py3-none-any.whl", hash = "sha256:862440c5c4d281363a5995eee59d77f0f7cac1f18869038729cecf03b02fc522", size = 7903, upload-time = "2026-05-15T15:50:36.424Z" },
 ]
 
 [[package]]
@@ -1010,7 +1010,7 @@ wheels = [
 
 [[package]]
 name = "fastmcp-slim"
-version = "3.3.0"
+version = "3.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "platformdirs" },
@@ -1020,9 +1020,9 @@ dependencies = [
     { name = "rich" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/db/6e/f4ba7d4f5d586ee85b7e2dd4feff89112de0e4cedc6a5fda794adb6b99c2/fastmcp_slim-3.3.0.tar.gz", hash = "sha256:56fd0077226b8dbf0bba253f9baaad5d97a3f74eb62750d6997128486b91b0ba", size = 567972, upload-time = "2026-05-15T02:04:34.015Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d1/a0/627103e517e1d0d6f1eec633d5662d13e776f01b45ad188e4f5f7478b438/fastmcp_slim-3.3.1.tar.gz", hash = "sha256:0957835fc59452e143ab2f4b7836d2d2df9b2d9958408edc79ba8b56232b2a88", size = 567007, upload-time = "2026-05-15T15:50:10.426Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/96/36/fa34dd253426e03e4f68918ca700758a22f3600fb6d4dc5a260b3d152c82/fastmcp_slim-3.3.0-py3-none-any.whl", hash = "sha256:7478c5220e06e5ff4f9cb5270e46c6b6d0f44ec0d79372a572b0a71195baa69a", size = 739366, upload-time = "2026-05-15T02:04:32.528Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/ee/97047f4cc2d7b1d46670d08d8ad01a96e7a748cc01c0b4b351ad8eddbc7a/fastmcp_slim-3.3.1-py3-none-any.whl", hash = "sha256:6cf1c2d77e3adb0d409d6825ed6b0b2a999062973e00b8eea03bd48bf9b4c043", size = 738644, upload-time = "2026-05-15T15:50:08.336Z" },
 ]
 
 [package.optional-dependencies]
@@ -1288,6 +1288,71 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/85/ba/8e6b2091878e99e86a36a814dcaeff652ed48bdb03d53e78e15aaa63a914/geopandas-1.1.3.tar.gz", hash = "sha256:91a31989b6f566012838d21d5f8033f37dce882079ccb7cfdc40d5ccce7f284f", size = 336718, upload-time = "2026-03-09T21:49:09.545Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3c/78/6a04792ace63a93e162f1305392d500ae8ddcb620e7eb88a22fd622b35bb/geopandas-1.1.3-py3-none-any.whl", hash = "sha256:90d62a64f95eaa3be2ccc115c5f3d6e24208bb11983b390fdc0621a3eccd0230", size = 342514, upload-time = "2026-03-09T21:49:07.973Z" },
+]
+
+[[package]]
+name = "gmart"
+version = "0.5.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "dotenv" },
+    { name = "fastapi" },
+    { name = "fastmcp" },
+    { name = "fastmcp-docs" },
+    { name = "geojson-pydantic" },
+    { name = "geopandas" },
+    { name = "ipykernel" },
+    { name = "loguru" },
+    { name = "ollama" },
+    { name = "pandas" },
+    { name = "pydantic" },
+    { name = "python-a2a" },
+    { name = "redis" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "branca" },
+    { name = "folium" },
+    { name = "ipykernel" },
+    { name = "jupyterlab" },
+    { name = "mapclassify" },
+    { name = "matplotlib" },
+    { name = "pre-commit" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.13.5" },
+    { name = "dotenv", specifier = ">=0.9.9" },
+    { name = "fastapi", specifier = ">=0.136.1" },
+    { name = "fastmcp", specifier = ">=3.3.1" },
+    { name = "fastmcp-docs", specifier = ">=1.0.0" },
+    { name = "geojson-pydantic", specifier = ">=2.1.1" },
+    { name = "geopandas", specifier = ">=1.1.3" },
+    { name = "ipykernel", specifier = ">=7.2.0" },
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "ollama", specifier = ">=0.6.2" },
+    { name = "pandas", specifier = ">=3.0.3" },
+    { name = "pydantic", specifier = ">=2.13.4" },
+    { name = "python-a2a", specifier = ">=0.5.10" },
+    { name = "redis", specifier = ">=7.4.0" },
+    { name = "starlette", specifier = ">=1.0.0" },
+    { name = "uvicorn", specifier = ">=0.47.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "branca", specifier = ">=0.8.2,<0.9.0" },
+    { name = "folium", specifier = ">=0.12" },
+    { name = "ipykernel", specifier = ">=7.2.0" },
+    { name = "jupyterlab", specifier = ">=4.5.7" },
+    { name = "mapclassify", specifier = ">=2.10.0,<3.0.0" },
+    { name = "matplotlib", specifier = ">=3.10.9,<4.0.0" },
+    { name = "pre-commit", specifier = ">=4.6.0" },
 ]
 
 [[package]]
@@ -3001,71 +3066,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9e/c3/059298687310d527a58bb01f3b1965787ee3b40dce76752eda8b44e9a2c5/pexpect-4.9.0-py2.py3-none-any.whl", hash = "sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523", size = 63772, upload-time = "2023-11-25T06:56:14.81Z" },
-]
-
-[[package]]
-name = "pfinder"
-version = "0.3.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "dotenv" },
-    { name = "fastapi" },
-    { name = "fastmcp" },
-    { name = "fastmcp-docs" },
-    { name = "geojson-pydantic" },
-    { name = "geopandas" },
-    { name = "ipykernel" },
-    { name = "loguru" },
-    { name = "ollama" },
-    { name = "pandas" },
-    { name = "pydantic" },
-    { name = "python-a2a" },
-    { name = "redis" },
-    { name = "starlette" },
-    { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "branca" },
-    { name = "folium" },
-    { name = "ipykernel" },
-    { name = "jupyterlab" },
-    { name = "mapclassify" },
-    { name = "matplotlib" },
-    { name = "pre-commit" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp", specifier = ">=3.13.5" },
-    { name = "dotenv", specifier = ">=0.9.9" },
-    { name = "fastapi", specifier = ">=0.136.1" },
-    { name = "fastmcp", specifier = ">=3.3.0" },
-    { name = "fastmcp-docs", specifier = ">=1.0.0" },
-    { name = "geojson-pydantic", specifier = ">=2.1.1" },
-    { name = "geopandas", specifier = ">=1.1.3" },
-    { name = "ipykernel", specifier = ">=7.2.0" },
-    { name = "loguru", specifier = ">=0.7.3" },
-    { name = "ollama", specifier = ">=0.6.2" },
-    { name = "pandas", specifier = ">=3.0.3" },
-    { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "python-a2a", specifier = ">=0.5.10" },
-    { name = "redis", specifier = ">=7.4.0" },
-    { name = "starlette", specifier = ">=1.0.0" },
-    { name = "uvicorn", specifier = ">=0.47.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "branca", specifier = ">=0.8.2,<0.9.0" },
-    { name = "folium", specifier = ">=0.12" },
-    { name = "ipykernel", specifier = ">=7.2.0" },
-    { name = "jupyterlab", specifier = ">=4.5.7" },
-    { name = "mapclassify", specifier = ">=2.10.0,<3.0.0" },
-    { name = "matplotlib", specifier = ">=3.10.9,<4.0.0" },
-    { name = "pre-commit", specifier = ">=4.6.0" },
 ]
 
 [[package]]

@@ -81,7 +81,9 @@ class ToolCallPartRequest(BaseModel):
     Attributes:
         kind (Literal["tool_call"]): type equals to "tool_call".
         payload (ToolCallPayload): ToolCall payload to post.
+        mcp_source (str | None): MCP server identifier in {NAME}_MCP_URL format.
     """
 
     kind: Literal["tool_call"]
     payload: ToolCallPayload
+    mcp_source: str | None = None
