@@ -13,6 +13,8 @@ from src.agents.common.logging.log_config import config_logger
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.a2a_service import A2AService
 from src.agents.services.pipeline_state import PipelineStateStore
+from src.agents.services.provision_a2a_service import ProvisionA2AService
+from src.agents.services.provsion_service import ProvisionService
 from src.agents.services.restriction_parser_service import (
     RestrictionParserService,
 )
@@ -28,7 +30,9 @@ def init_dependencies() -> dict[
     | IduMcpClient
     | SimpleLlmService
     | RestrictionParserService
+    | ProvisionService
     | A2AService
+    | ProvisionA2AService
     | JsonApiHandler
     | ChatStorageApiClient
     | PipelineStateStore,
@@ -44,6 +48,9 @@ def init_dependencies() -> dict[
     restriction_parser_service = RestrictionParserService(
         app_config.OLLAMA_URL, chat_storage_client, pipeline_state_store
     )
+    provision_service = ProvisionService(
+        app_config.OLLAMA_URL, chat_storage_client, pipeline_state_store
+    )
     return {
         "app_config": app_config,
         "system_service": SystemService(logs_path),
@@ -53,7 +60,9 @@ def init_dependencies() -> dict[
             app_config.OLLAMA_URL, chat_storage_client
         ),
         "restriction_parser_service": restriction_parser_service,
+        "provision_service": provision_service,
         "a2a_service": A2AService(restriction_parser_service),
+        "provision_a2a_service": ProvisionA2AService(provision_service),
         "chat_storage_json_handler": chat_storage_json_handler,
         "chat_storage_client": chat_storage_client,
         "pipeline_state_store": pipeline_state_store,

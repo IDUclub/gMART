@@ -27,6 +27,10 @@ class PipelineStep(StrEnum):
     BUFFERS = "buffers"
     RESTRICTIONS = "restrictions"
     FINAL_RESPONSE = "final_response"
+    # provision effects pipeline steps
+    RESOLVE_SERVICE = "resolve_service"
+    GET_SERVICE_ID = "get_service_id"
+    CALCULATE_EFFECTS = "calculate_effects"
 
 
 class PipelineStateStore:

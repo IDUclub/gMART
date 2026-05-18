@@ -62,3 +62,20 @@ class UrbanApiTool:
             existing_names[i]: FeatureCollection(**objects[i])
             for i in range(len(existing_names))
         }
+
+    async def get_entity_id_by_name(
+        self,
+        service_name: str,
+        token: str,
+    ) -> int | None:
+        """
+        Method for retrieving service type id by name.
+        Args:
+            service_name (str): Service name.
+            token (str): Auth Bearer token.
+        Returns:
+            int | None: Service type id. None if service not found.
+        """
+
+        service_name_id = await self.client.get_service_name_id([service_name.capitalize()], token)
+        return service_name_id.get(service_name.capitalize())

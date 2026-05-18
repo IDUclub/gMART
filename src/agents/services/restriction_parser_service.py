@@ -60,6 +60,7 @@ class RestrictionParserService(BaseLlmService):
         chat_storage_client: ChatStorageApiClient,
         state_store: PipelineStateStore,
     ) -> None:
+
         super().__init__(ollama_host, chat_storage_client)
         self.plan_builder = RestrictionPlanBuilder(self.llm_client)
         self.tool_executor = RestrictionToolExecutor()
@@ -99,10 +100,12 @@ class RestrictionParserService(BaseLlmService):
             chat_id = self._chat_id_from_storage_event(item) or chat_id
             if item.get("type") == "tool_call":
                 self._flush_text_buffer_to_parts(text_buffer, message_parts)
+                content = item.get("content", {})
                 self._add_tool_calls_to_parts(
                     message_parts,
-                    item.get("content", {}).get("tool_calls", []),
-                    execution_mode=item.get("content", {}).get("execution_mode", ""),
+                    content.get("tool_calls", []),
+                    execution_mode=content.get("execution_mode", ""),
+                    mcp_source=content.get("mcp_source"),
                 )
                 continue
 
@@ -314,7 +317,8 @@ class RestrictionParserService(BaseLlmService):
             )
 
         yield self._buf(
-            request_id, self._tool_call("data_retrievement", layers_result.tool_calls)
+            request_id,
+            self._tool_call("data_retrievement", layers_result.tool_calls, mcp_source="IDU_MCP_URL"),
         )
         for item in self._feature_collections(layers_result.tool_result):
             yield self._buf(request_id, item)
@@ -357,7 +361,8 @@ class RestrictionParserService(BaseLlmService):
             )
 
         yield self._buf(
-            request_id, self._tool_call("buffer_creation", buffers_result.tool_calls)
+            request_id,
+            self._tool_call("buffer_creation", buffers_result.tool_calls, mcp_source="IDU_MCP_URL"),
         )
         yield self._buf(
             request_id,
@@ -414,7 +419,11 @@ class RestrictionParserService(BaseLlmService):
 
             yield self._buf(
                 request_id,
-                self._tool_call("restriction_formation", restriction_result.tool_calls),
+                self._tool_call(
+                    "restriction_formation",
+                    restriction_result.tool_calls,
+                    mcp_source="IDU_MCP_URL",
+                ),
             )
             yield self._buf(
                 request_id,
@@ -631,6 +640,7 @@ class RestrictionParserService(BaseLlmService):
         parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
         tool_calls: list[dict],
         execution_mode: str,
+        mcp_source: str | None = None,
     ) -> None:
         if not tool_calls:
             return
@@ -642,6 +652,7 @@ class RestrictionParserService(BaseLlmService):
             ToolCallPartRequest(
                 kind="tool_call",
                 payload=ToolCallPayload(execution_mode=execution_mode, calls=calls),
+                mcp_source=mcp_source,
             )
         )
 
@@ -759,11 +770,15 @@ class RestrictionParserService(BaseLlmService):
         return {"type": "chunk", "content": {"text": text, "done": done}}
 
     @staticmethod
-    def _tool_call(execution_mode: str, tool_calls: list[dict]) -> dict:
-        return {
-            "type": "tool_call",
-            "content": {"execution_mode": execution_mode, "tool_calls": tool_calls},
-        }
+    def _tool_call(
+        execution_mode: str,
+        tool_calls: list[dict],
+        mcp_source: str | None = None,
+    ) -> dict:
+        content: dict = {"execution_mode": execution_mode, "tool_calls": tool_calls}
+        if mcp_source is not None:
+            content["mcp_source"] = mcp_source
+        return {"type": "tool_call", "content": content}
 
     @staticmethod
     def _feature_collections(layers: dict[str, dict]):

@@ -1,12 +1,11 @@
 from fastapi import APIRouter, Depends
-from fastapi.security import HTTPAuthorizationCredentials
 
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.exceptions.base_exceptions import AgentsNotFound
 from src.agents.dependencies.dependencies import get_pipeline_state_store
 from src.agents.services.pipeline_state import PipelineStateStore
 
-token_refresh_router = APIRouter(prefix="/restrictions", tags=["restrictions"])
+token_refresh_router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
 
 @token_refresh_router.post(
@@ -20,9 +19,10 @@ async def update_token(
     store: PipelineStateStore = Depends(get_pipeline_state_store),
 ) -> dict:
     """
-    Deliver a fresh bearer token to a pipeline that is waiting for token refresh.
+    Deliver a fresh bearer token to a pipeline that is suspended waiting for token refresh.
 
-    Call this endpoint after receiving a ``token_expired`` SSE event.
+    Applies to **any** pipeline type (restriction, provision, etc.).
+    Call this endpoint after receiving a ``token_expired`` SSE event from any pipeline stream.
     The pipeline will resume from the step that failed with 401.
 
     If no pipeline is currently waiting for ``request_id``, a 404 is returned.

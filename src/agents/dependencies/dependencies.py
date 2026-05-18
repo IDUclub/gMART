@@ -3,9 +3,12 @@ from fastmcp import Client
 
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.init_dependencies import init_dependencies
+from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.a2a_service import A2AService
 from src.agents.services.pipeline_state import PipelineStateStore
+from src.agents.services.provision_a2a_service import ProvisionA2AService
+from src.agents.services.provsion_service import ProvisionService
 from src.agents.services.restriction_parser_service import (
     RestrictionParserService,
 )
@@ -49,6 +52,47 @@ async def get_idu_mcp_client(
 
     mcp_url: str = app_deps["app_config"].IDU_MCP_URL
     return IduMcpClient(Client(mcp_url, auth=token), mcp_url=mcp_url)
+
+
+async def get_effects_mcp_client(
+    token: str = Depends(verify_bearer_token),
+) -> EffectsMcpClient:
+    """
+    Function returns EffectsMcpClient instance with provided authorization.
+    Args:
+        token (str): Bearer token for auth.
+    Returns:
+        EffectsMcpClient: EffectsMcpClient instance for the Object Effects MCP Server.
+    """
+
+    mcp_url: str = app_deps["app_config"].EFFECTS_MCP_URL
+    return EffectsMcpClient(Client(mcp_url, auth=token), mcp_url=mcp_url)
+
+
+def get_provision_service() -> ProvisionService:
+    """
+    Function returns initialized ProvisionService object from dependencies.
+    Returns:
+        ProvisionService: ProvisionService instance.
+    """
+
+    service: ProvisionService = app_deps["provision_service"]
+    if not isinstance(service, ProvisionService):
+        raise TypeError(f"Expected ProvisionService, got {type(service)}")
+    return service
+
+
+async def get_provision_a2a_service() -> ProvisionA2AService:
+    """
+    Function returns ProvisionA2AService instance.
+    Returns:
+        ProvisionA2AService: ProvisionA2AService instance.
+    """
+
+    service = app_deps["provision_a2a_service"]
+    if not isinstance(service, ProvisionA2AService):
+        raise TypeError(f"Expected ProvisionA2AService, got {type(service)}")
+    return service
 
 
 async def get_restriction_parser_service() -> RestrictionParserService:
