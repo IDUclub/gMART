@@ -20,16 +20,8 @@ jobs:
         id: date
         run: echo "now=$(date +'%Y-%m-%dT%H-%M-%S')" >> $GITHUB_OUTPUT
 
-      - name: Temporarily disable Git SSL verification
-        run: |
-          git config --global http.sslVerify false
-
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Re-enable Git SSL verification
-        run: |
-          git config --global http.sslVerify true
 
       - name: Copy env
         env:
