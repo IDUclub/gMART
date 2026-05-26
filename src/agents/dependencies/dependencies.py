@@ -6,6 +6,10 @@ from src.agents.dependencies.init_dependencies import init_dependencies
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.a2a_service import A2AService
+from src.agents.services.orchestrator_a2a_service import OrchestratorA2AService
+from src.agents.services.orchestrator_pipeline_service import (
+    OrchestratorPipelineService,
+)
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provsion_service import ProvisionService
@@ -133,3 +137,29 @@ async def get_system_service() -> SystemService:
     """
 
     return app_deps["system_service"]
+
+
+async def get_orchestrator_a2a_service() -> OrchestratorA2AService:
+    """
+    Function returns OrchestratorA2AService instance.
+    Returns:
+        OrchestratorA2AService: OrchestratorA2AService instance.
+    """
+
+    service = app_deps["orchestrator_a2a_service"]
+    if not isinstance(service, OrchestratorA2AService):
+        raise TypeError(f"Expected OrchestratorA2AService, got {type(service)}")
+    return service
+
+
+async def get_orchestrator_pipeline_service() -> OrchestratorPipelineService:
+    """
+    Function returns OrchestratorPipelineService instance.
+    Returns:
+        OrchestratorPipelineService: OrchestratorPipelineService instance.
+    """
+
+    service = app_deps["orchestrator_pipeline_service"]
+    if not isinstance(service, OrchestratorPipelineService):
+        raise TypeError(f"Expected OrchestratorPipelineService, got {type(service)}")
+    return service

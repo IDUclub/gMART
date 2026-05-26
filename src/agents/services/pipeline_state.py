@@ -144,3 +144,45 @@ class PipelineStateStore:
         """
         channel = self._key(request_id, "token_channel")
         return await self._redis.publish(channel, json.dumps({"token": new_token}))
+
+    async def update_state(self, request_id: str, updates: dict) -> None:
+        """
+        Apply a partial update to an existing pipeline state entry.
+
+        Merges *updates* into the stored state dict without overwriting fields
+        that are not present in *updates*.  A no-op when the state entry does
+        not exist (e.g. the pipeline was never started or already expired).
+
+        Args:
+            request_id (str): Pipeline request UUID.
+            updates (dict): Fields to merge into the stored state.
+        """
+        raw = await self._redis.get(self._key(request_id, "state"))
+        if not raw:
+            return
+        state = json.loads(raw)
+        state.update(updates)
+        await self._redis.setex(
+            self._key(request_id, "state"),
+            PIPELINE_TTL,
+            json.dumps(state, ensure_ascii=False),
+        )
+
+    async def create_generic(self, request_id: str, state: dict) -> None:
+        """
+        Persist arbitrary state dict for *request_id*.
+
+        Intended for pipeline types whose state schema differs from the standard
+        restriction/provision shape (e.g. the orchestrator pipeline, which stores
+        intent classification results and sub-pipeline request IDs in addition to
+        the common fields).  The TTL is the same as for every other pipeline state.
+
+        Args:
+            request_id (str): Pipeline request UUID.
+            state (dict): Arbitrary JSON-serialisable state dict.
+        """
+        await self._redis.setex(
+            self._key(request_id, "state"),
+            PIPELINE_TTL,
+            json.dumps(state, ensure_ascii=False),
+        )
