@@ -1,7 +1,6 @@
 """Exception handling middleware is defined here."""
 
 import traceback
-from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from loguru import logger
@@ -130,6 +129,6 @@ class ExceptionHandlerMiddleware(
 
         return {
             "jsonrpc": "2.0",
-            "id": request_id if request_id is not None else str(uuid4()),
+            "id": request_id,
             "error": error_body,
         }

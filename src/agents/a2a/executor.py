@@ -469,8 +469,9 @@ class RestrictionAgentExecutor:
         """
 
         return {
-            "role": "agent",
             "kind": "message",
+            "messageId": str(uuid4()),
+            "role": "agent",
             "parts": [{"type": "text", "text": text}],
         }
 

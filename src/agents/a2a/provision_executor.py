@@ -324,8 +324,9 @@ class ProvisionAgentExecutor:
     @staticmethod
     def _agent_message(context_id: str, task_id: str, text: str) -> A2AData:
         return {
-            "role": "agent",
             "kind": "message",
+            "messageId": str(uuid4()),
+            "role": "agent",
             "parts": [{"type": "text", "text": text}],
         }
 
