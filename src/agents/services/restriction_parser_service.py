@@ -26,7 +26,6 @@ from src.agents.common.exceptions.token_exceptions import (
 )
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.pipeline_state import (
-    PIPELINE_TTL,
     TOKEN_REFRESH_TIMEOUT,
     PipelineStateStore,
     PipelineStatus,
@@ -76,6 +75,7 @@ class RestrictionParserService(BaseLlmService):
         scenario_id: int,
         chat_id: str | None = None,
         request_id: str | None = None,
+        save_history: bool = True,
     ) -> AsyncGenerator:
         # Mutable container so the inner pipeline can update the token on
         # refresh and the outer generator sees the latest value.
@@ -96,6 +96,7 @@ class RestrictionParserService(BaseLlmService):
             chat_id=chat_id,
             request_id=request_id,
             token_ref=token_ref,
+            save_history=save_history,
         ):
             chat_id = self._chat_id_from_storage_event(item) or chat_id
             if item.get("type") == "tool_call":
@@ -144,6 +145,7 @@ class RestrictionParserService(BaseLlmService):
         token_ref: list[str],
         chat_id: str | None = None,
         request_id: str | None = None,
+        save_history: bool = True,
     ) -> AsyncGenerator:
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
@@ -168,7 +170,7 @@ class RestrictionParserService(BaseLlmService):
         if not is_reconnect:
             yield self._buf(request_id, self._pipeline_started_event(request_id))
 
-            if not chat_id:
+            if not chat_id and save_history:
                 logger.info("No chat id provided, creating a new chat.")
                 chat_result: list[tuple[str, str]] = []
                 try:

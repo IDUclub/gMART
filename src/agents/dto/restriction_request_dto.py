@@ -11,6 +11,7 @@ class RestrictionRequestDTO(SimpleRequestDTO):
         request (str): Request text.
         scenario_id (int): Scenario ID from Urban API.
         chat_id (str | None): Chat UUID from Chat Storage. Default to None.
+        save_history (bool): Persist conversation in Chat Storage. Default to True.
         request_id (str | None): Existing pipeline request ID for reconnect. Default to None.
     """
 
@@ -21,6 +22,14 @@ class RestrictionRequestDTO(SimpleRequestDTO):
         examples=["550e8400-e29b-41d4-a716-446655440000"],
         default=None,
         description="Chat ID from Chat Storage",
+    )
+    save_history: bool = Field(
+        default=True,
+        description=(
+            "Persist conversation in Chat Storage. "
+            "Pass false to skip chat creation and message saving "
+            "(useful for benchmarks and one-off queries)."
+        ),
     )
     request_id: str | None = Field(
         min_length=36,

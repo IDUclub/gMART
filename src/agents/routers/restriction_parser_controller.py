@@ -44,6 +44,7 @@ async def generate_restrictions_response(
         scenario_id=user_request.scenario_id,
         chat_id=user_request.chat_id,
         temperature=user_request.temperature,
+        save_history=user_request.save_history,
         request_id=user_request.request_id,
     ):
         yield RestrictionsResponse(**chunk)

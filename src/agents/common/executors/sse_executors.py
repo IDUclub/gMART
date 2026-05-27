@@ -58,10 +58,12 @@ async def stream_with_error_handling(
             logger.info("Trying to re-run pipeline")
             yield {
                 "type": "status",
-                "message": "При извлечении запроса произошла ошибка. Производится попытка перезапуска запроса.",
+                "content": {
+                    "status": "data_retrievement",
+                    "text": "При извлечении запроса произошла ошибка. Производится попытка перезапуска запроса.",
+                },
             }
             try:
-                yield {"type": "status"}
                 async for item in generator(model=model, *args, **kwargs):
                     if await request.is_disconnected():
                         logger.warning("Client disconnected during stream")
