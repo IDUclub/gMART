@@ -5,6 +5,8 @@ from typing import Any
 
 from python_a2a.models.task import Task, TaskState, TaskStatus
 
+_WAITING_STATE = TaskState.WAITING.value
+
 A2ATaskData = dict[str, Any]
 A2AArtifactData = dict[str, Any]
 A2AMessageData = dict[str, Any]
@@ -103,7 +105,10 @@ class A2ATaskStore:
         task.status = TaskStatus(state=state, message=copy.deepcopy(message))
         if message is not None:
             task.history.append(copy.deepcopy(message))
-        return task.status.to_dict()
+        status_dict = task.status.to_dict()
+        if status_dict.get("state") == _WAITING_STATE:
+            status_dict["state"] = "working"
+        return status_dict
 
     def add_or_append_artifact(
         self,
@@ -139,11 +144,19 @@ class A2ATaskStore:
     @staticmethod
     def _to_dict(task: Task) -> A2ATaskData:
         """
-        Function serializes python-a2a task.
+        Function serializes python-a2a task to A2A v0.3.0 format.
         Args:
             task (Task): A2A task instance.
         Returns:
             A2ATaskData: Serialized task.
         """
 
-        return copy.deepcopy(task.to_dict())
+        result = copy.deepcopy(task.to_dict())
+        result["kind"] = "task"
+        # python_a2a uses legacy "sessionId"; A2A v0.3.0 spec requires "contextId"
+        if "sessionId" in result:
+            result["contextId"] = result.pop("sessionId")
+        # python_a2a uses "waiting"; A2A v0.3.0 spec uses "working"
+        if result.get("status", {}).get("state") == _WAITING_STATE:
+            result["status"]["state"] = "working"
+        return result

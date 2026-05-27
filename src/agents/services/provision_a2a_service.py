@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from typing import Any
-from uuid import uuid4
 
 from python_a2a.models.task import TaskState
 
@@ -199,7 +198,7 @@ class ProvisionA2AService:
     def _success(request_id: Any, result: Any) -> A2AData:
         return {
             "jsonrpc": "2.0",
-            "id": request_id if request_id is not None else str(uuid4()),
+            "id": request_id,
             "result": result,
         }
 
@@ -210,6 +209,6 @@ class ProvisionA2AService:
             error["data"] = exc.data
         return {
             "jsonrpc": "2.0",
-            "id": request_id if request_id is not None else str(uuid4()),
+            "id": request_id,
             "error": error,
         }
