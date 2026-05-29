@@ -249,14 +249,15 @@ class RestrictionAgentExecutor:
         message = self._extract_message(params)
         user_query = self._extract_text(message)
         request_data = self._extract_request_data(params, message)
-        scenario_id = request_data.get("scenario_id")
+
+        raw_text = request_data.get("request") or user_query
+        scenario_id = self._extract_scenario_id_from_text(str(raw_text))
         if scenario_id is None:
             raise ValueError(
-                "scenario_id is required in params.metadata or a data part"
+                "scenario_id is required in the request text (e.g. scenario_id=772)"
             )
 
-        user_query = request_data.get("request") or user_query
-        user_query = self._hide_inline_ids(str(user_query))
+        user_query = self._hide_inline_ids(str(raw_text))
         if not user_query:
             raise ValueError("User message text is required")
 
@@ -307,6 +308,21 @@ class RestrictionAgentExecutor:
         raise ValueError("params.message is required")
 
     @staticmethod
+    def _extract_scenario_id_from_text(text: str) -> int | None:
+        """
+        Function extracts scenario_id from user request text.
+        Args:
+            text (str): Raw user request text.
+        Returns:
+            int | None: Extracted scenario_id or None if not found.
+        """
+
+        match = re.search(
+            r"\b(?:scenario_id|scenarioId)\b\s*[:=]\s*(\d+)", text, re.IGNORECASE
+        )
+        return int(match.group(1)) if match else None
+
+    @staticmethod
     def _extract_request_data(
         params: A2AData,
         message: A2AData,
@@ -331,8 +347,6 @@ class RestrictionAgentExecutor:
                 data.update(part_data)
 
         for key in (
-            "scenario_id",
-            "scenarioId",
             "model",
             "temperature",
             "request",
@@ -341,8 +355,6 @@ class RestrictionAgentExecutor:
             if key in params:
                 data[key] = params[key]
 
-        if "scenarioId" in data and "scenario_id" not in data:
-            data["scenario_id"] = data["scenarioId"]
         if "userQuery" in data and "request" not in data:
             data["request"] = data["userQuery"]
 
