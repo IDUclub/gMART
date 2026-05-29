@@ -60,7 +60,7 @@ class A2AMessageDTO(BaseModel):
     )
     metadata: dict[str, Any] | None = Field(
         default=None,
-        examples=[{"scenario_id": 772, "model": "gpt-oss:20b", "temperature": 0.7}],
+        examples=[{"model": "gpt-oss:20b", "temperature": 0.7}],
         description="Business metadata hidden from the agent prompt.",
     )
 
@@ -87,7 +87,7 @@ class A2AParamsDTO(BaseModel):
     contextId: str | None = Field(default=None, description="A2A context id.")
     metadata: dict[str, Any] | None = Field(
         default=None,
-        examples=[{"scenario_id": 772, "model": "gpt-oss:20b", "temperature": 0.7}],
+        examples=[{"model": "gpt-oss:20b", "temperature": 0.7}],
         description="Request metadata.",
     )
     includeArtifacts: bool | None = Field(
@@ -129,11 +129,10 @@ class A2AJsonRpcRequestDTO(BaseModel):
                     "parts": [
                         {
                             "type": "text",
-                            "text": "Построй зону ограничения вокруг школ 200 метров",
+                            "text": "scenario_id=772 Построй зону ограничения вокруг школ 200 метров",
                         }
                     ],
                     "metadata": {
-                        "scenario_id": 772,
                         "model": "gpt-oss:20b",
                         "temperature": 0.7,
                     },
