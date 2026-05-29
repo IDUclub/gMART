@@ -7,7 +7,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from src.idu_mcp.dependencies.dependencies import mcp_deps
+from src.idu_mcp.dependencies.dependencies import keycloak_verifier, mcp_deps
 from src.idu_mcp.prompts.restriction_prompts import mcp as restrictions_prompts_mcp
 from src.idu_mcp.tools_interfaces.geom_interface import geometry_mcp
 from src.idu_mcp.tools_interfaces.urb_api_interface import urban_api_mcp
@@ -36,7 +36,9 @@ async def main_app_lifespan(server: FastMCP):
         logger.info("Shutting down...")
 
 
-main_mcp = FastMCP("IDU Fast MCP Server", lifespan=main_app_lifespan)
+main_mcp = FastMCP(
+    "IDU Fast MCP Server", lifespan=main_app_lifespan, auth=keycloak_verifier
+)
 main_mcp.mount(urban_api_mcp)
 main_mcp.mount(geometry_mcp)
 main_mcp.mount(restrictions_prompts_mcp)

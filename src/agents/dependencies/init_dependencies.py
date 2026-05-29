@@ -20,6 +20,7 @@ from src.agents.services.restriction_parser_service import (
 )
 from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.system_service import SystemService
+from src.common.auth.auth_client import AuthenticationClient
 
 
 def init_dependencies() -> dict[
@@ -40,6 +41,7 @@ def init_dependencies() -> dict[
 
     logs_path = config_logger()
     app_config: AgentsAppConfig = load_config()
+    auth_client = AuthenticationClient(app_config.AUTH_CONFIG)
     idu_fastmcp_client = Client(app_config.IDU_MCP_URL)
     chat_storage_json_handler = JsonApiHandler(app_config.CHAT_STORAGE_URL)
     chat_storage_client = ChatStorageApiClient(chat_storage_json_handler)
@@ -53,6 +55,7 @@ def init_dependencies() -> dict[
     )
     return {
         "app_config": app_config,
+        "auth_client": auth_client,
         "system_service": SystemService(logs_path),
         "idu_fastmcp_client": idu_fastmcp_client,
         "idu_mcp_client": IduMcpClient(idu_fastmcp_client),

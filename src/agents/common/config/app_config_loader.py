@@ -4,6 +4,7 @@ from dotenv import find_dotenv, load_dotenv
 from loguru import logger
 
 from src.agents.common.config.app_config import AgentsAppConfig
+from src.common.auth.auth_config import AuthConfig
 
 ENV_EXTENSIONS = [
     "agents",
@@ -28,6 +29,18 @@ def try_load(env_file_extension: str):
     }
 
 
+def _build_auth_config() -> AuthConfig:
+    audiences_raw = os.getenv("AUTH_VALID_AUDIENCES", "")
+    valid_audiences = [a.strip() for a in audiences_raw.split(",") if a.strip()]
+    return AuthConfig(
+        verify=os.getenv("AUTH_VERIFY", "true").lower() == "true",
+        server_url=os.getenv("AUTH_SERVER_URL", ""),
+        client_id=os.getenv("AUTH_CLIENT_ID", ""),
+        verify_aud=os.getenv("AUTH_VERIFY_AUD", "false").lower() == "true",
+        valid_audiences=valid_audiences,
+    )
+
+
 def load_config() -> AgentsAppConfig:
 
     for extension in ENV_EXTENSIONS:
@@ -38,7 +51,9 @@ def load_config() -> AgentsAppConfig:
                 effects_mcp_url=os.getenv("OBJECTS_EFFECTS_MCP_SERVER"),
                 chat_storage_url=os.getenv("CHAT_STORAGE"),
                 redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
+                auth_config=_build_auth_config(),
             )
+
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
     try:
         return AgentsAppConfig(
@@ -47,6 +62,7 @@ def load_config() -> AgentsAppConfig:
             effects_mcp_url=os.getenv("OBJECTS_EFFECTS_MCP_SERVER"),
             chat_storage_url=os.getenv("CHAT_STORAGE"),
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
+            auth_config=_build_auth_config(),
         )
     except ValueError:
         raise

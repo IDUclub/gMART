@@ -3,6 +3,7 @@ import os
 from dotenv import find_dotenv, load_dotenv
 from loguru import logger
 
+from src.common.auth.auth_config import AuthConfig
 from src.idu_mcp.common.config.mcp_config import IduFastMcpConfig
 
 ENV_EXTENSIONS = [
@@ -29,20 +30,34 @@ def try_load(env_file_extension: str):
     }
 
 
+def _build_auth_config() -> AuthConfig:
+    audiences_raw = os.getenv("AUTH_VALID_AUDIENCES", "")
+    valid_audiences = [a.strip() for a in audiences_raw.split(",") if a.strip()]
+    return AuthConfig(
+        verify=os.getenv("AUTH_VERIFY", "true").lower() == "true",
+        server_url=os.getenv("AUTH_SERVER_URL", ""),
+        client_id=os.getenv("AUTH_CLIENT_ID", ""),
+        verify_aud=os.getenv("AUTH_VERIFY_AUD", "false").lower() == "true",
+        valid_audiences=valid_audiences,
+    )
+
+
 def load_config() -> IduFastMcpConfig:
 
     for extension in ENV_EXTENSIONS:
         if try_load(extension):
             return IduFastMcpConfig(
                 urban_api_url=os.getenv("URBAN_API_URL"),
-                workers=os.getenv("WORKERS"),
+                workers=os.getenv("WORKERS", "1"),
+                auth_config=_build_auth_config(),
             )
 
-    logger.warning("No new configurations found in env file or no env file foound")
+    logger.warning("No new configurations found in env file or no env file found")
     try:
         return IduFastMcpConfig(
             urban_api_url=os.getenv("URBAN_API_URL"),
-            workers=os.getenv("WORKERS"),
+            workers=os.getenv("WORKERS", "1"),
+            auth_config=_build_auth_config(),
         )
     except Exception as e:
         raise Exception(
