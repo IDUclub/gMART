@@ -1,8 +1,7 @@
 from typing import Annotated
 
-from fastmcp import Context, FastMCP
+from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
-from fastmcp.server.dependencies import CurrentContext
 from geojson_pydantic import FeatureCollection
 
 from src.idu_mcp.common.auth.token_verifier import AnyTokenVerifier
@@ -38,7 +37,7 @@ async def get_services_by_name(
         list[str],
         "Название сервиса на русском языке в единственном числе и именительном падеже",
     ],
-    ctx: Context = CurrentContext(),
+    scenario_id: Annotated[int, "ID сценария из Urban API"],
     token: str = Depends(extract_token),
     urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
 ) -> dict[str, FeatureCollection]:
@@ -46,14 +45,13 @@ async def get_services_by_name(
     Urban API tools interface method to retrieve services from scenario.
     Args:
         services_names (list[str]): Services names from db.
-        ctx (Context): Tool call context from CurrentContext().
+        scenario_id (int): Scenario ID from Urban API.
         token (str): Auth token to access Urban API data.
         urban_api_tools (UrbanApiTool): Urban API tools instance.
     Returns:
         dict[str | FeatureCollection]: dict with service name as key and FeatureCollection as value.
     """
 
-    scenario_id = int(ctx.request_context.meta.scenario_id)
     return await urban_api_tools.get_entity_by_names(
         scenario_id, services_names, ObjectTypeEnum.SERVICE, token
     )
@@ -81,22 +79,21 @@ async def get_physical_objects_by_name(
     physical_objects_names: Annotated[
         list[str], "Physical object names as list from db"
     ],
-    ctx: Context = CurrentContext(),
+    scenario_id: Annotated[int, "ID сценария из Urban API"],
     token: str = Depends(extract_token),
     urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
 ) -> dict[str, FeatureCollection]:
     """
     Urban API tools interface method to retrieve physical objects from scenario.
     Args:
-        physical_objects_names (list[str]): physical object names from db
-        ctx (Context): Context for CurrentContext() tool call.
+        physical_objects_names (list[str]): physical object names from db.
+        scenario_id (int): Scenario ID from Urban API.
         token (str): Auth token to access Urban API data.
         urban_api_tools (UrbanApiTool): Urban API tools instance.
     Returns:
         dict[str | FeatureCollection]: dict with physical object name as key and FeatureCollection as value
     """
 
-    scenario_id = int(ctx.request_context.meta.scenario_id)
     return await urban_api_tools.get_entity_by_names(
         scenario_id,
         physical_objects_names,

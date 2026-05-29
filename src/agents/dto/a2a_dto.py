@@ -40,7 +40,7 @@ class A2AMessageDTO(BaseModel):
     Attributes:
         role (str): Message role.
         parts (list[A2APartDTO]): A2A message parts.
-        metadata (dict | None): Agent metadata such as scenario_id, model and temperature.
+        metadata (dict | None): Agent metadata such as model and temperature.
     """
 
     model_config = ConfigDict(extra="allow")

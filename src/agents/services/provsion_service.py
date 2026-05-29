@@ -284,7 +284,7 @@ class ProvisionService(BaseLlmService):
                     effects_mcp_client,
                     token_ref,
                     lambda: self.tool_executor.get_service_id(
-                        idu_mcp_client, service_name, scenario_id
+                        idu_mcp_client, service_name
                     ),
                     svc_out,
                 ):

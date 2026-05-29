@@ -1322,6 +1322,7 @@ dev = [
     { name = "mapclassify" },
     { name = "matplotlib" },
     { name = "pre-commit" },
+    { name = "tqdm" },
 ]
 
 [package.metadata]
@@ -1353,6 +1354,7 @@ dev = [
     { name = "mapclassify", specifier = ">=2.10.0,<3.0.0" },
     { name = "matplotlib", specifier = ">=3.10.9,<4.0.0" },
     { name = "pre-commit", specifier = ">=4.6.0" },
+    { name = "tqdm", specifier = ">=4.67.3" },
 ]
 
 [[package]]

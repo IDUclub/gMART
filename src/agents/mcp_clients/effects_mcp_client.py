@@ -31,20 +31,21 @@ class EffectsMcpClient(BaseMcpClient):
         Call CalculateObjectEffects on the effects MCP server.
         Args:
             service_type_id (int): Service type identifier.
-            scenario_id (int): Scenario ID passed via MCP request meta.
-            project_id (int): Project ID passed via MCP request meta.
+            scenario_id (int): Scenario ID passed as tool argument.
+            project_id (int): Project ID passed as tool argument.
             target_population (int | None): Optional population override.
         Returns:
             dict: Effects result with before_prove_data, after_prove_data, effects, pivot.
         """
-        arguments: dict = {"service_type_id": service_type_id}
+        arguments: dict = {
+            "service_type_id": service_type_id,
+            "scenario_id": scenario_id,
+            "project_id": project_id,
+        }
         if target_population is not None:
             arguments["target_population"] = target_population
-        meta = {"scenario_id": scenario_id, "project_id": project_id}
         try:
-            return await self.execute_tool(
-                "CalculateObjectEffects", arguments, meta=meta
-            )
+            return await self.execute_tool("CalculateObjectEffects", arguments)
         except Exception as exc:
             if _is_token_expired(exc):
                 raise TokenExpiredError(str(exc)) from exc

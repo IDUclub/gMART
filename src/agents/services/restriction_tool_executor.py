@@ -36,7 +36,7 @@ class RestrictionToolExecutor:
         mcp_client: IduMcpClient,
         tool_name: str,
         arguments: dict,
-        meta: dict,
+        meta: dict | None = None,
     ) -> dict[str, dict]:
         result = await mcp_client.execute_tool(tool_name, arguments, meta=meta)
         return RestrictionToolExecutor.to_plain_data(result)
@@ -52,7 +52,6 @@ class RestrictionToolExecutor:
         )
         layers: dict[str, dict] = {}
         tool_calls: list[dict] = []
-        meta = {"scenario_id": scenario_id}
 
         self._append_if_present(
             tool_calls,
@@ -60,8 +59,10 @@ class RestrictionToolExecutor:
                 layers,
                 mcp_client,
                 "GetServices",
-                {"services_names": entities_by_type["service"]},
-                meta,
+                {
+                    "services_names": entities_by_type["service"],
+                    "scenario_id": scenario_id,
+                },
             ),
         )
         self._append_if_present(
@@ -70,8 +71,10 @@ class RestrictionToolExecutor:
                 layers,
                 mcp_client,
                 "GetPhysicalObjects",
-                {"physical_objects_names": entities_by_type["physical_object"]},
-                meta,
+                {
+                    "physical_objects_names": entities_by_type["physical_object"],
+                    "scenario_id": scenario_id,
+                },
             ),
         )
         return GeometryToolCallResult(
@@ -91,7 +94,7 @@ class RestrictionToolExecutor:
         mcp_client: IduMcpClient,
         tool_name: str,
         arguments: dict,
-        meta: dict,
+        meta: dict | None = None,
     ) -> dict | None:
         if not next(iter(arguments.values())):
             return None
