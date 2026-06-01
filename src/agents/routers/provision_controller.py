@@ -41,7 +41,6 @@ async def calculate_provision_effects(
         idu_mcp_client=idu_mcp_client,
         effects_mcp_client=effects_mcp_client,
         user_query=user_request.request,
-        project_id=user_request.project_id,
         scenario_id=user_request.scenario_id,
         chat_id=user_request.chat_id,
         temperature=user_request.temperature,

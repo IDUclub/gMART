@@ -33,21 +33,18 @@ class ProvisionToolExecutor:
         self,
         idu_mcp: IduMcpClient,
         service_name: str,
-        scenario_id: int,
     ) -> ProvisionStepResult:
         """
         Call GetServiceTypeIdByName on IDU MCP to resolve service_type_id by name.
         Args:
             idu_mcp (IduMcpClient): IDU MCP client with bearer token.
             service_name (str): Human-readable service name (e.g. "Школы").
-            scenario_id (int): Scenario identifier passed in MCP meta.
         Returns:
             ProvisionStepResult: Resolved service_type_id.
         """
         raw = await idu_mcp.execute_tool(
             "GetServiceTypeIdByName",
             {"service_name": service_name},
-            meta={"scenario_id": scenario_id},
         )
         service_type_id = self._parse_service_type_id(raw, service_name)
         return ProvisionStepResult(
@@ -89,7 +86,6 @@ class ProvisionToolExecutor:
         effects_mcp: EffectsMcpClient,
         service_type_id: int,
         scenario_id: int,
-        project_id: int,
         target_population: int | None,
     ) -> ProvisionStepResult:
         """
@@ -97,8 +93,7 @@ class ProvisionToolExecutor:
         Args:
             effects_mcp (EffectsMcpClient): Effects MCP client with bearer token.
             service_type_id (int): Resolved service type identifier.
-            scenario_id (int): Scenario identifier passed in MCP meta.
-            project_id (int): Project identifier passed in MCP meta.
+            scenario_id (int): Scenario identifier passed as tool argument.
             target_population (int | None): Optional population override.
         Returns:
             ProvisionStepResult with keys:
@@ -111,11 +106,13 @@ class ProvisionToolExecutor:
         raw = await effects_mcp.calculate_object_effects(
             service_type_id=service_type_id,
             scenario_id=scenario_id,
-            project_id=project_id,
             target_population=target_population,
         )
         effects: dict = self.to_plain_data(raw) if not isinstance(raw, dict) else raw
-        arguments: dict = {"service_type_id": service_type_id}
+        arguments: dict = {
+            "service_type_id": service_type_id,
+            "scenario_id": scenario_id,
+        }
         if target_population is not None:
             arguments["target_population"] = target_population
         return ProvisionStepResult(

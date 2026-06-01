@@ -87,11 +87,15 @@ class BaseMcpClient:
 
     # TODO enhance exception handling
     async def execute_tool(
-        self, tool_name: str, arguments: dict, meta: dict, log: bool = False
+        self,
+        tool_name: str,
+        arguments: dict,
+        meta: dict | None = None,
+        log: bool = False,
     ):
         try:
             async with self.mcp_client as mcp:
-                result = await mcp.call_tool(tool_name, arguments, meta=meta)
+                result = await mcp.call_tool(tool_name, arguments, meta=meta or {})
                 if log:
                     logger.info(
                         f"Executed tool with meta {result.meta} and data {result.data}"

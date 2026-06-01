@@ -9,16 +9,11 @@ class ProvisionRequestDTO(SimpleRequestDTO):
     The service name and target population are extracted from the natural language
     request by the pipeline via LLM + IDU MCP service catalog.
     Attributes:
-        project_id (int): Project ID — passed to the effects MCP server via meta.
-        scenario_id (int): Scenario ID — passed to both MCP servers via meta.
+        scenario_id (int): Scenario ID — passed to MCP servers as a tool argument.
         chat_id (str | None): Chat Storage UUID for history continuity.
         request_id (str | None): Existing pipeline request ID to reconnect/resume.
     """
 
-    project_id: int = Field(
-        examples=[1],
-        description="Project ID (passed to effects MCP server via request meta)",
-    )
     scenario_id: int = Field(
         examples=[772],
         description="Scenario ID from Urban API",

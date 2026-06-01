@@ -78,7 +78,6 @@ class ProvisionService(BaseLlmService):
         model: str,
         temperature: float,
         user_query: str,
-        project_id: int,
         scenario_id: int,
         chat_id: str | None = None,
         request_id: str | None = None,
@@ -97,7 +96,6 @@ class ProvisionService(BaseLlmService):
             model=model,
             temperature=temperature,
             user_query=user_query,
-            project_id=project_id,
             scenario_id=scenario_id,
             chat_id=chat_id,
             request_id=request_id,
@@ -148,7 +146,6 @@ class ProvisionService(BaseLlmService):
         model: str,
         temperature: float,
         user_query: str,
-        project_id: int,
         scenario_id: int,
         token_ref: list[str],
         chat_id: str | None = None,
@@ -284,7 +281,7 @@ class ProvisionService(BaseLlmService):
                     effects_mcp_client,
                     token_ref,
                     lambda: self.tool_executor.get_service_id(
-                        idu_mcp_client, service_name, scenario_id
+                        idu_mcp_client, service_name
                     ),
                     svc_out,
                 ):
@@ -334,7 +331,6 @@ class ProvisionService(BaseLlmService):
                         effects_mcp_client,
                         service_type_id,
                         scenario_id,
-                        project_id,
                         target_population,
                     ),
                     eff_out,
