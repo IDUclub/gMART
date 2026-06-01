@@ -86,7 +86,6 @@ class ProvisionToolExecutor:
         effects_mcp: EffectsMcpClient,
         service_type_id: int,
         scenario_id: int,
-        project_id: int,
         target_population: int | None,
     ) -> ProvisionStepResult:
         """
@@ -95,7 +94,6 @@ class ProvisionToolExecutor:
             effects_mcp (EffectsMcpClient): Effects MCP client with bearer token.
             service_type_id (int): Resolved service type identifier.
             scenario_id (int): Scenario identifier passed as tool argument.
-            project_id (int): Project identifier passed as tool argument.
             target_population (int | None): Optional population override.
         Returns:
             ProvisionStepResult with keys:
@@ -108,14 +106,12 @@ class ProvisionToolExecutor:
         raw = await effects_mcp.calculate_object_effects(
             service_type_id=service_type_id,
             scenario_id=scenario_id,
-            project_id=project_id,
             target_population=target_population,
         )
         effects: dict = self.to_plain_data(raw) if not isinstance(raw, dict) else raw
         arguments: dict = {
             "service_type_id": service_type_id,
             "scenario_id": scenario_id,
-            "project_id": project_id,
         }
         if target_population is not None:
             arguments["target_population"] = target_population
