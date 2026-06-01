@@ -183,6 +183,10 @@ class ProvisionAgentExecutor:
         user_query = self._extract_text(message)
         request_data = self._extract_request_data(params, message)
 
+        project_id = request_data.get("project_id")
+        if project_id is None:
+            raise ValueError("project_id is required in params.metadata or a data part")
+
         raw_text = request_data.get("request") or user_query
         scenario_id = self._extract_scenario_id_from_text(str(raw_text))
         if scenario_id is None:
@@ -248,6 +252,8 @@ class ProvisionAgentExecutor:
             if isinstance(part_data, dict):
                 data.update(part_data)
         for key in (
+            "project_id",
+            "projectId",
             "model",
             "temperature",
             "request",
@@ -256,6 +262,8 @@ class ProvisionAgentExecutor:
             if key in params:
                 data[key] = params[key]
 
+        if "projectId" in data and "project_id" not in data:
+            data["project_id"] = data["projectId"]
         if "userQuery" in data and "request" not in data:
             data["request"] = data["userQuery"]
         return data
