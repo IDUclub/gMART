@@ -40,7 +40,7 @@ class JsonApiHandler:
         elif response.status == 500:
             if response.content_type == "application/json":
                 response_info = await response.json()
-                if "reset by peer" in response_info["error"]:
+                if "reset by peer" in response_info.get("error", ""):
                     return None
             else:
                 response_info = await response.text()
