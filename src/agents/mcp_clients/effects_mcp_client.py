@@ -24,7 +24,6 @@ class EffectsMcpClient(BaseMcpClient):
         self,
         service_type_id: int,
         scenario_id: int,
-        project_id: int,
         target_population: int | None = None,
     ) -> dict:
         """
@@ -32,7 +31,6 @@ class EffectsMcpClient(BaseMcpClient):
         Args:
             service_type_id (int): Service type identifier.
             scenario_id (int): Scenario ID passed as tool argument.
-            project_id (int): Project ID passed as tool argument.
             target_population (int | None): Optional population override.
         Returns:
             dict: Effects result with before_prove_data, after_prove_data, effects, pivot.
@@ -40,7 +38,6 @@ class EffectsMcpClient(BaseMcpClient):
         arguments: dict = {
             "service_type_id": service_type_id,
             "scenario_id": scenario_id,
-            "project_id": project_id,
         }
         if target_population is not None:
             arguments["target_population"] = target_population

@@ -94,7 +94,6 @@ class ProvisionAgentExecutor:
                 temperature=execution["temperature"],
                 model=execution["model"],
                 user_query=execution["user_query"],
-                project_id=execution["project_id"],
                 scenario_id=execution["scenario_id"],
             ):
                 event = self._pipeline_item_to_event(task_id, context_id, item)
@@ -184,10 +183,6 @@ class ProvisionAgentExecutor:
         user_query = self._extract_text(message)
         request_data = self._extract_request_data(params, message)
 
-        project_id = request_data.get("project_id")
-        if project_id is None:
-            raise ValueError("project_id is required in params.metadata or a data part")
-
         raw_text = request_data.get("request") or user_query
         scenario_id = self._extract_scenario_id_from_text(str(raw_text))
         if scenario_id is None:
@@ -219,7 +214,6 @@ class ProvisionAgentExecutor:
                 request_data.get("temperature", self.DEFAULT_TEMPERATURE)
             ),
             "scenario_id": int(scenario_id),
-            "project_id": int(project_id),
             "user_query": user_query,
         }
 
@@ -254,8 +248,6 @@ class ProvisionAgentExecutor:
             if isinstance(part_data, dict):
                 data.update(part_data)
         for key in (
-            "project_id",
-            "projectId",
             "model",
             "temperature",
             "request",
@@ -264,8 +256,6 @@ class ProvisionAgentExecutor:
             if key in params:
                 data[key] = params[key]
 
-        if "projectId" in data and "project_id" not in data:
-            data["project_id"] = data["projectId"]
         if "userQuery" in data and "request" not in data:
             data["request"] = data["userQuery"]
         return data
