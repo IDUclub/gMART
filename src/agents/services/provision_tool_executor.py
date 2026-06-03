@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import TYPE_CHECKING
 
+from loguru import logger
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ class ProvisionToolExecutor:
         Returns:
             ProvisionStepResult: Resolved service_type_id.
         """
+        logger.info(f"Tool call: GetServiceTypeIdByName(service_name={service_name!r})")
         raw = await idu_mcp.execute_tool(
             "GetServiceTypeIdByName",
             {"service_name": service_name},
@@ -103,6 +105,12 @@ class ProvisionToolExecutor:
                 pivot:             dict
                 text_pivot:        str (optional, MCP-generated LLM context)
         """
+        logger.info(
+            f"Tool call: CalculateObjectEffects("
+            f"service_type_id={service_type_id}, "
+            f"scenario_id={scenario_id}, "
+            f"target_population={target_population})"
+        )
         raw = await effects_mcp.calculate_object_effects(
             service_type_id=service_type_id,
             scenario_id=scenario_id,
