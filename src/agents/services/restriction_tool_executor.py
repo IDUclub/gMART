@@ -122,8 +122,9 @@ class RestrictionToolExecutor:
         tool_result = await self.execute_named_tool(
             mcp_client,
             "CreateBuffers",
-            arguments,
-            meta={"objects": layers},
+            # ``objects`` is excluded from the tool schema (hidden from the LLM)
+            # and injected here directly as a call argument.Если
+            {**arguments, "objects": layers},
         )
         return self._tool_result("CreateBuffers", arguments, tool_result, plan)
 
@@ -146,8 +147,9 @@ class RestrictionToolExecutor:
         tool_result = await self.execute_named_tool(
             mcp_client,
             "CreateRestrictions",
-            arguments,
-            meta={"layers": layers},
+            # ``layers`` is excluded from the tool schema (hidden from the LLM)
+            # and injected here directly as a call argument.
+            {**arguments, "layers": layers},
         )
         return self._tool_result("CreateRestrictions", arguments, tool_result, plan)
 
