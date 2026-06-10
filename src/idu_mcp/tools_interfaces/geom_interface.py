@@ -1,6 +1,6 @@
-from fastmcp import Context, FastMCP
+from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
-from fastmcp.server.dependencies import CurrentContext
+from fastmcp.exceptions import ToolError
 from geojson_pydantic import FeatureCollection
 
 from src.idu_mcp.dependencies.dependencies import get_geom_tools
@@ -17,8 +17,9 @@ geometry_mcp = FastMCP("GEOMETRY MCP")
     
     Входные параметры:
     Параметр | Тип	| Обязателен | Описание
-    buffer_info |	dict[str, int |	Literal["round", "flat", "square"] | str]
-    
+    buffer_info |	dict[str, int |	Literal["round", "flat", "square"] | str] | ✅ | Словарь, где ключ - имя слоя, а значение - параметры буфера (buffer_size, buffer_type, title).
+    objects | dict[str, FeatureCollection] | ✅ | Исходные слои объектов (ключ - имя слоя, значение - FeatureCollection в GeoJSON), вокруг которых строятся буферы. Ключи должны совпадать с ключами из buffer_info.
+
     Выходные данные:
     
     Тип | Описание
@@ -32,6 +33,10 @@ geometry_mcp = FastMCP("GEOMETRY MCP")
       "buffer_info": {
         "жилая застройка": {"buffer_size": 150, "buffer_type": "round", "title": "Ограничение от промышленных объектов в радиусе 150 метров"},
         "промышленная зона": { "buffer_size": 300, "buffer_type": "square", "title": "Ограничение от водных объектов в радиусе 300 метров"}
+      },
+      "objects": {
+        "жилая застройка": "FeatureCollection",
+        "промышленная зона": "FeatureCollection"
       }
     }
     
@@ -48,21 +53,47 @@ geometry_mcp = FastMCP("GEOMETRY MCP")
 )
 async def create_buffers(
     buffer_info: dict,
-    ctx: Context = CurrentContext(),
+    objects: dict,
     geom_tools: GeometryTools = Depends(get_geom_tools),
 ) -> dict[str, FeatureCollection]:
     """
     Create buffers for layers.
     Args:
         buffer_info (dict[str, int | Literal["round", "flat", "square"] | str]): Buffer info, containing buffer type and buffer size.
-        ctx (Context): Context for mcp tool call.
+        objects (dict): Source object layers as dict[layer_name, FeatureCollection] in GeoJSON, around which
+            the buffers are built. Keys must match the keys of buffer_info.
         geom_tools (GeometryTools): GeometryTools instance.
     Returns:
         dict[str, FeatureCollection]: layer of objects which restricts which objects.
     """
 
-    objects = ctx.request_context.meta.objects
-    return await geom_tools.async_generate_geometry_buffers(buffer_info, objects)
+    # Validate the inputs (incorrectly passed layers) before touching geopandas,
+    # so that genuine geometry-operation failures are not misreported as bad input.
+    object_keys = {key.lower() for key in objects}
+    missing_layers = [name for name in buffer_info if name.lower() not in object_keys]
+    if missing_layers:
+        raise ToolError(
+            f"Не удалось построить буферы: слои {missing_layers} отсутствуют в 'objects'. "
+            f"Переданные слои objects: {list(objects)}; запрошены буферы для: {list(buffer_info)}."
+        )
+    for name, info in buffer_info.items():
+        missing_fields = [
+            field
+            for field in ("buffer_size", "buffer_type", "title")
+            if not isinstance(info, dict) or field not in info
+        ]
+        if missing_fields:
+            raise ToolError(
+                f"Не удалось построить буферы: в 'buffer_info' для слоя '{name}' "
+                f"отсутствуют обязательные поля {missing_fields}."
+            )
+
+    try:
+        return await geom_tools.async_generate_geometry_buffers(buffer_info, objects)
+    except Exception as e:
+        raise ToolError(
+            f"Ошибка при выполнении геометрических операций geopandas для буферов: {e}"
+        ) from e
 
 
 @geometry_mcp.tool(
@@ -81,11 +112,12 @@ async def create_buffers(
     generators | list[str] | ✅ | Список типов объектов, которые генерируют ограничения (должны совпадать с ключами из layers).
     objects	list[str] | ✅ | Список типов объектов, которые можут быть ограничены (приёмники).
     restrictions | dict[str, dict[str, str	list[str]]] | ✅ | Словарь, в котором ключ – имя ограничения (обычно это тип объекта‑генератора). Значение – вложенный словарь с метаданными ограничения: "title" – короткое название (строка). "description" – подробное описание (строка). "to" – список типов объектов, к которым это ограничение применимо (список строк).
+    layers | dict[str, FeatureCollection] | ✅ | Слои объектов и буферов (ключ – имя слоя, значение – FeatureCollection в GeoJSON), на основе которых строятся ограничения. Ключи должны совпадать с именами из generators и objects.
     Пример одного ограничения:
     {
       "title": "Школа",
       "description": "No new construction",
-      "to": ["house", "apartment"]
+      "to": ["дом"]
     }
     
     Пример входных данных:
@@ -98,6 +130,10 @@ async def create_buffers(
           "description": "Запрещено возведение объектов вокруг школ",
           "to": ["дом"]
         }
+      },
+      "layers": {
+        "школа": "FeatureCollection",
+        "дом": "FeatureCollection"
       }
     }
     """,
@@ -107,7 +143,7 @@ async def create_restrictions(
     generators: list[str],
     objects: list[str],
     restrictions: dict[str, dict[str, str | list[str]]],
-    ctx: Context = CurrentContext(),
+    layers: dict,
     geom_tools: GeometryTools = Depends(get_geom_tools),
 ) -> dict[str, FeatureCollection]:
     """
@@ -116,14 +152,39 @@ async def create_restrictions(
         generators (list[str]): list of restriction generators names.
         objects (list[str]): list of all needed objects.
         restrictions (dict[str, dict[str, str | list[str]]]): info with restriction rules.
-        ctx (Context): tool call context. Forms from CurrentContext().
+        layers (dict): Object and buffer layers as dict[layer_name, FeatureCollection] in GeoJSON, used to
+            build the restrictions. Keys must match the names from generators and objects.
         geom_tools (GeometryTools): GeometryTools instance.
     Returns:
         dict[str, dict]: tuple of layers where firs FeatureCollection is restricted objects layer
         and second FeatureCollection is generators layer.
     """
 
-    layers = ctx.request_context.meta.layers
-    return await geom_tools.async_create_restrictions(
-        layers, generators, objects, restrictions
-    )
+    if not any(name in layers for name in generators) or not any(
+        name in layers for name in objects
+    ):
+        raise ToolError(
+            f"Не удалось построить ограничения: среди переданных слоёв {list(layers)} "
+            f"нет генераторов {generators} или целевых объектов {objects} — "
+            f"проверьте соответствие имён слоёв."
+        )
+    for name, info in restrictions.items():
+        missing_fields = [
+            field
+            for field in ("title", "description", "to")
+            if not isinstance(info, dict) or field not in info
+        ]
+        if missing_fields:
+            raise ToolError(
+                f"Не удалось построить ограничения: в ограничении '{name}' "
+                f"отсутствуют обязательные поля {missing_fields}."
+            )
+
+    try:
+        return await geom_tools.async_create_restrictions(
+            layers, generators, objects, restrictions
+        )
+    except Exception as e:
+        raise ToolError(
+            f"Ошибка при выполнении геометрических операций geopandas для ограничений: {e}"
+        ) from e
