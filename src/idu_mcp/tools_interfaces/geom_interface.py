@@ -4,7 +4,9 @@ from fastmcp.exceptions import ToolError
 from geojson_pydantic import FeatureCollection
 
 from src.idu_mcp.dependencies.dependencies import get_geom_tools
+from src.idu_mcp.tools_descriptions import geometry_validation_messages as messages
 from src.idu_mcp.tools_services.geometry_tools import GeometryTools
+from src.idu_mcp.tools_services.geometry_validator import GeometryToolValidator
 
 geometry_mcp = FastMCP("GEOMETRY MCP")
 
@@ -67,33 +69,11 @@ async def create_buffers(
         dict[str, FeatureCollection]: layer of objects which restricts which objects.
     """
 
-    # Validate the inputs (incorrectly passed layers) before touching geopandas,
-    # so that genuine geometry-operation failures are not misreported as bad input.
-    object_keys = {key.lower() for key in objects}
-    missing_layers = [name for name in buffer_info if name.lower() not in object_keys]
-    if missing_layers:
-        raise ToolError(
-            f"Не удалось построить буферы: слои {missing_layers} отсутствуют в 'objects'. "
-            f"Переданные слои objects: {list(objects)}; запрошены буферы для: {list(buffer_info)}."
-        )
-    for name, info in buffer_info.items():
-        missing_fields = [
-            field
-            for field in ("buffer_size", "buffer_type", "title")
-            if not isinstance(info, dict) or field not in info
-        ]
-        if missing_fields:
-            raise ToolError(
-                f"Не удалось построить буферы: в 'buffer_info' для слоя '{name}' "
-                f"отсутствуют обязательные поля {missing_fields}."
-            )
-
+    GeometryToolValidator.validate_buffers(buffer_info, objects)
     try:
         return await geom_tools.async_generate_geometry_buffers(buffer_info, objects)
     except Exception as e:
-        raise ToolError(
-            f"Ошибка при выполнении геометрических операций geopandas для буферов: {e}"
-        ) from e
+        raise ToolError(messages.BUFFERS_RUNTIME_ERROR.format(error=e)) from e
 
 
 @geometry_mcp.tool(
@@ -160,31 +140,12 @@ async def create_restrictions(
         and second FeatureCollection is generators layer.
     """
 
-    if not any(name in layers for name in generators) or not any(
-        name in layers for name in objects
-    ):
-        raise ToolError(
-            f"Не удалось построить ограничения: среди переданных слоёв {list(layers)} "
-            f"нет генераторов {generators} или целевых объектов {objects} — "
-            f"проверьте соответствие имён слоёв."
-        )
-    for name, info in restrictions.items():
-        missing_fields = [
-            field
-            for field in ("title", "description", "to")
-            if not isinstance(info, dict) or field not in info
-        ]
-        if missing_fields:
-            raise ToolError(
-                f"Не удалось построить ограничения: в ограничении '{name}' "
-                f"отсутствуют обязательные поля {missing_fields}."
-            )
-
+    GeometryToolValidator.validate_restrictions(
+        generators, objects, restrictions, layers
+    )
     try:
         return await geom_tools.async_create_restrictions(
             layers, generators, objects, restrictions
         )
     except Exception as e:
-        raise ToolError(
-            f"Ошибка при выполнении геометрических операций geopandas для ограничений: {e}"
-        ) from e
+        raise ToolError(messages.RESTRICTIONS_RUNTIME_ERROR.format(error=e)) from e
