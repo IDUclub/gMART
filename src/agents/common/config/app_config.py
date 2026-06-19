@@ -8,6 +8,7 @@ class AgentsAppConfig:
         CHAT_STORAGE_URL (str): Chat Storage service URL.
         URBAN_API_URL (str): Urban API URL.
         REDIS_URL (str): Redis URL (used for pipeline state and pub/sub).
+        SYSTEM_PASSWORD (str | None): Optional password guarding system config retrieval.
     """
 
     OLLAMA_URL: str
@@ -16,6 +17,7 @@ class AgentsAppConfig:
     CHAT_STORAGE_URL: str
     URBAN_API_URL: str
     REDIS_URL: str
+    SYSTEM_PASSWORD: str | None
 
     def __init__(
         self,
@@ -25,6 +27,7 @@ class AgentsAppConfig:
         chat_storage_url: str,
         urban_api_url: str,
         redis_url: str = "redis://localhost:6379",
+        system_password: str | None = None,
     ) -> None:
 
         if not ollama_api_url:
@@ -45,6 +48,7 @@ class AgentsAppConfig:
             raise ValueError("URBAN_API_URL must be set")
         self.URBAN_API_URL = urban_api_url
         self.REDIS_URL = redis_url
+        self.SYSTEM_PASSWORD = system_password
 
     def to_dict(self) -> dict[str, str]:
 

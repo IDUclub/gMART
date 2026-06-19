@@ -39,6 +39,7 @@ def load_config() -> AgentsAppConfig:
                 chat_storage_url=os.getenv("CHAT_STORAGE"),
                 urban_api_url=os.getenv("URBAN_API_URL"),
                 redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
+                system_password=os.getenv("SYSTEM_PASSWORD"),
             )
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
     try:
@@ -49,6 +50,7 @@ def load_config() -> AgentsAppConfig:
             chat_storage_url=os.getenv("CHAT_STORAGE"),
             urban_api_url=os.getenv("URBAN_API_URL"),
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
+            system_password=os.getenv("SYSTEM_PASSWORD"),
         )
     except ValueError:
         raise
