@@ -27,7 +27,6 @@ jobs:
         env:
           ENV_PATH: ${{ secrets.ENV_PATH }}
         run: |
-          cp "$ENV_PATH/.env.agents.production" ./env/
           cp "$ENV_PATH/.env.idu_mcp.production" ./env/
 
       - name: Build images
@@ -57,6 +56,7 @@ jobs:
   run_container:
     runs-on: 99_runner
     needs: [build, stop_container]
+    environment: production
 
     env:
       NOW: ${{ needs.build.outputs.now }}
@@ -68,4 +68,11 @@ jobs:
           echo "MCP_IMAGE=$MCP_IMAGE_NAME:$NOW" >> $GITHUB_ENV
 
       - name: Run containers
+        env:
+          OLLAMA_API_URL: ${{ vars.OLLAMA_API_URL }}
+          IDU_MCP_SERVER: ${{ vars.IDU_MCP_SERVER }}
+          OBJECTS_EFFECTS_MCP_SERVER: ${{ vars.OBJECTS_EFFECTS_MCP_SERVER }}
+          CHAT_STORAGE: ${{ vars.CHAT_STORAGE }}
+          URBAN_API_URL: ${{ vars.URBAN_API_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
         run: docker compose -f docker-compose.actions.yaml up -d
