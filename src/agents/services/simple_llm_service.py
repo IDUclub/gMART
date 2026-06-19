@@ -6,6 +6,7 @@ from ollama import ChatResponse
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
+from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.services.base_llm_service import BaseLlmService
 
 
@@ -17,14 +18,24 @@ class SimpleLlmService(BaseLlmService):
         chat_storage_client (ChatStorageApiClient): Instance of ChatStorageApiClient for current app.
     """
 
-    def __init__(self, llm_host: str, chat_storage_client: ChatStorageApiClient):
+    def __init__(
+        self,
+        llm_host: str,
+        chat_storage_client: ChatStorageApiClient,
+        urban_api_client: UrbanApiClient,
+    ):
         """
         Initialization function for SimpleLlmService. Inherits from BaseService.
         Args:
             llm_host (str): Ollama host.
             chat_storage_client (ChatStorageApiClient): Instance of ChatStorageApiClient.
+            urban_api_client (UrbanApiClient): Instance of UrbanApiClient.
         """
-        super().__init__(llm_host=llm_host, chat_storage_client=chat_storage_client)
+        super().__init__(
+            llm_host=llm_host,
+            chat_storage_client=chat_storage_client,
+            urban_api_client=urban_api_client,
+        )
 
     async def generate_message(self, user_request: str, model: str) -> dict[str, Any]:
         """
