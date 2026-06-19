@@ -13,6 +13,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPartRequest,
 )
 from src.agents.api_clients.chat_storage_client.responses import ChatHistory
+from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
 from src.agents.model_clients.base_client import BaseLlmClient
 
@@ -23,19 +24,27 @@ class BaseLlmService(BaseLlmClient):
     Attributes:
         host (str): Ollama host.
         chat_storage_client (ChatStorageApiClient): Chat storage API client instance.
+        urban_api_client (UrbanApiClient): Urban API client instance.
         llm_client (AsyncOllamaClient): Asynchronous ollama client.
     """
 
-    def __init__(self, llm_host: str, chat_storage_client: ChatStorageApiClient):
+    def __init__(
+        self,
+        llm_host: str,
+        chat_storage_client: ChatStorageApiClient,
+        urban_api_client: UrbanApiClient,
+    ):
         """
         Initialization function for BaseLlmService. Inherits from BaseLlmClient.
         Args:
             llm_host (str): Ollama host.
             chat_storage_client (ChatStorageApiClient): Chat storage API client instance for chat operations.
+            urban_api_client (UrbanApiClient): Urban API client instance for scenario/project lookups.
         """
 
         super().__init__(host=llm_host)
         self.chat_storage_client: ChatStorageApiClient = chat_storage_client
+        self.urban_api_client: UrbanApiClient = urban_api_client
 
     async def get_models(self, only_running: bool = False):
         """
@@ -160,6 +169,7 @@ class BaseLlmService(BaseLlmClient):
         user_query: str,
         additional_instructions: str,
         scenario_id: int | None = None,
+        project_id: int | None = None,
         **kwargs,
     ) -> tuple[str, str]:
         """
@@ -170,6 +180,7 @@ class BaseLlmService(BaseLlmClient):
             user_query (str): First user query for chat.
             additional_instructions (str): Internal instructions for first requested service.
             scenario_id (int | None): Scenario ID from Urban API.
+            project_id (int | None): Project ID from Urban API. Resolved from scenario_id when not provided.
             **kwargs(Any): Any kwargs to save as meta to chat.
         Returns:
             tuple[str, str]: Tuple with chat_id as first value and chat title as second.
@@ -179,8 +190,12 @@ class BaseLlmService(BaseLlmClient):
         title = await self.generate_chat_title(
             model_name, user_query, additional_instructions, existing_names
         )
+        if scenario_id is not None and project_id is None:
+            project_id = await self.urban_api_client.get_project_by_scenario(
+                token, scenario_id
+            )
         chat_info = await self.chat_storage_client.create_chat(
-            token, title, scenario_id, **kwargs
+            token, title, scenario_id, project_id, **kwargs
         )
         logger.info(f"Created chat with {asdict(chat_info)}")
         await self.add_single_message(

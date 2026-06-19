@@ -20,6 +20,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPartRequest,
     ToolCallPayload,
 )
+from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.exceptions.token_exceptions import (
     PipelineSuspendedError,
     TokenExpiredError,
@@ -58,10 +59,11 @@ class ProvisionService(BaseLlmService):
         self,
         ollama_host: str,
         chat_storage_client: ChatStorageApiClient,
+        urban_api_client: UrbanApiClient,
         state_store: PipelineStateStore,
     ) -> None:
 
-        super().__init__(ollama_host, chat_storage_client)
+        super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.plan_builder = ProvisionPlanBuilder(self.llm_client)
         self.tool_executor = ProvisionToolExecutor()
         self.context_builder = ProvisionContextBuilder()
