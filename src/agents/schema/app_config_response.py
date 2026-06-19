@@ -2,10 +2,7 @@ from pydantic import BaseModel
 
 
 class AppConfigResponse(BaseModel):
-    """
-    Response model with the current agents service runtime configuration.
-    The system password is intentionally excluded from this response.
-    """
+    """Public view of the agents service runtime configuration."""
 
     OLLAMA_URL: str
     IDU_MCP_URL: str
