@@ -75,6 +75,7 @@ jobs:
           CHAT_STORAGE: ${{ vars.CHAT_STORAGE }}
           URBAN_API_URL: ${{ vars.URBAN_API_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
+          SYSTEM_PASSWORD: ${{ secrets.SYSTEM_PASSWORD }}
         run: docker compose -f docker-compose.actions.yaml up -d --wait --wait-timeout 120
 
       - name: Container diagnostics
