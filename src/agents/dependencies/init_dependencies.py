@@ -53,7 +53,7 @@ def init_dependencies() -> dict[
     )
     return {
         "app_config": app_config,
-        "system_service": SystemService(logs_path),
+        "system_service": SystemService(logs_path, app_config),
         "idu_fastmcp_client": idu_fastmcp_client,
         "idu_mcp_client": IduMcpClient(idu_fastmcp_client),
         "simple_llm_service": SimpleLlmService(
