@@ -6,6 +6,7 @@ from fastmcp import Client
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
+from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
 from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.common.config.app_config_loader import load_config
@@ -35,6 +36,7 @@ def init_dependencies() -> dict[
     | ProvisionA2AService
     | JsonApiHandler
     | ChatStorageApiClient
+    | UrbanApiClient
     | PipelineStateStore,
 ]:
 
@@ -43,13 +45,21 @@ def init_dependencies() -> dict[
     idu_fastmcp_client = Client(app_config.IDU_MCP_URL)
     chat_storage_json_handler = JsonApiHandler(app_config.CHAT_STORAGE_URL)
     chat_storage_client = ChatStorageApiClient(chat_storage_json_handler)
+    urban_api_json_handler = JsonApiHandler(app_config.URBAN_API_URL)
+    urban_api_client = UrbanApiClient(urban_api_json_handler)
     redis_client = aioredis.from_url(app_config.REDIS_URL, decode_responses=True)
     pipeline_state_store = PipelineStateStore(redis_client)
     restriction_parser_service = RestrictionParserService(
-        app_config.OLLAMA_URL, chat_storage_client, pipeline_state_store
+        app_config.OLLAMA_URL,
+        chat_storage_client,
+        urban_api_client,
+        pipeline_state_store,
     )
     provision_service = ProvisionService(
-        app_config.OLLAMA_URL, chat_storage_client, pipeline_state_store
+        app_config.OLLAMA_URL,
+        chat_storage_client,
+        urban_api_client,
+        pipeline_state_store,
     )
     return {
         "app_config": app_config,
@@ -57,7 +67,7 @@ def init_dependencies() -> dict[
         "idu_fastmcp_client": idu_fastmcp_client,
         "idu_mcp_client": IduMcpClient(idu_fastmcp_client),
         "simple_llm_service": SimpleLlmService(
-            app_config.OLLAMA_URL, chat_storage_client
+            app_config.OLLAMA_URL, chat_storage_client, urban_api_client
         ),
         "restriction_parser_service": restriction_parser_service,
         "provision_service": provision_service,
@@ -65,5 +75,7 @@ def init_dependencies() -> dict[
         "provision_a2a_service": ProvisionA2AService(provision_service),
         "chat_storage_json_handler": chat_storage_json_handler,
         "chat_storage_client": chat_storage_client,
+        "urban_api_json_handler": urban_api_json_handler,
+        "urban_api_client": urban_api_client,
         "pipeline_state_store": pipeline_state_store,
     }

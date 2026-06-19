@@ -37,6 +37,7 @@ def load_config() -> AgentsAppConfig:
                 idu_mcp_url=os.getenv("IDU_MCP_SERVER"),
                 effects_mcp_url=os.getenv("OBJECTS_EFFECTS_MCP_SERVER"),
                 chat_storage_url=os.getenv("CHAT_STORAGE"),
+                urban_api_url=os.getenv("URBAN_API_URL"),
                 redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
             )
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
@@ -46,6 +47,7 @@ def load_config() -> AgentsAppConfig:
             idu_mcp_url=os.getenv("IDU_MCP_SERVER"),
             effects_mcp_url=os.getenv("OBJECTS_EFFECTS_MCP_SERVER"),
             chat_storage_url=os.getenv("CHAT_STORAGE"),
+            urban_api_url=os.getenv("URBAN_API_URL"),
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
         )
     except ValueError:

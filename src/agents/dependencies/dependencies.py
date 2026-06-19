@@ -1,6 +1,7 @@
 from fastapi import Depends
 from fastmcp import Client
 
+from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.init_dependencies import init_dependencies
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
@@ -29,6 +30,19 @@ def get_simple_llm_service() -> SimpleLlmService:
     if not isinstance(simple_llm_service, SimpleLlmService):
         raise TypeError(f"Expected SimpleLlmService, got {type(simple_llm_service)}")
     return simple_llm_service
+
+
+def get_urban_api_client() -> UrbanApiClient:
+    """
+    Function returns initialized UrbanApiClient object from dependencies.
+    Returns:
+         UrbanApiClient: urban_api_client object initialized on startup.
+    """
+
+    urban_api_client: UrbanApiClient = app_deps["urban_api_client"]
+    if not isinstance(urban_api_client, UrbanApiClient):
+        raise TypeError(f"Expected UrbanApiClient, got {type(urban_api_client)}")
+    return urban_api_client
 
 
 def get_pipeline_state_store() -> PipelineStateStore:
