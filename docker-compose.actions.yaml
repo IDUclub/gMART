@@ -5,8 +5,13 @@ services:
     restart: always
     ports:
       - "80:80"
-    env_file:
-      - ./env/.env.agents.production
+    environment:
+      OLLAMA_API_URL: ${OLLAMA_API_URL}
+      IDU_MCP_SERVER: ${IDU_MCP_SERVER}
+      OBJECTS_EFFECTS_MCP_SERVER: ${OBJECTS_EFFECTS_MCP_SERVER}
+      CHAT_STORAGE: ${CHAT_STORAGE}
+      URBAN_API_URL: ${URBAN_API_URL}
+      REDIS_URL: ${REDIS_URL}
 
   idu_mcp:
     image: ${MCP_IMAGE}

@@ -8,4 +8,5 @@ class AppConfigResponse(BaseModel):
     IDU_MCP_URL: str
     EFFECTS_MCP_URL: str
     CHAT_STORAGE_URL: str
+    URBAN_API_URL: str
     REDIS_URL: str

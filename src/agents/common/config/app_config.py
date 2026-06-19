@@ -6,6 +6,7 @@ class AgentsAppConfig:
         IDU_MCP_URL (str): IDU MCP URL.
         EFFECTS_MCP_URL (str): Object Effects MCP URL.
         CHAT_STORAGE_URL (str): Chat Storage service URL.
+        URBAN_API_URL (str): Urban API URL.
         REDIS_URL (str): Redis URL (used for pipeline state and pub/sub).
     """
 
@@ -13,6 +14,7 @@ class AgentsAppConfig:
     IDU_MCP_URL: str
     EFFECTS_MCP_URL: str
     CHAT_STORAGE_URL: str
+    URBAN_API_URL: str
     REDIS_URL: str
 
     def __init__(
@@ -21,6 +23,7 @@ class AgentsAppConfig:
         idu_mcp_url: str,
         effects_mcp_url: str,
         chat_storage_url: str,
+        urban_api_url: str,
         redis_url: str = "redis://localhost:6379",
     ) -> None:
 
@@ -38,6 +41,9 @@ class AgentsAppConfig:
         if not chat_storage_url:
             raise ValueError("CHAT_STORAGE_URL must be set")
         self.CHAT_STORAGE_URL = chat_storage_url
+        if not urban_api_url:
+            raise ValueError("URBAN_API_URL must be set")
+        self.URBAN_API_URL = urban_api_url
         self.REDIS_URL = redis_url
 
     def to_dict(self) -> dict[str, str]:
@@ -47,6 +53,7 @@ class AgentsAppConfig:
             "IDU_MCP_URL": self.IDU_MCP_URL,
             "EFFECTS_MCP_URL": self.EFFECTS_MCP_URL,
             "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,
+            "URBAN_API_URL": self.URBAN_API_URL,
             "REDIS_URL": self.REDIS_URL,
         }
 
