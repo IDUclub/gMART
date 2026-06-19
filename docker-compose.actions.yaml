@@ -12,6 +12,12 @@ services:
       CHAT_STORAGE: ${CHAT_STORAGE}
       URBAN_API_URL: ${URBAN_API_URL}
       REDIS_URL: ${REDIS_URL}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:80/ping')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   idu_mcp:
     image: ${MCP_IMAGE}

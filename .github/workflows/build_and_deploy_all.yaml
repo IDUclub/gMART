@@ -75,4 +75,23 @@ jobs:
           CHAT_STORAGE: ${{ vars.CHAT_STORAGE }}
           URBAN_API_URL: ${{ vars.URBAN_API_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
-        run: docker compose -f docker-compose.actions.yaml up -d
+        run: docker compose -f docker-compose.actions.yaml up -d --wait --wait-timeout 120
+
+      - name: Container diagnostics
+        if: always()
+        run: |
+          sleep 5
+          fail=0
+          for c in idu_agents idu_mcp; do
+            status=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+            health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$c" 2>/dev/null || echo n/a)
+            count=$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo 0)
+            echo "::group::$c (status=$status, health=$health, restarts=$count)"
+            docker logs --tail 200 "$c" 2>&1 || true
+            echo "::endgroup::"
+            if [ "$status" != "running" ] || [ "$count" -gt 0 ]; then
+              echo "::error::container $c is unhealthy (status=$status, health=$health, restartCount=$count)"
+              fail=1
+            fi
+          done
+          exit $fail
