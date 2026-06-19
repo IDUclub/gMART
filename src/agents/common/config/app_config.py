@@ -40,14 +40,16 @@ class AgentsAppConfig:
         self.CHAT_STORAGE_URL = chat_storage_url
         self.REDIS_URL = redis_url
 
+    def to_dict(self) -> dict[str, str]:
+
+        return {
+            "OLLAMA_URL": self.OLLAMA_URL,
+            "IDU_MCP_URL": self.IDU_MCP_URL,
+            "EFFECTS_MCP_URL": self.EFFECTS_MCP_URL,
+            "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,
+            "REDIS_URL": self.REDIS_URL,
+        }
+
     def __repr__(self) -> str:
 
-        return str(
-            {
-                "OLLAMA_URL": self.OLLAMA_URL,
-                "IDU_MCP_URL": self.IDU_MCP_URL,
-                "EFFECTS_MCP_URL": self.EFFECTS_MCP_URL,
-                "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,
-                "REDIS_URL": self.REDIS_URL,
-            }
-        )
+        return str(self.to_dict())
