@@ -38,6 +38,7 @@ def load_config() -> AgentsAppConfig:
                 effects_mcp_url=os.getenv("OBJECTS_EFFECTS_MCP_SERVER"),
                 chat_storage_url=os.getenv("CHAT_STORAGE"),
                 urban_api_url=os.getenv("URBAN_API_URL"),
+                dvd_mcp_url=os.getenv("DVD_MCP_SERVER"),
                 redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
                 system_password=os.getenv("SYSTEM_PASSWORD"),
             )
@@ -49,6 +50,7 @@ def load_config() -> AgentsAppConfig:
             effects_mcp_url=os.getenv("OBJECTS_EFFECTS_MCP_SERVER"),
             chat_storage_url=os.getenv("CHAT_STORAGE"),
             urban_api_url=os.getenv("URBAN_API_URL"),
+            dvd_mcp_url=os.getenv("DVD_MCP_SERVER"),
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
             system_password=os.getenv("SYSTEM_PASSWORD"),
         )
