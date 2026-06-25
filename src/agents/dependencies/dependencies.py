@@ -4,9 +4,12 @@ from fastmcp import Client
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.init_dependencies import init_dependencies
+from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.a2a_service import A2AService
+from src.agents.services.dvd_a2a_service import DocumentQaA2AService
+from src.agents.services.dvd_rag_service import DvdRagService
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provsion_service import ProvisionService
@@ -81,6 +84,51 @@ async def get_effects_mcp_client(
 
     mcp_url: str = app_deps["app_config"].EFFECTS_MCP_URL
     return EffectsMcpClient(Client(mcp_url, auth=token), mcp_url=mcp_url)
+
+
+async def get_dvd_mcp_client() -> DvdMcpClient:
+    """
+    Function returns a DvdMcpClient for the IDU_DVD document vector-DB MCP server.
+
+    The IDU_DVD MCP server is unauthenticated, so no bearer token is attached.
+    Returns:
+        DvdMcpClient: Client for the IDU_DVD MCP server.
+    Raises:
+        ValueError: If DVD_MCP_SERVER is not configured.
+    """
+
+    mcp_url: str | None = app_deps["app_config"].DVD_MCP_URL
+    if not mcp_url:
+        raise ValueError(
+            "DVD_MCP_SERVER is not configured — set it to enable the /documents agent"
+        )
+    return DvdMcpClient(Client(mcp_url), mcp_url=mcp_url)
+
+
+def get_dvd_rag_service() -> DvdRagService:
+    """
+    Function returns initialized DvdRagService object from dependencies.
+    Returns:
+        DvdRagService: DvdRagService instance.
+    """
+
+    service: DvdRagService = app_deps["dvd_rag_service"]
+    if not isinstance(service, DvdRagService):
+        raise TypeError(f"Expected DvdRagService, got {type(service)}")
+    return service
+
+
+async def get_dvd_a2a_service() -> DocumentQaA2AService:
+    """
+    Function returns DocumentQaA2AService instance.
+    Returns:
+        DocumentQaA2AService: DocumentQaA2AService instance.
+    """
+
+    service = app_deps["dvd_a2a_service"]
+    if not isinstance(service, DocumentQaA2AService):
+        raise TypeError(f"Expected DocumentQaA2AService, got {type(service)}")
+    return service
 
 
 def get_provision_service() -> ProvisionService:

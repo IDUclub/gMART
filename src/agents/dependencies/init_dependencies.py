@@ -13,6 +13,8 @@ from src.agents.common.config.app_config_loader import load_config
 from src.agents.common.logging.log_config import config_logger
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.a2a_service import A2AService
+from src.agents.services.dvd_a2a_service import DocumentQaA2AService
+from src.agents.services.dvd_rag_service import DvdRagService
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provsion_service import ProvisionService
@@ -32,8 +34,10 @@ def init_dependencies() -> dict[
     | SimpleLlmService
     | RestrictionParserService
     | ProvisionService
+    | DvdRagService
     | A2AService
     | ProvisionA2AService
+    | DocumentQaA2AService
     | JsonApiHandler
     | ChatStorageApiClient
     | UrbanApiClient
@@ -61,6 +65,12 @@ def init_dependencies() -> dict[
         urban_api_client,
         pipeline_state_store,
     )
+    dvd_rag_service = DvdRagService(
+        app_config.OLLAMA_URL,
+        chat_storage_client,
+        urban_api_client,
+        pipeline_state_store,
+    )
     return {
         "app_config": app_config,
         "system_service": SystemService(logs_path, app_config),
@@ -71,8 +81,10 @@ def init_dependencies() -> dict[
         ),
         "restriction_parser_service": restriction_parser_service,
         "provision_service": provision_service,
+        "dvd_rag_service": dvd_rag_service,
         "a2a_service": A2AService(restriction_parser_service),
         "provision_a2a_service": ProvisionA2AService(provision_service),
+        "dvd_a2a_service": DocumentQaA2AService(dvd_rag_service),
         "chat_storage_json_handler": chat_storage_json_handler,
         "chat_storage_client": chat_storage_client,
         "urban_api_json_handler": urban_api_json_handler,

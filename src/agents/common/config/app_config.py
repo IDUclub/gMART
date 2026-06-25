@@ -5,6 +5,7 @@ class AgentsAppConfig:
         OLLAMA_URL (str): Ollama URL.
         IDU_MCP_URL (str): IDU MCP URL.
         EFFECTS_MCP_URL (str): Object Effects MCP URL.
+        DVD_MCP_URL (str | None): IDU_DVD document vector-DB MCP URL (optional).
         CHAT_STORAGE_URL (str): Chat Storage service URL.
         URBAN_API_URL (str): Urban API URL.
         REDIS_URL (str): Redis URL (used for pipeline state and pub/sub).
@@ -14,6 +15,7 @@ class AgentsAppConfig:
     OLLAMA_URL: str
     IDU_MCP_URL: str
     EFFECTS_MCP_URL: str
+    DVD_MCP_URL: str | None
     CHAT_STORAGE_URL: str
     URBAN_API_URL: str
     REDIS_URL: str
@@ -26,6 +28,7 @@ class AgentsAppConfig:
         effects_mcp_url: str,
         chat_storage_url: str,
         urban_api_url: str,
+        dvd_mcp_url: str | None = None,
         redis_url: str = "redis://localhost:6379",
         system_password: str | None = None,
     ) -> None:
@@ -41,6 +44,10 @@ class AgentsAppConfig:
         self.EFFECTS_MCP_URL = effects_mcp_url
         if not self.EFFECTS_MCP_URL:
             raise ValueError("OBJECTS_EFFECTS_MCP_SERVER must be set")
+        # Optional: only required by the document-QA (RAG) agent. Kept optional so
+        # existing deployments without DVD_MCP_SERVER still start; the DVD endpoints
+        # raise a clear error if it is unset (see dependencies.get_dvd_mcp_client).
+        self.DVD_MCP_URL = dvd_mcp_url or None
         if not chat_storage_url:
             raise ValueError("CHAT_STORAGE_URL must be set")
         self.CHAT_STORAGE_URL = chat_storage_url
@@ -56,6 +63,7 @@ class AgentsAppConfig:
             "OLLAMA_URL": self.OLLAMA_URL,
             "IDU_MCP_URL": self.IDU_MCP_URL,
             "EFFECTS_MCP_URL": self.EFFECTS_MCP_URL,
+            "DVD_MCP_URL": self.DVD_MCP_URL or "",
             "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,
             "URBAN_API_URL": self.URBAN_API_URL,
             "REDIS_URL": self.REDIS_URL,
