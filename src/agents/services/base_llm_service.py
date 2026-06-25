@@ -170,6 +170,7 @@ class BaseLlmService(BaseLlmClient):
         additional_instructions: str,
         scenario_id: int | None = None,
         project_id: int | None = None,
+        resolve_project_id: bool = True,
         **kwargs,
     ) -> tuple[str, str]:
         """
@@ -181,6 +182,9 @@ class BaseLlmService(BaseLlmClient):
             additional_instructions (str): Internal instructions for first requested service.
             scenario_id (int | None): Scenario ID from Urban API.
             project_id (int | None): Project ID from Urban API. Resolved from scenario_id when not provided.
+            resolve_project_id (bool): When True (default), resolve project_id from scenario_id
+                via Urban API if project_id is not given. Pass False to skip the lookup when the
+                caller has already resolved (or attempted to resolve) it.
             **kwargs(Any): Any kwargs to save as meta to chat.
         Returns:
             tuple[str, str]: Tuple with chat_id as first value and chat title as second.
@@ -190,7 +194,7 @@ class BaseLlmService(BaseLlmClient):
         title = await self.generate_chat_title(
             model_name, user_query, additional_instructions, existing_names
         )
-        if scenario_id is not None and project_id is None:
+        if resolve_project_id and scenario_id is not None and project_id is None:
             project_id = await self.urban_api_client.get_project_by_scenario(
                 token, scenario_id
             )
