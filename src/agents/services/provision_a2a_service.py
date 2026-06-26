@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from typing import Any
+from uuid import uuid4
 
 from python_a2a.models.task import TaskState
 
+from src.agents.a2a.a2a_format import (
+    apply_history_length,
+    normalize_response,
+    utc_now_rfc3339,
+)
 from src.agents.a2a.provision_agent import ProvisionA2AAgent
 from src.agents.a2a.provision_executor import ProvisionAgentExecutor
 from src.agents.a2a.task_store import A2ATaskStore
@@ -103,8 +109,14 @@ class ProvisionA2AService:
                 yield self._success(request_id, event)
 
         except A2AJsonRpcError as exc:
+            yield self._success(
+                request_id, self._terminal_failed_event(payload, exc.message)
+            )
             yield self._error(request_id, exc)
         except Exception as exc:
+            yield self._success(
+                request_id, self._terminal_failed_event(payload, str(exc))
+            )
             yield self._error(request_id, A2AJsonRpcError(-32000, str(exc)))
 
     async def _handle_single_json_rpc(
@@ -135,9 +147,11 @@ class ProvisionA2AService:
         effects_mcp_client: EffectsMcpClient,
     ) -> A2AResponse:
         if method in {"SendMessage", "message/send", "tasks/send"}:
-            return await self.executor.execute(
+            task = await self.executor.execute(
                 params, idu_mcp_client, effects_mcp_client
             )
+            configuration = params.get("configuration") or {}
+            return apply_history_length(task, configuration.get("historyLength"))
         if method in self.STREAMING_METHODS:
             raise A2AStreamingEndpointRequiredError()
         if method in {"GetTask", "tasks/get"}:
@@ -160,7 +174,7 @@ class ProvisionA2AService:
         task = self.task_store.get_task(task_id)
         if task is None:
             raise A2ATaskNotFoundError(task_id)
-        return task
+        return apply_history_length(task, params.get("historyLength"))
 
     def _cancel_task(self, params: A2AData) -> A2AData:
         task_id = self._task_id_from_params(params)
@@ -199,7 +213,32 @@ class ProvisionA2AService:
         return {
             "jsonrpc": "2.0",
             "id": request_id,
-            "result": result,
+            "result": normalize_response(result),
+        }
+
+    @staticmethod
+    def _terminal_failed_event(payload: A2AData, message_text: str) -> A2AData:
+        """Build a terminal failed status-update for the streaming error path."""
+        params = payload.get("params") if isinstance(payload, dict) else None
+        params = params if isinstance(params, dict) else {}
+        task_id = params.get("id") or params.get("taskId") or str(uuid4())
+        context_id = params.get("contextId") or params.get("context_id") or str(uuid4())
+        return {
+            "statusUpdate": {
+                "taskId": task_id,
+                "contextId": context_id,
+                "status": {
+                    "state": TaskState.FAILED.value,
+                    "timestamp": utc_now_rfc3339(),
+                    "message": {
+                        "kind": "message",
+                        "messageId": str(uuid4()),
+                        "role": "agent",
+                        "parts": [{"kind": "text", "text": message_text}],
+                    },
+                },
+                "final": True,
+            }
         }
 
     @staticmethod
