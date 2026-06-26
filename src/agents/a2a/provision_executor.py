@@ -7,7 +7,9 @@ from uuid import uuid4
 
 from python_a2a.models.task import TaskState
 
+from src.agents.a2a.a2a_format import sanitized_user_message
 from src.agents.a2a.task_store import A2ATaskStore
+from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.provsion_service import ProvisionService
@@ -184,15 +186,11 @@ class ProvisionAgentExecutor:
         request_data = self._extract_request_data(params, message)
 
         raw_text = request_data.get("request") or user_query
-        scenario_id = self._extract_scenario_id_from_text(str(raw_text))
-        if scenario_id is None:
-            raise ValueError(
-                "scenario_id is required in the request text (e.g. scenario_id=772)"
-            )
+        scenario_id = self._resolve_scenario_id(request_data, raw_text)
 
         user_query = self._hide_inline_ids(str(raw_text))
         if not user_query:
-            raise ValueError("User message text is required")
+            raise A2AInvalidParamsError("Message text is required")
 
         task_id = params.get("id") or params.get("taskId") or str(uuid4())
         context_id = (
@@ -213,9 +211,28 @@ class ProvisionAgentExecutor:
             "temperature": float(
                 request_data.get("temperature", self.DEFAULT_TEMPERATURE)
             ),
-            "scenario_id": int(scenario_id),
+            "scenario_id": scenario_id,
             "user_query": user_query,
         }
+
+    @classmethod
+    def _resolve_scenario_id(cls, request_data: A2AData, raw_text: Any) -> int:
+        """Resolve a required scenario_id from structured fields, falling back to text."""
+        scenario_id = request_data.get("scenario_id")
+        if scenario_id is None:
+            scenario_id = request_data.get("scenarioId")
+        if scenario_id is None:
+            scenario_id = cls._extract_scenario_id_from_text(str(raw_text))
+        if scenario_id is None:
+            raise A2AInvalidParamsError(
+                "scenario_id is required: pass it in a DataPart "
+                '({"kind": "data", "data": {"scenario_id": 772}}), in message.metadata, '
+                "or inline as 'scenario_id=772' in the message text"
+            )
+        try:
+            return int(scenario_id)
+        except (TypeError, ValueError) as exc:
+            raise A2AInvalidParamsError("scenario_id must be an integer") from exc
 
     @staticmethod
     def _extract_message(params: A2AData) -> A2AData:
@@ -228,7 +245,7 @@ class ProvisionAgentExecutor:
                 "role": "user",
                 "parts": [{"type": "text", "text": str(direct_text)}],
             }
-        raise ValueError("params.message is required")
+        raise A2AInvalidParamsError("params.message is required")
 
     @staticmethod
     def _extract_scenario_id_from_text(text: str) -> int | None:
@@ -270,17 +287,15 @@ class ProvisionAgentExecutor:
 
     @staticmethod
     def _sanitize_user_message(message: A2AData) -> A2AData:
-        return {
-            "role": "user",
-            "parts": [
-                {
-                    "type": "text",
-                    "text": ProvisionAgentExecutor._hide_inline_ids(str(part["text"])),
-                }
-                for part in message.get("parts", [])
-                if isinstance(part, dict) and part.get("text")
-            ],
-        }
+        parts = [
+            {
+                "type": "text",
+                "text": ProvisionAgentExecutor._hide_inline_ids(str(part["text"])),
+            }
+            for part in message.get("parts", [])
+            if isinstance(part, dict) and part.get("text")
+        ]
+        return sanitized_user_message(parts, message.get("messageId"))
 
     @staticmethod
     def _hide_inline_ids(text: str) -> str:
@@ -346,7 +361,7 @@ class ProvisionAgentExecutor:
                 {
                     "type": "data",
                     "data": feature_collection,
-                    "mediaType": "application/vnd.geo+json",
+                    "metadata": {"mediaType": "application/vnd.geo+json"},
                 }
             ],
             "metadata": {

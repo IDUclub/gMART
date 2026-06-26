@@ -6,7 +6,9 @@ from uuid import uuid4
 
 from python_a2a.models.task import TaskState
 
+from src.agents.a2a.a2a_format import sanitized_user_message
 from src.agents.a2a.task_store import A2ATaskStore
+from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
 from src.agents.services.dvd_rag_service import DvdRagService
 
 if TYPE_CHECKING:
@@ -166,7 +168,7 @@ class DocumentQaAgentExecutor:
         message = self._extract_message(params)
         user_query = self._extract_text(message)
         if not user_query:
-            raise ValueError("User message text is required")
+            raise A2AInvalidParamsError("Message text is required")
         request_data = self._extract_request_data(params, message)
 
         task_id = params.get("id") or params.get("taskId") or str(uuid4())
@@ -204,7 +206,7 @@ class DocumentQaAgentExecutor:
                 "role": "user",
                 "parts": [{"type": "text", "text": str(direct_text)}],
             }
-        raise ValueError("params.message is required")
+        raise A2AInvalidParamsError("params.message is required")
 
     @staticmethod
     def _extract_request_data(params: A2AData, message: A2AData) -> A2AData:
@@ -238,14 +240,12 @@ class DocumentQaAgentExecutor:
 
     @staticmethod
     def _sanitize_user_message(message: A2AData) -> A2AData:
-        return {
-            "role": "user",
-            "parts": [
-                {"type": "text", "text": str(part["text"])}
-                for part in message.get("parts", [])
-                if isinstance(part, dict) and part.get("text")
-            ],
-        }
+        parts = [
+            {"type": "text", "text": str(part["text"])}
+            for part in message.get("parts", [])
+            if isinstance(part, dict) and part.get("text")
+        ]
+        return sanitized_user_message(parts, message.get("messageId"))
 
     @staticmethod
     def _status_update(
