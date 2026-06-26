@@ -7,6 +7,7 @@ import pytest
 from src.agents.a2a.dvd_agent import DocumentQaA2AAgent
 from src.agents.a2a.dvd_executor import DocumentQaAgentExecutor
 from src.agents.a2a.task_store import A2ATaskStore
+from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
 
 
 class FakeRag:
@@ -65,7 +66,7 @@ def test_prepare_execution_extracts_text_and_metadata():
 
 
 def test_prepare_execution_requires_text():
-    with pytest.raises(ValueError):
+    with pytest.raises(A2AInvalidParamsError):
         _executor()._prepare_execution({"message": {"role": "user", "parts": []}})
 
 

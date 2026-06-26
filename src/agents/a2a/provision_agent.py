@@ -6,6 +6,7 @@ from python_a2a.models.agent import AgentCard, AgentSkill
 from python_a2a.server.a2a_server import A2AServer
 
 from src.agents.__version__ import APP_VERSION
+from src.agents.a2a.a2a_format import scenario_context_extension
 
 
 class ProvisionA2AAgent(A2AServer):
@@ -39,6 +40,7 @@ class ProvisionA2AAgent(A2AServer):
                 "stateTransitionHistory": True,
                 "google_a2a_compatible": True,
                 "parts_array_format": True,
+                "extensions": [scenario_context_extension()],
             },
             default_input_modes=["text/plain", "application/json"],
             default_output_modes=[

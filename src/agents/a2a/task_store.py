@@ -5,6 +5,8 @@ from typing import Any
 
 from python_a2a.models.task import Task, TaskState, TaskStatus
 
+from src.agents.a2a.a2a_format import utc_now_rfc3339
+
 _WAITING_STATE = TaskState.WAITING.value
 
 A2ATaskData = dict[str, Any]
@@ -47,7 +49,7 @@ class A2ATaskStore:
         task = Task(
             id=task_id,
             session_id=context_id,
-            status=TaskStatus(state=TaskState.SUBMITTED),
+            status=TaskStatus(state=TaskState.SUBMITTED, timestamp=utc_now_rfc3339()),
             message=copy.deepcopy(user_message),
             history=[copy.deepcopy(user_message)],
             artifacts=[],
@@ -102,7 +104,11 @@ class A2ATaskStore:
         """
 
         task = self._tasks[task_id]
-        task.status = TaskStatus(state=state, message=copy.deepcopy(message))
+        task.status = TaskStatus(
+            state=state,
+            message=copy.deepcopy(message),
+            timestamp=utc_now_rfc3339(),
+        )
         if message is not None:
             task.history.append(copy.deepcopy(message))
         status_dict = task.status.to_dict()
