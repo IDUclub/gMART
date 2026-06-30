@@ -22,6 +22,7 @@ from src.idu_mcp.dependencies.dependencies import mcp_deps
 from src.idu_mcp.prompts.restriction_prompts import mcp as restrictions_prompts_mcp
 from src.idu_mcp.tools_interfaces.geom_interface import geometry_mcp
 from src.idu_mcp.tools_interfaces.urb_api_interface import urban_api_mcp
+from src.__version__ import __VERSION__ as MCP_VERSION
 
 # FastMCPDocs.setup() prints a "✓" via print(); make stdout/stderr UTF-8 so it
 # does not raise UnicodeEncodeError on a Windows (cp1252) console.
@@ -51,7 +52,7 @@ main_mcp.mount(restrictions_prompts_mcp)
 docs = FastMCPDocs(
     mcp=main_mcp,
     title="IDU Fast MCP Server",
-    version="1.0.0",
+    version=MCP_VERSION,
     description="Documentation for IDU MCP tools",
     base_url="http://localhost:8000",
 )
