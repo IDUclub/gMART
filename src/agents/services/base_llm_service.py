@@ -2,6 +2,7 @@ import json
 from dataclasses import asdict
 
 from loguru import logger
+from ollama import ResponseError
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
@@ -147,9 +148,18 @@ class BaseLlmService(BaseLlmClient):
         Одна строка с названием чата.
         """.strip()
 
-        title = await self.llm_client.generate(
-            model=model_name, prompt=prompt, stream=False
-        )
+        try:
+            title = await self.llm_client.generate(
+                model=model_name, prompt=prompt, stream=False
+            )
+        except ResponseError as exc:
+            # Ollama answers 404 when the requested model is not pulled. Map the raw
+            # client error to the REST-facing ModelNotFound so the middleware returns
+            # a clean 404 with the list of available models instead of crashing the
+            # pipeline with an unhandled ollama error.
+            if exc.status_code == 404:
+                raise ModelNotFound(model_name, await self.get_models()) from exc
+            raise
         logger.debug(f"LLM chat title [{model_name}]: {title.response}")
         if title.response not in existing_names:
             return title.response
