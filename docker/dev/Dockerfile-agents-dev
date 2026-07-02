@@ -19,6 +19,7 @@ COPY pyproject.toml ./
 RUN uv pip install --system .
 
 # code base
+COPY src/__init__.py src/__version__.py ./src/
 COPY src/agents ./src/agents
 
 # default
