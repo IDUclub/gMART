@@ -10,6 +10,7 @@ from python_a2a.models.task import TaskState
 from src.agents.a2a.a2a_format import sanitized_user_message
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
+from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.services.restriction_parser_service import (
     RestrictionParserService,
@@ -95,7 +96,9 @@ class RestrictionAgentExecutor:
             execution["message"],
             execution["metadata"],
         )
-        yield {"task": task}
+        # First frame of a task lifecycle stream is the Task object itself
+        # (kind: "task"), per A2A 0.3 SendStreamingMessageSuccessResponse.
+        yield task
 
         async for event in self._run_pipeline(execution, mcp_client):
             yield event
@@ -138,18 +141,19 @@ class RestrictionAgentExecutor:
                 model=execution["model"],
                 user_query=execution["user_query"],
                 scenario_id=execution["scenario_id"],
+                request_id=task_id,
             ):
                 event = self._pipeline_item_to_event(task_id, context_id, item)
                 if event is None:
                     continue
-                if "artifactUpdate" in event:
+                if event.get("kind") == "artifact-update":
                     emitted_text = (
                         emitted_text
-                        or event["artifactUpdate"]["artifact"].get("artifactId")
+                        or event["artifact"].get("artifactId")
                         == "restriction-agent-text"
                     )
                 yield event
-                if item.get("type") == "error":
+                if item.get("type") in {"error", "pipeline_suspended"}:
                     return
 
             status = self.task_store.set_status(
@@ -163,6 +167,8 @@ class RestrictionAgentExecutor:
             )
             yield self._status_update(task_id, context_id, status, final=True)
 
+        except PipelineSuspendedError:
+            return
         except Exception as exc:
             status = self.task_store.set_status(
                 task_id,
@@ -233,6 +239,33 @@ class RestrictionAgentExecutor:
                     context_id,
                     task_id,
                     content.get("message", "Restriction pipeline error"),
+                ),
+            )
+            return self._status_update(task_id, context_id, status, final=True)
+
+        if item_type == "token_expired":
+            status = self.task_store.set_status(
+                task_id,
+                TaskState.WAITING,
+                self._agent_message(
+                    context_id,
+                    task_id,
+                    content.get("message", "Token expired, waiting for refresh."),
+                ),
+            )
+            return self._status_update(task_id, context_id, status, final=False)
+
+        if item_type == "pipeline_suspended":
+            status = self.task_store.set_status(
+                task_id,
+                TaskState.FAILED,
+                self._agent_message(
+                    context_id,
+                    task_id,
+                    content.get(
+                        "message",
+                        "Pipeline suspended: token was not refreshed in time.",
+                    ),
                 ),
             )
             return self._status_update(task_id, context_id, status, final=True)
@@ -459,12 +492,11 @@ class RestrictionAgentExecutor:
         """
 
         return {
-            "statusUpdate": {
-                "taskId": task_id,
-                "contextId": context_id,
-                "status": status,
-                "final": final,
-            }
+            "kind": "status-update",
+            "taskId": task_id,
+            "contextId": context_id,
+            "status": status,
+            "final": final,
         }
 
     @staticmethod
@@ -486,13 +518,12 @@ class RestrictionAgentExecutor:
         """
 
         return {
-            "artifactUpdate": {
-                "taskId": task_id,
-                "contextId": context_id,
-                "artifact": artifact,
-                "append": append,
-                "lastChunk": not append,
-            }
+            "kind": "artifact-update",
+            "taskId": task_id,
+            "contextId": context_id,
+            "artifact": artifact,
+            "append": append,
+            "lastChunk": not append,
         }
 
     @staticmethod

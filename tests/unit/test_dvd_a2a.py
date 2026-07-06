@@ -95,7 +95,7 @@ class TestEventMapping:
             "c1",
             {"type": "status", "content": {"status": "searching", "text": "ищу"}},
         )
-        assert "statusUpdate" in ev and ev["statusUpdate"]["final"] is False
+        assert ev["kind"] == "status-update" and ev["final"] is False
 
     def test_chunk_maps_to_per_iteration_artifact(self):
         ex = self._ex_with_task()
@@ -104,7 +104,8 @@ class TestEventMapping:
             "c1",
             {"type": "chunk", "content": {"text": "hi", "done": False, "iteration": 2}},
         )
-        assert ev["artifactUpdate"]["artifact"]["artifactId"] == "document-qa-answer-2"
+        assert ev["kind"] == "artifact-update"
+        assert ev["artifact"]["artifactId"] == "document-qa-answer-2"
 
     def test_empty_chunk_is_dropped(self):
         ex = self._ex_with_task()
@@ -120,14 +121,14 @@ class TestEventMapping:
         ev = ex._pipeline_item_to_event(
             "t1", "c1", {"type": "warning", "content": {"message": "no project id"}}
         )
-        assert "statusUpdate" in ev and ev["statusUpdate"]["final"] is False
+        assert ev["kind"] == "status-update" and ev["final"] is False
 
     def test_error_maps_to_final_status_update(self):
         ex = self._ex_with_task()
         ev = ex._pipeline_item_to_event(
             "t1", "c1", {"type": "error", "content": {"message": "boom"}}
         )
-        assert ev["statusUpdate"]["final"] is True
+        assert ev["kind"] == "status-update" and ev["final"] is True
 
     @pytest.mark.parametrize(
         "internal", ["tool_call", "service_event", "pipeline_started"]
@@ -159,11 +160,12 @@ async def test_stream_emits_task_then_terminal_completed():
 
     events = [e async for e in ex.stream(params, dvd_mcp_client=object(), token="t")]
 
-    assert "task" in events[0]
-    assert any("artifactUpdate" in e for e in events)
+    assert events[0]["kind"] == "task"
+    assert any(e.get("kind") == "artifact-update" for e in events)
     assert any(
-        e.get("statusUpdate", {}).get("final")
-        and e["statusUpdate"]["status"]["state"] == "completed"
+        e.get("kind") == "status-update"
+        and e.get("final")
+        and e["status"]["state"] == "completed"
         for e in events
     )
 
@@ -194,7 +196,8 @@ async def test_stream_failure_emits_failed_status():
     events = [e async for e in ex.stream(params, dvd_mcp_client=object(), token="t")]
 
     assert any(
-        e.get("statusUpdate", {}).get("final")
-        and e["statusUpdate"]["status"]["state"] == "failed"
+        e.get("kind") == "status-update"
+        and e.get("final")
+        and e["status"]["state"] == "failed"
         for e in events
     )
