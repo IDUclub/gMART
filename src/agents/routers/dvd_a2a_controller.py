@@ -68,7 +68,7 @@ async def _stream_json_rpc_events(
     token: str,
 ):
     async for event in dvd_a2a_service.stream_json_rpc(payload, dvd_mcp_client, token):
-        yield {"data": json.dumps(event, ensure_ascii=False)}
+        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 def _payload_to_plain_data(

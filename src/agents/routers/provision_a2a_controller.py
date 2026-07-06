@@ -63,7 +63,7 @@ async def _stream_json_rpc_events(
     async for event in provision_a2a_service.stream_json_rpc(
         payload, idu_mcp_client, effects_mcp_client
     ):
-        yield {"data": json.dumps(event, ensure_ascii=False)}
+        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 def _payload_to_plain_data(
