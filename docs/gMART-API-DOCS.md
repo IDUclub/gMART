@@ -223,20 +223,17 @@ JSON-RPC envelope whose `result` is one incremental event:
 
 | `result` shape | Meaning |
 |---|---|
-| `{ "task": { … } }` | Initial task snapshot (first frame). |
-| `{ "statusUpdate": { taskId, contextId, status, final } }` | Status transition. |
-| `{ "artifactUpdate": { taskId, contextId, artifact, append, lastChunk } }` | New / appended artifact (text chunks use `append: true`). |
+| `{ "kind": "task", id, contextId, status, … }` | Initial task snapshot (first frame). |
+| `{ "kind": "status-update", taskId, contextId, status, final }` | Status transition. |
+| `{ "kind": "artifact-update", taskId, contextId, artifact, append, lastChunk }` | New / appended artifact (text chunks use `append: true`). |
 
-A terminal `statusUpdate` (`final: true`) is **always** emitted — `completed` on success,
+Events follow the A2A 0.3 flat discriminated union (`kind` on the top level of `result`),
+so each SSE frame validates against the official SDK's `SendStreamingMessageResponse`.
+
+A terminal `status-update` (`final: true`) is **always** emitted — `completed` on success,
 `failed` on error. This holds even when the request is rejected before the pipeline starts
 (e.g. missing `scenario_id`): the stream emits a terminal `failed` status-update **and** a
 JSON-RPC error frame, so a spec-compliant streaming client never hangs on an empty stream.
-
-> **Note on the streaming envelope.** Incremental events use the wrapper keys above
-> (`task` / `statusUpdate` / `artifactUpdate`) rather than the spec's flat discriminated
-> union (`kind: "status-update"` / `"artifact-update"`). The **terminal** state is always
-> delivered. For strict v0.3 model parsing of a complete result, prefer `message/send`,
-> which returns a Task that validates against the official SDK.
 
 ### 7. Error codes
 
@@ -247,8 +244,8 @@ Errors use standard JSON-RPC codes:
 | `-32600` | Invalid Request | `jsonrpc != "2.0"`, non-object payload. |
 | `-32601` | Method not found | Unknown method. |
 | `-32602` | Invalid params | Missing/invalid `scenario_id`, missing message text, missing task id, non-object `params`. |
-| `-32001` | Streaming endpoint required | A streaming method sent to the non-streaming path. |
-| `-32004` | Task not found | `tasks/get` / `tasks/cancel` on an unknown id. |
+| `-32001` | Task not found (A2A `TaskNotFoundError`) | `tasks/get` / `tasks/cancel` on an unknown id. |
+| `-32004` | Unsupported operation (A2A `UnsupportedOperationError`) | A streaming method sent to the non-streaming path. |
 | `-32000` | Server error | Unexpected pipeline error. |
 
 Missing `scenario_id` returns `-32602` with a message naming the field and the accepted
@@ -394,20 +391,18 @@ JSON-RPC-конверт, где `result` — одно инкрементальн
 
 | Форма `result` | Значение |
 |---|---|
-| `{ "task": { … } }` | Начальный снимок задачи (первый кадр). |
-| `{ "statusUpdate": { taskId, contextId, status, final } }` | Смена статуса. |
-| `{ "artifactUpdate": { taskId, contextId, artifact, append, lastChunk } }` | Новый/дополненный артефакт (текстовые чанки — с `append: true`). |
+| `{ "kind": "task", id, contextId, status, … }` | Начальный снимок задачи (первый кадр). |
+| `{ "kind": "status-update", taskId, contextId, status, final }` | Смена статуса. |
+| `{ "kind": "artifact-update", taskId, contextId, artifact, append, lastChunk }` | Новый/дополненный артефакт (текстовые чанки — с `append: true`). |
 
-Терминальный `statusUpdate` (`final: true`) эмитится **всегда** — `completed` при успехе,
+События следуют плоскому дискриминированному союзу A2A 0.3 (`kind` на верхнем уровне
+`result`), поэтому каждый SSE-кадр проходит валидацию официальным SDK
+(`SendStreamingMessageResponse`).
+
+Терминальный `status-update` (`final: true`) эмитится **всегда** — `completed` при успехе,
 `failed` при ошибке. Это верно даже когда запрос отклонён до старта пайплайна (например, нет
 `scenario_id`): поток отдаёт терминальный `failed`-статус **и** кадр с JSON-RPC-ошибкой, так
 что спецификационный стриминг-клиент не зависает на пустом потоке.
-
-> **Замечание о конверте стриминга.** Инкрементальные события используют ключи-обёртки выше
-> (`task` / `statusUpdate` / `artifactUpdate`), а не плоский дискриминированный союз из
-> спецификации (`kind: "status-update"` / `"artifact-update"`). **Терминальное** состояние
-> доставляется всегда. Для строгого разбора полного результата по моделям v0.3 используйте
-> `message/send` — он возвращает Task, проходящий валидацию официальным SDK.
 
 ### 7. Коды ошибок
 
@@ -416,8 +411,8 @@ JSON-RPC-конверт, где `result` — одно инкрементальн
 | `-32600` | Invalid Request | `jsonrpc != "2.0"`, не-объектный payload. |
 | `-32601` | Method not found | Неизвестный метод. |
 | `-32602` | Invalid params | Нет/некорректный `scenario_id`, нет текста сообщения, нет id задачи, `params` не объект. |
-| `-32001` | Streaming endpoint required | Стриминговый метод отправлен в нестриминговый путь. |
-| `-32004` | Task not found | `tasks/get` / `tasks/cancel` по неизвестному id. |
+| `-32001` | Task not found (A2A `TaskNotFoundError`) | `tasks/get` / `tasks/cancel` по неизвестному id. |
+| `-32004` | Unsupported operation (A2A `UnsupportedOperationError`) | Стриминговый метод отправлен в нестриминговый путь. |
 | `-32000` | Server error | Непредвиденная ошибка пайплайна. |
 
 Отсутствие `scenario_id` возвращает `-32602` с сообщением, называющим поле и принимаемые

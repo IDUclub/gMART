@@ -113,3 +113,77 @@ async def test_status_timestamp_parses_as_rfc3339():
 
     parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     assert parsed.tzinfo is not None
+
+
+async def _run_stream(params: dict) -> list[dict]:
+    service = A2AService(FakeRestrictionService(), task_store=A2ATaskStore())
+    return [
+        event
+        async for event in service.stream_json_rpc(
+            {
+                "jsonrpc": "2.0",
+                "id": "it-s1",
+                "method": "message/stream",
+                "params": params,
+            },
+            object(),
+        )
+    ]
+
+
+async def test_every_stream_frame_passes_official_v030_validation():
+    """Each SSE envelope must be a valid SendStreamingMessageResponse: a flat
+    kind-discriminated Task | Message | TaskStatusUpdateEvent | TaskArtifactUpdateEvent.
+    """
+    events = await _run_stream(
+        {
+            "message": {
+                "role": "user",
+                "parts": [
+                    {"kind": "data", "data": {"scenario_id": 772}},
+                    {"kind": "text", "text": "построй зону вокруг школ 200 м"},
+                ],
+            }
+        }
+    )
+    assert events, "stream must not be empty"
+    kinds = []
+    for envelope in events:
+        response = a2a_types.SendStreamingMessageResponse.model_validate(envelope)
+        kinds.append(response.root.result.kind)
+
+    assert kinds[0] == "task", "first frame must be the Task snapshot"
+    assert "artifact-update" in kinds
+    assert kinds[-1] == "status-update", "stream must end with a terminal status-update"
+
+
+async def test_stream_error_frames_pass_official_v030_validation():
+    """Rejected requests: the terminal failed status-update and the JSON-RPC error frame
+    must both validate against the official union."""
+    events = await _run_stream(
+        {
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": "no scenario"}],
+            }
+        }
+    )
+    assert events, "stream must not be empty on error"
+    validated = [
+        a2a_types.SendStreamingMessageResponse.model_validate(envelope)
+        for envelope in events
+    ]
+    # Terminal failed status-update precedes the error frame.
+    statuses = [
+        response.root.result
+        for response in validated
+        if hasattr(response.root, "result")
+        and getattr(response.root.result, "kind", None) == "status-update"
+    ]
+    assert (
+        statuses and statuses[-1].final and statuses[-1].status.state.value == "failed"
+    )
+    errors = [
+        response.root for response in validated if hasattr(response.root, "error")
+    ]
+    assert errors, "expected a JSON-RPC error frame"

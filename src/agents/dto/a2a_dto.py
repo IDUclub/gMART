@@ -9,7 +9,8 @@ class A2APartDTO(BaseModel):
     """
     A2A message part.
     Attributes:
-        type (str): Part type, usually text or data.
+        type (str): Part type, usually text or data. Accepts the A2A 0.3 ``kind``
+            discriminator too (``extra="allow"``) — client examples should send ``kind``.
         text (str | None): Text part payload.
         data (dict | None): Structured data part payload.
         mediaType (str | None): Optional media type for data/file parts.
@@ -25,6 +26,7 @@ class A2APartDTO(BaseModel):
     )
     data: dict[str, Any] | None = Field(
         default=None,
+        examples=[{"scenario_id": 772}],
         description="Structured payload for data parts.",
     )
     mediaType: str | None = Field(
@@ -48,14 +50,6 @@ class A2AMessageDTO(BaseModel):
     role: str = Field(default="user", examples=["user"])
     parts: list[A2APartDTO] = Field(
         default_factory=list,
-        examples=[
-            [
-                {
-                    "type": "text",
-                    "text": "Построй зону ограничения вокруг школ 200 метров",
-                }
-            ]
-        ],
         description="Message content parts.",
     )
     metadata: dict[str, Any] | None = Field(
@@ -106,40 +100,47 @@ class A2AJsonRpcRequestDTO(BaseModel):
         params (A2AParamsDTO): A2A method params.
     """
 
-    model_config = ConfigDict(extra="allow")
-
-    jsonrpc: str = Field(default="2.0", examples=["2.0"])
-    id: str | int | None = Field(default=None, examples=["check-1"])
-    method: str | None = Field(
-        default=None,
-        examples=[
-            "SendMessage",
-            "SendStreamingMessage",
-            "GetTask",
-            "ListTasks",
-        ],
-        description="A2A JSON-RPC method.",
-    )
-    params: A2AParamsDTO = Field(
-        default_factory=A2AParamsDTO,
-        examples=[
-            {
-                "message": {
-                    "role": "user",
-                    "parts": [
-                        {
-                            "type": "text",
-                            "text": "scenario_id=772 Построй зону ограничения вокруг школ 200 метров",
-                        }
-                    ],
-                    "metadata": {
-                        "model": "gpt-oss:20b",
-                        "temperature": 0.7,
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={
+            # A single coherent, runnable "message/send" example — verified against the
+            # live endpoint. Swagger's "Try it out" fills the request body with this
+            # example directly, rather than combining independent per-field examples
+            # (which previously produced a mix-and-match body that didn't always dispatch
+            # sensibly, e.g. method="ListTasks" paired with a message-send params example).
+            "examples": [
+                {
+                    "jsonrpc": "2.0",
+                    "id": "postman-1",
+                    "method": "message/send",
+                    "params": {
+                        "id": "task-1",
+                        "message": {
+                            "role": "user",
+                            "parts": [
+                                {"kind": "data", "data": {"scenario_id": 772}},
+                                {
+                                    "kind": "text",
+                                    "text": "Построй зону ограничения вокруг школ 200 метров",
+                                },
+                            ],
+                        },
                     },
                 }
-            }
-        ],
+            ]
+        },
     )
+
+    jsonrpc: str = Field(default="2.0")
+    id: str | int | None = Field(default=None)
+    method: str | None = Field(
+        default=None,
+        description=(
+            "A2A JSON-RPC method. Send methods: 'message/send', 'message/stream' "
+            "(SSE). Task methods: 'tasks/get', 'tasks/list', 'tasks/cancel'."
+        ),
+    )
+    params: A2AParamsDTO = Field(default_factory=A2AParamsDTO)
 
 
 A2AJsonRpcPayloadDTO: TypeAlias = A2AJsonRpcRequestDTO | list[A2AJsonRpcRequestDTO]

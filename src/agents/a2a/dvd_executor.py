@@ -62,7 +62,9 @@ class DocumentQaAgentExecutor:
             execution["message"],
             execution["metadata"],
         )
-        yield {"task": task}
+        # First frame of a task lifecycle stream is the Task object itself
+        # (kind: "task"), per A2A 0.3 SendStreamingMessageSuccessResponse.
+        yield task
         async for event in self._run_pipeline(execution, dvd_mcp_client, token):
             yield event
 
@@ -252,12 +254,11 @@ class DocumentQaAgentExecutor:
         task_id: str, context_id: str, status: A2AData, final: bool
     ) -> A2AEventData:
         return {
-            "statusUpdate": {
-                "taskId": task_id,
-                "contextId": context_id,
-                "status": status,
-                "final": final,
-            }
+            "kind": "status-update",
+            "taskId": task_id,
+            "contextId": context_id,
+            "status": status,
+            "final": final,
         }
 
     @staticmethod
@@ -265,13 +266,12 @@ class DocumentQaAgentExecutor:
         task_id: str, context_id: str, artifact: A2AData, append: bool
     ) -> A2AEventData:
         return {
-            "artifactUpdate": {
-                "taskId": task_id,
-                "contextId": context_id,
-                "artifact": artifact,
-                "append": append,
-                "lastChunk": not append,
-            }
+            "kind": "artifact-update",
+            "taskId": task_id,
+            "contextId": context_id,
+            "artifact": artifact,
+            "append": append,
+            "lastChunk": not append,
         }
 
     @staticmethod

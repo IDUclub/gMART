@@ -203,12 +203,15 @@ class TestStreaming:
 
         events = _parse_sse(resp.text)
         assert events, "expected at least one SSE event"
-        assert "task" in events[0]["result"]
+        # A2A 0.3: first frame is the Task itself, follow-ups are flat
+        # kind-discriminated status-update / artifact-update events.
+        assert events[0]["result"]["kind"] == "task"
         terminal = [
             e
             for e in events
-            if e.get("result", {}).get("statusUpdate", {}).get("final")
-            and e["result"]["statusUpdate"]["status"]["state"] == "completed"
+            if e.get("result", {}).get("kind") == "status-update"
+            and e["result"].get("final")
+            and e["result"]["status"]["state"] == "completed"
         ]
         assert terminal, "expected a terminal completed status-update event"
 
