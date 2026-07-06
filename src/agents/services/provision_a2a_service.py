@@ -224,21 +224,20 @@ class ProvisionA2AService:
         task_id = params.get("id") or params.get("taskId") or str(uuid4())
         context_id = params.get("contextId") or params.get("context_id") or str(uuid4())
         return {
-            "statusUpdate": {
-                "taskId": task_id,
-                "contextId": context_id,
-                "status": {
-                    "state": TaskState.FAILED.value,
-                    "timestamp": utc_now_rfc3339(),
-                    "message": {
-                        "kind": "message",
-                        "messageId": str(uuid4()),
-                        "role": "agent",
-                        "parts": [{"kind": "text", "text": message_text}],
-                    },
+            "kind": "status-update",
+            "taskId": task_id,
+            "contextId": context_id,
+            "status": {
+                "state": TaskState.FAILED.value,
+                "timestamp": utc_now_rfc3339(),
+                "message": {
+                    "kind": "message",
+                    "messageId": str(uuid4()),
+                    "role": "agent",
+                    "parts": [{"kind": "text", "text": message_text}],
                 },
-                "final": True,
-            }
+            },
+            "final": True,
         }
 
     @staticmethod

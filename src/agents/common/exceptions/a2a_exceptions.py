@@ -73,6 +73,9 @@ class A2AMethodNotFoundError(A2AJsonRpcError):
 class A2AStreamingEndpointRequiredError(A2AJsonRpcError):
     """
     Raised when streaming A2A method is sent to non-streaming handler.
+
+    Uses ``-32004`` (A2A ``UnsupportedOperationError``): the requested streaming
+    operation is not supported by this (non-streaming) handler.
     """
 
     def __init__(self) -> None:
@@ -80,12 +83,14 @@ class A2AStreamingEndpointRequiredError(A2AJsonRpcError):
         A2AStreamingEndpointRequiredError initialization function.
         """
 
-        super().__init__(-32001, "Use the streaming endpoint for SendStreamingMessage")
+        super().__init__(-32004, "Use the streaming endpoint for SendStreamingMessage")
 
 
 class A2ATaskNotFoundError(A2AJsonRpcError):
     """
     Raised when requested A2A task is not found.
+
+    Uses ``-32001`` (A2A ``TaskNotFoundError``).
     """
 
     def __init__(self, task_id: str) -> None:
@@ -95,4 +100,4 @@ class A2ATaskNotFoundError(A2AJsonRpcError):
             task_id (str): A2A task id.
         """
 
-        super().__init__(-32004, f"Task not found: {task_id}")
+        super().__init__(-32001, f"Task not found: {task_id}")

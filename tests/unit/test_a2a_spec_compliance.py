@@ -205,6 +205,60 @@ async def test_user_echo_preserves_incoming_message_id():
 
 
 # ---------------------------------------------------------------------------
+# token_expired / pipeline_suspended surfacing (previously silently dropped)
+# ---------------------------------------------------------------------------
+async def test_task_id_is_threaded_through_as_request_id():
+    fake = FakeRestrictionService([{"type": "chunk", "content": {"text": "ok"}}])
+    ex = RestrictionAgentExecutor(fake, A2ATaskStore())
+    await ex.execute(
+        {"id": "task-77", "message": _message("scenario_id=1 build")},
+        mcp_client=object(),
+    )
+    assert fake.calls[0]["request_id"] == "task-77"
+
+
+async def test_token_expired_event_surfaces_as_waiting_status():
+    ex = _executor(
+        [
+            {
+                "type": "token_expired",
+                "content": {"message": "Token expired. Update token to continue."},
+            },
+            {"type": "chunk", "content": {"text": "ok"}},
+        ]
+    )
+    task = await ex.execute(
+        {"message": _message("scenario_id=1 build")}, mcp_client=object()
+    )
+    warning_messages = [
+        msg["parts"][0]["text"]
+        for msg in task["history"]
+        if msg["role"] == "agent" and "Token expired" in msg["parts"][0].get("text", "")
+    ]
+    assert warning_messages, "expected the token_expired warning in task history"
+    # the pipeline must not be treated as failed just because the token expired
+    assert task["status"]["state"] != "failed"
+
+
+async def test_pipeline_suspended_event_surfaces_as_terminal_failed():
+    ex = _executor(
+        [
+            {
+                "type": "pipeline_suspended",
+                "content": {
+                    "message": "Выполнение приостановлено: токен не был обновлён."
+                },
+            },
+        ]
+    )
+    task = await ex.execute(
+        {"message": _message("scenario_id=1 build")}, mcp_client=object()
+    )
+    assert task["status"]["state"] == "failed"
+    assert "приостановлено" in task["status"]["message"]["parts"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
 # RFC3339 timestamps
 # ---------------------------------------------------------------------------
 def test_task_store_status_timestamp_is_rfc3339():
@@ -317,8 +371,9 @@ async def test_stream_invalid_params_emits_terminal_failed():
     terminal = [
         e
         for e in events
-        if e.get("result", {}).get("statusUpdate", {}).get("final")
-        and e["result"]["statusUpdate"]["status"]["state"] == "failed"
+        if e.get("result", {}).get("kind") == "status-update"
+        and e["result"].get("final")
+        and e["result"]["status"]["state"] == "failed"
     ]
     assert terminal, "expected a terminal failed status-update event"
     errors = [e for e in events if "error" in e]
@@ -339,10 +394,11 @@ async def test_stream_happy_path_emits_completed_terminal():
             object(),
         )
     ]
-    assert "task" in events[0]["result"]
+    assert events[0]["result"]["kind"] == "task"
     assert any(
-        e.get("result", {}).get("statusUpdate", {}).get("final")
-        and e["result"]["statusUpdate"]["status"]["state"] == "completed"
+        e.get("result", {}).get("kind") == "status-update"
+        and e["result"].get("final")
+        and e["result"]["status"]["state"] == "completed"
         for e in events
     )
 

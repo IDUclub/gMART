@@ -331,7 +331,7 @@ class A2AService:
             payload (A2AData): The originating JSON-RPC request.
             message_text (str): Human-readable failure reason.
         Returns:
-            A2AData: A2A ``statusUpdate`` event with ``final`` set and ``failed`` state.
+            A2AData: A2A ``status-update`` event with ``final`` set and ``failed`` state.
         """
 
         params = payload.get("params") if isinstance(payload, dict) else None
@@ -339,21 +339,20 @@ class A2AService:
         task_id = params.get("id") or params.get("taskId") or str(uuid4())
         context_id = params.get("contextId") or params.get("context_id") or str(uuid4())
         return {
-            "statusUpdate": {
-                "taskId": task_id,
-                "contextId": context_id,
-                "status": {
-                    "state": TaskState.FAILED.value,
-                    "timestamp": utc_now_rfc3339(),
-                    "message": {
-                        "kind": "message",
-                        "messageId": str(uuid4()),
-                        "role": "agent",
-                        "parts": [{"kind": "text", "text": message_text}],
-                    },
+            "kind": "status-update",
+            "taskId": task_id,
+            "contextId": context_id,
+            "status": {
+                "state": TaskState.FAILED.value,
+                "timestamp": utc_now_rfc3339(),
+                "message": {
+                    "kind": "message",
+                    "messageId": str(uuid4()),
+                    "role": "agent",
+                    "parts": [{"kind": "text", "text": message_text}],
                 },
-                "final": True,
-            }
+            },
+            "final": True,
         }
 
     @staticmethod
