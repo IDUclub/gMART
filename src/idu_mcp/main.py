@@ -56,13 +56,10 @@ docs = FastMCPDocs(
     description="Documentation for IDU MCP tools",
     base_url="http://localhost:8000",
 )
-# Register the documentation routes (/docs, /openapi.json, /api/tools, ...) on
-# the FastMCP server BEFORE building the HTTP app. http_app() snapshots the
-# routes at call time, so docs registered later (e.g. in the lifespan) would
-# never reach the served app.
+
 asyncio.run(docs.setup())
 
-mcp_app = main_mcp.http_app()
+mcp_app = main_mcp.http_app(host_origin_protection=False)
 mcp_app.add_middleware(RequestLoggingMiddleware)
 
 
