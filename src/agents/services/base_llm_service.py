@@ -10,6 +10,7 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
     StatusPartRequest,
+    TablePartRequest,
     TextPartRequest,
     ToolCallPartRequest,
 )
@@ -242,7 +243,9 @@ class BaseLlmService(BaseLlmClient):
         token: str,
         chat_id: str,
         role: RoleEnum,
-        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        parts: list[
+            TextPartRequest | StatusPartRequest | ToolCallPartRequest | TablePartRequest
+        ],
         **kwargs,
     ):
         """
@@ -251,7 +254,7 @@ class BaseLlmService(BaseLlmClient):
             token (str): User token from Urban API.
             chat_id (str): String representation of chat uuid.
             role (RoleEnum): Role of message creator. Available values: "user", "assistant", "system".
-            parts (list[TextPartRequest | StatusPartRequest | ToolCallPartRequest]): Message parts as dto objects.
+            parts (list[TextPartRequest | StatusPartRequest | ToolCallPartRequest | TablePartRequest]): Message parts as dto objects.
             **kwargs (Any): Any kwargs to save as message meta.
         Returns:
             None: Data successfully uploaded.

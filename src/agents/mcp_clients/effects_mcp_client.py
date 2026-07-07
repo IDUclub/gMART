@@ -47,3 +47,33 @@ class EffectsMcpClient(BaseMcpClient):
             if _is_token_expired(exc):
                 raise TokenExpiredError(str(exc)) from exc
             raise
+
+    async def calculate_services_provision(
+        self,
+        scenario_id: int,
+        services: dict[int, dict],
+        target_population: int | None = None,
+    ) -> dict:
+        """
+        Call CalculateServicesProvision on the effects MCP server.
+        Args:
+            scenario_id (int): Scenario ID passed as tool argument.
+            services (dict[int, dict]): Per-service settings keyed by
+                service_type_id: {"name": str, "as_layer": bool}.
+            target_population (int | None): Optional population override shared
+                by all services.
+        Returns:
+            dict: Per-service results: {"services": {id: {name, summary, layers, error}}}.
+        """
+        arguments: dict = {
+            "scenario_id": scenario_id,
+            "services": {str(type_id): info for type_id, info in services.items()},
+        }
+        if target_population is not None:
+            arguments["target_population"] = target_population
+        try:
+            return await self.execute_tool("CalculateServicesProvision", arguments)
+        except Exception as exc:
+            if _is_token_expired(exc):
+                raise TokenExpiredError(str(exc)) from exc
+            raise

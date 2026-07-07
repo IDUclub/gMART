@@ -31,6 +31,7 @@ class PipelineStep(StrEnum):
     RESOLVE_SERVICE = "resolve_service"
     GET_SERVICE_ID = "get_service_id"
     CALCULATE_EFFECTS = "calculate_effects"
+    CALCULATE_PROVISION = "calculate_provision"
 
 
 class PipelineStateStore:

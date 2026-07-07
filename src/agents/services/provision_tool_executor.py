@@ -129,3 +129,52 @@ class ProvisionToolExecutor:
                 {"function": {"name": "CalculateObjectEffects", "arguments": arguments}}
             ],
         )
+
+    async def calculate_services_provision(
+        self,
+        effects_mcp: EffectsMcpClient,
+        scenario_id: int,
+        services: dict[int, dict],
+        target_population: int | None = None,
+    ) -> ProvisionStepResult:
+        """
+        Call CalculateServicesProvision on the effects MCP server.
+        Args:
+            effects_mcp (EffectsMcpClient): Effects MCP client with bearer token.
+            scenario_id (int): Scenario identifier passed as tool argument.
+            services (dict[int, dict]): Per-service settings keyed by
+                service_type_id: {"name": str, "as_layer": bool}.
+            target_population (int | None): Optional population override shared
+                by all services.
+        Returns:
+            ProvisionStepResult with data:
+                services: {service_type_id: {name, summary, layers, error}}
+        """
+        logger.info(
+            f"Tool call: CalculateServicesProvision("
+            f"scenario_id={scenario_id}, services={services}, "
+            f"target_population={target_population})"
+        )
+        raw = await effects_mcp.calculate_services_provision(
+            scenario_id=scenario_id,
+            services=services,
+            target_population=target_population,
+        )
+        data: dict = self.to_plain_data(raw) if not isinstance(raw, dict) else raw
+        arguments: dict = {
+            "scenario_id": scenario_id,
+            "services": {str(type_id): info for type_id, info in services.items()},
+        }
+        if target_population is not None:
+            arguments["target_population"] = target_population
+        return ProvisionStepResult(
+            data=data,
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "CalculateServicesProvision",
+                        "arguments": arguments,
+                    }
+                }
+            ],
+        )
