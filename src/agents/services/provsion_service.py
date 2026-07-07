@@ -14,6 +14,9 @@ from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
     StatusPartRequest,
     StatusPayload,
+    TableColumn,
+    TablePartRequest,
+    TablePayload,
     TextPartRequest,
     TextPayload,
     ToolCall,
@@ -35,7 +38,10 @@ from src.agents.services.pipeline_state import (
 )
 from src.agents.services.provision_context import ProvisionContextBuilder
 from src.agents.services.provision_plan_builder import ProvisionPlanBuilder
-from src.agents.services.provision_tool_executor import ProvisionToolExecutor
+from src.agents.services.provision_tool_executor import (
+    ProvisionStepResult,
+    ProvisionToolExecutor,
+)
 from src.agents.services.service_entities.provision_plan import (
     ProvisionPlan,
     ProvisionPlanMode,
@@ -45,14 +51,53 @@ if TYPE_CHECKING:
     from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
     from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 
+MessagePart = (
+    TextPartRequest | StatusPartRequest | ToolCallPartRequest | TablePartRequest
+)
+
+EFFECTS_ANALYSIS_INSTRUCTIONS = (
+    "Проанализируй эффекты обеспеченности на основе сводных данных расчёта. "
+    "Ответ формулируй как аналитический комментарий: что изменилось, "
+    "насколько значимы изменения, какие выводы можно сделать. "
+    "Используй только числа и факты из контекста. "
+    "Не оформляй таблицы — сводная таблица уже показана пользователю отдельно."
+)
+PROVISION_ANALYSIS_INSTRUCTIONS = (
+    "Проанализируй текущую обеспеченность сервисом на основе сводных данных расчёта. "
+    "Ответ формулируй как аналитический комментарий: насколько спрос покрыт "
+    "вместимостью, есть ли дефицит и насколько он значим. "
+    "Используй только числа и факты из контекста. "
+    "Не оформляй таблицы — таблица показателей уже показана пользователю отдельно."
+)
+SUMMARY_ANALYSIS_INSTRUCTIONS = (
+    "Проанализируй сводку обеспеченности городскими сервисами. "
+    "Укажи, какими сервисами территория обеспечена хуже всего (наибольший дефицит) "
+    "и какими лучше всего, и какие выводы можно сделать. "
+    "Используй только числа и факты из контекста. "
+    "Не оформляй таблицы — сводная таблица уже показана пользователю отдельно."
+)
+POPULATION_HINT = (
+    "\n\nРасчёт выполнен по населению, восстановленному из данных Urban API. "
+    "При желании укажите целевую численность населения прямо в запросе — "
+    "например: «…при населении 25 000 человек» — и расчёт будет выполнен с ней."
+)
+
 
 class ProvisionService(BaseLlmService):
     """
-    Service for running provision effects pipelines.
-    Pipeline steps:
-        1. GET_SERVICE_ID  — resolve service_type_id via IDU MCP GetServices.
-        2. CALCULATE_EFFECTS — call CalculateObjectEffects on the effects MCP server.
-        3. FINAL_RESPONSE  — LLM analysis of pivot data.
+    Service for running provision pipelines.
+
+    The first LLM call classifies the user query into one of the plan modes
+    (see ProvisionPlanMode); every mode then runs a deterministic,
+    checkpointed pipeline:
+        - effects:        GetServiceTypeIdByName -> CalculateObjectEffects
+                          -> layers + strict pivot table + LLM commentary.
+        - provision:      CalculateServicesProvision (single service, layers on)
+                          -> layers + strict metrics table + LLM commentary.
+        - summary:        CalculateServicesProvision (catalog, layers off unless
+                          explicitly requested) -> strict deficit/surplus table
+                          + LLM commentary.
+        - list_services:  deterministic text listing the scenario catalog.
     """
 
     def __init__(
@@ -88,9 +133,7 @@ class ProvisionService(BaseLlmService):
             idu_mcp_client.mcp_client.transport.auth.token.get_secret_value()
         ]
         text_buffer: list[str] = []
-        message_parts: list[
-            TextPartRequest | StatusPartRequest | ToolCallPartRequest
-        ] = []
+        message_parts: list[MessagePart] = []
 
         async for item in self._run_provision_pipeline(
             idu_mcp_client=idu_mcp_client,
@@ -221,10 +264,10 @@ class ProvisionService(BaseLlmService):
         # ── Step 0: RESOLVE_SERVICE ───────────────────────────────────
         yield self._buf(
             request_id,
-            self._status("service_lookup", "Определяю сервис и параметры из запроса"),
+            self._status("service_lookup", "Определяю тип запроса и параметры"),
         )
         if PipelineStep.RESOLVE_SERVICE not in checkpoint:
-            plan_out: list[ProvisionPlan] = []
+            resolve_out: list[tuple[ProvisionPlan, dict[str, int]]] = []
             try:
                 async for event in self._retryable_step(
                     request_id,
@@ -232,19 +275,24 @@ class ProvisionService(BaseLlmService):
                     effects_mcp_client,
                     token_ref,
                     lambda: self._resolve_service_plan(
-                        idu_mcp_client, model, user_query, scenario_id, llm_history
+                        token_ref[0], model, user_query, scenario_id, llm_history
                     ),
-                    plan_out,
+                    resolve_out,
                 ):
                     yield self._buf(request_id, event)
             except PipelineSuspendedError:
                 return
-            plan = plan_out[0]
+            plan, service_types = resolve_out[0]
             await self.state_store.save_checkpoint(
-                request_id, PipelineStep.RESOLVE_SERVICE, plan.model_dump(mode="json")
+                request_id,
+                PipelineStep.RESOLVE_SERVICE,
+                {
+                    "plan": plan.model_dump(mode="json"),
+                    "service_types": service_types,
+                },
             )
         else:
-            plan = ProvisionPlan.model_validate(
+            plan, service_types = self._load_resolve_checkpoint(
                 checkpoint[PipelineStep.RESOLVE_SERVICE]
             )
 
@@ -252,20 +300,378 @@ class ProvisionService(BaseLlmService):
             yield self._buf(
                 request_id,
                 self._status(
-                    "service_lookup", "Не удалось определить сервис из запроса"
+                    "service_lookup", "Не удалось определить тип запроса из сообщения"
                 ),
             )
             yield self._buf(
                 request_id,
                 self._chunk(
                     plan.clarification_question
-                    or "Уточните, для какого сервиса рассчитать эффекты обеспеченности.",
+                    or "Уточните, какой анализ обеспеченности сервисами нужен.",
                     done=True,
                 ),
             )
             await self.state_store.set_status(request_id, PipelineStatus.DONE)
             return
 
+        if plan.mode == ProvisionPlanMode.LIST_SERVICES:
+            async for event in self._run_list_services(request_id, service_types):
+                yield event
+            return
+
+        if plan.mode == ProvisionPlanMode.SUMMARY:
+            async for event in self._run_summary(
+                request_id,
+                idu_mcp_client,
+                effects_mcp_client,
+                token_ref,
+                checkpoint,
+                plan,
+                service_types,
+                model,
+                temperature,
+                user_query,
+                scenario_id,
+                llm_history,
+            ):
+                yield event
+            return
+
+        if plan.mode == ProvisionPlanMode.PROVISION:
+            async for event in self._run_single_provision(
+                request_id,
+                idu_mcp_client,
+                effects_mcp_client,
+                token_ref,
+                checkpoint,
+                plan,
+                service_types,
+                model,
+                temperature,
+                user_query,
+                scenario_id,
+                llm_history,
+            ):
+                yield event
+            return
+
+        # Default: ProvisionPlanMode.EFFECTS — the original before/after pipeline
+        async for event in self._run_effects(
+            request_id,
+            idu_mcp_client,
+            effects_mcp_client,
+            token_ref,
+            checkpoint,
+            plan,
+            model,
+            temperature,
+            user_query,
+            scenario_id,
+            llm_history,
+        ):
+            yield event
+
+    # ------------------------------------------------------------------
+    # Mode: list_services
+    # ------------------------------------------------------------------
+
+    async def _run_list_services(
+        self,
+        request_id: str,
+        service_types: dict[str, int],
+    ) -> AsyncGenerator:
+        yield self._buf(
+            request_id,
+            self._status("service_lookup", "Собираю список доступных сервисов"),
+        )
+        names = sorted(service_types)
+        if names:
+            listing = "\n".join(f"- {name}" for name in names)
+            text = (
+                "В проекте и его контексте доступны следующие сервисы:\n"
+                f"{listing}\n\n"
+                "Могу рассчитать сводку обеспеченности по всем сервисам "
+                "или обеспеченность и эффекты по конкретному сервису."
+            )
+        else:
+            text = "В сценарии нет доступных для анализа сервисов."
+        yield self._buf(request_id, self._chunk(text, done=True))
+        await self.state_store.set_status(request_id, PipelineStatus.DONE)
+
+    # ------------------------------------------------------------------
+    # Mode: summary
+    # ------------------------------------------------------------------
+
+    async def _run_summary(
+        self,
+        request_id: str,
+        idu_mcp_client: IduMcpClient,
+        effects_mcp_client: EffectsMcpClient,
+        token_ref: list[str],
+        checkpoint: dict,
+        plan: ProvisionPlan,
+        service_types: dict[str, int],
+        model: str,
+        temperature: float,
+        user_query: str,
+        scenario_id: int,
+        llm_history: list[dict],
+    ) -> AsyncGenerator:
+        selected_names = plan.service_names or list(service_types)
+        services_args = {
+            service_types[name]: {
+                "name": name,
+                "as_layer": name in plan.layer_service_names,
+            }
+            for name in selected_names
+            if name in service_types
+        }
+        if not services_args:
+            yield self._buf(
+                request_id,
+                self._chunk(
+                    "В сценарии нет доступных сервисов для расчёта сводки.", done=True
+                ),
+            )
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
+
+        yield self._buf(
+            request_id,
+            self._status(
+                "effects_calculation",
+                f"Рассчитываю обеспеченность по {len(services_args)} сервисам",
+            ),
+        )
+        prov_out: list[ProvisionStepResult] = []
+        async for event in self._checkpointed_provision_step(
+            request_id,
+            idu_mcp_client,
+            effects_mcp_client,
+            token_ref,
+            checkpoint,
+            scenario_id,
+            services_args,
+            plan.target_population,
+            prov_out,
+        ):
+            yield event
+        if not prov_out:
+            return
+        prov_result = prov_out[0]
+
+        yield self._buf(
+            request_id,
+            self._tool_call(
+                "effects_calculation",
+                prov_result.tool_calls,
+                mcp_source="OBJECTS_EFFECTS_MCP_URL",
+            ),
+        )
+        yield self._buf(
+            request_id,
+            self._status("effects_calculation", "Расчёт обеспеченности завершён"),
+        )
+        for item in self._provision_feature_collections(prov_result.data):
+            yield self._buf(request_id, item)
+
+        table = self.context_builder.build_summary_table(prov_result.data)
+        if table["rows"]:
+            yield self._buf(request_id, self._table(table))
+        else:
+            failed = [
+                f"{svc.get('name', '')}: {svc.get('error', 'нет данных')}"
+                for svc in (prov_result.data.get("services") or {}).values()
+            ]
+            yield self._buf(
+                request_id,
+                self._chunk(
+                    "Не удалось рассчитать обеспеченность ни для одного сервиса.\n"
+                    + "\n".join(failed),
+                    done=True,
+                ),
+            )
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
+
+        if PipelineStep.FINAL_RESPONSE not in checkpoint:
+            context = self.context_builder.build_summary_context(prov_result.data)
+            if plan.target_population is not None:
+                context += (
+                    f"\n\nРасчёт выполнен для заданной пользователем численности "
+                    f"населения: {plan.target_population} человек."
+                )
+            async for chunk in self._generate_analysis(
+                model,
+                user_query,
+                context,
+                temperature,
+                history=llm_history,
+                instructions=SUMMARY_ANALYSIS_INSTRUCTIONS,
+                trailing_note=(
+                    POPULATION_HINT if plan.target_population is None else None
+                ),
+            ):
+                yield self._buf(request_id, chunk)
+            await self.state_store.save_checkpoint(
+                request_id, PipelineStep.FINAL_RESPONSE, True
+            )
+
+        await self.state_store.set_status(request_id, PipelineStatus.DONE)
+
+    # ------------------------------------------------------------------
+    # Mode: provision (single service, current state)
+    # ------------------------------------------------------------------
+
+    async def _run_single_provision(
+        self,
+        request_id: str,
+        idu_mcp_client: IduMcpClient,
+        effects_mcp_client: EffectsMcpClient,
+        token_ref: list[str],
+        checkpoint: dict,
+        plan: ProvisionPlan,
+        service_types: dict[str, int],
+        model: str,
+        temperature: float,
+        user_query: str,
+        scenario_id: int,
+        llm_history: list[dict],
+    ) -> AsyncGenerator:
+        service_name: str = plan.service_name  # type: ignore[assignment]
+        service_type_id = service_types.get(service_name)
+
+        if service_type_id is None:
+            # Fallback for legacy checkpoints without the service_types map
+            svc_out: list[ProvisionStepResult] = []
+            async for event in self._get_service_id_step(
+                request_id,
+                idu_mcp_client,
+                effects_mcp_client,
+                token_ref,
+                checkpoint,
+                service_name,
+                svc_out,
+            ):
+                yield event
+            if not svc_out:
+                return
+            svc_result = svc_out[0]
+            service_type_id = svc_result.data["service_type_id"]
+            yield self._buf(
+                request_id,
+                self._tool_call(
+                    "service_lookup", svc_result.tool_calls, mcp_source="IDU_MCP_URL"
+                ),
+            )
+
+        yield self._buf(
+            request_id,
+            self._status(
+                "effects_calculation",
+                f"Рассчитываю текущую обеспеченность сервисом «{service_name}»",
+            ),
+        )
+        services_args = {
+            service_type_id: {"name": service_name, "as_layer": True},
+        }
+        prov_out: list[ProvisionStepResult] = []
+        async for event in self._checkpointed_provision_step(
+            request_id,
+            idu_mcp_client,
+            effects_mcp_client,
+            token_ref,
+            checkpoint,
+            scenario_id,
+            services_args,
+            plan.target_population,
+            prov_out,
+        ):
+            yield event
+        if not prov_out:
+            return
+        prov_result = prov_out[0]
+
+        yield self._buf(
+            request_id,
+            self._tool_call(
+                "effects_calculation",
+                prov_result.tool_calls,
+                mcp_source="OBJECTS_EFFECTS_MCP_URL",
+            ),
+        )
+        yield self._buf(
+            request_id,
+            self._status("effects_calculation", "Расчёт обеспеченности завершён"),
+        )
+        for item in self._provision_feature_collections(prov_result.data):
+            yield self._buf(request_id, item)
+
+        service_result = self._single_service_result(prov_result.data, service_type_id)
+        summary = (service_result or {}).get("summary")
+        if not summary:
+            error = (service_result or {}).get("error") or "нет данных"
+            yield self._buf(
+                request_id,
+                self._chunk(
+                    f"Не удалось рассчитать обеспеченность сервисом «{service_name}»: "
+                    f"{error}",
+                    done=True,
+                ),
+            )
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
+
+        table = self.context_builder.build_provision_metrics_table(
+            summary, service_name
+        )
+        yield self._buf(request_id, self._table(table))
+
+        if PipelineStep.FINAL_RESPONSE not in checkpoint:
+            context = self.context_builder.build_provision_context(
+                summary, service_name
+            )
+            if plan.target_population is not None:
+                context += (
+                    f"\n\nРасчёт выполнен для заданной пользователем численности "
+                    f"населения: {plan.target_population} человек."
+                )
+            async for chunk in self._generate_analysis(
+                model,
+                user_query,
+                context,
+                temperature,
+                history=llm_history,
+                instructions=PROVISION_ANALYSIS_INSTRUCTIONS,
+                trailing_note=(
+                    POPULATION_HINT if plan.target_population is None else None
+                ),
+            ):
+                yield self._buf(request_id, chunk)
+            await self.state_store.save_checkpoint(
+                request_id, PipelineStep.FINAL_RESPONSE, True
+            )
+
+        await self.state_store.set_status(request_id, PipelineStatus.DONE)
+
+    # ------------------------------------------------------------------
+    # Mode: effects (original before/after pipeline)
+    # ------------------------------------------------------------------
+
+    async def _run_effects(
+        self,
+        request_id: str,
+        idu_mcp_client: IduMcpClient,
+        effects_mcp_client: EffectsMcpClient,
+        token_ref: list[str],
+        checkpoint: dict,
+        plan: ProvisionPlan,
+        model: str,
+        temperature: float,
+        user_query: str,
+        scenario_id: int,
+        llm_history: list[dict],
+    ) -> AsyncGenerator:
         service_name: str = plan.service_name  # type: ignore[assignment]
         target_population: int | None = plan.target_population
 
@@ -274,32 +680,20 @@ class ProvisionService(BaseLlmService):
             request_id,
             self._status("service_lookup", f"Ищу сервис «{service_name}» в каталоге"),
         )
-        if PipelineStep.GET_SERVICE_ID not in checkpoint:
-            svc_out: list[Any] = []
-            try:
-                async for event in self._retryable_step(
-                    request_id,
-                    idu_mcp_client,
-                    effects_mcp_client,
-                    token_ref,
-                    lambda: self.tool_executor.get_service_id(
-                        idu_mcp_client, service_name
-                    ),
-                    svc_out,
-                ):
-                    yield self._buf(request_id, event)
-            except PipelineSuspendedError:
-                return
-            svc_result = svc_out[0]
-            await self.state_store.save_checkpoint(
-                request_id, PipelineStep.GET_SERVICE_ID, svc_result.data
-            )
-        else:
-            from src.agents.services.provision_tool_executor import ProvisionStepResult
-
-            svc_result = ProvisionStepResult(
-                data=checkpoint[PipelineStep.GET_SERVICE_ID], tool_calls=[]
-            )
+        svc_out: list[ProvisionStepResult] = []
+        async for event in self._get_service_id_step(
+            request_id,
+            idu_mcp_client,
+            effects_mcp_client,
+            token_ref,
+            checkpoint,
+            service_name,
+            svc_out,
+        ):
+            yield event
+        if not svc_out:
+            return
+        svc_result = svc_out[0]
 
         service_type_id: int = svc_result.data["service_type_id"]
         yield self._buf(
@@ -345,8 +739,6 @@ class ProvisionService(BaseLlmService):
                 request_id, PipelineStep.CALCULATE_EFFECTS, eff_result.data
             )
         else:
-            from src.agents.services.provision_tool_executor import ProvisionStepResult
-
             eff_result = ProvisionStepResult(
                 data=checkpoint[PipelineStep.CALCULATE_EFFECTS], tool_calls=[]
             )
@@ -367,11 +759,22 @@ class ProvisionService(BaseLlmService):
         for item in self._effects_feature_collections(effects_data):
             yield self._buf(request_id, item)
 
+        table = self.context_builder.build_effects_pivot_table(
+            effects_data, service_name
+        )
+        if table is not None:
+            yield self._buf(request_id, self._table(table))
+
         # ── Step 3: FINAL_RESPONSE ────────────────────────────────────
         if PipelineStep.FINAL_RESPONSE not in checkpoint:
             context = self.context_builder.build_context(effects_data, service_name)
             async for chunk in self._generate_analysis(
-                model, user_query, context, temperature, history=llm_history
+                model,
+                user_query,
+                context,
+                temperature,
+                history=llm_history,
+                instructions=EFFECTS_ANALYSIS_INSTRUCTIONS,
             ):
                 yield self._buf(request_id, chunk)
             await self.state_store.save_checkpoint(
@@ -379,6 +782,97 @@ class ProvisionService(BaseLlmService):
             )
 
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
+
+    # ------------------------------------------------------------------
+    # Shared checkpointed steps
+    # ------------------------------------------------------------------
+
+    async def _get_service_id_step(
+        self,
+        request_id: str,
+        idu_mcp_client: IduMcpClient,
+        effects_mcp_client: EffectsMcpClient,
+        token_ref: list[str],
+        checkpoint: dict,
+        service_name: str,
+        out: list,
+    ) -> AsyncGenerator:
+        """Resolve service_type_id via IDU MCP with checkpointing; result in out."""
+        if PipelineStep.GET_SERVICE_ID not in checkpoint:
+            svc_out: list[Any] = []
+            try:
+                async for event in self._retryable_step(
+                    request_id,
+                    idu_mcp_client,
+                    effects_mcp_client,
+                    token_ref,
+                    lambda: self.tool_executor.get_service_id(
+                        idu_mcp_client, service_name
+                    ),
+                    svc_out,
+                ):
+                    yield self._buf(request_id, event)
+            except PipelineSuspendedError:
+                return
+            svc_result = svc_out[0]
+            await self.state_store.save_checkpoint(
+                request_id, PipelineStep.GET_SERVICE_ID, svc_result.data
+            )
+        else:
+            svc_result = ProvisionStepResult(
+                data=checkpoint[PipelineStep.GET_SERVICE_ID], tool_calls=[]
+            )
+        out.append(svc_result)
+
+    async def _checkpointed_provision_step(
+        self,
+        request_id: str,
+        idu_mcp_client: IduMcpClient,
+        effects_mcp_client: EffectsMcpClient,
+        token_ref: list[str],
+        checkpoint: dict,
+        scenario_id: int,
+        services_args: dict[int, dict],
+        target_population: int | None,
+        out: list,
+    ) -> AsyncGenerator:
+        """Run CalculateServicesProvision with checkpointing; result in out."""
+        if PipelineStep.CALCULATE_PROVISION not in checkpoint:
+            prov_out: list[Any] = []
+            try:
+                async for event in self._retryable_step(
+                    request_id,
+                    idu_mcp_client,
+                    effects_mcp_client,
+                    token_ref,
+                    lambda: self.tool_executor.calculate_services_provision(
+                        effects_mcp_client,
+                        scenario_id,
+                        services_args,
+                        target_population,
+                    ),
+                    prov_out,
+                ):
+                    yield self._buf(request_id, event)
+            except PipelineSuspendedError:
+                return
+            prov_result = prov_out[0]
+            await self.state_store.save_checkpoint(
+                request_id, PipelineStep.CALCULATE_PROVISION, prov_result.data
+            )
+        else:
+            prov_result = ProvisionStepResult(
+                data=checkpoint[PipelineStep.CALCULATE_PROVISION], tool_calls=[]
+            )
+        out.append(prov_result)
+
+    @staticmethod
+    def _single_service_result(
+        services_result: dict, service_type_id: int
+    ) -> dict | None:
+        """Extract the per-service entry; JSON round-trips turn int keys into str."""
+        services = services_result.get("services") or {}
+        return services.get(str(service_type_id)) or services.get(service_type_id)
 
     # ------------------------------------------------------------------
     # Token-refresh retry wrapper (mirrors RestrictionParserService)
@@ -436,18 +930,32 @@ class ProvisionService(BaseLlmService):
 
     async def _resolve_service_plan(
         self,
-        idu_mcp_client: IduMcpClient,
+        token: str,
         model: str,
         user_query: str,
         scenario_id: int,
         history: list[dict] | None = None,
-    ) -> ProvisionPlan:
-        services_catalog = await self.plan_builder.get_services_catalog(
-            idu_mcp_client, scenario_id
+    ) -> tuple[ProvisionPlan, dict[str, int]]:
+        """Fetch the scenario service-type catalog and classify the user query."""
+        service_types = await self.urban_api_client.get_scenario_service_types(
+            token, scenario_id
         )
-        return await self.plan_builder.build_plan(
-            model, user_query, services_catalog, history
+        plan = await self.plan_builder.build_plan(
+            model, user_query, list(service_types), history
         )
+        return plan, service_types
+
+    @staticmethod
+    def _load_resolve_checkpoint(
+        stored: dict,
+    ) -> tuple[ProvisionPlan, dict[str, int]]:
+        if "plan" in stored:
+            return (
+                ProvisionPlan.model_validate(stored["plan"]),
+                stored.get("service_types") or {},
+            )
+        # Legacy checkpoint shape: the plan dump was stored directly
+        return ProvisionPlan.model_validate(stored), {}
 
     # ------------------------------------------------------------------
     # LLM generation
@@ -460,17 +968,13 @@ class ProvisionService(BaseLlmService):
         context: str,
         temperature: float,
         history: list[dict] | None = None,
+        instructions: str = EFFECTS_ANALYSIS_INSTRUCTIONS,
+        trailing_note: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "Проанализируй эффекты обеспеченности на основе сводных данных расчёта. "
-                    "Ответ формулируй как аналитический комментарий: что изменилось, "
-                    "насколько значимы изменения, какие выводы можно сделать. "
-                    "Используй только числа и факты из контекста.\n\n"
-                    f"Контекст расчёта:\n{context}"
-                ),
+                "content": f"{instructions}\n\nКонтекст расчёта:\n{context}",
             },
             *(history or []),
             {"role": "user", "content": user_query},
@@ -485,7 +989,14 @@ class ProvisionService(BaseLlmService):
             part: ChatResponse
             if part.message.content:
                 response_buffer.append(part.message.content)
-            yield self._chunk(part.message.content or "", done=part.done)
+            yield self._chunk(
+                part.message.content or "",
+                done=part.done and trailing_note is None,
+            )
+        if trailing_note is not None:
+            # Deterministic service note appended after the LLM commentary
+            # (e.g. how to override the population used in the calculation).
+            yield self._chunk(trailing_note, done=True)
         logger.debug(f"LLM provision analysis [{model}]: {''.join(response_buffer)}")
 
     # ------------------------------------------------------------------
@@ -496,7 +1007,7 @@ class ProvisionService(BaseLlmService):
         self,
         token: str,
         chat_id: str | None,
-        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        parts: list[MessagePart],
         **metadata,
     ) -> None:
         if not chat_id or not parts:
@@ -509,7 +1020,7 @@ class ProvisionService(BaseLlmService):
         self,
         token: str,
         chat_id: str | None,
-        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        parts: list[MessagePart],
         **metadata,
     ) -> None:
         if not chat_id or not parts:
@@ -529,7 +1040,7 @@ class ProvisionService(BaseLlmService):
     @staticmethod
     def _flush_text_buffer_to_parts(
         text_buffer: list[str],
-        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        parts: list[MessagePart],
     ) -> None:
         if not text_buffer:
             return
@@ -540,7 +1051,7 @@ class ProvisionService(BaseLlmService):
 
     def _add_tool_calls_to_parts(
         self,
-        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        parts: list[MessagePart],
         tool_calls: list[dict],
         execution_mode: str,
         mcp_source: str | None = None,
@@ -562,7 +1073,7 @@ class ProvisionService(BaseLlmService):
     @staticmethod
     def _pipeline_item_to_chat_part(
         item: dict,
-    ) -> TextPartRequest | StatusPartRequest | None:
+    ) -> TextPartRequest | StatusPartRequest | TablePartRequest | None:
         item_type = item.get("type")
         content = item.get("content") or {}
         if item_type == "status":
@@ -570,6 +1081,18 @@ class ProvisionService(BaseLlmService):
                 kind="status",
                 payload=StatusPayload(
                     status=content.get("status", ""), text=content.get("text", "")
+                ),
+            )
+        if item_type == "table":
+            return TablePartRequest(
+                kind="table",
+                payload=TablePayload(
+                    name=content.get("name", ""),
+                    title=content.get("title", ""),
+                    columns=[
+                        TableColumn(**column) for column in content.get("columns", [])
+                    ],
+                    rows=content.get("rows", []),
                 ),
             )
         if item_type == "chunk":
@@ -656,6 +1179,10 @@ class ProvisionService(BaseLlmService):
         return {"type": "chunk", "content": {"text": text, "done": done}}
 
     @staticmethod
+    def _table(table_content: dict) -> dict:
+        return {"type": "table", "content": table_content}
+
+    @staticmethod
     def _tool_call(
         execution_mode: str,
         tool_calls: list[dict],
@@ -699,3 +1226,19 @@ class ProvisionService(BaseLlmService):
                 "type": "feature_collection",
                 "content": {"name": "effects", "feature_collection": effects_fc},
             }
+
+    @staticmethod
+    def _provision_feature_collections(services_result: dict):
+        """Yield feature_collection events from a CalculateServicesProvision result."""
+        for service in (services_result.get("services") or {}).values():
+            layers = service.get("layers") or {}
+            service_name = service.get("name", "service")
+            for layer_name, fc in layers.items():
+                if isinstance(fc, dict) and fc.get("type") == "FeatureCollection":
+                    yield {
+                        "type": "feature_collection",
+                        "content": {
+                            "name": f"provision.{service_name}.{layer_name}",
+                            "feature_collection": fc,
+                        },
+                    }

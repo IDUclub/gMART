@@ -10,6 +10,7 @@ from src.agents.api_clients.chat_storage_client.entities import (
 )
 from src.agents.api_clients.chat_storage_client.request_models import (
     StatusPartRequest,
+    TablePartRequest,
     TextPartRequest,
     ToolCallPartRequest,
 )
@@ -141,7 +142,9 @@ class ChatStorageApiClient:
         token: str,
         chat_id: str,
         role: RoleEnum | str,
-        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        parts: list[
+            TextPartRequest | StatusPartRequest | ToolCallPartRequest | TablePartRequest
+        ],
         **kwargs,
     ) -> MessageAdded:
         """
@@ -150,7 +153,7 @@ class ChatStorageApiClient:
             token (str): Authorization token from Urban API.
             chat_id (str): String representation of chat uuid.
             role (RoleEnum | str): Message role as RoleEnum. Available values: "user", "system", "assistant".
-            parts(list[TextPartRequest | StatusPartRequest | ToolCallPartRequest]): List of pydantic dto models to post.
+            parts(list[TextPartRequest | StatusPartRequest | ToolCallPartRequest | TablePartRequest]): List of pydantic dto models to post.
             **kwargs (Any): Additional parameters for chat creation passed to meta.
         Returns:
             MessageAdded: Dataclass with created message info.

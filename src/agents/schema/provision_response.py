@@ -50,11 +50,26 @@ class ToolCallContent(BaseModel):
     tool_calls: list[Any]
 
 
+class TableColumn(BaseModel):
+    key: str
+    label: str
+
+
+class TableContent(BaseModel):
+    """Strict table rendered by code: column keys/labels never change."""
+
+    name: str
+    title: str
+    columns: list[TableColumn]
+    rows: list[dict[str, Any]]
+
+
 class ProvisionResponse(BaseModel):
     type: Literal[
         "status",
         "chunk",
         "feature_collection",
+        "table",
         "error",
         "service_event",
         "pipeline_started",
@@ -66,6 +81,7 @@ class ProvisionResponse(BaseModel):
         ProvisionStatusResponse
         | TextResponse
         | FeatureCollectionResponse
+        | TableContent
         | SseBaseError
         | ServiceEvent
         | PipelineStartedContent

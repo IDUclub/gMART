@@ -171,6 +171,11 @@ class ProvisionAgentExecutor:
             self.task_store.add_or_append_artifact(task_id, artifact, append=False)
             return self._artifact_update(task_id, context_id, artifact, append=False)
 
+        if item_type == "table":
+            artifact = self._table_artifact(content)
+            self.task_store.add_or_append_artifact(task_id, artifact, append=False)
+            return self._artifact_update(task_id, context_id, artifact, append=False)
+
         if item_type == "error":
             status = self.task_store.set_status(
                 task_id,
@@ -376,6 +381,29 @@ class ProvisionAgentExecutor:
             "description": "Text response from the provision effects agent",
             "parts": [{"type": "text", "text": text}],
             "metadata": {"mediaType": "text/plain", "append": append},
+        }
+
+    @staticmethod
+    def _table_artifact(table_content: A2AData) -> A2AData:
+        table_name = table_content.get("name") or "table"
+        safe_name = (
+            re.sub(r"[^a-zA-Z0-9_-]+", "-", table_name).strip("-").lower() or "table"
+        )
+        return {
+            "artifactId": f"table-{safe_name}",
+            "name": table_content.get("title") or table_name,
+            "description": "Strict table produced by the provision pipeline",
+            "parts": [
+                {
+                    "type": "data",
+                    "data": table_content,
+                    "metadata": {"mediaType": "application/json"},
+                }
+            ],
+            "metadata": {
+                "tableName": table_name,
+                "mediaType": "application/json",
+            },
         }
 
     @staticmethod
