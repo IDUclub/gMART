@@ -312,6 +312,114 @@ class TestReconnect:
 
 
 # ---------------------------------------------------------------------------
+# User-question persistence (follow-up questions in an existing chat)
+# ---------------------------------------------------------------------------
+class TestUserQuestionPersistence:
+    async def test_follow_up_question_saved_to_existing_chat(
+        self, service, fake_llm, fake_mcp
+    ):
+        from src.agents.api_clients.chat_storage_client.entities import RoleEnum
+
+        fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+        fake_llm.answer_texts = ["Ответ"]
+
+        await _run(service, fake_mcp, chat_id="chat-1")
+
+        service.add_single_message.assert_awaited_once()
+        token, chat_id, role, text = service.add_single_message.await_args.args
+        assert chat_id == "chat-1"
+        assert role == RoleEnum.USER
+        assert text == "вопрос"
+
+    async def test_new_chat_does_not_double_save_first_question(
+        self, service, fake_llm, fake_mcp
+    ):
+        # create_chat itself stores the first question — the pipeline must not add a copy
+        fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+        fake_llm.answer_texts = ["Ответ"]
+
+        await _run(service, fake_mcp, chat_id=None)
+
+        service.create_chat.assert_awaited_once()
+        service.add_single_message.assert_not_awaited()
+
+    async def test_reconnect_does_not_resave_question(
+        self, service, fake_llm, fake_mcp, state_store
+    ):
+        rid = "44444444-4444-4444-4444-444444444444"
+        await state_store.create(
+            rid,
+            chat_id="chat-1",
+            user_query="вопрос",
+            scenario_id=None,
+            model="m",
+            temperature=0.0,
+        )
+        await state_store.save_checkpoint(
+            rid,
+            "qa_progress",
+            {
+                "completed_iterations": 1,
+                "tool_calls": [],
+                "accepted": True,
+                "final_answer": "Готовый ответ",
+                "final_iteration": 1,
+                "prev_critique": None,
+                "prev_query": None,
+            },
+        )
+
+        await _run(service, fake_mcp, chat_id="chat-1", request_id=rid)
+
+        service.add_single_message.assert_not_awaited()
+
+    async def test_persist_failure_does_not_break_stream(
+        self, service, fake_llm, fake_mcp
+    ):
+        service.add_single_message.side_effect = RuntimeError("chat storage down")
+        fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+        fake_llm.answer_texts = ["Ответ"]
+
+        events = await _run(service, fake_mcp, chat_id="chat-1")
+
+        assert answer_text(events) == "Ответ"
+        assert final_chunk(events)["done"] is True
+
+
+# ---------------------------------------------------------------------------
+# persist_history=False (A2A runs): no ChatStorage writes at all
+# ---------------------------------------------------------------------------
+class TestPersistHistoryDisabled:
+    async def test_no_writes_with_existing_chat_but_history_still_read(
+        self, service, fake_llm, fake_mcp
+    ):
+        fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+        fake_llm.answer_texts = ["Ответ"]
+
+        events = await _run(service, fake_mcp, chat_id="chat-1", persist_history=False)
+
+        service.create_chat.assert_not_awaited()
+        service.add_single_message.assert_not_awaited()
+        service._schedule_persist_answer.assert_not_called()
+        # chat_id is still used for read-only LLM context
+        service.get_chat_messages.assert_awaited_once()
+        assert answer_text(events) == "Ответ"
+
+    async def test_no_chat_created_without_chat_id(self, service, fake_llm, fake_mcp):
+        fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+        fake_llm.answer_texts = ["Ответ"]
+
+        events = await _run(service, fake_mcp, chat_id=None, persist_history=False)
+
+        service.create_chat.assert_not_awaited()
+        service.add_single_message.assert_not_awaited()
+        service._schedule_persist_answer.assert_not_called()
+        # no chat_created service_event is emitted
+        assert not events_of_type(events, "service_event")
+        assert answer_text(events) == "Ответ"
+
+
+# ---------------------------------------------------------------------------
 # Persistence (parts building)
 # ---------------------------------------------------------------------------
 async def test_persist_answer_builds_toolcall_and_text_parts(

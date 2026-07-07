@@ -142,6 +142,8 @@ class RestrictionAgentExecutor:
                 user_query=execution["user_query"],
                 scenario_id=execution["scenario_id"],
                 request_id=task_id,
+                # A2A tasks must leave no trace in ChatStorage.
+                persist_history=False,
             ):
                 event = self._pipeline_item_to_event(task_id, context_id, item)
                 if event is None:

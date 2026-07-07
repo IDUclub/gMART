@@ -84,6 +84,7 @@ class DvdRagService(BaseLlmService):
         scenario_id: int | None = None,
         chat_id: str | None = None,
         request_id: str | None = None,
+        persist_history: bool = True,
     ) -> AsyncGenerator[dict[str, Any], None]:
         collected: dict[str, Any] = {
             "final_answer": "",
@@ -120,7 +121,9 @@ class DvdRagService(BaseLlmService):
             # No chat_id supplied → create a new chat tagged with scenario_id. The
             # project_id is resolved from scenario_id; if that lookup fails we warn the
             # client, drop the project filter, and keep going (the chat is still created).
-            if not chat_id:
+            # A2A runs pass persist_history=False: no chat is created and nothing is
+            # written to ChatStorage (history stays read-only).
+            if not chat_id and persist_history:
                 project_id: int | None = None
                 if scenario_id is not None:
                     try:
@@ -171,9 +174,28 @@ class DvdRagService(BaseLlmService):
         if original_chat_id:
             try:
                 chat_info = await self.get_chat_messages(token, original_chat_id)
-                history = self.build_llm_history(chat_info.messages)
+                history = self.build_llm_history(
+                    chat_info.messages, current_user_query=user_query
+                )
             except Exception as exc:
                 logger.warning(f"DVD QA: failed to fetch chat history: {exc}")
+
+        # A follow-up question in an existing chat is persisted here — create_chat
+        # stores only the first one. Runs after the history fetch so the current
+        # question doesn't also enter the LLM context from storage, and is skipped
+        # on reconnect (the original run already stored it). Chat storage failures
+        # must not break the stream.
+        if persist_history and not is_reconnect and original_chat_id:
+            try:
+                await self.add_single_message(
+                    token,
+                    original_chat_id,
+                    RoleEnum.USER,
+                    user_query,
+                    scenario_id=scenario_id,
+                )
+            except Exception as exc:
+                logger.warning(f"DVD QA: failed to persist user question: {exc}")
 
         async for event in self._run_qa_loop(
             dvd_mcp_client,
@@ -188,7 +210,7 @@ class DvdRagService(BaseLlmService):
 
         # Persist only when this run actually produced the answer — never on a reconnect
         # that merely replayed an already-completed pipeline (avoids duplicate messages).
-        if collected.get("newly_completed"):
+        if persist_history and collected.get("newly_completed"):
             self._schedule_persist_answer(token, chat_id, collected, scenario_id)
 
     # ------------------------------------------------------------------
