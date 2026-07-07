@@ -78,6 +78,7 @@ class RestrictionParserService(BaseLlmService):
         scenario_id: int,
         chat_id: str | None = None,
         request_id: str | None = None,
+        persist_history: bool = True,
     ) -> AsyncGenerator:
         # Mutable container so the inner pipeline can update the token on
         # refresh and the outer generator sees the latest value.
@@ -98,6 +99,7 @@ class RestrictionParserService(BaseLlmService):
             chat_id=chat_id,
             request_id=request_id,
             token_ref=token_ref,
+            persist_history=persist_history,
         ):
             chat_id = self._chat_id_from_storage_event(item) or chat_id
             if item.get("type") == "tool_call":
@@ -129,12 +131,14 @@ class RestrictionParserService(BaseLlmService):
         if text_buffer:
             self._flush_text_buffer_to_parts(text_buffer, message_parts)
         # Use token_ref[0]: may have been refreshed during pipeline execution.
-        self._schedule_add_message_parts_to_chat(
-            token_ref[0],
-            chat_id,
-            message_parts,
-            scenario_id=scenario_id,
-        )
+        # A2A runs pass persist_history=False — no ChatStorage writes at all.
+        if persist_history:
+            self._schedule_add_message_parts_to_chat(
+                token_ref[0],
+                chat_id,
+                message_parts,
+                scenario_id=scenario_id,
+            )
 
     async def _run_restriction_execution_pipline(
         self,
@@ -146,6 +150,7 @@ class RestrictionParserService(BaseLlmService):
         token_ref: list[str],
         chat_id: str | None = None,
         request_id: str | None = None,
+        persist_history: bool = True,
     ) -> AsyncGenerator:
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
@@ -170,7 +175,9 @@ class RestrictionParserService(BaseLlmService):
         if not is_reconnect:
             yield self._buf(request_id, self._pipeline_started_event(request_id))
 
-            if not chat_id:
+            # A2A runs pass persist_history=False: no chat is created and nothing
+            # is written to ChatStorage (history stays read-only).
+            if not chat_id and persist_history:
                 logger.info("No chat id provided, creating a new chat.")
                 chat_result: list[tuple[str, str]] = []
                 try:
@@ -212,12 +219,31 @@ class RestrictionParserService(BaseLlmService):
         if original_chat_id:
             try:
                 chat_info = await self.get_chat_messages(token_ref[0], original_chat_id)
-                llm_history = self.build_llm_history(chat_info.messages)
+                llm_history = self.build_llm_history(
+                    chat_info.messages, current_user_query=user_query
+                )
                 logger.info(f"Loaded {len(llm_history)} messages from chat history")
             except Exception as exc:
                 logger.warning(
                     f"Failed to fetch chat history, proceeding without it: {exc}"
                 )
+
+        # A follow-up question in an existing chat is persisted here — create_chat
+        # stores only the first one. Runs after the history fetch so the current
+        # question doesn't also enter the LLM context from storage, and is skipped
+        # on reconnect (the original run already stored it). Chat storage failures
+        # must not break the stream.
+        if persist_history and not is_reconnect and original_chat_id:
+            try:
+                await self.add_single_message(
+                    token_ref[0],
+                    original_chat_id,
+                    RoleEnum.USER,
+                    user_query,
+                    scenario_id=scenario_id,
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to persist user question: {exc}")
 
         checkpoint = await self.state_store.get_checkpoint(request_id)
 

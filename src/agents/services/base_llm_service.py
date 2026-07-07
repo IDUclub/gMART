@@ -290,6 +290,7 @@ class BaseLlmService(BaseLlmClient):
     def build_llm_history(
         messages: list[dict],
         max_messages: int = 10,
+        current_user_query: str | None = None,
     ) -> list[dict]:
         """
         Convert chat storage messages to a compact Ollama-compatible list.
@@ -299,6 +300,10 @@ class BaseLlmService(BaseLlmClient):
         Args:
             messages: Raw message dicts from ChatHistory.messages.
             max_messages: Maximum number of messages to keep (most recent).
+            current_user_query: The query being processed right now. If the stored
+                history ends with this exact user message (it is persisted before the
+                pipeline runs, so a reconnect fetches it back), that trailing copy is
+                dropped — services append the current query to the LLM context themselves.
         Returns:
             list[dict]: Messages in {"role": ..., "content": ...} format.
         """
@@ -324,5 +329,13 @@ class BaseLlmService(BaseLlmClient):
             combined = "\n".join(texts).strip()
             if combined:
                 result.append({"role": role, "content": combined})
+
+        if (
+            current_user_query
+            and result
+            and result[-1]["role"] == "user"
+            and result[-1]["content"] == current_user_query.strip()
+        ):
+            result.pop()
 
         return result[-max_messages:]

@@ -15,8 +15,10 @@ class FakeRag:
 
     def __init__(self, events: list[dict]) -> None:
         self._events = events
+        self.calls: list[dict] = []
 
     async def run_document_qa_pipeline(self, **kwargs):
+        self.calls.append(kwargs)
         for event in self._events:
             yield event
 
@@ -182,6 +184,29 @@ async def test_execute_returns_completed_task_with_artifact():
     )
     assert task["status"]["state"] == "completed"
     assert task["artifacts"]
+
+
+async def test_stream_disables_history_persistence():
+    # A2A runs must leave no trace in ChatStorage: chat_id is forwarded only for
+    # read-only history context, persist_history is always False.
+    rag = FakeRag(
+        [{"type": "chunk", "content": {"text": "A", "done": False, "iteration": 1}}]
+    )
+    ex = DocumentQaAgentExecutor(rag, A2ATaskStore())
+    params = {
+        "message": {
+            "role": "user",
+            "parts": [{"type": "text", "text": "q"}],
+            "metadata": {"chat_id": "c9"},
+        }
+    }
+
+    async for _ in ex.stream(params, dvd_mcp_client=object(), token="t"):
+        pass
+
+    (call,) = rag.calls
+    assert call["persist_history"] is False
+    assert call["chat_id"] == "c9"
 
 
 async def test_stream_failure_emits_failed_status():

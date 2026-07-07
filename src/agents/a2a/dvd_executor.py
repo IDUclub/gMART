@@ -94,7 +94,10 @@ class DocumentQaAgentExecutor:
                 temperature=execution["temperature"],
                 user_query=execution["user_query"],
                 scenario_id=execution["scenario_id"],
+                # chat_id is passed for read-only history context; A2A tasks
+                # must leave no trace in ChatStorage.
                 chat_id=execution["chat_id"],
+                persist_history=False,
             ):
                 event = self._pipeline_item_to_event(task_id, context_id, item)
                 if event is None:

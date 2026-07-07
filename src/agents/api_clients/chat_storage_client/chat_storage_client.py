@@ -40,8 +40,8 @@ class ChatStorageApiClient:
         """
 
         return MessageAdded(
-            chat_id=message["message_id"],
-            message_id=message["chat_id"],
+            chat_id=message["chat_id"],
+            message_id=message["message_id"],
             message_type=creation_type,
         )
 
