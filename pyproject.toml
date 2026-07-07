@@ -1,6 +1,6 @@
 [project]
 name = "gMART"
-version = "0.13.2"
+version = "0.13.3"
 description = "First look on fastmcp with uv"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
