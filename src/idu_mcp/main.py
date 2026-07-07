@@ -16,13 +16,13 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
+from src.__version__ import __VERSION__ as MCP_VERSION
 from src.idu_mcp.common.logging.log_config import config_logger
 from src.idu_mcp.common.middlewares.logging_middleware import RequestLoggingMiddleware
 from src.idu_mcp.dependencies.dependencies import mcp_deps
 from src.idu_mcp.prompts.restriction_prompts import mcp as restrictions_prompts_mcp
 from src.idu_mcp.tools_interfaces.geom_interface import geometry_mcp
 from src.idu_mcp.tools_interfaces.urb_api_interface import urban_api_mcp
-from src.__version__ import __VERSION__ as MCP_VERSION
 
 # FastMCPDocs.setup() prints a "✓" via print(); make stdout/stderr UTF-8 so it
 # does not raise UnicodeEncodeError on a Windows (cp1252) console.

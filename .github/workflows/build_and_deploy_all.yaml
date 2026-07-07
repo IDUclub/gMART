@@ -23,12 +23,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Copy env
-        env:
-          ENV_PATH: ${{ secrets.ENV_PATH }}
-        run: |
-          cp "$ENV_PATH/.env.idu_mcp.production" ./env/
-
       - name: Build images
         env:
           NOW: ${{ steps.date.outputs.now }}
@@ -74,7 +68,7 @@ jobs:
           OBJECTS_EFFECTS_MCP_SERVER: ${{ vars.OBJECTS_EFFECTS_MCP_SERVER }}
           CHAT_STORAGE: ${{ vars.CHAT_STORAGE }}
           URBAN_API_URL: ${{ vars.URBAN_API_URL }}
-          DVD_MCP_SERVER: $ {{ vars.DVD_MCP_SERVER }}
+          DVD_MCP_SERVER: ${{ vars.DVD_MCP_SERVER }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
           SYSTEM_PASSWORD: ${{ secrets.SYSTEM_PASSWORD }}
         run: docker compose -f docker-compose.actions.yaml up -d --wait --wait-timeout 120
