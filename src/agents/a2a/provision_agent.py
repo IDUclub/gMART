@@ -27,8 +27,11 @@ class ProvisionA2AAgent(A2AServer):
         return AgentCard(
             name="provision-effects-agent",
             description=(
-                "Calculates service provision effects for a project scenario and returns "
-                "status updates, GeoJSON layers, and an LLM-generated analysis."
+                "Analyzes service provision for a project scenario: lists available "
+                "services, builds a deficit/surplus summary over the catalog, and "
+                "calculates provision or project effects for a single service. Returns "
+                "status updates, GeoJSON layers, strict data tables, and an "
+                "LLM-generated analysis."
             ),
             url=url,
             version=APP_VERSION,
@@ -47,6 +50,7 @@ class ProvisionA2AAgent(A2AServer):
                 "text/plain",
                 "application/vnd.geo+json",
                 "application/geo+json",
+                "application/json",
             ],
             skills=[
                 AgentSkill(
@@ -54,7 +58,8 @@ class ProvisionA2AAgent(A2AServer):
                     name="Calculate service provision effects",
                     description=(
                         "Runs the provision effects pipeline: resolves service by name, "
-                        "calls CalculateObjectEffects, and returns layers with an analysis."
+                        "calls CalculateObjectEffects, and returns layers with a strict "
+                        "pivot table and an analysis."
                     ),
                     tags=["provision", "effects", "geospatial", "geojson"],
                     examples=[
@@ -66,7 +71,60 @@ class ProvisionA2AAgent(A2AServer):
                         "text/plain",
                         "application/vnd.geo+json",
                         "application/geo+json",
+                        "application/json",
                     ],
-                )
+                ),
+                AgentSkill(
+                    id="calculate-service-provision",
+                    name="Calculate current service provision",
+                    description=(
+                        "Calculates the current provision for a single service via "
+                        "CalculateServicesProvision and returns layers with a strict "
+                        "metrics table and an analysis."
+                    ),
+                    tags=["provision", "geospatial", "geojson"],
+                    examples=[
+                        "Какая обеспеченность школами?",
+                        "Рассчитай текущую обеспеченность поликлиниками",
+                    ],
+                    input_modes=["text/plain", "application/json"],
+                    output_modes=[
+                        "text/plain",
+                        "application/vnd.geo+json",
+                        "application/geo+json",
+                        "application/json",
+                    ],
+                ),
+                AgentSkill(
+                    id="provision-summary",
+                    name="Service provision summary",
+                    description=(
+                        "Builds a deficit/surplus summary table over the scenario "
+                        "service catalog (no layers unless explicitly requested) "
+                        "with an analysis of the least provided services."
+                    ),
+                    tags=["provision", "summary", "deficit"],
+                    examples=[
+                        "Дай сводку по обеспеченности сервисами",
+                        "Какими сервисами меньше всего обеспечен проект?",
+                    ],
+                    input_modes=["text/plain", "application/json"],
+                    output_modes=["text/plain", "application/json"],
+                ),
+                AgentSkill(
+                    id="list-available-services",
+                    name="List available services",
+                    description=(
+                        "Lists service types available in the project scenario "
+                        "and its context."
+                    ),
+                    tags=["services", "catalog"],
+                    examples=[
+                        "Какие сервисы есть в проекте?",
+                        "Что доступно для анализа обеспеченности?",
+                    ],
+                    input_modes=["text/plain", "application/json"],
+                    output_modes=["text/plain"],
+                ),
             ],
         )

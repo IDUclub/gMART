@@ -49,6 +49,46 @@ class StatusPartRequest(BaseModel):
     payload: StatusPayload
 
 
+class TableColumn(BaseModel):
+    """
+    Pydantic model for a strict table column.
+    Attributes:
+        key (str): Machine-readable column key, stable across requests.
+        label (str): Human-readable column label (Russian).
+    """
+
+    key: str
+    label: str
+
+
+class TablePayload(BaseModel):
+    """
+    Pydantic model for table part payload.
+    Attributes:
+        name (str): Machine-readable table identifier (e.g. "provision_summary").
+        title (str): Human-readable table title.
+        columns (list[TableColumn]): Ordered column contract.
+        rows (list[dict[str, Any]]): Row values keyed by column key.
+    """
+
+    name: str
+    title: str
+    columns: list[TableColumn]
+    rows: list[dict[str, Any]]
+
+
+class TablePartRequest(BaseModel):
+    """
+    Request pydantic model for table part in request.
+    Attributes:
+        kind (Literal["table"]): Type equals to "table".
+        payload (TablePayload): Table payload to post.
+    """
+
+    kind: Literal["table"]
+    payload: TablePayload
+
+
 class ToolCall(BaseModel):
     """
     Tool Call pydantic model.
