@@ -9,6 +9,7 @@ services:
       OLLAMA_API_URL: ${OLLAMA_API_URL}
       IDU_MCP_SERVER: ${IDU_MCP_SERVER}
       OBJECTS_EFFECTS_MCP_SERVER: ${OBJECTS_EFFECTS_MCP_SERVER}
+      DVD_MCP_SERVER: ${DVD_MCP_SERVER}
       CHAT_STORAGE: ${CHAT_STORAGE}
       URBAN_API_URL: ${URBAN_API_URL}
       REDIS_URL: ${REDIS_URL}
@@ -26,5 +27,11 @@ services:
     restart: always
     ports:
       - "8000:8000"
-    env_file:
-      - ./env/.env.idu_mcp.production
+    environment:
+      URBAN_API_URL: ${URBAN_API_URL}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
