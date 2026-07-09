@@ -143,6 +143,47 @@ class TestLoop:
         assert call.limit == 3
         assert call.context_height == 4
 
+    async def test_structural_filters_threaded_to_search_and_toolcall(
+        self, service, fake_llm, fake_mcp
+    ):
+        fake_llm.json_responses = [
+            plan_json(
+                document_names=["СП 42.13330"],
+                block="amendment",
+                types=["clause"],
+            ),
+            verdict_json(satisfied=True),
+        ]
+        fake_llm.answer_texts = ["Ответ [1]"]
+
+        events = await _run(service, fake_mcp)
+
+        # filters reach the IDU_DVD search call
+        call = fake_mcp.search_calls[0]
+        assert call.document_names == ["СП 42.13330"]
+        assert call.block == "amendment"
+        assert call.types == ["clause"]
+        # and are recorded in the emitted tool_call arguments
+        tool_calls = events_of_type(events, "tool_call")
+        args = tool_calls[0]["content"]["tool_calls"][0]["function"]["arguments"]
+        assert args["document_names"] == ["СП 42.13330"]
+        assert args["block"] == "amendment"
+        assert args["types"] == ["clause"]
+        # active filters are surfaced in the searching status
+        assert any("фильтры" in t for t in statuses(events, "searching"))
+
+    async def test_no_filters_absent_from_toolcall_args(
+        self, service, fake_llm, fake_mcp
+    ):
+        fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+        fake_llm.answer_texts = ["Ответ"]
+
+        events = await _run(service, fake_mcp)
+
+        tool_calls = events_of_type(events, "tool_call")
+        args = tool_calls[0]["content"]["tool_calls"][0]["function"]["arguments"]
+        assert set(args) == {"query", "limit", "context_height"}
+
 
 # ---------------------------------------------------------------------------
 # project_id resolution + warning fallback

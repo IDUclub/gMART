@@ -20,6 +20,28 @@ async def test_planner_parses_and_clamps_bounds(fake_llm):
     assert plan.context_height == 5  # clamped to 0..5
 
 
+async def test_planner_keeps_valid_filters(fake_llm):
+    fake_llm.json_responses = [
+        plan_json(
+            document_names=["СП 42.13330", "  ", ""],
+            block="Amendment",
+            types=["Clause", "TABLE"],
+        )
+    ]
+    plan = await RetrievalPlanner(fake_llm).build_plan("m", "вопрос", history=[])
+    assert plan.document_names == ["СП 42.13330"]  # empties dropped
+    assert plan.block == "amendment"  # lowercased
+    assert plan.types == ["clause", "table"]  # lowercased
+
+
+async def test_planner_drops_invalid_block_and_empty_filters(fake_llm):
+    fake_llm.json_responses = [plan_json(document_names=[], block="bogus", types=None)]
+    plan = await RetrievalPlanner(fake_llm).build_plan("m", "вопрос", history=[])
+    assert plan.document_names is None
+    assert plan.block is None  # unknown block → dropped
+    assert plan.types is None
+
+
 async def test_planner_falls_back_to_user_query_when_blank(fake_llm):
     fake_llm.json_responses = [plan_json(search_query="   ")]
     plan = await RetrievalPlanner(fake_llm).build_plan(

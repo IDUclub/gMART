@@ -104,6 +104,9 @@ class FakeDvdMcpClient:
                 kind=str(kind),
                 limit=limit,
                 context_height=context_height,
+                document_names=kwargs.get("document_names"),
+                block=kwargs.get("block"),
+                types=kwargs.get("types"),
             )
         )
         if self._hits_per_call is not None:
@@ -138,6 +141,9 @@ def plan_json(
     kind: str = "all",
     limit: int = 5,
     context_height: int = 1,
+    document_names: list[str] | None = None,
+    block: str | None = None,
+    types: list[str] | None = None,
 ) -> str:
     return json.dumps(
         {
@@ -145,6 +151,9 @@ def plan_json(
             "kind": kind,
             "limit": limit,
             "context_height": context_height,
+            "document_names": document_names,
+            "block": block,
+            "types": types,
         },
         ensure_ascii=False,
     )
