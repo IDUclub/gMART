@@ -16,6 +16,22 @@ T = TypeVar("T", bound=BaseModel)
 
 _LIMIT_MIN, _LIMIT_MAX = 1, 20
 _CONTEXT_HEIGHT_MIN, _CONTEXT_HEIGHT_MAX = 0, 5
+# IDU_DVD ``block`` filter accepts only these two values (see IDU_DVD SearchRequest).
+_VALID_BLOCKS = {"main", "amendment"}
+
+
+def _clean_str_list(
+    values: list[str] | None, *, lower: bool = False
+) -> list[str] | None:
+    """Drop empties/non-strings from an LLM-produced list filter; ``None`` if nothing remains."""
+    if not values:
+        return None
+    cleaned = [
+        (v.strip().lower() if lower else v.strip())
+        for v in values
+        if isinstance(v, str) and v.strip()
+    ]
+    return cleaned or None
 
 
 async def _request_json(
@@ -91,6 +107,9 @@ class RetrievalPlanner:
 
     @staticmethod
     def _clamp(plan: RetrievalPlan, user_query: str) -> RetrievalPlan:
+        block = (plan.block or "").strip().lower() or None
+        if block not in _VALID_BLOCKS:
+            block = None
         return plan.model_copy(
             update={
                 "search_query": (plan.search_query or "").strip() or user_query,
@@ -98,6 +117,9 @@ class RetrievalPlanner:
                 "context_height": min(
                     max(plan.context_height, _CONTEXT_HEIGHT_MIN), _CONTEXT_HEIGHT_MAX
                 ),
+                "document_names": _clean_str_list(plan.document_names),
+                "block": block,
+                "types": _clean_str_list(plan.types, lower=True),
             }
         )
 
@@ -108,6 +130,9 @@ class RetrievalPlanner:
             "kind": "text | table | all",
             "limit": 10,
             "context_height": 1,
+            "document_names": 'null | ["название документа", ...]',
+            "block": "null | main | amendment",
+            "types": 'null | ["clause", "table", ...]',
         }
         prompt = f"""Ты планируешь поиск по векторной базе нормативных документов \
 (градостроительство и городское планирование).
@@ -124,7 +149,22 @@ class RetrievalPlanner:
 вопросов, меньше для точечных.
 - context_height — сколько соседних фрагментов прикреплять к каждому найденному \
 (целое 0–5). Больше (2–3), когда важен контекст вокруг (определения, процедуры, \
-перечни, ссылки на смежные пункты); 0–1 для точечных фактов."""
+перечни, ссылки на смежные пункты); 0–1 для точечных фактов.
+- document_names — null по умолчанию (искать по всей базе). Заполняй списком названий \
+документов ТОЛЬКО если пользователь явно назвал конкретный документ (например \
+«СП 42.13330», «по ГОСТ 21.501»).
+- block — null по умолчанию (искать везде). "amendment" — если вопрос про изменения/\
+поправки к документу; "main" — если явно про основную (действующую) редакцию без учёта \
+поправок.
+- types — null по умолчанию (все уровни). Список структурных уровней для сужения: \
+"table" (таблицы), "clause"/"subclause" (пункты/подпункты), "chapter"/"section" \
+(главы/разделы), "definition" (определения/термины), "appendix" (приложения), \
+"note" (примечания). Заполняй, только когда вопрос явно нацелен на определённый вид \
+элемента («дай определение…» → ["definition"], «что в таблице…» → ["table"]). \
+Не дублируй kind: при kind="table" не указывай types=["table"].
+
+Все фильтры (document_names, block, types) по умолчанию null — не сужай поиск без явной \
+необходимости, лишние фильтры отсекают релевантные фрагменты."""
         if prev_critique:
             prompt += f"""
 
@@ -132,7 +172,8 @@ class RetrievalPlanner:
 Замечание критика: {prev_critique}
 Предыдущий поисковый запрос: «{prev_query}».
 Сформируй ИНОЙ, улучшенный поисковый запрос (синонимы, иные формулировки, \
-официальная терминология); при необходимости измени kind, limit или context_height."""
+официальная терминология); при необходимости измени kind, limit, context_height или \
+ослабь фильтры (document_names, block, types), если они могли отсечь нужное."""
         return prompt
 
 
