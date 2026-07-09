@@ -90,24 +90,41 @@ class DvdMcpClient(BaseMcpClient):
         return self._normalize(result)
 
     @staticmethod
-    def _normalize(result: Any) -> dict[str, Any]:
+    def _to_dict(obj: Any) -> Any:
+        """
+        Best-effort conversion of an MCP-returned object into a plain dict.
+
+        FastMCP rehydrates a tool's structured output (via ``result.data``) into
+        synthetic types built from its output schema — e.g. a dynamically generated
+        ``Root`` class for the ``SearchHit`` items — which is neither a ``dict`` nor a
+        pydantic-v2 model with ``model_dump``. Try the known converters in order and
+        fall back to attribute inspection so any of those shapes normalizes cleanly.
+        """
+        if isinstance(obj, dict):
+            return obj
+        for attr in ("model_dump", "dict", "_asdict"):  # pydantic v2 / v1 / namedtuple
+            converter = getattr(obj, attr, None)
+            if callable(converter):
+                try:
+                    return converter()
+                except TypeError:
+                    continue
+        if hasattr(obj, "__dict__"):
+            return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
+        return obj
+
+    @classmethod
+    def _normalize(cls, result: Any) -> dict[str, Any]:
         """Normalize the MCP tool result into a ``{"count", "hits": [dict, ...]}`` dict."""
         if result is None:
             return {"count": 0, "hits": []}
+        result = cls._to_dict(result)
         if not isinstance(result, dict):
-            result = (
-                result.model_dump()
-                if hasattr(result, "model_dump")
-                else {
-                    "count": getattr(result, "count", 0),
-                    "hits": getattr(result, "hits", []),
-                }
-            )
+            result = {
+                "count": getattr(result, "count", 0),
+                "hits": getattr(result, "hits", []),
+            }
         hits = result.get("hits") or []
-        result["hits"] = [
-            hit if isinstance(hit, dict) else hit.model_dump()
-            for hit in hits
-            if hit is not None
-        ]
+        result["hits"] = [cls._to_dict(hit) for hit in hits if hit is not None]
         result.setdefault("count", len(result["hits"]))
         return result
