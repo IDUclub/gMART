@@ -19,12 +19,22 @@ class RetrievalPlan(BaseModel):
         kind (SearchKind): Search surface — text fragments, tables, or both.
         limit (int): Number of fragments to retrieve (clamped to 1..20 by the planner).
         context_height (int): Neighbour fragments to attach per hit (clamped to 0..5).
+        document_names (list[str] | None): Restrict the search to these document names
+            (any of); ``None`` searches across the whole base.
+        block (str | None): Restrict to ``main`` (base text) or ``amendment`` (changes/
+            поправки); ``None`` searches both.
+        types (list[str] | None): Restrict to these structural levels (``chapter`` /
+            ``section`` / ``clause`` / ``subclause`` / ``table`` / ``definition`` / ...);
+            ``None`` searches all levels.
     """
 
     search_query: str = ""
     kind: SearchKind = SearchKind.ALL
     limit: int = 10
     context_height: int = 1
+    document_names: list[str] | None = None
+    block: str | None = None
+    types: list[str] | None = None
 
 
 class CriticVerdict(BaseModel):

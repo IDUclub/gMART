@@ -39,6 +39,21 @@ async def test_search_includes_optional_filters():
     assert args["tags"] == ["a", "b"]
 
 
+async def test_search_includes_structural_filters():
+    c = _client()
+    c.execute_tool = AsyncMock(return_value={"hits": []})
+    await c.search(
+        "q",
+        document_names=["СП 42.13330", "ГОСТ 21.501"],
+        block="amendment",
+        types=["clause", "table"],
+    )
+    _, args = c.execute_tool.await_args.args
+    assert args["document_names"] == ["СП 42.13330", "ГОСТ 21.501"]
+    assert args["block"] == "amendment"
+    assert args["types"] == ["clause", "table"]
+
+
 async def test_search_omits_empty_filters():
     c = _client()
     c.execute_tool = AsyncMock(return_value={"hits": []})

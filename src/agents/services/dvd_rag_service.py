@@ -26,6 +26,7 @@ from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatu
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
+    from src.agents.services.service_entities.dvd_plan import RetrievalPlan
 
 _MCP_SOURCE = "DVD_MCP_URL"
 _EXECUTION_MODE = "rag_search"
@@ -266,19 +267,31 @@ class DvdRagService(BaseLlmService):
                     "searching",
                     f"Ищу в нормативной базе: «{plan.search_query}» "
                     f"(тип: {plan.kind}, фрагментов: {plan.limit}, "
-                    f"контекст: ±{plan.context_height})…",
+                    f"контекст: ±{plan.context_height}"
+                    f"{self._filter_note(plan)})…",
                 ),
             )
-            search_args = {
+            # Only non-empty filters are threaded into the tool call (and recorded), so
+            # the persisted tool-call history mirrors exactly what IDU_DVD received.
+            search_args: dict[str, Any] = {
                 "query": plan.search_query,
                 "limit": plan.limit,
                 "context_height": plan.context_height,
             }
+            if plan.document_names:
+                search_args["document_names"] = plan.document_names
+            if plan.block:
+                search_args["block"] = plan.block
+            if plan.types:
+                search_args["types"] = plan.types
             search_result = await dvd_mcp_client.search(
                 plan.search_query,
                 kind=plan.kind,
                 limit=plan.limit,
                 context_height=plan.context_height,
+                document_names=plan.document_names,
+                block=plan.block,
+                types=plan.types,
             )
             hits = search_result.get("hits") or []
 
@@ -302,7 +315,9 @@ class DvdRagService(BaseLlmService):
                 prev_critique = (
                     "Поиск не дал результатов. Переформулируй поисковый запрос: "
                     "используй синонимы, официальную терминологию, более общие "
-                    "или более узкие формулировки."
+                    "или более узкие формулировки. Если были заданы фильтры "
+                    "(document_names, block, types) — ослабь или убери их, они "
+                    "могли отсечь релевантные фрагменты."
                 )
                 prev_query = plan.search_query
                 await self._save_progress(
@@ -589,6 +604,18 @@ class DvdRagService(BaseLlmService):
     @staticmethod
     def _status(status: str, text: str) -> dict:
         return {"type": "status", "content": {"status": status, "text": text}}
+
+    @staticmethod
+    def _filter_note(plan: "RetrievalPlan") -> str:
+        """Human-readable suffix listing the active IDU_DVD search filters (empty if none)."""
+        bits: list[str] = []
+        if plan.document_names:
+            bits.append(f"документы: {', '.join(plan.document_names)}")
+        if plan.block:
+            bits.append(f"блок: {plan.block}")
+        if plan.types:
+            bits.append(f"уровни: {', '.join(plan.types)}")
+        return f", фильтры — {'; '.join(bits)}" if bits else ""
 
     @staticmethod
     def _chunk(text: str, done: bool, iteration: int) -> dict:
