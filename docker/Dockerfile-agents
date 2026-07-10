@@ -1,3 +1,15 @@
+FROM node:22-alpine AS test-ui-builder
+
+WORKDIR /ui
+
+COPY tools/test-ui/package*.json ./
+RUN npm ci
+
+COPY tools/test-ui/index.html tools/test-ui/vite.config.js ./
+COPY tools/test-ui/src ./src
+RUN npm run build
+
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -16,6 +28,7 @@ RUN uv sync --locked --no-dev
 
 COPY src/__init__.py src/__version__.py ./src/
 COPY src/agents ./src/agents
+COPY --from=test-ui-builder /ui/dist ./tools/test-ui/dist
 
 ENV FASTAPI_WORKERS=4
 ENV PORT=80

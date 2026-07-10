@@ -12,3 +12,5 @@ README.md
 .env.agents.
 **/dev
 /data
+tools/test-ui/node_modules
+tools/test-ui/dist

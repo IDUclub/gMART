@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from loguru import logger
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.staticfiles import StaticFiles
 
 from src.agents.__version__ import APP_DESCRIPTION, APP_TITLE, APP_VERSION
 from src.agents.common.logging.log_config import config_logger
@@ -23,6 +25,8 @@ from src.agents.routers.system_controller import system_router
 from src.agents.routers.token_refresh_controller import token_refresh_router
 
 config_logger()
+
+TEST_UI_DIST_DIR = Path(__file__).resolve().parents[2] / "tools" / "test-ui" / "dist"
 
 
 @asynccontextmanager
@@ -70,3 +74,16 @@ app.include_router(provision_a2a_router)
 app.include_router(dvd_a2a_router)
 app.include_router(a2a_router)
 app.include_router(system_router)
+
+if TEST_UI_DIST_DIR.exists():
+    app.mount(
+        "/test-ui",
+        StaticFiles(directory=TEST_UI_DIST_DIR, html=True),
+        name="test-ui",
+    )
+else:
+    logger.info(
+        "gMART test UI is not mounted: {} does not exist. "
+        "Run `npm install && npm run build` in tools/test-ui to enable /test-ui.",
+        TEST_UI_DIST_DIR,
+    )
