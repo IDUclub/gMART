@@ -7,9 +7,12 @@ from src.agents.dependencies.init_dependencies import init_dependencies
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
+from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 from src.agents.services.a2a_service import A2AService
 from src.agents.services.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd_rag_service import DvdRagService
+from src.agents.services.normgraph_a2a_service import NormGraphA2AService
+from src.agents.services.normgraph_rag_service import NormGraphRagService
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provsion_service import ProvisionService
@@ -128,6 +131,51 @@ async def get_dvd_a2a_service() -> DocumentQaA2AService:
     service = app_deps["dvd_a2a_service"]
     if not isinstance(service, DocumentQaA2AService):
         raise TypeError(f"Expected DocumentQaA2AService, got {type(service)}")
+    return service
+
+
+async def get_normgraph_mcp_client() -> NormGraphMcpClient:
+    """
+    Function returns a NormGraphMcpClient for the NormGraph restriction-graph MCP server.
+
+    The NormGraph MCP server is unauthenticated, so no bearer token is attached.
+    Returns:
+        NormGraphMcpClient: Client for the NormGraph MCP server.
+    Raises:
+        ValueError: If NORM_GRAPH_MCP_SERVER is not configured.
+    """
+
+    mcp_url: str | None = app_deps["app_config"].NORM_GRAPH_MCP_URL
+    if not mcp_url:
+        raise ValueError(
+            "NORM_GRAPH_MCP_SERVER is not configured — set it to enable the /norms agent"
+        )
+    return NormGraphMcpClient(Client(mcp_url), mcp_url=mcp_url)
+
+
+def get_normgraph_rag_service() -> NormGraphRagService:
+    """
+    Function returns initialized NormGraphRagService object from dependencies.
+    Returns:
+        NormGraphRagService: NormGraphRagService instance.
+    """
+
+    service: NormGraphRagService = app_deps["normgraph_rag_service"]
+    if not isinstance(service, NormGraphRagService):
+        raise TypeError(f"Expected NormGraphRagService, got {type(service)}")
+    return service
+
+
+async def get_normgraph_a2a_service() -> NormGraphA2AService:
+    """
+    Function returns NormGraphA2AService instance.
+    Returns:
+        NormGraphA2AService: NormGraphA2AService instance.
+    """
+
+    service = app_deps["normgraph_a2a_service"]
+    if not isinstance(service, NormGraphA2AService):
+        raise TypeError(f"Expected NormGraphA2AService, got {type(service)}")
     return service
 
 

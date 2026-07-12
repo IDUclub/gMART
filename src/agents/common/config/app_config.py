@@ -6,6 +6,7 @@ class AgentsAppConfig:
         IDU_MCP_URL (str): IDU MCP URL.
         EFFECTS_MCP_URL (str): Object Effects MCP URL.
         DVD_MCP_URL (str | None): IDU_DVD document vector-DB MCP URL (optional).
+        NORM_GRAPH_MCP_URL (str | None): NormGraph normative-restrictions graph MCP URL (optional).
         CHAT_STORAGE_URL (str): Chat Storage service URL.
         URBAN_API_URL (str): Urban API URL.
         REDIS_URL (str): Redis URL (used for pipeline state and pub/sub).
@@ -16,6 +17,7 @@ class AgentsAppConfig:
     IDU_MCP_URL: str
     EFFECTS_MCP_URL: str
     DVD_MCP_URL: str | None
+    NORM_GRAPH_MCP_URL: str | None
     CHAT_STORAGE_URL: str
     URBAN_API_URL: str
     REDIS_URL: str
@@ -29,6 +31,7 @@ class AgentsAppConfig:
         chat_storage_url: str,
         urban_api_url: str,
         dvd_mcp_url: str | None = None,
+        norm_graph_mcp_url: str | None = None,
         redis_url: str = "redis://localhost:6379",
         system_password: str | None = None,
     ) -> None:
@@ -48,6 +51,10 @@ class AgentsAppConfig:
         # existing deployments without DVD_MCP_SERVER still start; the DVD endpoints
         # raise a clear error if it is unset (see dependencies.get_dvd_mcp_client).
         self.DVD_MCP_URL = dvd_mcp_url or None
+        # Optional: only required by the norms-QA (NormGraph graph-RAG) agent. Kept optional
+        # so existing deployments without NORM_GRAPH_MCP_SERVER still start; the /norms
+        # endpoints raise a clear error if it is unset (see dependencies.get_normgraph_mcp_client).
+        self.NORM_GRAPH_MCP_URL = norm_graph_mcp_url or None
         if not chat_storage_url:
             raise ValueError("CHAT_STORAGE_URL must be set")
         self.CHAT_STORAGE_URL = chat_storage_url
@@ -64,6 +71,7 @@ class AgentsAppConfig:
             "IDU_MCP_URL": self.IDU_MCP_URL,
             "EFFECTS_MCP_URL": self.EFFECTS_MCP_URL,
             "DVD_MCP_URL": self.DVD_MCP_URL or "",
+            "NORM_GRAPH_MCP_URL": self.NORM_GRAPH_MCP_URL or "",
             "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,
             "URBAN_API_URL": self.URBAN_API_URL,
             "REDIS_URL": self.REDIS_URL,
