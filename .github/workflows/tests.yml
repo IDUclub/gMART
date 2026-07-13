@@ -1,0 +1,103 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [dev]
+
+# Cancel stale runs when a new commit is pushed to the PR.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit
+
+  integration:
+    name: Integration
+    uses: ./.github/workflows/integration.yml
+
+  format:
+    name: Format (isort + black)
+    needs: [unit-tests, integration]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # push auto-format fixes back to the PR branch
+      pull-requests: write    # leave a comment on the PR
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Check out the PR branch itself (not the detached merge ref) so we can push.
+          ref: ${{ github.head_ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      # First check. On mismatches pre-commit rewrites the files and returns a
+      # non-zero code. Don't fail the job here — handle the result below.
+      - name: Check formatting
+        id: check
+        run: |
+          if uv run pre-commit run --all-files --show-diff-on-failure; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # If the first check found mismatches, commit the auto-fixes to the PR branch.
+      - name: Commit auto-format
+        if: steps.check.outputs.clean == 'false'
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing to commit (mismatch is not auto-fixable)."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "style: auto-format with isort + black [skip ci]"
+          git push origin HEAD:${{ github.head_ref }}
+
+      - name: Comment on PR
+        if: steps.check.outputs.clean == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --body "🎨 Code did not satisfy isort/black — applied auto-formatting and pushed the fixes to the branch. Re-running the check."
+
+      # Second check. If mismatches remain after auto-formatting (e.g. something
+      # black/isort cannot fix), fail the job → the PR is blocked.
+      - name: Re-check formatting
+        if: steps.check.outputs.clean == 'false'
+        run: uv run pre-commit run --all-files --show-diff-on-failure

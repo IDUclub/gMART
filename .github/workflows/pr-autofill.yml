@@ -1,0 +1,82 @@
+# Auto-fill the title and body of pull requests.
+#   PRs into dev:
+#     * main -> dev (release sync-back): title = the current version, body = the PR's commits;
+#     * feature/fix -> dev:              title = the source branch name, body = the PR's commits.
+#   PRs into main (release PRs):
+#     * title = the version the Release workflow will bump to on merge, predicted by commitizen
+#       (`cz bump --get-next`) from the conventional commits since the last v* tag;
+#     * body = every commit since the last release (what the changelog will cover), not just the
+#       PR's own range.
+# Re-runs on every new push to the PR (synchronize), so the title/body always reflect the current
+# commits - note this overwrites manual edits to the title/body. Runs only for same-repo branches
+# (fork PRs get a read-only token).
+
+name: PR autofill
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [dev, main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  autofill:
+    name: Fill PR title and body
+    runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags: commit lists and the last release tag
+
+      # Only release PRs need commitizen (to predict the next version).
+      - name: Install commitizen
+        if: ${{ github.event.pull_request.base.ref == 'main' }}
+        run: pipx install commitizen
+
+      - name: Compute and apply title + body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$BASE_REF" = "main" ]; then
+            # Release PR: predict the version the Release workflow will create on merge.
+            # `cz bump --get-next` runs in the checked-out PR merge ref and reads
+            # [tool.commitizen] from pyproject.toml, so the prediction follows the same
+            # rules as the real bump (major_version_zero etc.). Prints the next version
+            # on stdout; exits 21 when no commit is eligible -> fallback title.
+            next="$(cz bump --get-next --yes 2>/dev/null || true)"
+            if [ -n "$next" ]; then
+              title="v${next}"
+            else
+              title="${HEAD_REF} -> ${BASE_REF} (no release-worthy commits)"
+            fi
+
+            # Body: every commit since the last release - the changelog's coverage.
+            # Both the tag lookup and the log run against HEAD (the PR merge ref): release
+            # tags live on main and are not reachable from dev itself, but they are
+            # reachable from the merge of the two.
+            last_tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+            body="$(git log --reverse --no-merges --format='- %s' ${last_tag:+${last_tag}..}HEAD)"
+          else
+            # Body: the PR's commit subjects as a dash list (oldest first).
+            body="$(git log --reverse --format='- %s' "${BASE_SHA}..${HEAD_SHA}")"
+
+            # Title: version for the release sync-back from main, branch name otherwise.
+            if [ "$HEAD_REF" = "main" ]; then
+              title="$(git show "${HEAD_SHA}:pyproject.toml" | sed -nE 's/^version = "(.*)"/\1/p' | head -1)"
+              [ -z "$title" ] && title="main -> dev"
+            else
+              title="$HEAD_REF"
+            fi
+          fi
+          [ -z "$body" ] && body="- (no commits)"
+
+          gh pr edit "$PR" --title "$title" --body "$body"
