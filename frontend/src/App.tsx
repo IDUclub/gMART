@@ -23,6 +23,18 @@ import type {
 } from "./types";
 const AGENTS: Agent[] = [
   {
+    id: "orchestrator",
+    icon: "⌬",
+    label: "Оркестратор",
+    caption: "Единая точка входа",
+    path: "/orchestrator/route/stream",
+    needsScenario: false,
+    examples: [
+      "Построй зону ограничения вокруг школ 200 метров и найди требования к их размещению",
+      "Оцени обеспеченность детскими садами и проверь нормативные ограничения",
+    ],
+  },
+  {
     id: "restrictions",
     icon: "◈",
     label: "Ограничения",
@@ -139,7 +151,8 @@ export default function App() {
       null,
     );
   const abort = useRef<AbortController | null>(null),
-    kc = useRef<Keycloak | null>(null);
+    kc = useRef<Keycloak | null>(null),
+    stepBase = useRef("");
   const agent = AGENTS.find((a) => a.id === agentId)!;
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
@@ -228,6 +241,9 @@ export default function App() {
     setEvents((v) =>
       [{ time: new Date().toLocaleTimeString(), event }, ...v].slice(0, 100),
     );
+    route(event);
+  }
+  function route(event: StreamEvent, nested = false) {
     if (event.type === "pipeline_started") setStatus("Агент начал работу");
     if (event.type === "status")
       setStatus(event.content?.text || labelStatus(event.content?.status));
@@ -238,14 +254,58 @@ export default function App() {
           : event.content?.text || "";
       setAnswer((v) =>
         event.content?.iteration && event.content.iteration > 1
-          ? text
+          ? stepBase.current + text
           : v + text,
       );
-      if (event.content?.done) {
+      if (event.content?.done && !nested) {
         setBusy(false);
         setStatus("Ответ готов");
         loadChats();
       }
+    }
+    if (event.type === "plan") {
+      const steps = event.content?.steps || [];
+      setStatus(`План готов: шагов — ${steps.length}`);
+      if (steps.length)
+        setAnswer(
+          (v) =>
+            v +
+            "**План работы**\n\n" +
+            steps
+              .map(
+                (s: any) =>
+                  `${s.step}. ${s.agent_title || labelAgent(s.agent)} — ${s.task}`,
+              )
+              .join("\n") +
+            "\n\n",
+        );
+    }
+    if (event.type === "step_started") {
+      const step = event.content?.step,
+        agent = labelAgent(event.content?.agent);
+      setStatus(`Шаг ${step}: ${agent}`);
+      setAnswer(
+        (v) => (stepBase.current = `${v}---\n\n**Шаг ${step} · ${agent}**\n\n`),
+      );
+    }
+    if (event.type === "step_event" && event.content?.event)
+      route(event.content.event, true);
+    if (event.type === "step_finished") {
+      if (event.content?.status === "failed")
+        setAnswer(
+          (v) =>
+            v +
+            `\n\n> ⚠ Шаг ${event.content.step} не выполнен: ${event.content.summary || "ошибка агента"}\n\n`,
+        );
+      setStatus(`Шаг ${event.content?.step} завершён`);
+    }
+    if (event.type === "clarification") {
+      setAnswer((v) => v + (event.content?.question || ""));
+      setStatus("Нужно уточнение");
+    }
+    if (event.type === "orchestrator_final") {
+      setStatus("Ответ готов");
+      loadChats();
     }
     if (event.type === "feature_collection") {
       const fc =
@@ -293,6 +353,7 @@ export default function App() {
     setAnswer("");
     setTables([]);
     setEvents([]);
+    stepBase.current = "";
     setStatus("Подключение к агенту…");
     const url = new URL(agent.path, settings.agentsUrl);
     url.searchParams.set("request", query);
@@ -890,6 +951,20 @@ function SettingsModal({
 }
 function err(e: unknown) {
   return e instanceof Error ? e.message : String(e);
+}
+function labelAgent(key?: string) {
+  return (
+    (
+      {
+        restriction: "Ограничения",
+        provision: "Обеспеченность",
+        documents: "Документы",
+        norms: "Нормы",
+      } as Record<string, string>
+    )[key || ""] ||
+    key ||
+    "агент"
+  );
 }
 function labelStatus(s: string) {
   return (
