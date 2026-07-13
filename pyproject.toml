@@ -1,6 +1,6 @@
 [project]
 name = "gMART"
-version = "0.13.4"
+version = "0.13.5"
 description = "First look on fastmcp with uv"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
@@ -32,6 +32,7 @@ dev = [
     "matplotlib (>=3.11.0,<4.0.0)",
     "mapclassify (>=2.10.0,<3.0.0)",
     "pre-commit>=4.6.0",
+    "commitizen>=4.0.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "fakeredis>=2.26.0",
@@ -47,4 +48,16 @@ markers = [
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
+]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.13.5"
+tag_format = "v$version"
+version_scheme = "pep440"
+major_version_zero = true
+update_changelog_on_bump = true
+version_files = [
+    "pyproject.toml:^version",
+    "src/__version__.py:__VERSION__",
 ]

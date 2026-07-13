@@ -1,0 +1,112 @@
+# Release workflow - on every push to main (e.g. after merging dev -> main) it bumps the
+# version + changelog from conventional commits, refreshes uv.lock, tags the version, and creates a
+# draft pre-release. The bump is synced back to dev via a separate main -> dev PR.
+# The draft can later be promoted to a full release manually in the GitHub UI.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# One release run at a time.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump version + generate changelog
+    runs-on: ubuntu-latest
+    # Don't react to commitizen's own bump commit (belt-and-suspenders: pushes
+    # made with GITHUB_TOKEN don't trigger workflows anyway).
+    if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
+    permissions:
+      contents: write   # commit the bump, push the tag, and create the release
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so commitizen can find the baseline and the
+          # commits to analyze.
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # Commitizen needs a baseline tag to compute the version and the incremental changelog
+      # (`update_changelog_on_bump = true`). On a brand-new repo with no v* tag yet, seed one at the
+      # previous release state (the merge's first parent) so the first run doesn't fail with
+      # "No tag found to do an incremental changelog". Later runs already have real tags and skip this.
+      - name: Seed baseline tag if none exists
+        run: |
+          if [ -z "$(git tag -l 'v*')" ]; then
+            base="$(uv run cz version --project)"
+            # annotated so `git push --follow-tags` actually pushes it
+            git tag -a "v${base}" -m "baseline v${base}" HEAD^ 2>/dev/null \
+              || git tag -a "v${base}" -m "baseline v${base}" HEAD
+            echo "Seeded baseline tag v${base}"
+          fi
+
+      # Bump the version (pyproject + src/__version__.py) and the changelog, then refresh uv.lock so it
+      # stays in sync with the new [project].version - the Dockerfiles install from the lock, so a stale
+      # lock would break the image. --version-files-only writes the files without committing, so we fold
+      # the refreshed lock into one bump commit + tag.
+      # Exit codes 3/21 mean "no eligible commits since the last release" - that's a no-op.
+      - name: Bump version, changelog and lock
+        id: bump
+        run: |
+          old="$(uv run cz version --project)"
+          set +e
+          uv run cz bump --yes --changelog --version-files-only
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ] || [ "$code" -eq 21 ]; then
+            echo "No eligible commits to bump - skipping release."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [ "$code" -ne 0 ]; then
+            exit "$code"
+          fi
+          new="$(uv run cz version --project)"
+          uv lock                                  # sync uv.lock to the bumped version
+          git add -A
+          git commit -m "bump: version ${old} -> ${new}"
+          git tag -a "v${new}" -m "release v${new}"   # annotated so --follow-tags pushes it
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+          echo "tag=v${new}" >> "$GITHUB_OUTPUT"
+
+      # If a new version was created, push the commit + the NEW release tag back to main, then
+      # create a draft pre-release that can be promoted later. Push the branch and the new tag in
+      # one atomic push (not --follow-tags): the seeded baseline tag must NOT be pushed - it points
+      # at an old commit and trips GitHub's workflow-file protection on the GITHUB_TOKEN, and it is
+      # only needed locally in this runner for the changelog.
+      - name: Push bump commit and tag
+        if: steps.bump.outputs.bumped == 'true'
+        run: git push origin HEAD:main "refs/tags/${{ steps.bump.outputs.tag }}"
+
+      - name: Create GitHub draft pre-release
+        if: steps.bump.outputs.bumped == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bump.outputs.tag }}
+          name: Release ${{ steps.bump.outputs.tag }}
+          draft: true          # keep it a draft so you can edit before publishing
+          prerelease: true     # mark as a pre-release until promoted
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

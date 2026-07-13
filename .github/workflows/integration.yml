@@ -1,0 +1,75 @@
+name: Integration tests
+
+# Integration tests against disposable infrastructure — nightly, on demand, and
+# on PRs to dev via the Tests workflow (workflow_call, after unit tests pass).
+#
+# gMART's integration suite is tiered: each test self-skips when its backing
+# service is unreachable (see tests/integration/conftest.py). Here we bring up
+# the two services CI can host cheaply:
+#   - redis  : pipeline-state reconnect/replay tests.
+#   - ollama : LLM-path tests, on CPU with a small, CPU-friendly model
+#              (qwen2.5:3b-instruct).
+# The IDU_DVD MCP is a separate service (its own repo + Qdrant/embeddings), so
+# it is NOT provisioned here — the document-QA live test (test_qa_live) points
+# DVD_MCP_SERVER at an unreachable default and self-skips. Run it locally against
+# a real IDU_DVD MCP when you need that coverage.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "17 3 * * *"
+
+jobs:
+  integration:
+    name: Integration (Redis + Ollama CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Wait for Ollama
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/tags > /dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:11434/api/tags > /dev/null
+
+      - name: Pull model (CPU-friendly)
+        run: |
+          last=$(curl -s http://localhost:11434/api/pull -d '{"model":"qwen2.5:3b-instruct"}' | tail -1)
+          echo "$last"
+          echo "$last" | grep -q '"status":"success"'
+
+      - name: Run integration tests
+        env:
+          OLLAMA_API_URL: http://localhost:11434
+          REDIS_URL: redis://localhost:6379
+          # No IDU_DVD MCP in CI: keep the default unreachable URL so test_qa_live
+          # self-skips instead of erroring.
+          DVD_MCP_SERVER: http://localhost:8000/mcp
+          DVD_TEST_MODEL: qwen2.5:3b-instruct
+        run: uv run pytest tests/integration -m integration -rs
