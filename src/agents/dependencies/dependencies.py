@@ -13,6 +13,7 @@ from src.agents.services.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd_rag_service import DvdRagService
 from src.agents.services.normgraph_a2a_service import NormGraphA2AService
 from src.agents.services.normgraph_rag_service import NormGraphRagService
+from src.agents.services.orchestrator_service import OrchestratorService
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provsion_service import ProvisionService
@@ -151,6 +152,51 @@ async def get_normgraph_mcp_client() -> NormGraphMcpClient:
             "NORM_GRAPH_MCP_SERVER is not configured — set it to enable the /norms agent"
         )
     return NormGraphMcpClient(Client(mcp_url), mcp_url=mcp_url)
+
+
+async def get_optional_dvd_mcp_client() -> DvdMcpClient | None:
+    """
+    Function returns a DvdMcpClient when DVD_MCP_SERVER is configured, else None.
+
+    Used by the orchestrator: the documents agent is simply excluded from the
+    planner catalogue when the URL is unset, so the endpoint must not fail.
+    Returns:
+        DvdMcpClient | None: Client for the IDU_DVD MCP server or None.
+    """
+
+    mcp_url: str | None = app_deps["app_config"].DVD_MCP_URL
+    if not mcp_url:
+        return None
+    return DvdMcpClient(Client(mcp_url), mcp_url=mcp_url)
+
+
+async def get_optional_normgraph_mcp_client() -> NormGraphMcpClient | None:
+    """
+    Function returns a NormGraphMcpClient when NORM_GRAPH_MCP_SERVER is configured, else None.
+
+    Used by the orchestrator: the norms agent is simply excluded from the
+    planner catalogue when the URL is unset, so the endpoint must not fail.
+    Returns:
+        NormGraphMcpClient | None: Client for the NormGraph MCP server or None.
+    """
+
+    mcp_url: str | None = app_deps["app_config"].NORM_GRAPH_MCP_URL
+    if not mcp_url:
+        return None
+    return NormGraphMcpClient(Client(mcp_url), mcp_url=mcp_url)
+
+
+def get_orchestrator_service() -> OrchestratorService:
+    """
+    Function returns initialized OrchestratorService object from dependencies.
+    Returns:
+        OrchestratorService: OrchestratorService instance.
+    """
+
+    service: OrchestratorService = app_deps["orchestrator_service"]
+    if not isinstance(service, OrchestratorService):
+        raise TypeError(f"Expected OrchestratorService, got {type(service)}")
+    return service
 
 
 def get_normgraph_rag_service() -> NormGraphRagService:

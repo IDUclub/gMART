@@ -19,6 +19,7 @@ from src.agents.routers.dvd_a2a_controller import dvd_a2a_router
 from src.agents.routers.dvd_controller import dvd_router
 from src.agents.routers.norms_a2a_controller import norms_a2a_router
 from src.agents.routers.norms_controller import norms_router
+from src.agents.routers.orchestrator_controller import orchestrator_router
 from src.agents.routers.provision_a2a_controller import provision_a2a_router
 from src.agents.routers.provision_controller import provision_router
 from src.agents.routers.restriction_parser_controller import restriction_router
@@ -73,6 +74,7 @@ app.include_router(restriction_router)
 app.include_router(provision_router)
 app.include_router(dvd_router)
 app.include_router(norms_router)
+app.include_router(orchestrator_router)
 app.include_router(token_refresh_router)
 app.include_router(restriction_a2a_router)
 app.include_router(provision_a2a_router)
