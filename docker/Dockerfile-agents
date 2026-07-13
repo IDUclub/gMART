@@ -1,3 +1,12 @@
+FROM node:22-alpine AS ui-builder
+
+WORKDIR /ui
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/index.html frontend/tsconfig*.json frontend/vite.config.ts ./
+COPY frontend/src ./src
+RUN npm run build
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -16,6 +25,7 @@ RUN uv sync --locked --no-dev
 
 COPY src/__init__.py src/__version__.py ./src/
 COPY src/agents ./src/agents
+COPY --from=ui-builder /ui/dist ./frontend/dist
 
 ENV FASTAPI_WORKERS=4
 ENV PORT=80
