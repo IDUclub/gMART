@@ -1,6 +1,6 @@
 [project]
 name = "gMART"
-version = "0.13.5"
+version = "0.14.0"
 description = "First look on fastmcp with uv"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
@@ -52,7 +52,7 @@ filterwarnings = [
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.13.5"
+version = "0.14.0"
 tag_format = "v$version"
 version_scheme = "pep440"
 major_version_zero = true
