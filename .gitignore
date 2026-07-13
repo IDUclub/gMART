@@ -30,3 +30,10 @@ DECFILE
 
 # mongo
 /mongo
+
+# Frontend build
+frontend/node_modules/
+frontend/dist/
+
+#Agents
+AGENTS.md
