@@ -1,0 +1,10 @@
+export type AgentId="restrictions"|"provision"|"documents"|"norms"|"llm";
+export type Agent={id:AgentId;label:string;caption:string;path:string;needsScenario:boolean;icon:string;examples:string[]};
+export type TableData={name?:string;title?:string;columns:Array<{key:string;label:string}>;rows:Array<Record<string,unknown>>};
+export type LayerData={id:string;name:string;color:string;visible:boolean;geojson:GeoJSON.FeatureCollection;count:number};
+export type StreamEvent={type:string;content:any};
+export type ChatSummary={chat_id:string;title:string|null;scenario_id:string|number|null;project_id:string|number|null;updated_at:string;metadata?:Record<string,unknown>};
+export type MessagePart={part_seq:number;kind:string;payload:Record<string,any>};
+export type Message={message_id:string;role:string;parts:MessagePart[];created_at:string};
+export type Chat=ChatSummary&{messages:Message[]};
+export type Settings={theme:"light"|"dark";basemap:string;agentsUrl:string;chatStorageUrl:string;authHelperUrl:string;keycloakUrl:string;keycloakRealm:string;keycloakClientId:string;model:string;temperature:number};
