@@ -1,3 +1,10 @@
+## v0.14.1 (2026-07-14)
+
+### Fix
+
+- **norms_rag**: recursively normalize NormGraph MCP results (#120)
+- **chat_storage**: tolerate new ChatStorage response fields (#119)
+
 ## v0.14.0 (2026-07-13)
 
 ### Feat
