@@ -11,6 +11,9 @@ class AgentsAppConfig:
         URBAN_API_URL (str): Urban API URL.
         REDIS_URL (str): Redis URL (used for pipeline state and pub/sub).
         SYSTEM_PASSWORD (str | None): Optional password guarding system config retrieval.
+        AUTH_HELPER_URL (str | None): IDU auth helper base URL (optional; enables /auth/token).
+        AUTH_HELPER_API_KEY (str | None): API key for the auth helper /api/token endpoint.
+            Secret — kept server-side only, never exposed via /system/config or logs.
     """
 
     OLLAMA_URL: str
@@ -22,6 +25,8 @@ class AgentsAppConfig:
     URBAN_API_URL: str
     REDIS_URL: str
     SYSTEM_PASSWORD: str | None
+    AUTH_HELPER_URL: str | None
+    AUTH_HELPER_API_KEY: str | None
 
     def __init__(
         self,
@@ -34,6 +39,8 @@ class AgentsAppConfig:
         norm_graph_mcp_url: str | None = None,
         redis_url: str = "redis://localhost:6379",
         system_password: str | None = None,
+        auth_helper_url: str | None = None,
+        auth_helper_api_key: str | None = None,
     ) -> None:
 
         if not ollama_api_url:
@@ -63,6 +70,10 @@ class AgentsAppConfig:
         self.URBAN_API_URL = urban_api_url
         self.REDIS_URL = redis_url
         self.SYSTEM_PASSWORD = system_password
+        # Optional: only required by the /auth/token proxy (UI login through the IDU
+        # auth helper). Both must be set to enable it; the API key stays server-side.
+        self.AUTH_HELPER_URL = auth_helper_url or None
+        self.AUTH_HELPER_API_KEY = auth_helper_api_key or None
 
     def to_dict(self) -> dict[str, str]:
 
@@ -75,6 +86,9 @@ class AgentsAppConfig:
             "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,
             "URBAN_API_URL": self.URBAN_API_URL,
             "REDIS_URL": self.REDIS_URL,
+            # AUTH_HELPER_API_KEY is deliberately omitted: to_dict feeds
+            # /system/config and __repr__, and the key must not leak there.
+            "AUTH_HELPER_URL": self.AUTH_HELPER_URL or "",
         }
 
     def __repr__(self) -> str:

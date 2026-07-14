@@ -42,6 +42,8 @@ def load_config() -> AgentsAppConfig:
                 norm_graph_mcp_url=os.getenv("NORM_GRAPH_MCP_SERVER"),
                 redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
                 system_password=os.getenv("SYSTEM_PASSWORD"),
+                auth_helper_url=os.getenv("AUTH_HELPER_URL"),
+                auth_helper_api_key=os.getenv("AUTH_HELPER_API_KEY"),
             )
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
     try:
@@ -55,6 +57,8 @@ def load_config() -> AgentsAppConfig:
             norm_graph_mcp_url=os.getenv("NORM_GRAPH_MCP_SERVER"),
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
             system_password=os.getenv("SYSTEM_PASSWORD"),
+            auth_helper_url=os.getenv("AUTH_HELPER_URL"),
+            auth_helper_api_key=os.getenv("AUTH_HELPER_API_KEY"),
         )
     except ValueError:
         raise
