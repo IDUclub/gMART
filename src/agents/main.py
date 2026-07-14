@@ -15,6 +15,7 @@ from src.agents.common.middlewares.exception_handler import (
 )
 from src.agents.dependencies.dependencies import app_deps
 from src.agents.routers.a2a_controller import a2a_router, restriction_a2a_router
+from src.agents.routers.auth_controller import auth_router
 from src.agents.routers.dvd_a2a_controller import dvd_a2a_router
 from src.agents.routers.dvd_controller import dvd_router
 from src.agents.routers.norms_a2a_controller import norms_a2a_router
@@ -69,6 +70,7 @@ async def ping_server():
     return {"status": "ok"}
 
 
+app.include_router(auth_router)
 app.include_router(llm_router)
 app.include_router(restriction_router)
 app.include_router(provision_router)
