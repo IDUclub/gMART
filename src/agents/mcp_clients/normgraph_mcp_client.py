@@ -182,27 +182,37 @@ class NormGraphMcpClient(BaseMcpClient):
             if value is not None and value != []
         }
 
-    @staticmethod
-    def _to_dict(obj: Any) -> Any:
+    @classmethod
+    def _to_dict(cls, obj: Any) -> Any:
         """
-        Best-effort conversion of an MCP-returned object into a plain dict.
+        Best-effort recursive conversion of an MCP-returned object into plain data.
 
         FastMCP rehydrates a tool's structured output (via ``result.data``) into synthetic
         types built from its output schema, which are neither a ``dict`` nor a pydantic-v2
         model with ``model_dump``. Try the known converters in order and fall back to
-        attribute inspection so any of those shapes normalizes cleanly.
+        attribute inspection. The conversion is recursive: nested synthetic objects
+        (e.g. ``provenance``/``value`` inside a search hit) must also become dicts —
+        downstream consumers (NormGraphContextBuilder) treat the result as plain JSON.
         """
-        if obj is None or isinstance(obj, dict):
+        if obj is None or isinstance(obj, (str, int, float, bool)):
             return obj
+        if isinstance(obj, dict):
+            return {key: cls._to_dict(value) for key, value in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [cls._to_dict(item) for item in obj]
         for attr in ("model_dump", "dict", "_asdict"):  # pydantic v2 / v1 / namedtuple
             converter = getattr(obj, attr, None)
             if callable(converter):
                 try:
-                    return converter()
+                    return cls._to_dict(converter())
                 except TypeError:
                     continue
         if hasattr(obj, "__dict__"):
-            return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
+            return {
+                key: cls._to_dict(value)
+                for key, value in vars(obj).items()
+                if not key.startswith("_")
+            }
         return obj
 
     @classmethod
