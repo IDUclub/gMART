@@ -3,6 +3,7 @@ from fastmcp import Client
 
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.auth.auth import verify_bearer_token
+from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.dependencies.init_dependencies import init_dependencies
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
@@ -24,6 +25,19 @@ from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.system_service import SystemService
 
 app_deps: dict[str, object] = init_dependencies()
+
+
+def get_app_config() -> AgentsAppConfig:
+    """
+    Function returns the AgentsAppConfig loaded on startup.
+    Returns:
+         AgentsAppConfig: app_config object initialized on startup.
+    """
+
+    app_config: AgentsAppConfig = app_deps["app_config"]
+    if not isinstance(app_config, AgentsAppConfig):
+        raise TypeError(f"Expected AgentsAppConfig, got {type(app_config)}")
+    return app_config
 
 
 def get_simple_llm_service() -> SimpleLlmService:

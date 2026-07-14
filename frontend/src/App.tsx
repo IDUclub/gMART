@@ -3,6 +3,8 @@ import Keycloak from "keycloak-js";
 import ReactMarkdown from "react-markdown";
 import MapPanel from "./MapPanel";
 import {
+  authAvailable,
+  authLogin,
   deleteChat,
   getChat,
   getChats,
@@ -146,18 +148,30 @@ export default function App() {
     [rightTab, setRightTab] = useState<"map" | "data" | "process">("map"),
     [models, setModels] = useState<string[]>([]),
     [settingsOpen, setSettingsOpen] = useState(false),
+    [loginOpen, setLoginOpen] = useState(false),
+    [authApi, setAuthApi] = useState(false),
     [systemPassword, setSystemPassword] = useState(""),
     [systemConfig, setSystemConfig] = useState<Record<string, string> | null>(
       null,
     );
   const abort = useRef<AbortController | null>(null),
     kc = useRef<Keycloak | null>(null),
+    // Credentials for the /auth/token proxy login: kept in memory only (never
+    // persisted) so the short-lived token can be re-requested before expiry.
+    helperCreds = useRef<{ username: string; password: string } | null>(null),
+    reloginTimer = useRef<number | null>(null),
     stepBase = useRef("");
   const agent = AGENTS.find((a) => a.id === agentId)!;
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
     localStorage.setItem("gmart-ui", JSON.stringify(settings));
   }, [settings]);
+  useEffect(() => {
+    authAvailable(settings).then(setAuthApi);
+    return () => {
+      if (reloginTimer.current) window.clearTimeout(reloginTimer.current);
+    };
+  }, []);
   useEffect(() => {
     const urlToken =
       new URLSearchParams(location.search).get("access_token") ||
@@ -222,14 +236,45 @@ export default function App() {
     loadChats();
   }
   function login() {
-    if (kc.current) kc.current.login();
+    if (authApi) setLoginOpen(true);
+    else if (kc.current) kc.current.login();
     else {
       const url = new URL(settings.authHelperUrl);
       url.searchParams.set("returnUrl", location.origin + location.pathname);
       location.href = url.toString();
     }
   }
+  async function helperLogin(username: string, password: string) {
+    const data = await authLogin(settings, username, password);
+    helperCreds.current = { username, password };
+    setToken(data.access_token);
+    setAuth("ready");
+    scheduleRelogin(data.expires_in);
+    return data.access_token;
+  }
+  function scheduleRelogin(expiresIn?: number) {
+    if (reloginTimer.current) window.clearTimeout(reloginTimer.current);
+    if (!expiresIn || expiresIn <= 60) return;
+    reloginTimer.current = window.setTimeout(
+      async () => {
+        const creds = helperCreds.current;
+        if (!creds) return;
+        try {
+          await helperLogin(creds.username, creds.password);
+        } catch {
+          helperCreds.current = null;
+          setToken("");
+          setAuth("anonymous");
+        }
+      },
+      (expiresIn - 30) * 1000,
+    );
+  }
   async function freshToken() {
+    if (helperCreds.current) {
+      const { username, password } = helperCreds.current;
+      return helperLogin(username, password);
+    }
     if (kc.current) {
       await kc.current.updateToken(-1);
       setToken(kc.current.token || "");
@@ -633,6 +678,81 @@ export default function App() {
           models={models}
         />
       )}
+      {loginOpen && (
+        <LoginModal login={helperLogin} close={() => setLoginOpen(false)} />
+      )}
+    </div>
+  );
+}
+function LoginModal({
+  login,
+  close,
+}: {
+  login: (username: string, password: string) => Promise<string>;
+  close: () => void;
+}) {
+  const [username, setUsername] = useState(""),
+    [password, setPassword] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false);
+  async function submit() {
+    setBusy(true);
+    setError("");
+    try {
+      await login(username, password);
+      close();
+    } catch (e) {
+      setError(err(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div
+      className="modal"
+      onMouseDown={(e) => e.target === e.currentTarget && close()}
+    >
+      <div className="modal-card">
+        <div className="panel-head">
+          <div>
+            <span className="eyebrow">АВТОРИЗАЦИЯ</span>
+            <h2>Вход в IDU</h2>
+          </div>
+          <button onClick={close}>×</button>
+        </div>
+        <div className="form-grid">
+          <label>
+            Логин
+            <input
+              value={username}
+              autoFocus
+              autoComplete="username"
+              onChange={(e) => setUsername(e.target.value)}
+            />
+          </label>
+          <label>
+            Пароль
+            <input
+              type="password"
+              value={password}
+              autoComplete="current-password"
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !busy && submit()}
+            />
+          </label>
+        </div>
+        {error && <small className="login-error">{error}</small>}
+        <div className="modal-actions">
+          <button onClick={close}>Отмена</button>
+          <button
+            className="primary"
+            disabled={busy || !username || !password}
+            onClick={submit}
+          >
+            {busy ? "Вход…" : "Войти"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
