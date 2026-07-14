@@ -71,7 +71,7 @@ class ChatStorageApiClient:
         chat = await self.json_handler.get(
             endpoint=f"/api/v1/chat_history/{chat_id}", auth_token=token
         )
-        return ChatHistory(**chat)
+        return ChatHistory.from_response(chat)
 
     async def create_chat(
         self,
