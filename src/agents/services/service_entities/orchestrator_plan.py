@@ -11,6 +11,7 @@ class OrchestratorAgent(StrEnum):
     PROVISION = "provision"
     DOCUMENTS = "documents"
     NORMS = "norms"
+    URBAN_DATA = "urban_data"
 
 
 class OrchestratorPlanMode(StrEnum):

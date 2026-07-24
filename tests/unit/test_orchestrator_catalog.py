@@ -8,8 +8,14 @@ from src.agents.services.orchestrator_catalog import available_agents
 from src.agents.services.service_entities.orchestrator_plan import OrchestratorAgent
 
 
-def config(dvd: str | None = "http://dvd", norms: str | None = "http://norms"):
-    return SimpleNamespace(DVD_MCP_URL=dvd, NORM_GRAPH_MCP_URL=norms)
+def config(
+    dvd: str | None = "http://dvd",
+    norms: str | None = "http://norms",
+    urban_data: str | None = "http://urban-data",
+):
+    return SimpleNamespace(
+        DVD_MCP_URL=dvd, NORM_GRAPH_MCP_URL=norms, URBAN_DATA_MCP_URL=urban_data
+    )
 
 
 def keys(agents) -> set[OrchestratorAgent]:
@@ -22,6 +28,7 @@ def test_all_agents_available_with_scenario_and_urls():
         OrchestratorAgent.PROVISION,
         OrchestratorAgent.DOCUMENTS,
         OrchestratorAgent.NORMS,
+        OrchestratorAgent.URBAN_DATA,
     }
 
 
@@ -29,6 +36,7 @@ def test_scenario_bound_agents_excluded_without_scenario():
     assert keys(available_agents(config(), scenario_id=None)) == {
         OrchestratorAgent.DOCUMENTS,
         OrchestratorAgent.NORMS,
+        OrchestratorAgent.URBAN_DATA,
     }
 
 
@@ -44,5 +52,16 @@ def test_norms_excluded_without_normgraph_url():
     )
 
 
+def test_urban_data_excluded_without_urban_data_url():
+    assert OrchestratorAgent.URBAN_DATA not in keys(
+        available_agents(config(urban_data=None), scenario_id=772)
+    )
+
+
 def test_no_agents_without_scenario_and_urls():
-    assert available_agents(config(dvd=None, norms=None), scenario_id=None) == []
+    assert (
+        available_agents(
+            config(dvd=None, norms=None, urban_data=None), scenario_id=None
+        )
+        == []
+    )

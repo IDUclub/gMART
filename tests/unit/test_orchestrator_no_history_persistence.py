@@ -20,13 +20,16 @@ def orchestrator(monkeypatch, fake_llm, fake_urban, state_store):
     from src.agents.services.orchestrator_service import OrchestratorService
 
     app_config = SimpleNamespace(
-        DVD_MCP_URL="http://dvd", NORM_GRAPH_MCP_URL="http://norms"
+        DVD_MCP_URL="http://dvd",
+        NORM_GRAPH_MCP_URL="http://norms",
+        URBAN_DATA_MCP_URL="http://urban-data",
     )
     svc = OrchestratorService(
         "http://ollama",
         Mock(),
         fake_urban,
         state_store,
+        Mock(),
         Mock(),
         Mock(),
         Mock(),
@@ -68,6 +71,7 @@ async def test_no_chat_storage_calls_without_persistence(orchestrator, fake_llm)
             effects_mcp_client=Mock(),
             dvd_mcp_client=Mock(),
             normgraph_mcp_client=Mock(),
+            urban_data_mcp_client=Mock(),
             token="tok",
             model="m",
             temperature=0.5,

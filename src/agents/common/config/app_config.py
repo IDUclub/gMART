@@ -7,6 +7,10 @@ class AgentsAppConfig:
         EFFECTS_MCP_URL (str): Object Effects MCP URL.
         DVD_MCP_URL (str | None): IDU_DVD document vector-DB MCP URL (optional).
         NORM_GRAPH_MCP_URL (str | None): NormGraph normative-restrictions graph MCP URL (optional).
+        URBAN_DATA_MCP_URL (str | None): Base URL of the external, grouped Urban MCP server
+            for the urban-data QA agent (optional), e.g. ``https://urban-mcp.example.ru/mcp``
+            — group sub-paths (``/territories``, ``/projects``, ...) are appended in code,
+            see ``UrbanDataMcpClient``.
         CHAT_STORAGE_URL (str): Chat Storage service URL.
         URBAN_API_URL (str): Urban API URL.
         REDIS_URL (str): Redis URL (used for pipeline state and pub/sub).
@@ -21,6 +25,7 @@ class AgentsAppConfig:
     EFFECTS_MCP_URL: str
     DVD_MCP_URL: str | None
     NORM_GRAPH_MCP_URL: str | None
+    URBAN_DATA_MCP_URL: str | None
     CHAT_STORAGE_URL: str
     URBAN_API_URL: str
     REDIS_URL: str
@@ -37,6 +42,7 @@ class AgentsAppConfig:
         urban_api_url: str,
         dvd_mcp_url: str | None = None,
         norm_graph_mcp_url: str | None = None,
+        urban_data_mcp_url: str | None = None,
         redis_url: str = "redis://localhost:6379",
         system_password: str | None = None,
         auth_helper_url: str | None = None,
@@ -62,6 +68,11 @@ class AgentsAppConfig:
         # so existing deployments without NORM_GRAPH_MCP_SERVER still start; the /norms
         # endpoints raise a clear error if it is unset (see dependencies.get_normgraph_mcp_client).
         self.NORM_GRAPH_MCP_URL = norm_graph_mcp_url or None
+        # Optional: only required by the urban-data QA agent (external grouped Urban MCP).
+        # Kept optional so existing deployments without URBAN_DATA_MCP_SERVER still start;
+        # the /urban-data endpoints raise a clear error if it is unset (see
+        # dependencies.get_urban_data_mcp_client).
+        self.URBAN_DATA_MCP_URL = urban_data_mcp_url or None
         if not chat_storage_url:
             raise ValueError("CHAT_STORAGE_URL must be set")
         self.CHAT_STORAGE_URL = chat_storage_url
@@ -83,6 +94,7 @@ class AgentsAppConfig:
             "EFFECTS_MCP_URL": self.EFFECTS_MCP_URL,
             "DVD_MCP_URL": self.DVD_MCP_URL or "",
             "NORM_GRAPH_MCP_URL": self.NORM_GRAPH_MCP_URL or "",
+            "URBAN_DATA_MCP_URL": self.URBAN_DATA_MCP_URL or "",
             "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,
             "URBAN_API_URL": self.URBAN_API_URL,
             "REDIS_URL": self.REDIS_URL,

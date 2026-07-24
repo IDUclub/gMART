@@ -27,6 +27,8 @@ from src.agents.routers.restriction_parser_controller import restriction_router
 from src.agents.routers.simple_llm_controller import llm_router
 from src.agents.routers.system_controller import system_router
 from src.agents.routers.token_refresh_controller import token_refresh_router
+from src.agents.routers.urban_data_a2a_controller import urban_data_a2a_router
+from src.agents.routers.urban_data_controller import urban_data_router
 
 config_logger()
 
@@ -76,12 +78,14 @@ app.include_router(restriction_router)
 app.include_router(provision_router)
 app.include_router(dvd_router)
 app.include_router(norms_router)
+app.include_router(urban_data_router)
 app.include_router(orchestrator_router)
 app.include_router(token_refresh_router)
 app.include_router(restriction_a2a_router)
 app.include_router(provision_a2a_router)
 app.include_router(dvd_a2a_router)
 app.include_router(norms_a2a_router)
+app.include_router(urban_data_a2a_router)
 app.include_router(a2a_router)
 app.include_router(system_router)
 

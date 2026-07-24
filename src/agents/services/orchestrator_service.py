@@ -37,12 +37,14 @@ from src.agents.services.service_entities.orchestrator_plan import (
     OrchestratorPlanMode,
     OrchestratorStep,
 )
+from src.agents.services.urban_data_qa_service import UrbanDataQaService
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
     from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
     from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
+    from src.agents.mcp_clients.urban_data_mcp_client import UrbanDataMcpClient
 
 # Inner sub-agent event types that are never forwarded to the client: the outer
 # stream announces the step itself (step_started) and owns the chat lifecycle.
@@ -83,6 +85,7 @@ class OrchestratorService(BaseLlmService):
         provision_service: ProvisionService,
         dvd_service: DvdRagService,
         normgraph_service: NormGraphRagService,
+        urban_data_service: UrbanDataQaService,
         app_config: AgentsAppConfig,
     ) -> None:
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
@@ -91,6 +94,7 @@ class OrchestratorService(BaseLlmService):
         self.provision_service = provision_service
         self.dvd_service = dvd_service
         self.normgraph_service = normgraph_service
+        self.urban_data_service = urban_data_service
         self.app_config = app_config
         self.plan_builder = OrchestratorPlanBuilder(self.llm_client)
 
@@ -104,6 +108,7 @@ class OrchestratorService(BaseLlmService):
         effects_mcp_client: "EffectsMcpClient",
         dvd_mcp_client: "DvdMcpClient | None",
         normgraph_mcp_client: "NormGraphMcpClient | None",
+        urban_data_mcp_client: "UrbanDataMcpClient | None",
         token: str,
         model: str,
         temperature: float,
@@ -232,6 +237,7 @@ class OrchestratorService(BaseLlmService):
                     effects_mcp_client,
                     dvd_mcp_client,
                     normgraph_mcp_client,
+                    urban_data_mcp_client,
                     token,
                     model,
                     temperature,
@@ -292,6 +298,7 @@ class OrchestratorService(BaseLlmService):
         effects_mcp_client: "EffectsMcpClient",
         dvd_mcp_client: "DvdMcpClient | None",
         normgraph_mcp_client: "NormGraphMcpClient | None",
+        urban_data_mcp_client: "UrbanDataMcpClient | None",
         token: str,
         model: str,
         temperature: float,
@@ -340,6 +347,19 @@ class OrchestratorService(BaseLlmService):
                 raise ValueError("norms step requires NORM_GRAPH_MCP_SERVER")
             return self.normgraph_service.run_norms_qa_pipeline(
                 normgraph_mcp_client=normgraph_mcp_client,
+                token=token,
+                model=model,
+                temperature=temperature,
+                user_query=user_query,
+                scenario_id=scenario_id,
+                request_id=step_request_id,
+                persist_history=False,
+            )
+        if step.agent == OrchestratorAgent.URBAN_DATA:
+            if urban_data_mcp_client is None:
+                raise ValueError("urban_data step requires URBAN_DATA_MCP_SERVER")
+            return self.urban_data_service.run_urban_data_qa_pipeline(
+                urban_data_mcp_client=urban_data_mcp_client,
                 token=token,
                 model=model,
                 temperature=temperature,

@@ -100,6 +100,26 @@ AGENT_CATALOG: dict[OrchestratorAgent, AgentCatalogEntry] = {
         ),
         requires_scenario_id=False,
     ),
+    OrchestratorAgent.URBAN_DATA: AgentCatalogEntry(
+        key=OrchestratorAgent.URBAN_DATA,
+        title="Агент урбанистических данных",
+        description=(
+            "Отвечает на вопросы по данным Urban API через внешний Urban MCP: "
+            "территории, проекты и сценарии, физические объекты, сервисы, "
+            "индикаторы, социальные группы и ценности, а также справочники "
+            "(типы объектов/сервисов, единицы измерения и т.п.). Сам подбирает "
+            "и вызывает нужные инструменты (строго read-only — не создаёт и не "
+            "изменяет данные); если данные пространственные — показывает их как "
+            "слой на карте."
+        ),
+        examples=(
+            "Какие территории входят в проект?",
+            "Покажи физические объекты на этой территории",
+            "Какие индикаторы есть для этого сценария?",
+            "Какие социальные ценности связаны с этим типом сервиса?",
+        ),
+        requires_scenario_id=False,
+    ),
 }
 
 
@@ -125,6 +145,11 @@ def available_agents(
         if entry.key == OrchestratorAgent.DOCUMENTS and not app_config.DVD_MCP_URL:
             continue
         if entry.key == OrchestratorAgent.NORMS and not app_config.NORM_GRAPH_MCP_URL:
+            continue
+        if (
+            entry.key == OrchestratorAgent.URBAN_DATA
+            and not app_config.URBAN_DATA_MCP_URL
+        ):
             continue
         agents.append(entry)
     return agents

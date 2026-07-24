@@ -9,6 +9,7 @@ from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
+from src.agents.mcp_clients.urban_data_mcp_client import UrbanDataMcpClient
 from src.agents.services.a2a_service import A2AService
 from src.agents.services.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd_rag_service import DvdRagService
@@ -23,6 +24,8 @@ from src.agents.services.restriction_parser_service import (
 )
 from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.system_service import SystemService
+from src.agents.services.urban_data_a2a_service import UrbanDataA2AService
+from src.agents.services.urban_data_qa_service import UrbanDataQaService
 
 app_deps: dict[str, object] = init_dependencies()
 
@@ -200,6 +203,50 @@ async def get_optional_normgraph_mcp_client() -> NormGraphMcpClient | None:
     return NormGraphMcpClient(Client(mcp_url), mcp_url=mcp_url)
 
 
+async def get_urban_data_mcp_client(
+    token: str = Depends(verify_bearer_token),
+) -> UrbanDataMcpClient:
+    """
+    Function returns UrbanDataMcpClient instance with provided authorization.
+    Args:
+        token (str): Bearer token for auth.
+    Returns:
+        UrbanDataMcpClient: Client for the external, grouped Urban MCP server.
+    Raises:
+        ValueError: If URBAN_DATA_MCP_SERVER is not configured.
+    """
+
+    base_url: str | None = app_deps["app_config"].URBAN_DATA_MCP_URL
+    if not base_url:
+        raise ValueError(
+            "URBAN_DATA_MCP_SERVER is not configured — set it to enable the "
+            "/urban-data agent"
+        )
+    return UrbanDataMcpClient(base_url=base_url, token=token)
+
+
+async def get_optional_urban_data_mcp_client(
+    token: str = Depends(verify_bearer_token),
+) -> UrbanDataMcpClient | None:
+    """
+    Function returns an UrbanDataMcpClient when URBAN_DATA_MCP_SERVER is configured,
+    else None.
+
+    Used by the orchestrator: the urban-data agent is simply excluded from the planner
+    catalogue when the URL is unset, so the endpoint must not fail. Unlike the DVD/NormGraph
+    optional clients, this one still needs the caller's token — only its ``projects`` group
+    is authenticated — so it is created eagerly whenever the URL is configured, regardless
+    of whether the planner ends up routing to it.
+    Returns:
+        UrbanDataMcpClient | None: Client for the Urban MCP server or None.
+    """
+
+    base_url: str | None = app_deps["app_config"].URBAN_DATA_MCP_URL
+    if not base_url:
+        return None
+    return UrbanDataMcpClient(base_url=base_url, token=token)
+
+
 def get_orchestrator_service() -> OrchestratorService:
     """
     Function returns initialized OrchestratorService object from dependencies.
@@ -293,6 +340,32 @@ async def get_a2a_service() -> A2AService:
     if not isinstance(a2a_service, A2AService):
         raise TypeError(f"Expected A2AService, got {type(a2a_service)}")
     return a2a_service
+
+
+def get_urban_data_qa_service() -> UrbanDataQaService:
+    """
+    Function returns initialized UrbanDataQaService object from dependencies.
+    Returns:
+        UrbanDataQaService: UrbanDataQaService instance.
+    """
+
+    service: UrbanDataQaService = app_deps["urban_data_qa_service"]
+    if not isinstance(service, UrbanDataQaService):
+        raise TypeError(f"Expected UrbanDataQaService, got {type(service)}")
+    return service
+
+
+async def get_urban_data_a2a_service() -> UrbanDataA2AService:
+    """
+    Function returns UrbanDataA2AService instance.
+    Returns:
+        UrbanDataA2AService: UrbanDataA2AService instance.
+    """
+
+    service = app_deps["urban_data_a2a_service"]
+    if not isinstance(service, UrbanDataA2AService):
+        raise TypeError(f"Expected UrbanDataA2AService, got {type(service)}")
+    return service
 
 
 async def get_system_service() -> SystemService:
