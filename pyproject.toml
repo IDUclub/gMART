@@ -61,17 +61,3 @@ version_files = [
     "pyproject.toml:^version",
     "src/__version__.py:__VERSION__",
 ]
-
-[tool.uv]
-# Transitive packages pinned below their next major to stay within the "minor/patch only"
-# upgrade policy (deps-update sweep); none of these are direct dependencies of this project.
-override-dependencies = [
-    "cryptography<47",
-    "importlib-metadata<9",
-    "more-itertools<11",
-    "rich<15",
-    "rich-rst<2",
-    "websockets<17",
-    "zipp<4",
-    "rpds-py<1",
-]
