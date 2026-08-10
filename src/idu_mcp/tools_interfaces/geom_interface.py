@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
@@ -85,8 +87,11 @@ async def create_buffers(
     Для каждого объекта‑приёмника (restricted object) добавляется информация о том, 
     какие ограничения применимы к нему, и возвращается два слоя в формате GeoJSON:
 
-    restricted_objects – объекты с полями restriction_name и restriction_description.
-    generated_restrictions – (внутренний слой, совпадает с первым) – используется для дальнейшего анализа/визуализации.
+    restricted_objects – объекты с исходными атрибутами, составным object_ref,
+    полями restriction_name/restriction_description и массивом restriction_evidence,
+    объясняющим каждое пересечение и источник правила.
+    generated_restrictions – буферные геометрии источников с исходными атрибутами
+    и нормативным происхождением – используются для анализа и визуализации.
     
     Параметр | Тип | Обязательно | Описание
     generators | list[str] | ✅ | Список типов объектов, которые генерируют ограничения (должны совпадать с ключами из layers).
@@ -122,7 +127,10 @@ async def create_buffers(
 async def create_restrictions(
     generators: list[str],
     objects: list[str],
-    restrictions: dict[str, dict[str, str | list[str]]],
+    restrictions: dict[
+        str,
+        dict[str, str | list[str] | dict[str, Any] | None],
+    ],
     layers: dict,
     geom_tools: GeometryTools = Depends(get_geom_tools),
 ) -> dict[str, FeatureCollection]:
@@ -131,7 +139,8 @@ async def create_restrictions(
     Args:
         generators (list[str]): list of restriction generators names.
         objects (list[str]): list of all needed objects.
-        restrictions (dict[str, dict[str, str | list[str]]]): info with restriction rules.
+        restrictions: restriction rules. Alongside title/description/to, a rule may carry
+            origin, a nullable restriction_id and structured NormGraph provenance.
         layers (dict): Object and buffer layers as dict[layer_name, FeatureCollection] in GeoJSON, used to
             build the restrictions. Keys must match the names from generators and objects.
         geom_tools (GeometryTools): GeometryTools instance.

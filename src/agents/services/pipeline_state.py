@@ -21,6 +21,7 @@ class PipelineStatus(StrEnum):
 
 
 class PipelineStep(StrEnum):
+    NORMGRAPH = "normgraph"
     PLAN = "plan"
     PLAN_EXPLANATION = "plan_explanation"
     LAYERS = "layers"

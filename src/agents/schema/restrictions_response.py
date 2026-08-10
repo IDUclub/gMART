@@ -15,6 +15,7 @@ class StatusResponse(BaseModel):
     """
 
     status: Literal[
+        "norm_retrieval",
         "data_retrievement",
         "plan_explanation",
         "buffer_creation",
@@ -67,6 +68,7 @@ class ToolCallContent(BaseModel):
 
     execution_mode: str
     tool_calls: list[Any]
+    mcp_source: str | None = None
 
 
 class RestrictionsResponse(BaseModel):

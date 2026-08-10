@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 from collections.abc import AsyncGenerator, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +28,9 @@ from src.agents.common.exceptions.token_exceptions import (
     TokenExpiredError,
 )
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.normgraph_restriction_retriever import (
+    NormGraphRestrictionRetriever,
+)
 from src.agents.services.pipeline_state import (
     PIPELINE_TTL,
     TOKEN_REFRESH_TIMEOUT,
@@ -43,6 +48,21 @@ from src.agents.services.service_entities.restriction_plan import (
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
+    from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
+
+
+def _ablation_no_catalog() -> bool:
+    """Whether the domain-catalog grounding ablation is enabled (evaluation only).
+
+    Enabled when the ``ABLATION_NO_CATALOG`` env var is a truthy value
+    (``1``/``true``/``yes``/``on``). Off by default in production.
+    """
+    return os.getenv("ABLATION_NO_CATALOG", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 class RestrictionParserService(BaseLlmService):
@@ -65,6 +85,7 @@ class RestrictionParserService(BaseLlmService):
 
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.plan_builder = RestrictionPlanBuilder(self.llm_client)
+        self.normgraph_retriever = NormGraphRestrictionRetriever(self.llm_client)
         self.tool_executor = RestrictionToolExecutor()
         self.context_builder = RestrictionContextBuilder()
         self.state_store = state_store
@@ -79,6 +100,7 @@ class RestrictionParserService(BaseLlmService):
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
+        normgraph_mcp_client: NormGraphMcpClient | None = None,
     ) -> AsyncGenerator:
         # Mutable container so the inner pipeline can update the token on
         # refresh and the outer generator sees the latest value.
@@ -100,6 +122,7 @@ class RestrictionParserService(BaseLlmService):
             request_id=request_id,
             token_ref=token_ref,
             persist_history=persist_history,
+            normgraph_mcp_client=normgraph_mcp_client,
         ):
             chat_id = self._chat_id_from_storage_event(item) or chat_id
             if item.get("type") == "tool_call":
@@ -126,6 +149,9 @@ class RestrictionParserService(BaseLlmService):
             part = self._pipeline_item_to_chat_part(item)
             if part is not None:
                 message_parts.append(part)
+            # TODO: persist full FeatureCollection/evidence snapshots for exact
+            # historical reproduction. Phase one intentionally stores MCP tool
+            # calls and reruns them against the current scenario state.
             yield item
 
         if text_buffer:
@@ -151,6 +177,7 @@ class RestrictionParserService(BaseLlmService):
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
+        normgraph_mcp_client: NormGraphMcpClient | None = None,
     ) -> AsyncGenerator:
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
@@ -247,6 +274,44 @@ class RestrictionParserService(BaseLlmService):
 
         checkpoint = await self.state_store.get_checkpoint(request_id)
 
+        normgraph_restrictions: list[dict[str, Any]] = []
+        if normgraph_mcp_client is not None:
+            yield self._buf(
+                request_id,
+                self._status(
+                    "norm_retrieval",
+                    "Проверяю применимые канонические ограничения в NormGraph",
+                ),
+            )
+            if PipelineStep.NORMGRAPH not in checkpoint:
+                retrieval = await self.normgraph_retriever.retrieve(
+                    normgraph_mcp_client,
+                    model,
+                    user_query,
+                    history=llm_history,
+                )
+                normgraph_restrictions = retrieval.restrictions
+                checkpoint_data = {
+                    "restrictions": retrieval.restrictions,
+                    "unsupported_count": retrieval.unsupported_count,
+                    "tool_call": retrieval.tool_call,
+                }
+                await self.state_store.save_checkpoint(
+                    request_id, PipelineStep.NORMGRAPH, checkpoint_data
+                )
+                yield self._buf(
+                    request_id,
+                    self._tool_call(
+                        "norm_retrieval",
+                        [retrieval.tool_call],
+                        mcp_source="NORM_GRAPH_MCP_URL",
+                    ),
+                )
+            else:
+                normgraph_restrictions = checkpoint[PipelineStep.NORMGRAPH].get(
+                    "restrictions", []
+                )
+
         yield self._buf(
             request_id,
             self._status(
@@ -261,7 +326,12 @@ class RestrictionParserService(BaseLlmService):
                     mcp_client,
                     token_ref,
                     lambda: self._build_plan(
-                        mcp_client, model, user_query, scenario_id, llm_history
+                        mcp_client,
+                        model,
+                        user_query,
+                        scenario_id,
+                        llm_history,
+                        normgraph_restrictions,
                     ),
                     plan_out,
                 ):
@@ -565,6 +635,10 @@ class RestrictionParserService(BaseLlmService):
                 - будут ли строиться только буферы или также ограничения для других объектов;
                 - если есть целевые объекты, почему они выбраны.
 
+                На этом этапе расчёт ещё не выполнен. Не сообщай количество найденных
+                объектов, не перечисляй адреса и не приводи «примерные» результаты.
+                Объясняй только выбранные параметры будущей проверки.
+
                 Данные для объяснения:
                 {self._plan_summary(plan)}
                 """,
@@ -576,6 +650,7 @@ class RestrictionParserService(BaseLlmService):
         async for part in await self.llm_client.chat(
             model,
             messages,
+            think=False,
             options={"temperature": min(temperature, 0.4)},
             stream=True,
         ):
@@ -598,7 +673,13 @@ class RestrictionParserService(BaseLlmService):
                 "role": "system",
                 "content": f"""Дай комментарий к запросу пользователя на основе контекста статистики сгенерированных слоёв.
                 Ответ давай только в виде обычного текста. Внимательно анализируй предоставленную в контексте информацию.
-                В качестве отсылок используй только названия ограничений.
+                Сообщи общее число затронутых объектов. Для каждого объекта из
+                affected_objects назови его понятное имя, составной object_id, применённое
+                ограничение и причину попадания. Если details_truncated=true, явно скажи,
+                что полный перечень находится в возвращённом GeoJSON. Если объектов нет,
+                сообщи об этом прямо. Не показывай программный код.
+                В качестве нормативных отсылок используй название документа, номер пункта
+                и restriction_id только тогда, когда они есть в evidence/provenance.
 
                 Контекст для ответа:
 
@@ -612,14 +693,43 @@ class RestrictionParserService(BaseLlmService):
         async for part in await self.llm_client.chat(
             model,
             messages,
+            think=False,
             options={"temperature": temperature},
             stream=True,
         ):
             part: ChatResponse
             if part.message.content:
                 response_buffer.append(part.message.content)
-            yield self._chunk(part.message.content or "", done=part.done)
+                yield self._chunk(part.message.content, done=False)
+        if not response_buffer:
+            fallback = self._fallback_final_response(context)
+            response_buffer.append(fallback)
+            yield self._chunk(fallback, done=False)
+        yield self._chunk("", done=True)
         logger.debug(f"LLM final response [{model}]: {''.join(response_buffer)}")
+
+    @staticmethod
+    def _fallback_final_response(context: str) -> str:
+        """Return a useful user-facing result if Ollama emits no content."""
+
+        match = re.search(r'"affected_count"\s*:\s*(\d+)', context)
+        if match:
+            affected_count = int(match.group(1))
+            if affected_count == 0:
+                return (
+                    "Проверка завершена: объектов, попавших под заданные ограничения, "
+                    "не найдено. Геометрии зон и источников возвращены вместе с результатом."
+                )
+            return (
+                f"Проверка завершена: под заданные ограничения попали "
+                f"{affected_count} объектов. Полный перечень объектов возвращён в GeoJSON; "
+                "для каждого объекта там указаны понятное имя, составной идентификатор, "
+                "применённое ограничение и причина геометрического пересечения."
+            )
+        return (
+            "Проверка завершена. Полный результат возвращён в GeoJSON вместе с объектами "
+            "и атрибутами, объясняющими причины попадания под ограничения."
+        )
 
     async def _add_message_parts_to_chat(
         self,
@@ -736,10 +846,20 @@ class RestrictionParserService(BaseLlmService):
         user_query: str,
         scenario_id: int,
         history: list[dict] | None = None,
+        normgraph_restrictions: list[dict[str, Any]] | None = None,
     ) -> RestrictionPlan:
-        services_catalog, physical_objects_catalog = (
-            await self.plan_builder.get_entity_catalogs(mcp_client, scenario_id)
-        )
+        # Ablation switch (evaluation only): when ABLATION_NO_CATALOG is set the
+        # plan is built WITHOUT the domain-catalog grounding, so the effect of
+        # catalog grounding on plan validity / entity correctness can be measured.
+        # Env-gated (not per-request) so an ablation arm runs as a separate pass
+        # and the public request contract is untouched.
+        if _ablation_no_catalog():
+            services_catalog: list[str] = []
+            physical_objects_catalog: list[str] = []
+        else:
+            services_catalog, physical_objects_catalog = (
+                await self.plan_builder.get_entity_catalogs(mcp_client, scenario_id)
+            )
         return await self.plan_builder.build_plan(
             model,
             user_query,
@@ -747,6 +867,7 @@ class RestrictionParserService(BaseLlmService):
             services_catalog,
             physical_objects_catalog,
             history=history,
+            normgraph_restrictions=normgraph_restrictions,
         )
 
     @staticmethod
@@ -812,12 +933,24 @@ class RestrictionParserService(BaseLlmService):
             content["mcp_source"] = mcp_source
         return {"type": "tool_call", "content": content}
 
-    @staticmethod
-    def _feature_collections(layers: dict[str, dict]):
+    # Backend result dicts key the restriction layers by internal English names;
+    # translate them to human-readable titles so they are not shown to the user
+    # verbatim (the effect layers already arrive under catalog names).
+    _RESERVED_LAYER_NAMES = {
+        "objects": "Объекты в зоне ограничений",
+        "generators": "Источники ограничений",
+    }
+
+    @classmethod
+    def _feature_collections(cls, layers: dict[str, dict]):
         for name, feature_collection in layers.items():
+            display = cls._RESERVED_LAYER_NAMES.get(str(name), name)
             yield {
                 "type": "feature_collection",
-                "content": {"name": name, "feature_collection": feature_collection},
+                "content": {
+                    "name": display,
+                    "feature_collection": feature_collection,
+                },
             }
 
     @staticmethod
@@ -831,6 +964,13 @@ class RestrictionParserService(BaseLlmService):
                     "source": rule.source_name,
                     "distance_m": rule.buffer_size,
                     "title": rule.title,
+                    "origin": rule.origin,
+                    "restriction_id": rule.restriction_id,
+                    "provenance": (
+                        rule.provenance.model_dump(mode="json")
+                        if rule.provenance
+                        else None
+                    ),
                 }
                 for rule in plan.buffer_rules
             ],
@@ -840,6 +980,13 @@ class RestrictionParserService(BaseLlmService):
                     "targets": rule.target_names,
                     "title": rule.title,
                     "description": rule.description,
+                    "origin": rule.origin,
+                    "restriction_id": rule.restriction_id,
+                    "provenance": (
+                        rule.provenance.model_dump(mode="json")
+                        if rule.provenance
+                        else None
+                    ),
                 }
                 for rule in plan.restriction_rules
             ],
