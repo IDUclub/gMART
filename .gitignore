@@ -37,3 +37,7 @@ frontend/dist/
 
 #Agents
 AGENTS.md
+
+# Benchmark data and outputs (large, local-only: gold set, run results, reports)
+benchmarks/data/
+benchmarks/out/
