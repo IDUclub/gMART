@@ -317,3 +317,32 @@ def test_unretrieved_normgraph_rules_cannot_keep_normgraph_origin():
     assert grounded.mode == "needs_clarification"
     assert grounded.buffer_rules == []
     assert grounded.restriction_rules == []
+
+
+def test_grounding_keeps_a_clarification_the_planner_already_produced():
+    """A plan that never had rules did not "fail to ground".
+
+    When an entity is missing from the scenario catalog the planner already
+    returns needs_clarification with the available objects listed. Grounding used
+    to overwrite that with the generic normative message, which both loses the
+    catalog listing and misreports why the query was not answered.
+    """
+
+    catalog_question = (
+        "Запрошенный объект \"детские сады\" отсутствует в доступных списках. "
+        "Доступные объекты: сервисы: ['аптека', 'остановка наземного транспорта']"
+    )
+    plan = RestrictionPlan(
+        mode="needs_clarification",
+        source_entities=[],
+        target_entities=[],
+        buffer_rules=[],
+        restriction_rules=[],
+        clarification_question=catalog_question,
+        original="test",
+    )
+
+    grounded = RestrictionPlanBuilder._ground_normgraph_rules(plan, [])
+
+    assert grounded.mode == "needs_clarification"
+    assert grounded.clarification_question == catalog_question

@@ -771,8 +771,29 @@ class RestrictionPlanBuilder:
             "buffer_rules": buffer_rules,
             "restriction_rules": restriction_rules,
         }
-        if not buffer_rules or (
-            plan.mode == RestrictionTaskMode.RESTRICTIONS and not restriction_rules
+        # Only a plan that actually LOST rules here failed to ground. A plan that
+        # arrived without rules (e.g. the planner already decided the query needs
+        # clarification because an entity is missing from the scenario catalog)
+        # must keep its own, far more useful question instead of being overwritten
+        # with the generic normative one.
+        dropped = (len(plan.buffer_rules) - len(buffer_rules)) + (
+            len(plan.restriction_rules) - len(restriction_rules)
+        )
+        logger.info(
+            "NormGraph grounding: mode={} buffer_rules {} -> {}, "
+            "restriction_rules {} -> {}; dropped={}; retrieved hit ids {}".format(
+                plan.mode,
+                len(plan.buffer_rules),
+                len(buffer_rules),
+                len(plan.restriction_rules),
+                len(restriction_rules),
+                dropped,
+                list(hits_by_id)[:5],
+            )
+        )
+        if dropped and (
+            not buffer_rules
+            or (plan.mode == RestrictionTaskMode.RESTRICTIONS and not restriction_rules)
         ):
             updates.update(
                 mode=RestrictionTaskMode.NEEDS_CLARIFICATION,
