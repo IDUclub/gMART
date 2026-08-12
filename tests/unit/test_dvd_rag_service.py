@@ -467,7 +467,7 @@ async def test_persist_answer_builds_toolcall_and_text_parts(
     monkeypatch, fake_llm, fake_urban, state_store
 ):
     monkeypatch.setattr(
-        "src.agents.model_clients.base_client.AsyncOllamaClient",
+        "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
     from src.agents.services.dvd_rag_service import DvdRagService

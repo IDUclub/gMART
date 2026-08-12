@@ -1,8 +1,10 @@
-"""Unit tests for the Ollama model-not-found mapping in ``generate_chat_title``.
+"""Unit tests for the model-not-found mapping in ``generate_chat_title``.
 
-When Ollama answers 404 ("model '<name>' not found") the raw ``ollama.ResponseError``
-must be mapped to the REST-facing ``ModelNotFound`` (404 + available models), instead of
-escaping and crashing the pipeline. Non-404 Ollama errors must propagate unchanged.
+When the model server answers 404 ("model '<name>' not found") the adapter's
+``LlmResponseError`` must be mapped to the REST-facing ``ModelNotFound`` (404 +
+available models) instead of escaping and crashing the pipeline. Other backend
+errors must propagate unchanged. The mapping is backend-independent: both the
+Ollama and the OpenAI-compatible adapter raise ``LlmResponseError``.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from ollama import ResponseError
+from src.agents.model_clients.llm_base import LlmResponseError
 
 from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
 from src.agents.services.base_llm_service import BaseLlmService
@@ -23,13 +25,13 @@ def _service() -> BaseLlmService:
 
 
 class _GenRaising:
-    """Fake ollama client whose ``generate`` raises a programmed ResponseError."""
+    """Fake adapter whose ``generate`` raises a programmed backend error."""
 
     def __init__(self, status_code: int) -> None:
         self._status_code = status_code
 
     async def generate(self, model=None, prompt=None, stream=False, **kwargs):
-        raise ResponseError(f"model '{model}' not found", self._status_code)
+        raise LlmResponseError(f"model '{model}' not found", self._status_code)
 
 
 class _GenOk:
@@ -54,12 +56,12 @@ async def test_generate_chat_title_maps_404_to_model_not_found():
     svc.get_models.assert_awaited_once()
 
 
-async def test_generate_chat_title_reraises_non_404_response_error():
+async def test_generate_chat_title_reraises_non_404_backend_error():
     svc = _service()
     svc.llm_client = _GenRaising(500)
     svc.get_models = AsyncMock()
 
-    with pytest.raises(ResponseError):
+    with pytest.raises(LlmResponseError):
         await svc.generate_chat_title("some-model", "запрос", "", [])
 
     # The available-models lookup is only done on the 404 mapping path.

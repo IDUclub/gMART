@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from ollama import ChatResponse
+from src.agents.model_clients.llm_base import LlmChatResponse
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
@@ -462,7 +462,7 @@ class DvdRagService(BaseLlmService):
             options={"temperature": temperature},
             stream=True,
         ):
-            part: ChatResponse
+            part: LlmChatResponse
             if part.message.content:
                 response_buffer.append(part.message.content)
             # ``done`` is forced False here; finality is decided by the loop after the

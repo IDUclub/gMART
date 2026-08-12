@@ -2,7 +2,7 @@ import json
 from dataclasses import asdict
 
 from loguru import logger
-from ollama import ResponseError
+from src.agents.model_clients.llm_base import LlmResponseError
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
@@ -153,11 +153,11 @@ class BaseLlmService(BaseLlmClient):
             title = await self.llm_client.generate(
                 model=model_name, prompt=prompt, stream=False
             )
-        except ResponseError as exc:
-            # Ollama answers 404 when the requested model is not pulled. Map the raw
-            # client error to the REST-facing ModelNotFound so the middleware returns
-            # a clean 404 with the list of available models instead of crashing the
-            # pipeline with an unhandled ollama error.
+        except LlmResponseError as exc:
+            # Both backends answer 404 when the requested model is not served. Map
+            # the raw client error to the REST-facing ModelNotFound so the middleware
+            # returns a clean 404 with the list of available models instead of
+            # crashing the pipeline with an unhandled backend error.
             if exc.status_code == 404:
                 raise ModelNotFound(model_name, await self.get_models()) from exc
             raise

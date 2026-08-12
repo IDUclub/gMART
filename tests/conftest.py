@@ -59,7 +59,7 @@ def service(monkeypatch, fake_llm, fake_urban, state_store):
     default so loop tests stay focused; tests that exercise those paths override the stubs.
     """
     monkeypatch.setattr(
-        "src.agents.model_clients.base_client.AsyncOllamaClient",
+        "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
     from src.agents.services.dvd_rag_service import DvdRagService

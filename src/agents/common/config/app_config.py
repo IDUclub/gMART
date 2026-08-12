@@ -2,7 +2,10 @@ class AgentsAppConfig:
     """
     Fast API rest agents service configuration class.
     Attributes:
-        OLLAMA_URL (str): Ollama URL.
+        OLLAMA_URL (str): Ollama URL (also the OpenAI backend's fallback base URL).
+        LLM_BACKEND (str): Which LLM backend the agents use: "ollama" (default) or
+            "openai" for any OpenAI-compatible server such as vLLM.
+        OPENAI_BASE_URL (str | None): Base URL of that server when LLM_BACKEND=openai.
         IDU_MCP_URL (str): IDU MCP URL.
         EFFECTS_MCP_URL (str): Object Effects MCP URL.
         DVD_MCP_URL (str | None): IDU_DVD document vector-DB MCP URL (optional).
@@ -17,6 +20,8 @@ class AgentsAppConfig:
     """
 
     OLLAMA_URL: str
+    LLM_BACKEND: str
+    OPENAI_BASE_URL: str | None
     IDU_MCP_URL: str
     EFFECTS_MCP_URL: str
     DVD_MCP_URL: str | None
@@ -41,6 +46,8 @@ class AgentsAppConfig:
         system_password: str | None = None,
         auth_helper_url: str | None = None,
         auth_helper_api_key: str | None = None,
+        llm_backend: str | None = None,
+        openai_base_url: str | None = None,
     ) -> None:
 
         if not ollama_api_url:
@@ -74,11 +81,24 @@ class AgentsAppConfig:
         # auth helper). Both must be set to enable it; the API key stays server-side.
         self.AUTH_HELPER_URL = auth_helper_url or None
         self.AUTH_HELPER_API_KEY = auth_helper_api_key or None
+        # Backend selection lives here for visibility in /system/config; the client
+        # factory reads the same variables from the environment.
+        self.LLM_BACKEND = (llm_backend or "ollama").strip().lower()
+        if self.LLM_BACKEND not in ("ollama", "openai"):
+            raise ValueError("LLM_BACKEND must be 'ollama' or 'openai'")
+        self.OPENAI_BASE_URL = openai_base_url or None
+        if self.LLM_BACKEND == "openai" and not (
+            self.OPENAI_BASE_URL or self.OLLAMA_URL
+        ):
+            raise ValueError("LLM_BACKEND=openai requires OPENAI_BASE_URL")
 
     def to_dict(self) -> dict[str, str]:
 
         return {
             "OLLAMA_URL": self.OLLAMA_URL,
+            "LLM_BACKEND": self.LLM_BACKEND,
+            # OPENAI_API_KEY is deliberately absent here, like AUTH_HELPER_API_KEY.
+            "OPENAI_BASE_URL": self.OPENAI_BASE_URL or "",
             "IDU_MCP_URL": self.IDU_MCP_URL,
             "EFFECTS_MCP_URL": self.EFFECTS_MCP_URL,
             "DVD_MCP_URL": self.DVD_MCP_URL or "",
