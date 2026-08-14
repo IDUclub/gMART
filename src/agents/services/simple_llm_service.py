@@ -1,12 +1,11 @@
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from src.agents.model_clients.llm_base import LlmChatResponse
-
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
+from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
 
 

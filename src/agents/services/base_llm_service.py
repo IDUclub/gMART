@@ -2,7 +2,6 @@ import json
 from dataclasses import asdict
 
 from loguru import logger
-from src.agents.model_clients.llm_base import LlmResponseError
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
@@ -18,6 +17,7 @@ from src.agents.api_clients.chat_storage_client.responses import ChatHistory
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
 from src.agents.model_clients.base_client import BaseLlmClient
+from src.agents.model_clients.llm_base import LlmResponseError
 
 
 class BaseLlmService(BaseLlmClient):

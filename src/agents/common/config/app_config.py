@@ -3,8 +3,9 @@ class AgentsAppConfig:
     Fast API rest agents service configuration class.
     Attributes:
         OLLAMA_URL (str): Ollama URL (also the OpenAI backend's fallback base URL).
-        LLM_BACKEND (str): Which LLM backend the agents use: "ollama" (default) or
-            "openai" for any OpenAI-compatible server such as vLLM.
+        LLM_BACKEND (str): Which LLM backend the agents use: "openai" (default) for
+            any OpenAI-compatible server such as vLLM, or "ollama" for the native
+            Ollama client.
         OPENAI_BASE_URL (str | None): Base URL of that server when LLM_BACKEND=openai.
         IDU_MCP_URL (str): IDU MCP URL.
         EFFECTS_MCP_URL (str): Object Effects MCP URL.
@@ -83,7 +84,7 @@ class AgentsAppConfig:
         self.AUTH_HELPER_API_KEY = auth_helper_api_key or None
         # Backend selection lives here for visibility in /system/config; the client
         # factory reads the same variables from the environment.
-        self.LLM_BACKEND = (llm_backend or "ollama").strip().lower()
+        self.LLM_BACKEND = (llm_backend or "openai").strip().lower()
         if self.LLM_BACKEND not in ("ollama", "openai"):
             raise ValueError("LLM_BACKEND must be 'ollama' or 'openai'")
         self.OPENAI_BASE_URL = openai_base_url or None

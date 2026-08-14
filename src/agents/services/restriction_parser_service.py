@@ -7,7 +7,6 @@ from collections.abc import AsyncGenerator, Callable
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from src.agents.model_clients.llm_base import LlmChatResponse
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
@@ -27,6 +26,7 @@ from src.agents.common.exceptions.token_exceptions import (
     PipelineSuspendedError,
     TokenExpiredError,
 )
+from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,

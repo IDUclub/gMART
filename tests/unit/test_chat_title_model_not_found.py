@@ -13,9 +13,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from src.agents.model_clients.llm_base import LlmResponseError
 
 from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
+from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.services.base_llm_service import BaseLlmService
 
 

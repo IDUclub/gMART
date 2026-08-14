@@ -7,8 +7,9 @@ class BaseLlmClient:
     Base class for agent clients.
     Attributes:
         host (str): The host of the agent.
-        llm_client (BaseLlmAdapter): backend-neutral LLM adapter (Ollama by
-            default, an OpenAI-compatible server when LLM_BACKEND=openai).
+        llm_client (BaseLlmAdapter): backend-neutral LLM adapter (an
+            OpenAI-compatible server by default, the native Ollama client when
+            LLM_BACKEND=ollama).
     """
 
     def __init__(self, host: str):

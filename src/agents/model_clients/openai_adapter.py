@@ -7,17 +7,30 @@ Translates the Ollama-shaped calls the agents make into ``/v1/chat/completions``
   ``options={"num_predict": ...}``  -> ``max_tokens``
   ``options={"num_ctx": ...}``      -> dropped; the context length is a server-side
                                        setting there (vLLM's ``--max-model-len``)
-  ``think=False``                   -> dropped; reasoning models on an OpenAI API
-                                       return the trace in ``reasoning_content``
-                                       and the answer in ``content`` anyway
+  ``think=False``                   -> ``reasoning_effort="none"``
 
-Both dropped parameters are logged once per process so a silent behaviour change
-cannot hide: structured output and the reasoning toggle are what keep the
-restriction planner's JSON valid.
+Dropping ``think=False`` would not be cosmetic on a reasoning model: the trace is
+then generated as part of the completion and eats the ``num_predict`` budget, which
+can return an empty ``content`` with ``finish_reason="length"``. ``reasoning_effort``
+is the one spelling both engines in use honour — verified against vLLM 0.27 and
+Ollama's own ``/v1`` — so it is the default and needs no configuration.
+
+``OPENAI_THINK_MODE`` selects another spelling for servers that need one:
+
+  ``reasoning_effort`` (default) — ``reasoning_effort="none"``
+  ``chat_template``             — ``chat_template_kwargs={"enable_thinking": False}``,
+                                  which vLLM honours but Ollama ignores; the variable
+                                  name comes from OPENAI_THINK_CHAT_TEMPLATE_KWARG
+  ``off``                       — send nothing, and warn once
+
+Whatever is dropped is logged once per process so a silent behaviour change cannot
+hide: structured output and the reasoning toggle are what keep the restriction
+planner's JSON valid.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any, AsyncIterator
 
 from loguru import logger
@@ -30,6 +43,10 @@ from src.agents.model_clients.llm_base import (
     LlmMessage,
     LlmResponseError,
 )
+
+THINK_REASONING_EFFORT = "reasoning_effort"
+THINK_CHAT_TEMPLATE = "chat_template"
+THINK_OFF = "off"
 
 _warned: set[str] = set()
 
@@ -48,8 +65,22 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         base_url: str,
         api_key: str | None = None,
         timeout: float | None = None,
+        think_mode: str | None = None,
+        think_chat_template_kwarg: str | None = None,
     ):
         self.base_url = base_url
+        # How think= is spelled for this server; see the module docstring.
+        self.think_mode = (
+            think_mode
+            if think_mode is not None
+            else os.getenv("OPENAI_THINK_MODE", THINK_REASONING_EFFORT)
+        ).strip().lower() or THINK_OFF
+        # Chat-template variable carrying think= when think_mode is chat_template.
+        self.think_kwarg = (
+            think_chat_template_kwarg
+            if think_chat_template_kwarg is not None
+            else os.getenv("OPENAI_THINK_CHAT_TEMPLATE_KWARG", "enable_thinking")
+        ).strip()
         # Local servers usually ignore the key but the SDK requires one.
         self.client = AsyncOpenAI(
             base_url=base_url, api_key=api_key or "not-needed", timeout=timeout
@@ -58,6 +89,18 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
     # ------------------------------------------------------------------ #
     # translation helpers
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _reasoning(part: Any) -> str | None:
+        """The reasoning trace, whichever name the server gives it.
+
+        vLLM (with ``--reasoning-parser``) calls it ``reasoning_content``; Ollama's
+        own ``/v1`` endpoint and several proxies call it ``reasoning``.
+        """
+
+        return getattr(part, "reasoning_content", None) or getattr(
+            part, "reasoning", None
+        )
+
     @staticmethod
     def _response_format(format: Any) -> dict[str, Any] | None:  # noqa: A002
         if format is None:
@@ -95,6 +138,28 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             )
         return out
 
+    def _apply_think(self, call: dict[str, Any], think: bool) -> None:
+        """Spell out ``think=`` the way this server understands it."""
+
+        if self.think_mode == THINK_REASONING_EFFORT:
+            # Reasoning is on by default everywhere, so only switching it off says
+            # anything; setdefault keeps an explicit caller value.
+            if think is False:
+                call.setdefault("reasoning_effort", "none")
+        elif self.think_mode == THINK_CHAT_TEMPLATE:
+            # Merge rather than overwrite: a caller may pass its own extra_body.
+            extra_body = dict(call.get("extra_body") or {})
+            template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+            template_kwargs.setdefault(self.think_kwarg, think)
+            extra_body["chat_template_kwargs"] = template_kwargs
+            call["extra_body"] = extra_body
+        else:
+            _warn_once(
+                "think",
+                "think= was dropped (OPENAI_THINK_MODE=off); on a reasoning model the "
+                "trace is generated anyway and consumes the num_predict budget",
+            )
+
     def _build(
         self,
         model: str,
@@ -105,12 +170,6 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         options: dict[str, Any] | None,
         extra: dict[str, Any],
     ) -> dict[str, Any]:
-        if think is not None:
-            _warn_once(
-                "think",
-                "think= is Ollama-specific and was dropped; on an OpenAI API the "
-                "reasoning trace arrives in reasoning_content, not in content",
-            )
         call: dict[str, Any] = {
             "model": model,
             "messages": messages or [],
@@ -118,41 +177,83 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             **self._sampling(options),
             **extra,
         }
+        if think is not None:
+            self._apply_think(call, think)
         response_format = self._response_format(format)
         if response_format:
             call["response_format"] = response_format
         return call
 
-    @staticmethod
-    def _as_response(completion: Any) -> LlmChatResponse:
+    @classmethod
+    def _as_response(cls, completion: Any) -> LlmChatResponse:
         choice = completion.choices[0] if completion.choices else None
         message = getattr(choice, "message", None)
+        content = getattr(message, "content", "") or ""
+        finish_reason = getattr(choice, "finish_reason", None)
+        reasoning = cls._reasoning(message)
+        if not content and finish_reason == "length":
+            # The budget ran out before any answer was produced — on a reasoning
+            # model, inside the trace. vLLM's reasoning parser only fills the field
+            # once it sees the closing tag, so truncation mid-thought leaves both
+            # content and the trace empty; the warning must not depend on the trace.
+            # Callers only see an empty string, so say it out loud: the fix is more
+            # max_tokens or disabling thinking, not a retry.
+            logger.warning(
+                "empty content with finish_reason=length"
+                + (
+                    f" after a {len(reasoning)}-char reasoning trace"
+                    if reasoning
+                    else ""
+                )
+                + ": the whole num_predict budget was spent before an answer. Raise "
+                "it, or disable thinking via OPENAI_THINK_CHAT_TEMPLATE_KWARG"
+            )
         return LlmChatResponse(
             model=getattr(completion, "model", "") or "",
             message=LlmMessage(
                 role=getattr(message, "role", "assistant") or "assistant",
-                content=getattr(message, "content", "") or "",
-                thinking=getattr(message, "reasoning_content", None),
+                content=content,
+                thinking=reasoning,
             ),
             done=True,
-            done_reason=getattr(choice, "finish_reason", None),
+            done_reason=finish_reason,
         )
 
-    @staticmethod
-    async def _as_stream(stream: Any) -> AsyncIterator[LlmChatResponse]:
+    @classmethod
+    async def _as_stream(cls, stream: Any) -> AsyncIterator[LlmChatResponse]:
+        """Yield chunks, always ending on one with ``done=True``.
+
+        Two shapes have to be absorbed for the call sites — which loop until
+        ``part.done`` — to terminate against any server: a trailing chunk carrying
+        only ``usage`` and no choices (what ``stream_options.include_usage`` adds),
+        and a stream that simply stops without ever sending ``finish_reason``.
+        Ollama always closes with ``done=True``, so this keeps the two backends
+        interchangeable.
+        """
+
+        model = ""
+        finished = False
         async for chunk in stream:
-            choice = chunk.choices[0] if chunk.choices else None
+            model = getattr(chunk, "model", "") or model
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            choice = choices[0]
             delta = getattr(choice, "delta", None)
+            finish_reason = getattr(choice, "finish_reason", None)
+            finished = finished or finish_reason is not None
             yield LlmChatResponse(
-                model=getattr(chunk, "model", "") or "",
+                model=model,
                 message=LlmMessage(
                     role=getattr(delta, "role", "assistant") or "assistant",
                     content=getattr(delta, "content", None) or "",
-                    thinking=getattr(delta, "reasoning_content", None),
+                    thinking=cls._reasoning(delta),
                 ),
-                done=getattr(choice, "finish_reason", None) is not None,
-                done_reason=getattr(choice, "finish_reason", None),
+                done=finish_reason is not None,
+                done_reason=finish_reason,
             )
+        if not finished:
+            yield LlmChatResponse(model=model, done=True, done_reason="stop")
 
     # ------------------------------------------------------------------ #
     # BaseLlmAdapter
