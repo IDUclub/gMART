@@ -38,6 +38,11 @@ frontend/dist/
 #Agents
 AGENTS.md
 
-# Benchmark data and outputs (large, local-only: gold set, run results, reports)
+# Skills
+/graphify-out
+
+# Benchmark data and outputs (large, local-only: gold set, run results, reports).
+# The harness and eval code under benchmarks/ IS tracked on the experiment branch,
+# so only the data directories are ignored here — not the whole folder.
 benchmarks/data/
 benchmarks/out/

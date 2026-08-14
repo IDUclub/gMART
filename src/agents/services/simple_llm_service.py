@@ -1,12 +1,11 @@
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from ollama import ChatResponse
-
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
+from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
 
 
@@ -60,12 +59,12 @@ class SimpleLlmService(BaseLlmService):
             user_request (str): User request.
             model (str): Model name to generate response on.
         Returns:
-            AsyncGenerator[dict[str, Any], None]: generator for chunks from ollama api.
+            AsyncGenerator[dict[str, Any], None]: generator of chunks from the LLM backend.
         """
 
         messages = [{"role": "user", "content": user_request}]
         async for part in await self.llm_client.chat(model, messages, stream=True):
-            part: ChatResponse
+            part: LlmChatResponse
             if part.done:
                 yield {"type": "Text", "content": part.message.content}
                 return

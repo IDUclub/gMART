@@ -44,6 +44,8 @@ def load_config() -> AgentsAppConfig:
                 system_password=os.getenv("SYSTEM_PASSWORD"),
                 auth_helper_url=os.getenv("AUTH_HELPER_URL"),
                 auth_helper_api_key=os.getenv("AUTH_HELPER_API_KEY"),
+                llm_backend=os.getenv("LLM_BACKEND"),
+                openai_base_url=os.getenv("OPENAI_BASE_URL"),
             )
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
     try:
@@ -59,6 +61,8 @@ def load_config() -> AgentsAppConfig:
             system_password=os.getenv("SYSTEM_PASSWORD"),
             auth_helper_url=os.getenv("AUTH_HELPER_URL"),
             auth_helper_api_key=os.getenv("AUTH_HELPER_API_KEY"),
+            llm_backend=os.getenv("LLM_BACKEND"),
+            openai_base_url=os.getenv("OPENAI_BASE_URL"),
         )
     except ValueError:
         raise
