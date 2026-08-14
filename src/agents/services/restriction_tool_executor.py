@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
@@ -123,7 +123,7 @@ class RestrictionToolExecutor:
             mcp_client,
             "CreateBuffers",
             # ``objects`` is excluded from the tool schema (hidden from the LLM)
-            # and injected here directly as a call argument.Если
+            # and injected here directly as a call argument.
             {**arguments, "objects": layers},
         )
         return self._tool_result("CreateBuffers", arguments, tool_result, plan)
@@ -164,7 +164,7 @@ class RestrictionToolExecutor:
         self,
         plan: RestrictionPlan,
         layer_keys: list[str],
-    ) -> dict[str, dict[str, int | str]]:
+    ) -> dict[str, dict[str, Any]]:
         buffer_info = {}
         for rule in plan.buffer_rules:
             layer_key = self._resolve_layer_key(layer_keys, rule.source_name)
@@ -174,6 +174,11 @@ class RestrictionToolExecutor:
                 "buffer_size": rule.buffer_size,
                 "buffer_type": rule.buffer_type,
                 "title": rule.title,
+                "origin": rule.origin,
+                "restriction_id": rule.restriction_id,
+                "provenance": (
+                    rule.provenance.model_dump(mode="json") if rule.provenance else None
+                ),
             }
         return buffer_info
 
@@ -185,7 +190,7 @@ class RestrictionToolExecutor:
     ) -> dict[str, list | dict]:
         generators: list[str] = []
         objects: list[str] = []
-        restrictions: dict[str, dict[str, str | list[str]]] = {}
+        restrictions: dict[str, dict[str, Any]] = {}
 
         for rule in plan.restriction_rules:
             generator_key = self._resolve_layer_key(buffer_keys, rule.source_name)
@@ -203,6 +208,11 @@ class RestrictionToolExecutor:
                 "title": rule.title,
                 "description": rule.description,
                 "to": target_keys,
+                "origin": rule.origin,
+                "restriction_id": rule.restriction_id,
+                "provenance": (
+                    rule.provenance.model_dump(mode="json") if rule.provenance else None
+                ),
             }
 
         return {

@@ -14,7 +14,7 @@ import pytest
 @pytest.fixture
 def orchestrator(monkeypatch, fake_llm, fake_urban, state_store):
     monkeypatch.setattr(
-        "src.agents.model_clients.base_client.AsyncOllamaClient",
+        "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
     from src.agents.services.orchestrator_service import OrchestratorService

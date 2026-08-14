@@ -49,6 +49,18 @@ const AGENTS: Agent[] = [
     ],
   },
   {
+    id: "compliance",
+    icon: "☑",
+    label: "Соответствие",
+    caption: "Проверка по нормам",
+    path: "/compliance/check/stream",
+    needsScenario: true,
+    examples: [
+      "Проверь соответствие проекта нормативным ограничениям",
+      "Какие объекты проекта нарушают противопожарные расстояния?",
+    ],
+  },
+  {
     id: "provision",
     icon: "◎",
     label: "Обеспеченность",

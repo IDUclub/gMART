@@ -3,6 +3,8 @@ import json
 import geopandas as gpd
 import pandas as pd
 
+MAX_AFFECTED_OBJECT_DETAILS = 10
+
 
 class RestrictionContextBuilder:
     """
@@ -54,12 +56,13 @@ class RestrictionContextBuilder:
     async def generate_generators_summary(generators: gpd.GeoDataFrame) -> str:
         generators["area"] = generators.area
         generators["num"] = 1
+        grouping_column = "source_layer" if "source_layer" in generators else "name"
         return json.dumps(
-            generators.groupby("name", as_index=False)
-            .agg({"name": "first", "area": "sum", "num": "sum"})
+            generators.groupby(grouping_column, as_index=False)
+            .agg({grouping_column: "first", "area": "sum", "num": "sum"})
             .rename(
                 columns={
-                    "name": "Название",
+                    grouping_column: "Название",
                     "area": "Площадь кв.м",
                     "num": "Количество",
                 }
@@ -71,7 +74,7 @@ class RestrictionContextBuilder:
     async def generate_objects_summary(objects: gpd.GeoDataFrame) -> str:
         objects["area"] = objects.area
         objects["num"] = 1
-        return json.dumps(
+        aggregate = (
             objects.groupby("restriction_name", as_index=False)
             .agg(
                 {
@@ -89,6 +92,30 @@ class RestrictionContextBuilder:
                 }
             )
             .to_dict(orient="records")
+        )
+        details = []
+        # A single object may contain evidence for several intersecting
+        # generators. Sending one hundred such records can overflow the local
+        # model context and produce an empty answer. The complete object list
+        # remains in the returned GeoJSON; this is only the textual preview.
+        for _, row in objects.head(MAX_AFFECTED_OBJECT_DETAILS).iterrows():
+            object_ref = row.get("object_ref") or {}
+            details.append(
+                {
+                    "object_id": object_ref.get("id"),
+                    "object_name": object_ref.get("name"),
+                    "layer": row.get("source_layer"),
+                    "reasons": row.get("restriction_evidence") or [],
+                }
+            )
+        return json.dumps(
+            {
+                "summary": aggregate,
+                "affected_count": len(objects),
+                "affected_objects": details,
+                "details_truncated": len(objects) > len(details),
+            },
+            ensure_ascii=False,
         )
 
     @staticmethod

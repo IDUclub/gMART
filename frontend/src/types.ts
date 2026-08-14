@@ -1,5 +1,11 @@
 export type AgentId =
-  "orchestrator" | "restrictions" | "provision" | "documents" | "norms" | "llm";
+  | "orchestrator"
+  | "restrictions"
+  | "compliance"
+  | "provision"
+  | "documents"
+  | "norms"
+  | "llm";
 export type Agent = {
   id: AgentId;
   label: string;
