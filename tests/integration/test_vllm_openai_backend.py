@@ -155,7 +155,10 @@ async def test_planner_schemas_survive_guided_decoding(adapter, plan_cls):
         options={"temperature": 0, "num_predict": 512, "num_ctx": 16384},
         messages=[
             {"role": "system", "content": "Верни план в JSON строго по схеме."},
-            {"role": "user", "content": "Найди ограничения застройки рядом со школами."},
+            {
+                "role": "user",
+                "content": "Найди ограничения застройки рядом со школами.",
+            },
         ],
     )
 
