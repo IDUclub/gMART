@@ -27,7 +27,7 @@ from src.agents.common.exceptions.token_exceptions import (
     TokenExpiredError,
 )
 from src.agents.model_clients.llm_base import LlmChatResponse
-from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.base_llm_service import BaseLlmService, chat_history_disabled
 from src.agents.services.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,
 )
@@ -107,6 +107,7 @@ class RestrictionParserService(BaseLlmService):
         token_ref: list[str] = [
             mcp_client.mcp_client.transport.auth.token.get_secret_value()
         ]
+        persist_history = persist_history and not chat_history_disabled()
         text_buffer: list[str] = []
         message_parts: list[
             TextPartRequest | StatusPartRequest | ToolCallPartRequest
@@ -179,6 +180,7 @@ class RestrictionParserService(BaseLlmService):
         persist_history: bool = True,
         normgraph_mcp_client: NormGraphMcpClient | None = None,
     ) -> AsyncGenerator:
+        persist_history = persist_history and not chat_history_disabled()
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
         )
@@ -243,7 +245,9 @@ class RestrictionParserService(BaseLlmService):
         )
 
         llm_history: list[dict] = []
-        if original_chat_id:
+        # A2A keeps history read-only, hence the separate flag: DISABLE_CHAT_HISTORY
+        # switches the reads off as well, so ChatStorage need not run at all.
+        if original_chat_id and not chat_history_disabled():
             try:
                 chat_info = await self.get_chat_messages(token_ref[0], original_chat_id)
                 llm_history = self.build_llm_history(

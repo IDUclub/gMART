@@ -2,6 +2,7 @@ from typing import Any
 
 import redis.asyncio as aioredis
 from fastmcp import Client
+from loguru import logger
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
@@ -12,13 +13,18 @@ from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.common.config.app_config_loader import load_config
 from src.agents.common.logging.log_config import config_logger
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
+from src.agents.mcp_clients.mcp_http import build_mcp_client
 from src.agents.services.a2a_service import A2AService
 from src.agents.services.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd_rag_service import DvdRagService
 from src.agents.services.normgraph_a2a_service import NormGraphA2AService
 from src.agents.services.normgraph_rag_service import NormGraphRagService
 from src.agents.services.orchestrator_service import OrchestratorService
-from src.agents.services.pipeline_state import PipelineStateStore
+from src.agents.services.pipeline_state import (
+    NullPipelineStateStore,
+    PipelineStateStore,
+    pipeline_state_disabled,
+)
 from src.agents.services.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provsion_service import ProvisionService
 from src.agents.services.restriction_parser_service import (
@@ -52,13 +58,20 @@ def init_dependencies() -> dict[
 
     logs_path = config_logger()
     app_config: AgentsAppConfig = load_config()
-    idu_fastmcp_client = Client(app_config.IDU_MCP_URL)
+    idu_fastmcp_client = build_mcp_client(app_config.IDU_MCP_URL)
     chat_storage_json_handler = JsonApiHandler(app_config.CHAT_STORAGE_URL)
     chat_storage_client = ChatStorageApiClient(chat_storage_json_handler)
     urban_api_json_handler = JsonApiHandler(app_config.URBAN_API_URL)
     urban_api_client = UrbanApiClient(urban_api_json_handler)
-    redis_client = aioredis.from_url(app_config.REDIS_URL, decode_responses=True)
-    pipeline_state_store = PipelineStateStore(redis_client)
+    if pipeline_state_disabled():
+        logger.warning(
+            "DISABLE_PIPELINE_STATE is set: no checkpoints, no event replay, "
+            "no mid-pipeline token refresh — and Redis is never contacted."
+        )
+        pipeline_state_store: PipelineStateStore = NullPipelineStateStore()
+    else:
+        redis_client = aioredis.from_url(app_config.REDIS_URL, decode_responses=True)
+        pipeline_state_store = PipelineStateStore(redis_client)
     restriction_parser_service = RestrictionParserService(
         app_config.OLLAMA_URL,
         chat_storage_client,
