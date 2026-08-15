@@ -117,7 +117,15 @@ run_arm() {                             # $1 = dataset, $2 = out dir, $3 = label
   for pid in "${pids[@]}"; do
     wait "$pid" || failed=1
   done
-  [ "$failed" = "0" ] || echo "WARNING: a model run exited non-zero — see above"
+  # An arm that gave up (the service went away) must not be followed by the next
+  # one: the ablation would run against an unfinished main arm, and the operator
+  # would find both incomplete.
+  if [ "$failed" != "0" ]; then
+    echo "ERROR: a model run exited non-zero — stopping the chain here."
+    echo "       fix the cause, then rerun this script; --retry-errors picks the"
+    echo "       failed rows back up."
+    exit 1
+  fi
 }
 
 # --------------------------------------------------------------------------- #

@@ -195,6 +195,32 @@ def parse_endpoints(raw: str | None) -> dict[str, str]:
     return out
 
 
+# A restart of the agents service takes a minute, and in that minute the harness
+# can burn thousands of rows: each one fails to connect in milliseconds and is
+# written as done. That is exactly what happened — 2835 rows across two models
+# were marked complete without ever reaching the pipeline. Past this many
+# consecutive unreachable rows the run stops instead.
+CONNECTION_FAILURE_LIMIT = 15
+
+
+def is_connection_failure(record: dict) -> bool:
+    """A row that never reached the service, as opposed to one it rejected."""
+
+    error = str(record.get("error") or "")
+    if not error or record.get("duration_sec", 0) > 5:
+        return False
+    return any(
+        mark in error
+        for mark in (
+            "ConnectionError",
+            "Connection refused",
+            "Failed to establish",
+            "Max retries exceeded",
+            "NewConnectionError",
+        )
+    )
+
+
 def move_out_error_rows(out_path: Path) -> tuple[int, int]:
     """Take the failed rows out of ``results.jsonl`` so a resume redoes them.
 
@@ -704,6 +730,7 @@ def main():
         try:
             with out_path.open("a", encoding="utf-8") as fh:
                 completed = len(done)
+                unreachable = 0
                 with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
                     futs = [ex.submit(_work, it) for it in todo]
                     for fut in as_completed(futs):
@@ -712,6 +739,21 @@ def main():
                             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
                             fh.flush()
                         completed += 1
+                        unreachable = (
+                            unreachable + 1 if is_connection_failure(rec) else 0
+                        )
+                        if unreachable >= CONNECTION_FAILURE_LIMIT:
+                            for pending in futs:
+                                pending.cancel()
+                            print(
+                                f"\n  ABORT: {unreachable} rows in a row could not "
+                                f"reach {args.agents_base}. The service is down; "
+                                "stopping so the rest of the dataset is not marked "
+                                "done without being run. Rerun with --retry-errors "
+                                "once it is back.",
+                                flush=True,
+                            )
+                            sys.exit(2)
                         tag = (
                             "ok"
                             if not rec["error"]
