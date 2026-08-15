@@ -274,7 +274,8 @@ def test_parts_are_valid_json_payloads():
     """The model is handed a table it can parse, not a string cut in half."""
 
     rows = [{"Наименование ограничения": "а", "Количество объектов": 1}]
-    part = RestrictionContextBuilder._render_part("генераторы", rows, 1, 2, 10)
+    items = [json.dumps(row, ensure_ascii=False) for row in rows]
+    part = RestrictionContextBuilder._render_part("генераторы", items, 1, 2, 10)
 
     payload = part[part.index("[") : part.rindex("]") + 1]
     assert json.loads(payload) == rows
@@ -344,3 +345,66 @@ def test_summaries_are_grouped_within_the_budget():
         sum(len(s) + 32 for s in group) <= 300 or len(group) == 1 for group in groups
     )
     assert sum(len(group) for group in groups) == 10
+
+
+def _one_restriction_many_reasons(n_objects: int, reasons_per_object: int) -> dict:
+    """The shape that defeated the first attempt: a single restriction name, with
+    the size living in each object's evidence instead of in the summary table."""
+
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [30.3 + i * 1e-4, 59.9]},
+                "properties": {
+                    "restriction_name": "Санитарно-защитная зона",
+                    "restriction_description": "Одно и то же описание",
+                    "source_layer": "Жилой дом",
+                    "object_ref": {"id": f"feature/{i}", "name": f"дом {i}"},
+                    "restriction_evidence": [
+                        {
+                            "generator": f"источник {j}",
+                            "reason": "пересечение с зоной ограничения " * 4,
+                        }
+                        for j in range(reasons_per_object)
+                    ],
+                },
+            }
+            for i in range(n_objects)
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_single_restriction_with_heavy_evidence_is_still_split():
+    """One distinct restriction meant nothing to divide by, so the whole context
+    went to the model unsplit and came back 400 — 22 rows lost that way."""
+
+    builder = RestrictionContextBuilder()
+    objects = _one_restriction_many_reasons(n_objects=10, reasons_per_object=200)
+    budget = 6000
+
+    whole = await builder.generate_restrictions_context(_generators(), objects)
+    chunks = await builder.generate_restrictions_context_chunks(
+        _generators(), objects, budget_chars=budget
+    )
+
+    assert len(whole) > budget, "the fixture must actually overflow"
+    assert len(chunks) > 1
+    assert all(len(chunk) <= budget for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_one_object_larger_than_the_whole_budget_is_truncated():
+    """A single object's evidence can exceed the budget on its own; the part has
+    to stay within it rather than the row being lost."""
+
+    builder = RestrictionContextBuilder()
+    objects = _one_restriction_many_reasons(n_objects=2, reasons_per_object=2000)
+
+    chunks = await builder.generate_restrictions_context_chunks(
+        _generators(), objects, budget_chars=4000
+    )
+
+    assert all(len(chunk) <= 4000 for chunk in chunks)

@@ -41,33 +41,69 @@ class RestrictionContextBuilder:
         if budget_chars <= 0 or len(context) <= budget_chars:
             return [context]
 
-        rows = self._restriction_rows(objects)
-        if len(rows) <= 1:
-            # Nothing left to divide: one enormous row, or none at all. The
-            # caller still has the 400 to fall back on.
-            return [context]
+        # Both halves grow without bound and either can be the large one: some
+        # scenarios have thousands of distinct restrictions, others a single one
+        # whose affected objects each carry kilobytes of evidence. Dividing by
+        # restrictions alone left the second kind whole — and those were exactly
+        # the rows that kept coming back 400.
+        items = [
+            json.dumps(row, ensure_ascii=False)
+            for row in self._restriction_rows(objects) + self._affected_rows(objects)
+        ]
+        if not items:
+            return [context[:budget_chars]]
 
         header = await self._generators_block(generators)
-        overhead = len(self._render_part(header, [], 1, 1, len(rows)))
-        per_row = max(len(json.dumps(row, ensure_ascii=False)) + 2 for row in rows)
-        rows_per_part = max(1, (budget_chars - overhead) // per_row)
-        groups = [
-            rows[i : i + rows_per_part] for i in range(0, len(rows), rows_per_part)
-        ]
+        room = budget_chars - len(self._render_part(header, [], 1, 1, len(items)))
+        if room < 200:
+            return [context[:budget_chars]]
+
+        groups: list[list[str]] = [[]]
+        size = 0
+        for item in items:
+            # A single object's evidence can be larger than the whole budget;
+            # truncating it keeps the part valid instead of losing the row.
+            item = item if len(item) <= room else item[: room - 20] + '…"'
+            if groups[-1] and size + len(item) + 2 > room:
+                groups.append([])
+                size = 0
+            groups[-1].append(item)
+            size += len(item) + 2
         return [
-            self._render_part(header, group, i, len(groups), len(rows))
+            self._render_part(header, group, i, len(groups), len(items))
             for i, group in enumerate(groups, start=1)
         ]
 
     @staticmethod
+    def _affected_rows(objects: dict) -> list[dict]:
+        """The per-object detail entries, which carry the evidence."""
+
+        if not objects.get("features"):
+            return []
+        rows = []
+        for feature in objects["features"][:MAX_AFFECTED_OBJECT_DETAILS]:
+            properties = feature.get("properties") or {}
+            object_ref = properties.get("object_ref") or {}
+            rows.append(
+                {
+                    "object_id": object_ref.get("id"),
+                    "object_name": object_ref.get("name"),
+                    "layer": properties.get("source_layer"),
+                    "reasons": properties.get("restriction_evidence") or [],
+                }
+            )
+        return rows
+
+    @staticmethod
     def _render_part(
-        header: str, rows: list[dict], part: int, parts: int, total_rows: int
+        header: str, items: list[str], part: int, parts: int, total_items: int
     ) -> str:
+        body = "[" + ", ".join(items) + "]"
         return f"""Сводная информация по сформированным ограничениям (часть {part} из {parts}):\n
         Генераторы ограничений:
         \n{header}
-        \nОбъекты, подверженные ограничениям — {len(rows)} из {total_rows} видов ограничений:
-        \n{json.dumps(rows, ensure_ascii=False)}"""
+        \nОбъекты, подверженные ограничениям — {len(items)} записей из {total_items}:
+        \n{body}"""
 
     @staticmethod
     def _restriction_rows(objects: dict) -> list[dict]:
