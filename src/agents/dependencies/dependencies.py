@@ -8,6 +8,7 @@ from src.agents.dependencies.init_dependencies import init_dependencies
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
+from src.agents.mcp_clients.mcp_http import build_mcp_client
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 from src.agents.services.a2a_service import A2AService
 from src.agents.services.dvd_a2a_service import DocumentQaA2AService
@@ -86,7 +87,7 @@ async def get_idu_mcp_client(
     """
 
     mcp_url: str = app_deps["app_config"].IDU_MCP_URL
-    return IduMcpClient(Client(mcp_url, auth=token), mcp_url=mcp_url)
+    return IduMcpClient(build_mcp_client(mcp_url, auth=token), mcp_url=mcp_url)
 
 
 async def get_effects_mcp_client(
@@ -101,7 +102,7 @@ async def get_effects_mcp_client(
     """
 
     mcp_url: str = app_deps["app_config"].EFFECTS_MCP_URL
-    return EffectsMcpClient(Client(mcp_url, auth=token), mcp_url=mcp_url)
+    return EffectsMcpClient(build_mcp_client(mcp_url, auth=token), mcp_url=mcp_url)
 
 
 async def get_dvd_mcp_client() -> DvdMcpClient:
@@ -120,7 +121,7 @@ async def get_dvd_mcp_client() -> DvdMcpClient:
         raise ValueError(
             "DVD_MCP_SERVER is not configured — set it to enable the /documents agent"
         )
-    return DvdMcpClient(Client(mcp_url), mcp_url=mcp_url)
+    return DvdMcpClient(build_mcp_client(mcp_url), mcp_url=mcp_url)
 
 
 def get_dvd_rag_service() -> DvdRagService:
@@ -165,7 +166,7 @@ async def get_normgraph_mcp_client() -> NormGraphMcpClient:
         raise ValueError(
             "NORM_GRAPH_MCP_SERVER is not configured — set it to enable the /norms agent"
         )
-    return NormGraphMcpClient(Client(mcp_url), mcp_url=mcp_url)
+    return NormGraphMcpClient(build_mcp_client(mcp_url), mcp_url=mcp_url)
 
 
 async def get_optional_dvd_mcp_client() -> DvdMcpClient | None:
@@ -181,7 +182,7 @@ async def get_optional_dvd_mcp_client() -> DvdMcpClient | None:
     mcp_url: str | None = app_deps["app_config"].DVD_MCP_URL
     if not mcp_url:
         return None
-    return DvdMcpClient(Client(mcp_url), mcp_url=mcp_url)
+    return DvdMcpClient(build_mcp_client(mcp_url), mcp_url=mcp_url)
 
 
 async def get_optional_normgraph_mcp_client() -> NormGraphMcpClient | None:
@@ -197,7 +198,7 @@ async def get_optional_normgraph_mcp_client() -> NormGraphMcpClient | None:
     mcp_url: str | None = app_deps["app_config"].NORM_GRAPH_MCP_URL
     if not mcp_url:
         return None
-    return NormGraphMcpClient(Client(mcp_url), mcp_url=mcp_url)
+    return NormGraphMcpClient(build_mcp_client(mcp_url), mcp_url=mcp_url)
 
 
 def get_orchestrator_service() -> OrchestratorService:

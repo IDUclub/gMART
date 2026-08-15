@@ -4,6 +4,7 @@ from pydantic import SecretStr
 
 from src.agents.common.exceptions.token_exceptions import TokenExpiredError
 from src.agents.mcp_clients.base_mcp_client import BaseMcpClient, _is_token_expired
+from src.agents.mcp_clients.mcp_http import build_mcp_client
 
 
 # TODO add prompts cache
@@ -15,7 +16,7 @@ class IduMcpClient(BaseMcpClient):
     def update_token(self, new_token: str) -> None:
         """Replace the bearer token used for all subsequent MCP calls."""
         if self._mcp_url:
-            self.mcp_client = McpClient(self._mcp_url, auth=new_token)
+            self.mcp_client = build_mcp_client(self._mcp_url, auth=new_token)
         else:
             # Fallback: try to patch the transport in-place
             try:
