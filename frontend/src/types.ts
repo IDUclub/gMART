@@ -3,6 +3,7 @@ export type AgentId =
   | "restrictions"
   | "compliance"
   | "provision"
+  | "scenario_data"
   | "documents"
   | "norms"
   | "llm";

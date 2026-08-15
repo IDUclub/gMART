@@ -73,6 +73,19 @@ const AGENTS: Agent[] = [
     ],
   },
   {
+    id: "scenario_data",
+    icon: "◫",
+    label: "Данные сценария",
+    caption: "Объекты, показатели и слои",
+    path: "/scenario-data/qa/stream",
+    needsScenario: true,
+    examples: [
+      "Какие объекты есть в сценарии и сколько их по типам?",
+      "Покажи на карте физические объекты сценария",
+      "Выведи таблицу всех объектов сценария без геометрии",
+    ],
+  },
+  {
     id: "documents",
     icon: "▤",
     label: "Документы",
@@ -1090,6 +1103,7 @@ function labelAgent(key?: string) {
       {
         restriction: "Ограничения",
         provision: "Обеспеченность",
+        scenario_data: "Данные сценария",
         documents: "Документы",
         norms: "Нормы",
       } as Record<string, string>

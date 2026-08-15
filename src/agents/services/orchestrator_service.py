@@ -31,6 +31,7 @@ from src.agents.services.provsion_service import ProvisionService
 from src.agents.services.restriction_parser_service import (
     RestrictionParserService,
 )
+from src.agents.services.scenario_data_service import ScenarioDataService
 from src.agents.services.service_entities.orchestrator_plan import (
     OrchestratorAgent,
     OrchestratorPlan,
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
     from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
     from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
+    from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 
 # Inner sub-agent event types that are never forwarded to the client: the outer
 # stream announces the step itself (step_started) and owns the chat lifecycle.
@@ -54,7 +56,7 @@ class OrchestratorService(BaseLlmService):
     Single entry point routing a user request across the gMART agents.
 
     An LLM planner maps the request onto a sequential plan of 1..3 steps over the
-    restriction / provision / documents / norms agents (or a clarification
+    restriction / provision / scenario-data / documents / norms agents (or a clarification
     question when nothing fits). Each step invokes the corresponding pipeline
     service **in-process** with ``persist_history=False`` and its own
     ``request_id``; the sub-agent's events are forwarded verbatim inside
@@ -84,11 +86,13 @@ class OrchestratorService(BaseLlmService):
         dvd_service: DvdRagService,
         normgraph_service: NormGraphRagService,
         app_config: AgentsAppConfig,
+        scenario_data_service: ScenarioDataService | None = None,
     ) -> None:
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.state_store = state_store
         self.restriction_service = restriction_service
         self.provision_service = provision_service
+        self.scenario_data_service = scenario_data_service
         self.dvd_service = dvd_service
         self.normgraph_service = normgraph_service
         self.app_config = app_config
@@ -112,6 +116,7 @@ class OrchestratorService(BaseLlmService):
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
+        urban_mcp_client: "UrbanMcpClient | None" = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
@@ -232,6 +237,7 @@ class OrchestratorService(BaseLlmService):
                     effects_mcp_client,
                     dvd_mcp_client,
                     normgraph_mcp_client,
+                    urban_mcp_client,
                     token,
                     model,
                     temperature,
@@ -292,6 +298,7 @@ class OrchestratorService(BaseLlmService):
         effects_mcp_client: "EffectsMcpClient",
         dvd_mcp_client: "DvdMcpClient | None",
         normgraph_mcp_client: "NormGraphMcpClient | None",
+        urban_mcp_client: "UrbanMcpClient | None",
         token: str,
         model: str,
         temperature: float,
@@ -316,6 +323,25 @@ class OrchestratorService(BaseLlmService):
             return self.provision_service.run_provision_pipeline(
                 idu_mcp_client=idu_mcp_client,
                 effects_mcp_client=effects_mcp_client,
+                model=model,
+                temperature=temperature,
+                user_query=user_query,
+                scenario_id=scenario_id,
+                request_id=step_request_id,
+                persist_history=False,
+            )
+        if step.agent == OrchestratorAgent.SCENARIO_DATA:
+            if (
+                scenario_id is None
+                or urban_mcp_client is None
+                or self.scenario_data_service is None
+            ):
+                raise ValueError(
+                    "scenario_data step requires scenario_id and URBAN_MCP_SERVER"
+                )
+            return self.scenario_data_service.run_scenario_data_pipeline(
+                urban_mcp_client=urban_mcp_client,
+                token=token,
                 model=model,
                 temperature=temperature,
                 user_query=user_query,

@@ -9,6 +9,7 @@ from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
+from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 from src.agents.services.a2a_service import A2AService
 from src.agents.services.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd_rag_service import DvdRagService
@@ -21,6 +22,7 @@ from src.agents.services.provsion_service import ProvisionService
 from src.agents.services.restriction_parser_service import (
     RestrictionParserService,
 )
+from src.agents.services.scenario_data_service import ScenarioDataService
 from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.system_service import SystemService
 
@@ -200,6 +202,29 @@ async def get_optional_normgraph_mcp_client() -> NormGraphMcpClient | None:
     return NormGraphMcpClient(Client(mcp_url), mcp_url=mcp_url)
 
 
+async def get_urban_mcp_client(
+    token: str = Depends(verify_bearer_token),
+) -> UrbanMcpClient:
+    """Return an authenticated aggregate client for all Urban MCP groups."""
+
+    base_url: str | None = app_deps["app_config"].URBAN_MCP_URL
+    if not base_url:
+        raise ValueError(
+            "URBAN_MCP_SERVER is not configured — set it to enable the "
+            "/scenario-data agent"
+        )
+    return UrbanMcpClient(base_url, token)
+
+
+async def get_optional_urban_mcp_client(
+    token: str = Depends(verify_bearer_token),
+) -> UrbanMcpClient | None:
+    """Return Urban MCP client for the orchestrator when configured."""
+
+    base_url: str | None = app_deps["app_config"].URBAN_MCP_URL
+    return UrbanMcpClient(base_url, token) if base_url else None
+
+
 def get_orchestrator_service() -> OrchestratorService:
     """
     Function returns initialized OrchestratorService object from dependencies.
@@ -210,6 +235,15 @@ def get_orchestrator_service() -> OrchestratorService:
     service: OrchestratorService = app_deps["orchestrator_service"]
     if not isinstance(service, OrchestratorService):
         raise TypeError(f"Expected OrchestratorService, got {type(service)}")
+    return service
+
+
+def get_scenario_data_service() -> ScenarioDataService:
+    """Return the initialized scenario-data agent service."""
+
+    service = app_deps["scenario_data_service"]
+    if not isinstance(service, ScenarioDataService):
+        raise TypeError(f"Expected ScenarioDataService, got {type(service)}")
     return service
 
 
