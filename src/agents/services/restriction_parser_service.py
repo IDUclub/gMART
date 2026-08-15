@@ -26,7 +26,8 @@ from src.agents.common.exceptions.token_exceptions import (
     PipelineSuspendedError,
     TokenExpiredError,
 )
-from src.agents.model_clients.llm_base import LlmChatResponse
+from src.agents.model_clients.llm_base import LlmChatResponse, LlmResponseError
+from src.agents.model_clients.model_limits import context_budget_chars
 from src.agents.services.base_llm_service import BaseLlmService, chat_history_disabled
 from src.agents.services.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,
@@ -479,6 +480,8 @@ class RestrictionParserService(BaseLlmService):
         for item in self._feature_collections(buffers_result.tool_result):
             yield self._buf(request_id, item)
 
+        context = ""
+        restriction_layers: dict | None = None
         if plan.mode == RestrictionTaskMode.BUFFERS_ONLY:
             context = await self.context_builder.generate_buffers_context(
                 buffers_result.tool_result
@@ -540,15 +543,26 @@ class RestrictionParserService(BaseLlmService):
             )
             for item in self._feature_collections(restriction_result.tool_result):
                 yield self._buf(request_id, item)
-            context = await self.context_builder.generate_restrictions_context(
-                restriction_result.tool_result["generators"],
-                restriction_result.tool_result["objects"],
-            )
+            # The restrictions context is built inside the final-response step:
+            # how it is assembled depends on how much of it the model can take.
+            restriction_layers = restriction_result.tool_result
 
         if PipelineStep.FINAL_RESPONSE not in checkpoint:
-            async for chunk in self.generate_final_response(
-                model, user_query, context, temperature, history=llm_history
-            ):
+            final_events = (
+                self.generate_final_response(
+                    model, user_query, context, temperature, history=llm_history
+                )
+                if restriction_layers is None
+                else self._final_response_events(
+                    model,
+                    user_query,
+                    restriction_layers["generators"],
+                    restriction_layers["objects"],
+                    temperature,
+                    history=llm_history,
+                )
+            )
+            async for chunk in final_events:
                 yield self._buf(request_id, chunk)
             await self.state_store.save_checkpoint(
                 request_id, PipelineStep.FINAL_RESPONSE, True
@@ -663,6 +677,107 @@ class RestrictionParserService(BaseLlmService):
                 response_buffer.append(part.message.content)
                 yield self._chunk(part.message.content, done=False)
         logger.debug(f"LLM plan explanation [{model}]: {''.join(response_buffer)}")
+
+    @staticmethod
+    def _is_context_overflow(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "context length" in text or "context window" in text
+
+    @staticmethod
+    def _folded_context(summaries: list[str]) -> str:
+        parts = "\n\n".join(
+            f"Часть {i}:\n{summary}" for i, summary in enumerate(summaries, start=1)
+        )
+        return (
+            "Ниже — выжимки по частям статистики сформированных ограничений. "
+            "Статистика не помещалась в модель целиком, поэтому она была обработана "
+            f"по частям ({len(summaries)}). Соберите из них единый связный ответ и "
+            "укажите, что перечень объектов полностью содержится в возвращённом "
+            f"GeoJSON.\n\n{parts}"
+        )
+
+    async def _final_response_events(
+        self,
+        model: str,
+        user_query: str,
+        generators: dict,
+        objects: dict,
+        temperature: float,
+        history: list[dict] | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Stream the final answer, folding the context when it does not fit.
+
+        The context grows with the scenario: on the largest ones it reached
+        380 000 tokens against a 16 384 window and the request came back 400,
+        losing the whole run. Oversized contexts are therefore summarised part by
+        part first, and the streamed answer is written from those summaries.
+        The configured window can be stale, so an overflow that still gets
+        through refolds once against a much smaller budget — but only while
+        nothing has been streamed yet, so the user never sees a restart.
+        """
+
+        budget = context_budget_chars(model)
+        emitted = False
+        for attempt in (1, 2):
+            chunks = await self.context_builder.generate_restrictions_context_chunks(
+                generators, objects, budget
+            )
+            context = chunks[0]
+            if len(chunks) > 1:
+                summaries: list[str] = []
+                for number, part in enumerate(chunks, start=1):
+                    yield self._status(
+                        "final_response",
+                        f"Статистика не помещается в модель целиком — "
+                        f"обрабатываю часть {number} из {len(chunks)}",
+                    )
+                    summaries.append(
+                        await self._summarize_context_part(
+                            model, user_query, part, temperature
+                        )
+                    )
+                context = self._folded_context(summaries)
+            try:
+                async for chunk in self.generate_final_response(
+                    model, user_query, context, temperature, history=history
+                ):
+                    emitted = True
+                    yield chunk
+                return
+            except LlmResponseError as exc:
+                if emitted or attempt == 2 or not self._is_context_overflow(exc):
+                    raise
+                budget = max(budget // 4, 1000)
+                logger.warning(
+                    f"final response overflowed the context of {model}, "
+                    f"refolding with a budget of {budget} characters: {exc}"
+                )
+
+    async def _summarize_context_part(
+        self, model: str, user_query: str, part: str, temperature: float
+    ) -> str:
+        """One part of an oversized context, condensed for the final pass."""
+
+        response = await self.llm_client.chat(
+            model,
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты обрабатываешь ОДНУ ЧАСТЬ статистики по сформированным "
+                        "ограничениям. Сожми её в короткую фактическую выжимку: "
+                        "какие ограничения встречаются, сколько объектов затронуто "
+                        "и какова их площадь. Только факты из этой части, без "
+                        "выводов и без предположений о других частях.\n\n" + part
+                    ),
+                },
+                {"role": "user", "content": user_query},
+            ],
+            think=False,
+            options={"temperature": temperature},
+            stream=False,
+        )
+        return response["message"]["content"] or ""
 
     async def generate_final_response(
         self,
