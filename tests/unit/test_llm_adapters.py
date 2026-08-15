@@ -485,3 +485,60 @@ async def test_budget_exhausted_is_logged_even_without_a_trace():
 
     assert response.message.content == ""
     assert any("finish_reason=length" in w for w in warnings), warnings
+
+
+def test_model_routes_are_parsed_and_normalised():
+    from src.agents.model_clients.factory import parse_routes
+
+    assert parse_routes("a=http://h:8001, b=http://h:8002/v1") == {
+        "a": "http://h:8001",
+        "b": "http://h:8002/v1",
+    }
+    assert parse_routes(None) == {}
+    with pytest.raises(ValueError):
+        parse_routes("nonsense")
+
+
+def test_each_model_is_sent_to_its_own_server():
+    """vLLM serves one model per process, so the adapter dispatches by model."""
+
+    adapter = OpenAiCompatAdapter(
+        base_url="http://a6k4.dgx:8001/v1",
+        routes={"gemma-3-27b": "http://a6k4.dgx:8002/v1"},
+    )
+
+    assert str(adapter.client_for("gemma-3-27b").base_url).startswith(
+        "http://a6k4.dgx:8002"
+    )
+    # unrouted models fall back to the default server
+    assert str(adapter.client_for("gpt-oss-20b").base_url).startswith(
+        "http://a6k4.dgx:8001"
+    )
+    # routed clients are cached rather than rebuilt per call
+    assert adapter.client_for("gemma-3-27b") is adapter.client_for("gemma-3-27b")
+
+
+def test_routes_reach_the_factory(monkeypatch):
+    monkeypatch.setenv("LLM_BACKEND", "openai")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://a6k4.dgx:8001")
+    monkeypatch.setenv(
+        "OPENAI_MODEL_ROUTES",
+        "gpt-oss-20b=http://a6k4.dgx:8001,gemma-3-27b=http://a6k4.dgx:8002",
+    )
+    adapter = build_llm_adapter("http://unused")
+    assert adapter.routes["gemma-3-27b"].endswith("/v1")
+
+
+@pytest.mark.asyncio
+async def test_think_off_effort_is_configurable_for_harmony_servers():
+    """gpt-oss behind vLLM's Harmony format rejects reasoning_effort='none' with
+    a 400, so the value standing for "reason as little as possible" is settable."""
+
+    adapter, completions = _adapter_with(
+        _Completion([_Choice(message=_Delta("ok"), finish_reason="stop")])
+    )
+    adapter.think_off_effort = "low"
+
+    await adapter.chat("gpt-oss-20b", [], think=False)
+
+    assert completions.calls[0]["reasoning_effort"] == "low"

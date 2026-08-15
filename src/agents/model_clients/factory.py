@@ -61,8 +61,38 @@ def build_llm_adapter(
         raise ValueError("LLM_BACKEND=openai requires OPENAI_BASE_URL")
     url = _with_api_path(url)
     key = api_key or os.getenv("OPENAI_API_KEY")
-    logger.info(f"LLM backend: OpenAI-compatible at {url}")
-    return OpenAiCompatAdapter(base_url=url, api_key=key, timeout=timeout)
+    routes = {
+        name: _with_api_path(route)
+        for name, route in parse_routes(os.getenv("OPENAI_MODEL_ROUTES")).items()
+    }
+    logger.info(
+        f"LLM backend: OpenAI-compatible at {url}"
+        + (f", per-model servers: {routes}" if routes else "")
+    )
+    return OpenAiCompatAdapter(
+        base_url=url, api_key=key, timeout=timeout, routes=routes
+    )
+
+
+def parse_routes(raw: str | None) -> dict[str, str]:
+    """``"model=url,model=url"`` -> mapping.
+
+    vLLM serves a single model per process, so driving several models from one
+    agents instance means one server per model.
+    """
+
+    routes: dict[str, str] = {}
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(
+                f"malformed OPENAI_MODEL_ROUTES entry {item!r}; expected model=url"
+            )
+        name, route = item.split("=", 1)
+        routes[name.strip()] = route.strip()
+    return routes
 
 
 def _with_api_path(url: str) -> str:

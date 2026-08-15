@@ -1,5 +1,8 @@
 import json
+import os
 from dataclasses import asdict
+from typing import Any
+from uuid import uuid4
 
 from loguru import logger
 
@@ -18,6 +21,26 @@ from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiCli
 from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
 from src.agents.model_clients.base_client import BaseLlmClient
 from src.agents.model_clients.llm_base import LlmResponseError
+
+MAX_TITLE_PROMPT_NAMES = 50
+
+
+def chat_history_disabled() -> bool:
+    """Whether ChatStorage reads and writes are switched off (evaluation only).
+
+    Enabled when the ``DISABLE_CHAT_HISTORY`` env var is a truthy value
+    (``1``/``true``/``yes``/``on``). Benchmark runs send every query on its own,
+    never re-reading the history, so persisting it only adds latency and makes a
+    ChatStorage outage fail a run that does not need the service at all.
+    Off by default in production.
+    """
+
+    return os.getenv("DISABLE_CHAT_HISTORY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 class BaseLlmService(BaseLlmClient):
@@ -94,6 +117,15 @@ class BaseLlmService(BaseLlmClient):
             str: Generated unique chat title.
         """
 
+        # ChatStorage answers /chats/titles with {"items": [...]}, not a bare list
+        taken = self._existing_titles(existing_names)
+        # Only a bounded sample goes into the prompt: a heavy user (a benchmark
+        # creates a chat per query) accumulates thousands of titles, and the whole
+        # list overruns the model's context window — the request then fails with a
+        # 400 and takes the pipeline down with it. Uniqueness is still checked
+        # against the full list below.
+        recent_names = taken[-MAX_TITLE_PROMPT_NAMES:]
+
         prompt = f"""
         # Роль
 
@@ -133,7 +165,7 @@ class BaseLlmService(BaseLlmClient):
         # Данные
 
         <existing_titles>
-        {json.dumps(existing_names, ensure_ascii=False)}
+        {json.dumps(recent_names, ensure_ascii=False)}
         </existing_titles>
 
         <user_query>
@@ -151,7 +183,12 @@ class BaseLlmService(BaseLlmClient):
 
         try:
             title = await self.llm_client.generate(
-                model=model_name, prompt=prompt, stream=False
+                # a title needs no reasoning, and a reasoning model that spends the
+                # whole budget on its trace answers nothing at all
+                model=model_name,
+                prompt=prompt,
+                stream=False,
+                think=False,
             )
         except LlmResponseError as exc:
             # Both backends answer 404 when the requested model is not served. Map
@@ -162,8 +199,19 @@ class BaseLlmService(BaseLlmClient):
                 raise ModelNotFound(model_name, await self.get_models()) from exc
             raise
         logger.debug(f"LLM chat title [{model_name}]: {title.response}")
-        if title.response not in existing_names:
-            return title.response
+        generated = (title.response or "").strip()
+        if not generated:
+            # An empty title is dropped from the ChatStorage payload, comes back as
+            # ``None`` and then fails validation of the chat_created SSE event,
+            # killing the whole stream. Name the chat after the query instead.
+            generated = self._fallback_chat_title(user_query, taken)
+            logger.warning(
+                f"empty chat title from {model_name}, falling back to {generated!r}"
+            )
+        if generated not in taken:
+            return generated
+        if max_retries <= 0:
+            return self._fallback_chat_title(user_query, taken)
         return await self.generate_chat_title(
             model_name,
             user_query,
@@ -171,6 +219,32 @@ class BaseLlmService(BaseLlmClient):
             existing_names,
             max_retries=max_retries - 1,
         )
+
+    @staticmethod
+    def _existing_titles(existing_names: Any) -> list[str]:
+        """Normalise what ChatStorage returns into a plain list of titles.
+
+        ``/chat_history/chats/titles`` answers ``{"items": [...]}``; taking that
+        dict as a list silently compared titles against its keys (so uniqueness
+        never held) and put every stored title into the prompt.
+        """
+
+        if isinstance(existing_names, dict):
+            existing_names = existing_names.get("items") or []
+        return [str(name) for name in (existing_names or [])]
+
+    @staticmethod
+    def _fallback_chat_title(user_query: str, existing_names: list[str]) -> str:
+        """A never-empty, never-colliding title for when the model gives none."""
+
+        base = " ".join(str(user_query).split())[:57].strip() or "Новый чат"
+        if base not in existing_names:
+            return base
+        for suffix in range(2, 100):
+            candidate = f"{base[:54]} ({suffix})"
+            if candidate not in existing_names:
+                return candidate
+        return f"{base[:44]} {uuid4().hex[:8]}"
 
     # TODO add error handling for functions
     async def create_chat(
@@ -216,7 +290,9 @@ class BaseLlmService(BaseLlmClient):
         await self.add_single_message(
             token, chat_info.chat_id, RoleEnum.USER, text=user_query, **kwargs
         )
-        return chat_info.chat_id, chat_info.title
+        # ChatStorage does not always echo the title back; the locally generated one
+        # is what the chat_created event must carry, and it must never be None
+        return chat_info.chat_id, chat_info.title or title
 
     async def add_single_message(
         self, token: str, chat_id: str, role: RoleEnum, text: str, **kwargs

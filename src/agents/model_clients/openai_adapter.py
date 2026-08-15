@@ -7,7 +7,7 @@ Translates the Ollama-shaped calls the agents make into ``/v1/chat/completions``
   ``options={"num_predict": ...}``  -> ``max_tokens``
   ``options={"num_ctx": ...}``      -> dropped; the context length is a server-side
                                        setting there (vLLM's ``--max-model-len``)
-  ``think=False``                   -> ``reasoning_effort="none"``
+  ``think=False``                   -> ``reasoning_effort=<OPENAI_THINK_OFF_EFFORT>``
 
 Dropping ``think=False`` would not be cosmetic on a reasoning model: the trace is
 then generated as part of the completion and eats the ``num_predict`` budget, which
@@ -17,7 +17,10 @@ Ollama's own ``/v1`` — so it is the default and needs no configuration.
 
 ``OPENAI_THINK_MODE`` selects another spelling for servers that need one:
 
-  ``reasoning_effort`` (default) — ``reasoning_effort="none"``
+  ``reasoning_effort`` (default) — ``reasoning_effort=OPENAI_THINK_OFF_EFFORT``,
+                                  "none" by default; gpt-oss served through vLLM's
+                                  Harmony format rejects "none" with a 400 and needs
+                                  "low", which every server tested also accepts
   ``chat_template``             — ``chat_template_kwargs={"enable_thinking": False}``,
                                   which vLLM honours but Ollama ignores; the variable
                                   name comes from OPENAI_THINK_CHAT_TEMPLATE_KWARG
@@ -67,14 +70,32 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         timeout: float | None = None,
         think_mode: str | None = None,
         think_chat_template_kwarg: str | None = None,
+        routes: dict[str, str] | None = None,
+        think_off_effort: str | None = None,
     ):
         self.base_url = base_url
+        # vLLM serves one model per process, so a deployment driving several models
+        # needs a server per model; routes maps model name -> base URL and lets one
+        # agents instance reach all of them without being restarted in between.
+        self.routes = dict(routes or {})
+        self._api_key = api_key or "not-needed"
+        self._timeout = timeout
+        self._routed: dict[str, AsyncOpenAI] = {}
         # How think= is spelled for this server; see the module docstring.
         self.think_mode = (
             think_mode
             if think_mode is not None
             else os.getenv("OPENAI_THINK_MODE", THINK_REASONING_EFFORT)
         ).strip().lower() or THINK_OFF
+        # Which reasoning_effort means "as little as possible". "none" is the
+        # OpenAI spelling, but gpt-oss served through vLLM's Harmony format rejects
+        # it with 400 ("Harmony does not support reasoning_effort='none'") and needs
+        # "low"; both servers in a mixed deployment must therefore be able to differ.
+        self.think_off_effort = (
+            think_off_effort
+            if think_off_effort is not None
+            else os.getenv("OPENAI_THINK_OFF_EFFORT", "none")
+        ).strip() or "none"
         # Chat-template variable carrying think= when think_mode is chat_template.
         self.think_kwarg = (
             think_chat_template_kwarg
@@ -83,8 +104,20 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         ).strip()
         # Local servers usually ignore the key but the SDK requires one.
         self.client = AsyncOpenAI(
-            base_url=base_url, api_key=api_key or "not-needed", timeout=timeout
+            base_url=base_url, api_key=self._api_key, timeout=timeout
         )
+
+    def client_for(self, model: str) -> AsyncOpenAI:
+        """The server serving ``model``; the default one when the model is unrouted."""
+
+        url = self.routes.get(model)
+        if not url:
+            return self.client
+        if url not in self._routed:
+            self._routed[url] = AsyncOpenAI(
+                base_url=url, api_key=self._api_key, timeout=self._timeout
+            )
+        return self._routed[url]
 
     # ------------------------------------------------------------------ #
     # translation helpers
@@ -145,7 +178,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             # Reasoning is on by default everywhere, so only switching it off says
             # anything; setdefault keeps an explicit caller value.
             if think is False:
-                call.setdefault("reasoning_effort", "none")
+                call.setdefault("reasoning_effort", self.think_off_effort)
         elif self.think_mode == THINK_CHAT_TEMPLATE:
             # Merge rather than overwrite: a caller may pass its own extra_body.
             extra_body = dict(call.get("extra_body") or {})
@@ -271,7 +304,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
     ) -> LlmChatResponse | AsyncIterator[LlmChatResponse]:
         call = self._build(model, messages, stream, think, format, options, kwargs)
         try:
-            result = await self.client.chat.completions.create(**call)
+            result = await self.client_for(model).chat.completions.create(**call)
         except APIStatusError as exc:
             raise LlmResponseError(str(exc), exc.status_code) from exc
         except OpenAIError as exc:
@@ -289,13 +322,21 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         )
 
     async def list(self) -> dict[str, list[dict[str, Any]]]:
-        try:
-            models = await self.client.models.list()
-        except APIStatusError as exc:
-            raise LlmResponseError(str(exc), exc.status_code) from exc
-        except OpenAIError as exc:
-            raise LlmResponseError(str(exc)) from exc
-        return {"models": [{"model": m.id, "name": m.id} for m in models.data]}
+        """Union over every routed server, so validate_model() accepts a model
+        that lives on a routed server rather than on the default one."""
+
+        clients = [self.client] + [self.client_for(m) for m in self.routes]
+        seen: dict[str, dict[str, Any]] = {}
+        for client in clients:
+            try:
+                models = await client.models.list()
+            except APIStatusError as exc:
+                raise LlmResponseError(str(exc), exc.status_code) from exc
+            except OpenAIError as exc:
+                raise LlmResponseError(str(exc)) from exc
+            for m in models.data:
+                seen.setdefault(m.id, {"model": m.id, "name": m.id})
+        return {"models": list(seen.values())}
 
     async def ps(self) -> dict[str, list[dict[str, Any]]]:
         # An OpenAI-compatible server loads its models at start-up and has no
