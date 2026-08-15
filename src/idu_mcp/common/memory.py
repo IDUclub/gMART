@@ -20,6 +20,7 @@ import ctypes
 import gc
 import os
 from collections import Counter
+from types import FrameType
 
 from loguru import logger
 
@@ -79,13 +80,60 @@ def _describe(obj: object) -> str:
     return f"{module}.{kind}" if module else kind
 
 
-def retention_report(sample: int = 8, per_object: int = 4) -> dict:
+def _is_own(obj: object) -> bool:
+    """This module's own frames refer to everything it inspects."""
+
+    return isinstance(obj, FrameType) and obj.f_globals.get("__name__") == __name__
+
+
+def _owner_chain(obj: object, mine: set[int], max_depth: int = 8) -> list[str]:
+    """Walk referrers up to the first thing that is not a plain container.
+
+    Containers say nothing on their own — a list inside a dict inside a tuple is
+    every payload in the process. The frame or object that owns them is the
+    answer, so the walk continues until it finds one, and reports the trail.
+    """
+
+    chain: list[str] = []
+    current = obj
+    seen = {id(obj)}
+    # gc.get_referrers builds a fresh list that refers to what it found, so the
+    # walk would otherwise climb its own scaffolding. The lists are kept alive
+    # deliberately: freeing them would let their ids be reused by real objects.
+    scratch: list[list] = []
+    for _ in range(max_depth):
+        found = gc.get_referrers(current)
+        scratch.append(found)
+        skip = mine | {id(item) for item in scratch}
+        referrers = [
+            r
+            for r in found
+            if id(r) not in seen and id(r) not in skip and not _is_own(r)
+        ]
+        scratch.append(referrers)
+        if not referrers:
+            break
+        current = referrers[0]
+        seen.add(id(current))
+        if isinstance(current, FrameType):
+            code = current.f_code
+            chain.append(
+                f"frame {code.co_filename}:{code.co_firstlineno} {code.co_name}"
+            )
+            break
+        chain.append(_describe(current))
+        if not isinstance(current, (list, dict, tuple, set)):
+            break
+    return chain
+
+
+def retention_report(sample: int = 6) -> dict:
     """What is holding the largest containers alive.
 
     Flat object counts under a high RSS mean the allocator; counts in the
-    millions mean something keeps references, and this says what. For the
-    biggest containers it walks two levels of referrers, which is enough to name
-    the owning object — a session, a middleware, a cache — by module and class.
+    millions mean something keeps references, and this says what: for the
+    biggest containers it names the first real owner up the referrer chain — a
+    frame, a session, a cache — rather than the anonymous containers between.
     """
 
     gc.collect()
@@ -101,20 +149,45 @@ def retention_report(sample: int = 8, per_object: int = 4) -> dict:
             biggest.append((size, obj))
     biggest.sort(key=lambda item: item[0], reverse=True)
 
-    report = []
+    # This function's own bookkeeping refers to every object it reports on, so
+    # the walk has to be told to step over it.
+    report: list[dict] = []
+    mine = {id(biggest), id(report)} | {id(item) for item in biggest}
     for size, obj in biggest[:sample]:
-        chains = []
-        for referrer in gc.get_referrers(obj)[:per_object]:
-            if referrer is biggest or referrer is report:
-                continue
-            grandparents = [
-                _describe(g)
-                for g in gc.get_referrers(referrer)[:per_object]
-                if g is not biggest
-            ]
-            chains.append({"held_by": _describe(referrer), "which_is_in": grandparents})
-        report.append({"type": type(obj).__name__, "size": size, "referrers": chains})
-    return {"rss_mb": round(rss_bytes() / 1024 / 1024, 1), "biggest": report}
+        report.append(
+            {
+                "type": type(obj).__name__,
+                "size": size,
+                "owner_chain": _owner_chain(obj, mine),
+            }
+        )
+    return {
+        "rss_mb": round(rss_bytes() / 1024 / 1024, 1),
+        "big_containers": len(biggest),
+        "biggest": report,
+    }
+
+
+def count_types(names: list[str]) -> dict[str, int]:
+    """How many instances of each named type are alive.
+
+    The referrer walk says the payloads hang off MCP protocol objects; this says
+    whether those come with a session that was never torn down (transports keep
+    climbing) or with buffered messages inside a live session (only the message
+    types climb). The two have different fixes.
+    """
+
+    gc.collect()
+    wanted = set(names)
+    counts: Counter[str] = Counter({name: 0 for name in names})
+    for obj in gc.get_objects():
+        try:
+            name = type(obj).__name__
+        except Exception:  # noqa: BLE001
+            continue
+        if name in wanted:
+            counts[name] += 1
+    return dict(counts)
 
 
 def memory_snapshot(top: int = 15) -> dict:

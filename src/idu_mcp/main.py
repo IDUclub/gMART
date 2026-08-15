@@ -21,6 +21,7 @@ from starlette.routing import Route
 from src.__version__ import __VERSION__ as MCP_VERSION
 from src.idu_mcp.common.logging.log_config import config_logger
 from src.idu_mcp.common.memory import (
+    count_types,
     memory_snapshot,
     release_memory,
     retention_report,
@@ -52,14 +53,36 @@ def _max_request_body_size() -> int:
         return 64 * 1024 * 1024
 
 
+def _session_idle_timeout() -> float | None:
+    """Seconds a session may sit idle before it is reaped; 0/off disables it."""
+
+    raw = os.getenv("MCP_SESSION_IDLE_TIMEOUT", "600").strip().lower()
+    if raw in {"0", "off", "none", ""}:
+        return None
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return 600.0
+
+
 class _BodyLimitSessionManager(fastmcp_http.FastMCPStreamableHTTPSessionManager):
-    """Session manager with a raised request body limit.
+    """Session manager with a raised request body limit and idle sessions reaped.
 
     The mcp SDK caps Streamable HTTP POST bodies at 4 MiB and answers 413 before
     parsing, which the geometry tools hit on large scenarios: ``CreateBuffers``
     and ``CreateRestrictions`` carry whole layers as arguments. FastMCP builds
     the manager itself and does not forward ``max_request_body_size``, so the
     limit is re-applied here after construction.
+
+    Each session also starts a task that sits inside ``app.run()``, and the SDK
+    only ever ends it on the idle timeout — which defaults to off. A client that
+    opens a session per tool call therefore leaves one live transport behind per
+    call: 800 of them within half an hour of benchmark load, and the process
+    grew until the host started killing other containers' workers.
+
+    The deadline only moves forward on incoming HTTP requests, and a tool call in
+    progress sends none, so the timeout must stay comfortably above the longest
+    call (``MCP_HTTP_TIMEOUT``) or it would cancel the work it is waiting for.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -67,6 +90,45 @@ class _BodyLimitSessionManager(fastmcp_http.FastMCPStreamableHTTPSessionManager)
         limit = _max_request_body_size()
         self.max_request_body_size = limit
         self.asgi_app = RequestBodyLimitMiddleware(self._handle_request, limit)
+        idle_timeout = _session_idle_timeout()
+        if idle_timeout is not None and not getattr(self, "stateless", False):
+            self.session_idle_timeout = idle_timeout
+            logger.info(f"MCP sessions idle for {idle_timeout}s will be reaped")
+
+    @staticmethod
+    def _session_id(scope: dict) -> str | None:
+        for name, value in scope.get("headers") or []:
+            if name.lower() == b"mcp-session-id":
+                return value.decode("ascii", "replace")
+        return None
+
+    def _drop_session(self, session_id: str | None) -> None:
+        """Forget a session the client has closed, and end the task behind it.
+
+        Dropping the instance alone is not enough: the session's ``app.run()``
+        task keeps the transport, its streams and whatever they still hold. The
+        idle scope is the SDK's own handle on that task, so cancelling it is what
+        actually frees the session — the timeout then only covers clients that
+        disconnect without saying so.
+        """
+
+        if not session_id:
+            return
+        transport = self._server_instances.pop(session_id, None)
+        self._session_owners.pop(session_id, None)
+        if transport is None:
+            return
+        idle_scope = getattr(transport, "idle_scope", None)
+        if idle_scope is not None:
+            idle_scope.cancel()
+
+    async def handle_request(self, scope: dict, receive, send) -> None:
+        await super().handle_request(scope, receive, send)
+        # The client opens a session per tool call and closes it with DELETE;
+        # without this the transport outlives the call and the process grows by
+        # one session for every call it serves.
+        if scope.get("method") == "DELETE":
+            self._drop_session(self._session_id(scope))
 
 
 fastmcp_http.FastMCPStreamableHTTPSessionManager = _BodyLimitSessionManager
@@ -123,6 +185,16 @@ async def memory(request: Request) -> JSONResponse:
         )
     if request.query_params.get("retainers"):
         return JSONResponse(retention_report())
+    types = request.query_params.get("types")
+    if types:
+        return JSONResponse(
+            {
+                "rss_mb": round(rss_bytes() / 1024 / 1024, 1),
+                "counts": count_types(
+                    [t.strip() for t in types.split(",") if t.strip()]
+                ),
+            }
+        )
     snapshot = memory_snapshot()
     if request.query_params.get("release"):
         release_memory()
