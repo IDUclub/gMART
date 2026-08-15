@@ -46,3 +46,6 @@ AGENTS.md
 # so only the data directories are ignored here — not the whole folder.
 benchmarks/data/
 benchmarks/out/
+
+# local scenario cache (SCENARIO_CACHE_DIR default)
+runtime/
