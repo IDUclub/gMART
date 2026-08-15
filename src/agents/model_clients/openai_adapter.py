@@ -193,6 +193,42 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                 "trace is generated anyway and consumes the num_predict budget",
             )
 
+    @staticmethod
+    def _alternating(messages: list[dict] | None) -> list[dict]:
+        """Make the turns alternate, which several chat templates demand.
+
+        Gemma's rejects anything else outright — ``Conversation roles must
+        alternate user/assistant/user/assistant/...`` with a 400 that kills the
+        request. Two shapes arise here in practice: a repair pass that appends
+        the model's answer to a conversation with no user turn yet, giving
+        ``[system, assistant, ...]``, and a chat history that already ends with
+        the question the caller then appends again, giving two user turns.
+
+        Consecutive turns of one role are merged, and a leading system message is
+        relabelled as the user turn when an assistant turn would otherwise come
+        first — Gemma folds the system prompt into the first user turn anyway, so
+        this invents no text. Models with a laxer template see the same
+        conversation, which keeps a benchmark comparing them honest.
+        """
+
+        out: list[dict] = []
+        for message in messages or []:
+            role = message.get("role")
+            if out and out[-1].get("role") == role:
+                merged = (
+                    f"{out[-1].get('content') or ''}\n\n{message.get('content') or ''}"
+                )
+                out[-1] = {**out[-1], "content": merged.strip()}
+                continue
+            out.append(dict(message))
+        if (
+            len(out) > 1
+            and out[0].get("role") == "system"
+            and out[1].get("role") != "user"
+        ):
+            out[0] = {**out[0], "role": "user"}
+        return out
+
     def _build(
         self,
         model: str,
@@ -205,7 +241,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
     ) -> dict[str, Any]:
         call: dict[str, Any] = {
             "model": model,
-            "messages": messages or [],
+            "messages": self._alternating(messages),
             "stream": stream,
             **self._sampling(options),
             **extra,
