@@ -278,3 +278,69 @@ def test_parts_are_valid_json_payloads():
 
     payload = part[part.index("[") : part.rindex("]") + 1]
     assert json.loads(payload) == rows
+
+
+@pytest.mark.asyncio
+async def test_summaries_are_folded_again_when_they_do_not_fit(
+    monkeypatch, state_store
+):
+    """Enough parts and the summaries themselves overrun the window — which is
+    how the scenarios this was meant to rescue kept failing anyway."""
+
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter", lambda *a, **k: Mock()
+    )
+    from src.agents.services.restriction_parser_service import RestrictionParserService
+
+    service = RestrictionParserService("http://ollama", Mock(), Mock(), state_store)
+    rounds: list[int] = []
+
+    async def fake_summary(model, user_query, part, temperature):
+        rounds.append(len(part))
+        return "выжимка" * 20
+
+    service._summarize_context_part = fake_summary
+
+    folded = await service._reduce_summaries(
+        "m", "запрос", ["выжимка" * 20] * 40, 0.0, budget=2000
+    )
+
+    assert len(folded) <= 2000
+    assert rounds, "a second fold should have run"
+
+
+@pytest.mark.asyncio
+async def test_reduce_stops_instead_of_folding_for_ever(monkeypatch, state_store):
+    """A summary that never shrinks must end the fold, not loop."""
+
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter", lambda *a, **k: Mock()
+    )
+    from src.agents.services.restriction_parser_service import RestrictionParserService
+
+    service = RestrictionParserService("http://ollama", Mock(), Mock(), state_store)
+    calls: list[int] = []
+
+    async def stubborn(model, user_query, part, temperature):
+        calls.append(1)
+        return "х" * 5000
+
+    service._summarize_context_part = stubborn
+
+    folded = await service._reduce_summaries(
+        "m", "запрос", ["х" * 5000] * 8, 0.0, budget=1000
+    )
+
+    assert len(folded) <= 1000
+    assert len(calls) <= 8 * 3, "the depth cap should have stopped it"
+
+
+def test_summaries_are_grouped_within_the_budget():
+    from src.agents.services.restriction_parser_service import RestrictionParserService
+
+    groups = RestrictionParserService._group_to_budget(["а" * 100] * 10, budget=300)
+
+    assert all(
+        sum(len(s) + 32 for s in group) <= 300 or len(group) == 1 for group in groups
+    )
+    assert sum(len(group) for group in groups) == 10

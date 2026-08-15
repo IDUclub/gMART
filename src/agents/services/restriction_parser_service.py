@@ -696,6 +696,55 @@ class RestrictionParserService(BaseLlmService):
             f"GeoJSON.\n\n{parts}"
         )
 
+    @staticmethod
+    def _group_to_budget(summaries: list[str], budget: int) -> list[list[str]]:
+        """Consecutive summaries, grouped so each group fits the budget."""
+
+        groups: list[list[str]] = [[]]
+        size = 0
+        for summary in summaries:
+            cost = len(summary) + 32  # the "Часть N:" framing around each one
+            if groups[-1] and size + cost > budget:
+                groups.append([])
+                size = 0
+            groups[-1].append(summary)
+            size += cost
+        return [group for group in groups if group]
+
+    async def _reduce_summaries(
+        self,
+        model: str,
+        user_query: str,
+        summaries: list[str],
+        temperature: float,
+        budget: int,
+        max_rounds: int = 3,
+    ) -> str:
+        """Fold summaries until the final prompt fits.
+
+        Enough parts and the summaries themselves overrun the window, which is
+        how the very scenarios this was meant to rescue kept failing. Each round
+        condenses groups of summaries into fewer, longer-lived ones; the depth
+        is capped so a pathological case ends with a truncated context rather
+        than an endless fold.
+        """
+
+        for _ in range(max_rounds):
+            folded = self._folded_context(summaries)
+            if len(folded) <= budget or len(summaries) == 1:
+                return folded
+            groups = self._group_to_budget(summaries, budget)
+            if len(groups) >= len(summaries):
+                break
+            summaries = [
+                await self._summarize_context_part(
+                    model, user_query, self._folded_context(group), temperature
+                )
+                for group in groups
+            ]
+        folded = self._folded_context(summaries)
+        return folded[:budget] if len(folded) > budget else folded
+
     async def _final_response_events(
         self,
         model: str,
@@ -736,7 +785,9 @@ class RestrictionParserService(BaseLlmService):
                             model, user_query, part, temperature
                         )
                     )
-                context = self._folded_context(summaries)
+                context = await self._reduce_summaries(
+                    model, user_query, summaries, temperature, budget
+                )
             try:
                 async for chunk in self.generate_final_response(
                     model, user_query, context, temperature, history=history

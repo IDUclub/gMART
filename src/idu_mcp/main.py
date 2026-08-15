@@ -20,7 +20,12 @@ from starlette.routing import Route
 
 from src.__version__ import __VERSION__ as MCP_VERSION
 from src.idu_mcp.common.logging.log_config import config_logger
-from src.idu_mcp.common.memory import memory_snapshot, release_memory, rss_bytes
+from src.idu_mcp.common.memory import (
+    memory_snapshot,
+    release_memory,
+    retention_report,
+    rss_bytes,
+)
 from src.idu_mcp.common.middlewares.logging_middleware import RequestLoggingMiddleware
 from src.idu_mcp.dependencies.dependencies import mcp_deps
 from src.idu_mcp.prompts.restriction_prompts import mcp as restrictions_prompts_mcp
@@ -116,6 +121,8 @@ async def memory(request: Request) -> JSONResponse:
         return JSONResponse(
             {"error": "set MCP_DEBUG_MEMORY=1 to enable"}, status_code=404
         )
+    if request.query_params.get("retainers"):
+        return JSONResponse(retention_report())
     snapshot = memory_snapshot()
     if request.query_params.get("release"):
         release_memory()

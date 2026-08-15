@@ -66,6 +66,57 @@ def rss_bytes() -> int:
     return 0
 
 
+def _describe(obj: object) -> str:
+    """A referrer named well enough to find in the source."""
+
+    kind = type(obj).__name__
+    if isinstance(obj, dict):
+        keys = [k for k in list(obj)[:6] if isinstance(k, str)]
+        return f"dict(keys={keys})" if keys else "dict"
+    if isinstance(obj, (list, tuple, set)):
+        return f"{kind}(len={len(obj)})"
+    module = getattr(type(obj), "__module__", "")
+    return f"{module}.{kind}" if module else kind
+
+
+def retention_report(sample: int = 8, per_object: int = 4) -> dict:
+    """What is holding the largest containers alive.
+
+    Flat object counts under a high RSS mean the allocator; counts in the
+    millions mean something keeps references, and this says what. For the
+    biggest containers it walks two levels of referrers, which is enough to name
+    the owning object — a session, a middleware, a cache — by module and class.
+    """
+
+    gc.collect()
+    biggest: list[tuple[int, object]] = []
+    for obj in gc.get_objects():
+        if not isinstance(obj, (list, dict)):
+            continue
+        try:
+            size = len(obj)
+        except Exception:  # noqa: BLE001
+            continue
+        if size > 1000:
+            biggest.append((size, obj))
+    biggest.sort(key=lambda item: item[0], reverse=True)
+
+    report = []
+    for size, obj in biggest[:sample]:
+        chains = []
+        for referrer in gc.get_referrers(obj)[:per_object]:
+            if referrer is biggest or referrer is report:
+                continue
+            grandparents = [
+                _describe(g)
+                for g in gc.get_referrers(referrer)[:per_object]
+                if g is not biggest
+            ]
+            chains.append({"held_by": _describe(referrer), "which_is_in": grandparents})
+        report.append({"type": type(obj).__name__, "size": size, "referrers": chains})
+    return {"rss_mb": round(rss_bytes() / 1024 / 1024, 1), "biggest": report}
+
+
 def memory_snapshot(top: int = 15) -> dict:
     """RSS and the most numerous live object types.
 
