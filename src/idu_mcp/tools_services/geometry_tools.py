@@ -7,6 +7,7 @@ from typing import Any
 import geopandas as gpd
 import pandas as pd
 
+from src.idu_mcp.common.memory import release_memory
 from src.idu_mcp.tools_services.entites.buffer_type_enum import BufferTypeEnum
 from src.idu_mcp.tools_services.geojson_precision import round_layers
 
@@ -141,10 +142,7 @@ class GeometryTools:
         # buffers travel back here as CreateRestrictions arguments, so they are
         # trimmed to the same precision as the layers they were built from
         return round_layers(
-            {
-                name: json.loads(layer.to_json())
-                for name, layer in result_layers.items()
-            }
+            {name: json.loads(layer.to_json()) for name, layer in result_layers.items()}
         )
 
     async def async_generate_geometry_buffers(
@@ -152,9 +150,14 @@ class GeometryTools:
         buffer_info: dict[str, dict[str, Any]],
         objects_geoms: dict[str, dict],
     ) -> dict[str, dict]:
-        return await asyncio.to_thread(
-            self.generate_geometry_buffers, buffer_info, objects_geoms
-        )
+        try:
+            return await asyncio.to_thread(
+                self.generate_geometry_buffers, buffer_info, objects_geoms
+            )
+        finally:
+            # The layers this just built and dropped are hundreds of megabytes
+            # that the allocator would otherwise keep in the worker thread's arena.
+            release_memory()
 
     @classmethod
     def form_layers(
@@ -340,6 +343,9 @@ class GeometryTools:
         objects: list[str],
         restrictions: dict[str, dict[str, Any]],
     ) -> dict[str, dict]:
-        return await asyncio.to_thread(
-            self.create_restrictions, layers, generators, objects, restrictions
-        )
+        try:
+            return await asyncio.to_thread(
+                self.create_restrictions, layers, generators, objects, restrictions
+            )
+        finally:
+            release_memory()

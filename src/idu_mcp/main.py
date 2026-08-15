@@ -20,6 +20,7 @@ from starlette.routing import Route
 
 from src.__version__ import __VERSION__ as MCP_VERSION
 from src.idu_mcp.common.logging.log_config import config_logger
+from src.idu_mcp.common.memory import memory_snapshot, release_memory, rss_bytes
 from src.idu_mcp.common.middlewares.logging_middleware import RequestLoggingMiddleware
 from src.idu_mcp.dependencies.dependencies import mcp_deps
 from src.idu_mcp.prompts.restriction_prompts import mcp as restrictions_prompts_mcp
@@ -102,6 +103,26 @@ async def health(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+async def memory(request: Request) -> JSONResponse:
+    """RSS and the most numerous live objects, for tracking a growing process.
+
+    Off unless ``MCP_DEBUG_MEMORY`` is set: walking every object costs a second
+    on a large heap, which is not something a served deployment should expose.
+    Compare two snapshots — a type whose count keeps climbing is a leak, while
+    flat counts under a high RSS mean the allocator has not returned the arenas.
+    """
+
+    if os.getenv("MCP_DEBUG_MEMORY", "").strip().lower() not in {"1", "true", "yes"}:
+        return JSONResponse(
+            {"error": "set MCP_DEBUG_MEMORY=1 to enable"}, status_code=404
+        )
+    snapshot = memory_snapshot()
+    if request.query_params.get("release"):
+        release_memory()
+        snapshot["rss_mb_after_release"] = round(rss_bytes() / 1024 / 1024, 1)
+    return JSONResponse(snapshot)
+
+
 async def get_logs(request: Request) -> FileResponse:
     """Download a stable snapshot of the idu_mcp log file.
 
@@ -126,3 +147,4 @@ async def get_logs(request: Request) -> FileResponse:
 mcp_app.routes.insert(0, Route("/", endpoint=redirect_to_docs))
 mcp_app.routes.insert(0, Route("/health", endpoint=health))
 mcp_app.routes.insert(0, Route("/logs", endpoint=get_logs))
+mcp_app.routes.insert(0, Route("/debug/memory", endpoint=memory))
