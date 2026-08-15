@@ -8,6 +8,7 @@ import geopandas as gpd
 import pandas as pd
 
 from src.idu_mcp.tools_services.entites.buffer_type_enum import BufferTypeEnum
+from src.idu_mcp.tools_services.geojson_precision import round_layers
 
 
 class GeometryTools:
@@ -137,9 +138,14 @@ class GeometryTools:
                 layer_name=layer_name,
                 metadata=info,
             )
-        return {
-            name: json.loads(layer.to_json()) for name, layer in result_layers.items()
-        }
+        # buffers travel back here as CreateRestrictions arguments, so they are
+        # trimmed to the same precision as the layers they were built from
+        return round_layers(
+            {
+                name: json.loads(layer.to_json())
+                for name, layer in result_layers.items()
+            }
+        )
 
     async def async_generate_geometry_buffers(
         self,
@@ -320,10 +326,12 @@ class GeometryTools:
         generators_gdf = generators_gdf.drop(
             columns=["_row_id", "_feature_id"], errors="ignore"
         )
-        return {
-            "objects": json.loads(objects_gdf.to_crs(4326).to_json()),
-            "generators": json.loads(generators_gdf.to_crs(4326).to_json()),
-        }
+        return round_layers(
+            {
+                "objects": json.loads(objects_gdf.to_crs(4326).to_json()),
+                "generators": json.loads(generators_gdf.to_crs(4326).to_json()),
+            }
+        )
 
     async def async_create_restrictions(
         self,

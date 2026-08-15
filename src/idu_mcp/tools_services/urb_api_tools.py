@@ -3,6 +3,7 @@ from loguru import logger
 
 from src.idu_mcp.api_clients.urban_api_client import UrbanApiClient
 from src.idu_mcp.tools_services.entites.object_type_enum import ObjectTypeEnum
+from src.idu_mcp.tools_services.geojson_precision import round_feature_collection
 from src.idu_mcp.tools_services.scenario_cache import ScenarioCache
 
 
@@ -68,6 +69,12 @@ class UrbanApiTool:
                         f"Unknown object type {object_type}\nfor scenario {scenario_id}\nand names {names}"
                     )
                     raise ValueError("Unsupported object type")
+            # trim coordinate precision before caching: the layer travels back to
+            # this server as a CreateBuffers/CreateRestrictions argument, and the
+            # full float precision is what pushes big scenarios past the MCP
+            # request body limit
+            for feature_collection in objects:
+                round_feature_collection(feature_collection)
             self.cache.set(scenario_id, cache_key, (object_name_id, objects))
         existing_names = list(object_name_id)
         return {

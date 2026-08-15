@@ -6,11 +6,13 @@ import tempfile
 from datetime import datetime
 
 import anyio
+import fastmcp.server.http as fastmcp_http
 from fastapi.responses import RedirectResponse
 from fastmcp import FastMCP
 from fastmcp.server.lifespan import lifespan
 from fastmcp_docs import FastMCPDocs
 from loguru import logger
+from mcp.server.streamable_http_manager import RequestBodyLimitMiddleware
 from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
@@ -33,6 +35,35 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 log_path = config_logger()
+
+
+def _max_request_body_size() -> int:
+    """POST body limit for the MCP transport, in bytes."""
+
+    try:
+        return max(1, int(os.getenv("MCP_MAX_REQUEST_BODY_MB", "64"))) * 1024 * 1024
+    except ValueError:
+        return 64 * 1024 * 1024
+
+
+class _BodyLimitSessionManager(fastmcp_http.FastMCPStreamableHTTPSessionManager):
+    """Session manager with a raised request body limit.
+
+    The mcp SDK caps Streamable HTTP POST bodies at 4 MiB and answers 413 before
+    parsing, which the geometry tools hit on large scenarios: ``CreateBuffers``
+    and ``CreateRestrictions`` carry whole layers as arguments. FastMCP builds
+    the manager itself and does not forward ``max_request_body_size``, so the
+    limit is re-applied here after construction.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        limit = _max_request_body_size()
+        self.max_request_body_size = limit
+        self.asgi_app = RequestBodyLimitMiddleware(self._handle_request, limit)
+
+
+fastmcp_http.FastMCPStreamableHTTPSessionManager = _BodyLimitSessionManager
 
 
 @lifespan
