@@ -27,6 +27,7 @@ from src.agents.model_clients.factory import build_llm_adapter
 from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.services.service_entities.orchestrator_plan import OrchestratorPlan
 from src.agents.services.service_entities.restriction_plan import RestrictionPlan
+from src.agents.services.service_entities.scenario_data_action import ScenarioDataAction
 
 pytestmark = pytest.mark.integration
 
@@ -137,7 +138,9 @@ async def test_truncated_completion_has_a_string_content(adapter):
     assert isinstance(response.message.content, str)
 
 
-@pytest.mark.parametrize("plan_cls", [RestrictionPlan, OrchestratorPlan])
+@pytest.mark.parametrize(
+    "plan_cls", [RestrictionPlan, OrchestratorPlan, ScenarioDataAction]
+)
 async def test_planner_schemas_survive_guided_decoding(adapter, plan_cls):
     """The grammar compiler must accept the schema and the output must parse.
 

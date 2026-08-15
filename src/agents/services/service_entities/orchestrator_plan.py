@@ -9,6 +9,7 @@ MAX_PLAN_STEPS = 3
 class OrchestratorAgent(StrEnum):
     RESTRICTION = "restriction"
     PROVISION = "provision"
+    SCENARIO_DATA = "scenario_data"
     DOCUMENTS = "documents"
     NORMS = "norms"
 

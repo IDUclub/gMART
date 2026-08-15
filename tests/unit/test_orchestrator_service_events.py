@@ -79,7 +79,9 @@ def orchestrator(monkeypatch, fake_llm, fake_urban, state_store):
     from src.agents.services.orchestrator_service import OrchestratorService
 
     app_config = SimpleNamespace(
-        DVD_MCP_URL="http://dvd", NORM_GRAPH_MCP_URL="http://norms"
+        DVD_MCP_URL="http://dvd",
+        NORM_GRAPH_MCP_URL="http://norms",
+        URBAN_MCP_URL="http://urban-mcp",
     )
     svc = OrchestratorService(
         "http://ollama",
