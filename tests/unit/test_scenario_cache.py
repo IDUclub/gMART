@@ -1,20 +1,37 @@
 """Tests for the per-scenario Urban API response cache used by benchmark runs.
 
+The cache lives on disk: a scenario's objects run to tens of megabytes as Python
+objects, and keeping several scenarios resident starved the host of memory.
+
 Covers:
   * the cache being off unless ``SCENARIO_CACHE_SIZE`` is set;
   * LRU eviction once more scenarios than the limit are touched;
   * TTL expiry;
+  * entries stored compressed, readable by a fresh instance, and a damaged entry
+    counting as a miss rather than an error;
   * ``UrbanApiTool.get_entity_by_names`` serving a repeat call without hitting
     the Urban API client again, while still returning independent models.
 """
 
 from __future__ import annotations
 
+import gzip
+import json
+import os
+
 import pytest
 
 from src.idu_mcp.tools_services.entites.object_type_enum import ObjectTypeEnum
 from src.idu_mcp.tools_services.scenario_cache import ScenarioCache
 from src.idu_mcp.tools_services.urb_api_tools import UrbanApiTool
+
+
+@pytest.fixture(autouse=True)
+def cache_dir(tmp_path, monkeypatch):
+    """Never let a test write into the working tree."""
+
+    monkeypatch.setenv("SCENARIO_CACHE_DIR", str(tmp_path / "cache"))
+    return tmp_path / "cache"
 
 
 def _fc() -> dict:
@@ -65,17 +82,42 @@ def test_lru_evicts_the_least_recently_used_scenario():
     assert cache.get(3, ("k",)) == "three"
 
 
-def test_entry_expires_after_ttl(monkeypatch):
+def test_entry_expires_after_ttl(cache_dir):
+    """Age is the entry file's own mtime, so it outlives the process."""
+
     cache = ScenarioCache(max_scenarios=2, ttl=10)
-    now = [1000.0]
-    monkeypatch.setattr(
-        "src.idu_mcp.tools_services.scenario_cache.time.monotonic", lambda: now[0]
-    )
     cache.set(1, ("k",), "one")
-    now[0] += 5
     assert cache.get(1, ("k",)) == "one"
-    now[0] += 6
+
+    entry = next((cache_dir / "1").glob("*.json.gz"))
+    stale = os.stat(entry).st_mtime - 11
+    os.utime(entry, (stale, stale))
+
     assert cache.get(1, ("k",)) is None
+    assert not entry.exists()
+
+
+def test_entries_are_stored_compressed_and_outlive_the_instance(cache_dir):
+    payload = {"features": [{"name": "жилой дом"} for _ in range(500)]}
+    ScenarioCache(max_scenarios=2, ttl=0).set(846, ("k",), payload)
+
+    entry = next((cache_dir / "846").glob("*.json.gz"))
+    assert entry.stat().st_size < len(json.dumps(payload, ensure_ascii=False)) / 5
+    with gzip.open(entry, "rt", encoding="utf-8") as fh:
+        assert json.load(fh) == payload
+
+    # a fresh instance — a restarted container — reads the same entry
+    assert ScenarioCache(max_scenarios=2, ttl=0).get(846, ("k",)) == payload
+
+
+def test_a_damaged_entry_is_a_miss(cache_dir):
+    cache = ScenarioCache(max_scenarios=2, ttl=0)
+    cache.set(1, ("k",), "one")
+    entry = next((cache_dir / "1").glob("*.json.gz"))
+    entry.write_bytes(b"not gzip at all")
+
+    assert cache.get(1, ("k",)) is None
+    assert not entry.exists()
 
 
 def test_size_from_env(monkeypatch):
@@ -115,7 +157,5 @@ async def test_cache_off_means_every_call_hits_the_api(monkeypatch):
     client = FakeUrbanClient()
     tool = UrbanApiTool(client)
     for _ in range(3):
-        await tool.get_entity_by_names(
-            846, ["Аптека"], ObjectTypeEnum.SERVICE, "token"
-        )
+        await tool.get_entity_by_names(846, ["Аптека"], ObjectTypeEnum.SERVICE, "token")
     assert client.services_calls == 3
