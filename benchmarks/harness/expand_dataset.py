@@ -24,8 +24,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -61,18 +65,33 @@ def _nouns(q: str) -> set[str]:
 
 def generate(host: str, model: str, question: str, n: int,
              temperature: float, timeout: float) -> list[str]:
+    """Ask for n paraphrases. A host ending in /v1 is an OpenAI-compatible server
+    (vLLM), which has no /api/generate and no keep_alive — its models are resident
+    for the lifetime of the process."""
+
     prompt = SYS_PROMPT.format(n=n) + f"\n\nИсходный запрос:\n{question}"
-    r = requests.post(
-        f"{host}/api/generate",
-        json={"model": model, "prompt": prompt, "stream": False,
-              # keep the model resident between calls — on a shared server the
-              # model is otherwise evicted and reloaded per request (minutes).
-              "keep_alive": "15m",
-              "options": {"temperature": temperature}},
-        timeout=timeout,
-    )
-    r.raise_for_status()
-    text = r.json().get("response", "")
+    if host.rstrip("/").endswith("/v1"):
+        r = requests.post(
+            f"{host.rstrip('/')}/chat/completions",
+            json={"model": model,
+                  "messages": [{"role": "user", "content": prompt}],
+                  "temperature": temperature, "max_tokens": 1024},
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        text = r.json()["choices"][0]["message"]["content"] or ""
+    else:
+        r = requests.post(
+            f"{host}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False,
+                  # keep the model resident between calls — on a shared server the
+                  # model is otherwise evicted and reloaded per request (minutes).
+                  "keep_alive": "15m",
+                  "options": {"temperature": temperature}},
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        text = r.json().get("response", "")
     lines = [re.sub(r"^\s*\d+[.)]\s*", "", ln).strip(" -–—\t")
              for ln in text.splitlines() if ln.strip()]
     return [ln for ln in lines if len(ln) > 10]
@@ -116,6 +135,10 @@ def main():
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--attempts", type=int, default=3)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--workers", type=int,
+                    default=int(os.getenv("EXPAND_WORKERS", "8")),
+                    help="parallel generation requests; vLLM batches them, so one "
+                         "at a time wastes most of the GPU")
     ap.add_argument("--out", default="benchmarks/data/gold/expanded.csv")
     args = ap.parse_args()
 
@@ -136,13 +159,14 @@ def main():
         print(f"resuming: {len(done_bases)} base records already done", flush=True)
     jf = jsonl_path.open("a", encoding="utf-8")
 
-    def emit(rec: dict) -> None:
-        jf.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        jf.flush()
+    write_lock = threading.Lock()
 
-    for i, row in df.iterrows():
-        if i in done_bases:
-            continue
+    def emit(rec: dict) -> None:
+        with write_lock:
+            jf.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            jf.flush()
+
+    def expand_one(i, row) -> str:
         base_q = str(row[COL_Q])
         base = row.to_dict()
         base["base_index"] = i
@@ -157,9 +181,8 @@ def main():
             try:
                 cands = generate(args.ollama_host, args.model, base_q,
                                  need + 2, args.temperature, args.timeout)
-            except Exception as e:
-                print(f"  [{i}] generation error: {e}")
-                break
+            except Exception as e:  # noqa: BLE001
+                return f" generation error: {e}"
             for c in cands:
                 if len(kept) >= args.n_paraphrases:
                     break
@@ -171,13 +194,34 @@ def main():
             r["base_index"] = i
             r["variant"] = v
             emit(r)
-        print(f"  [{i+1}/{len(df)}] sid={row.get('scenario_id')} "
-              f"kept {len(kept)}/{args.n_paraphrases}", flush=True)
+        return f" sid={row.get('scenario_id')} base={i} kept {len(kept)}/{args.n_paraphrases}"
+
+    # Base records are independent and the server batches concurrent requests:
+    # generating one at a time leaves vLLM at ~1 running request and a few percent
+    # of KV cache, i.e. the GPU mostly idle.
+    pending = [(i, row) for i, row in df.iterrows() if i not in done_bases]
+    completed = len(done_bases)
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {pool.submit(expand_one, i, row): i for i, row in pending}
+        for fut in as_completed(futures):
+            completed += 1
+            try:
+                note = fut.result()
+            except Exception as e:  # noqa: BLE001
+                note = f" base={futures[fut]} failed: {e}"
+            print(f"  [{completed}/{len(df)}]{note}", flush=True)
 
     jf.close()
     # assemble the CSV from the (complete or resumed) JSONL
     out = pd.DataFrame([json.loads(l) for l in jsonl_path.open(encoding="utf-8")])
     out.to_csv(args.out, sep=";", index=False)
+    # dated copy: the set costs hours of LLM time and must survive a re-run
+    snap = Path(args.out).parent / "snapshots"
+    snap.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    snap_file = snap / f"{Path(args.out).stem}.{stamp}{Path(args.out).suffix}"
+    out.to_csv(snap_file, sep=";", index=False)
+    print(f"immutable copy -> {snap_file}")
     print(f"\nwrote {args.out}: {len(out)} rows "
           f"({out['base_index'].nunique()} base records)", flush=True)
 

@@ -33,6 +33,7 @@ import difflib
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -73,6 +74,21 @@ SYSTEM = """Ты переписываешь формулировки задач 
 7. Одно предложение. Без пояснений, без кавычек, без префиксов.
 
 Верни ТОЛЬКО переформулированный вопрос."""
+
+
+def snapshot_path(out: str) -> Path:
+    """A dated copy beside the output.
+
+    The generated set costs hours of LLM time; keeping a timestamped copy means a
+    later re-run with FORCE_* cannot silently destroy the one the results were
+    produced against.
+    """
+
+    p = Path(out)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    snap = p.parent / "snapshots"
+    snap.mkdir(parents=True, exist_ok=True)
+    return snap / f"{p.stem}.{stamp}{p.suffix}"
 
 
 def _phrases(question: str, gold) -> list[str]:
@@ -205,22 +221,37 @@ def is_metric_buffer(question: str) -> bool:
 
 
 def ask(host: str, model: str, question: str, timeout: float, hint: str = "") -> str:
-    resp = requests.post(
-        f"{host}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": (f"{hint}\n\n" if hint else "") + question},
-            ],
-            "stream": False,
-            "keep_alive": "2h",
-            "options": {"temperature": 0.2},
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    return resp.json()["message"]["content"].strip().strip('"').strip()
+    """A host ending in /v1 is an OpenAI-compatible server (vLLM): different
+    endpoint, no keep_alive, and the answer sits under choices[0].message."""
+
+    messages = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": (f"{hint}\n\n" if hint else "") + question},
+    ]
+    if host.rstrip("/").endswith("/v1"):
+        resp = requests.post(
+            f"{host.rstrip('/')}/chat/completions",
+            json={"model": model, "messages": messages,
+                  "temperature": 0.2, "max_tokens": 512},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"] or ""
+    else:
+        resp = requests.post(
+            f"{host}/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "keep_alive": "2h",
+                "options": {"temperature": 0.2},
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        content = resp.json()["message"]["content"]
+    return content.strip().strip('"').strip()
 
 
 # A question already stating a separation requirement, a ban or a norm is a
@@ -268,6 +299,21 @@ def main() -> None:
     df = pd.read_csv(args.gold, sep=";", engine="python")
     df[COL_ORIG] = df[COL_Q]
 
+    # Incremental and resumable: each decision is appended as it is made, so an
+    # interrupted run (this stage takes ~15 minutes, the chain around it hours)
+    # resumes instead of regenerating everything through the LLM again.
+    checkpoint = Path(args.report).with_suffix(".jsonl")
+    decided: dict[int, dict] = {}
+    if checkpoint.exists():
+        for line in checkpoint.open(encoding="utf-8"):
+            try:
+                rec = json.loads(line)
+                decided[int(rec["base_index"])] = rec
+            except Exception:  # noqa: BLE001
+                pass
+        print(f"resuming: {len(decided)} rows already decided", flush=True)
+    cp = checkpoint.open("a", encoding="utf-8")
+
     rows = []
     targets = [
         i for i, g in enumerate(gold)
@@ -281,6 +327,15 @@ def main() -> None:
     for n, i in enumerate(targets, 1):
         g = gold[i]
         original = str(df.at[i, COL_Q])
+        if i in decided:
+            rec = decided[i]
+            if rec.get("rewritten"):
+                df.at[i, COL_Q] = rec["rewritten"]
+                changed += 1
+            else:
+                kept += 1
+            rows.append(rec)
+            continue
         keep = _phrases(original, g)
         best, reason, last = None, "не пытались", ""
         if not is_metric_buffer(original):
@@ -313,14 +368,21 @@ def main() -> None:
         else:
             kept += 1
             status = f"оставлен оригинал ({reason})"
-        rows.append({"base_index": i, "status": status,
-                     "original": original, "rewritten": best or "",
-                     "last_candidate": "" if best else last})
+        record = {"base_index": i, "status": status,
+                  "original": original, "rewritten": best or "",
+                  "last_candidate": "" if best else last}
+        rows.append(record)
+        cp.write(json.dumps(record, ensure_ascii=False) + "\n")
+        cp.flush()
         print(f"  [{n}/{len(targets)}] base={i} {status}")
 
+    cp.close()
     df.to_csv(args.out, sep=";", index=False)
     pd.DataFrame(rows).to_csv(args.report, index=False)
+    snapshot = snapshot_path(args.out)
+    df.to_csv(snapshot, sep=";", index=False)
     print(f"\nreframed {changed}, kept original {kept} -> {args.out}")
+    print(f"immutable copy -> {snapshot}")
     print(f"per-row report -> {args.report}")
 
 
