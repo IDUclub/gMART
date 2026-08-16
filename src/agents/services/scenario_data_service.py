@@ -61,7 +61,7 @@ class ScenarioDataService(BaseLlmService):
         model: str,
         temperature: float,
         user_query: str,
-        scenario_id: int,
+        scenario_id: int | None = None,
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
@@ -121,6 +121,17 @@ class ScenarioDataService(BaseLlmService):
         token_ref = [token]
         parts: list[TextPartRequest | TablePartRequest | ToolCallPartRequest] = []
         observations: list[dict[str, Any]] = []
+        if scenario_id is None:
+            observations.append(
+                {
+                    "context": "Сценарий не выбран.",
+                    "summary": (
+                        "Доступны только общие инструменты без обязательного "
+                        "scenario_id. Если вопрос относится к конкретному сценарию, "
+                        "нужно попросить пользователя выбрать сценарий."
+                    ),
+                }
+            )
         executed: set[str] = set()
 
         yield self._buf(
@@ -136,18 +147,31 @@ class ScenarioDataService(BaseLlmService):
             tools_box,
         ):
             yield self._buf(request_id, event)
-        tools: list[UrbanMcpTool] = tools_box[0]
-        if not tools:
+        loaded_tools: list[UrbanMcpTool] = tools_box[0]
+        if not loaded_tools:
             raise ValueError("Urban MCP returned no read-only tools")
+        tools = self._tools_for_context(loaded_tools, scenario_id)
+        if not tools:
+            observations.append(
+                {
+                    "context": "Нет инструментов без контекста сценария.",
+                    "summary": "Попроси пользователя выбрать сценарий.",
+                }
+            )
 
         successful_calls = 0
-        for _ in range(MAX_SCENARIO_TOOL_CALLS + 3):
+        for _ in range(MAX_SCENARIO_TOOL_CALLS + 3 if tools else 0):
             yield self._buf(
                 request_id,
                 self._status("planning", "Выбираю следующий источник данных…"),
             )
             action = await self.plan_builder.choose_action(
-                model, user_query, tools, observations, history
+                model,
+                user_query,
+                tools,
+                observations,
+                history,
+                scenario_id=scenario_id,
             )
             if action.action == ScenarioDataActionKind.FINAL_ANSWER:
                 break
@@ -224,7 +248,9 @@ class ScenarioDataService(BaseLlmService):
                     action.group,
                     action.tool_name,
                     arguments,
-                    meta={"scenario_id": scenario_id},
+                    meta=(
+                        {"scenario_id": scenario_id} if scenario_id is not None else {}
+                    ),
                 ),
                 result_box,
             ):
@@ -289,7 +315,9 @@ class ScenarioDataService(BaseLlmService):
 
     @staticmethod
     def _prepare_arguments(
-        tool: UrbanMcpTool, arguments: dict[str, Any], scenario_id: int
+        tool: UrbanMcpTool,
+        arguments: dict[str, Any],
+        scenario_id: int | None,
     ) -> dict[str, Any]:
         properties = tool.input_schema.get("properties") or {}
         prepared = {
@@ -297,7 +325,7 @@ class ScenarioDataService(BaseLlmService):
             for key, value in arguments.items()
             if key in properties and value is not None
         }
-        if "scenario_id" in properties:
+        if "scenario_id" in properties and scenario_id is not None:
             prepared["scenario_id"] = scenario_id
         required = set(tool.input_schema.get("required") or [])
         missing = required - set(prepared)
@@ -306,6 +334,20 @@ class ScenarioDataService(BaseLlmService):
                 f"Tool {tool.group}.{tool.name} requires arguments: {sorted(missing)}"
             )
         return prepared
+
+    @staticmethod
+    def _tools_for_context(
+        tools: list[UrbanMcpTool], scenario_id: int | None
+    ) -> list[UrbanMcpTool]:
+        """Hide tools that require scenario context when no scenario is selected."""
+
+        if scenario_id is not None:
+            return tools
+        return [
+            tool
+            for tool in tools
+            if "scenario_id" not in set(tool.input_schema.get("required") or [])
+        ]
 
     async def _retryable_operation(
         self,

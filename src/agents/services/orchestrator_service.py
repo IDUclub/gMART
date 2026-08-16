@@ -331,14 +331,8 @@ class OrchestratorService(BaseLlmService):
                 persist_history=False,
             )
         if step.agent == OrchestratorAgent.SCENARIO_DATA:
-            if (
-                scenario_id is None
-                or urban_mcp_client is None
-                or self.scenario_data_service is None
-            ):
-                raise ValueError(
-                    "scenario_data step requires scenario_id and URBAN_MCP_SERVER"
-                )
+            if urban_mcp_client is None or self.scenario_data_service is None:
+                raise ValueError("scenario_data step requires URBAN_MCP_SERVER")
             return self.scenario_data_service.run_scenario_data_pipeline(
                 urban_mcp_client=urban_mcp_client,
                 token=token,

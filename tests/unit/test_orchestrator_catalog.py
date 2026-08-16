@@ -34,6 +34,7 @@ def test_all_agents_available_with_scenario_and_urls():
 
 def test_scenario_bound_agents_excluded_without_scenario():
     assert keys(available_agents(config(), scenario_id=None)) == {
+        OrchestratorAgent.SCENARIO_DATA,
         OrchestratorAgent.DOCUMENTS,
         OrchestratorAgent.NORMS,
     }
