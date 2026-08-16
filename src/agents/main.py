@@ -19,6 +19,7 @@ from src.agents.routers.auth_controller import auth_router
 from src.agents.routers.compliance_controller import compliance_router
 from src.agents.routers.dvd_a2a_controller import dvd_a2a_router
 from src.agents.routers.dvd_controller import dvd_router
+from src.agents.routers.mcp_diagnostics_controller import mcp_diagnostics_router
 from src.agents.routers.norms_a2a_controller import norms_a2a_router
 from src.agents.routers.norms_controller import norms_router
 from src.agents.routers.orchestrator_controller import orchestrator_router
@@ -79,6 +80,7 @@ app.include_router(restriction_router)
 app.include_router(compliance_router)
 app.include_router(provision_router)
 app.include_router(dvd_router)
+app.include_router(mcp_diagnostics_router)
 app.include_router(norms_router)
 app.include_router(orchestrator_router)
 app.include_router(scenario_data_router)
