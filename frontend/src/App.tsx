@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Keycloak from "keycloak-js";
 import ReactMarkdown from "react-markdown";
 import MapPanel from "./MapPanel";
+import McpConsole from "./McpConsole";
 import {
   authAvailable,
   authLogin,
@@ -154,7 +155,7 @@ function load() {
 export default function App() {
   const [settings, setSettings] = useState<Settings>(load),
     [agentId, setAgentId] = useState<AgentId>("restrictions"),
-    [mode, setMode] = useState<"workspace" | "admin">("workspace"),
+    [mode, setMode] = useState<"workspace" | "mcp" | "admin">("workspace"),
     [scenario, setScenario] = useState("772"),
     [project, setProject] = useState(""),
     [token, setToken] = useState(""),
@@ -490,6 +491,12 @@ export default function App() {
             </button>
           ))}
           <button
+            className={mode === "mcp" ? "active" : ""}
+            onClick={() => setMode("mcp")}
+          >
+            <span>⌁</span>MCP-консоль
+          </button>
+          <button
             className={mode === "admin" ? "active" : ""}
             onClick={() => setMode("admin")}
           >
@@ -685,6 +692,8 @@ export default function App() {
               </section>
             </div>
           </>
+        ) : mode === "mcp" ? (
+          <McpConsole settings={settings} token={token} setToken={setToken} />
         ) : (
           <Admin
             settings={settings}
