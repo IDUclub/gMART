@@ -35,9 +35,10 @@ class ScenarioDataPlanBuilder:
         tools: list[UrbanMcpTool],
         observations: list[dict[str, Any]],
         history: list[dict] | None = None,
+        scenario_id: int | None = None,
     ) -> ScenarioDataAction:
         shortlist = self._shortlist(tools, user_query, observations)
-        prompt = self._build_prompt(shortlist, observations)
+        prompt = self._build_prompt(shortlist, observations, scenario_id)
         messages = [
             {"role": "system", "content": prompt},
             *(history or []),
@@ -160,7 +161,9 @@ class ScenarioDataPlanBuilder:
 
     @staticmethod
     def _build_prompt(
-        tools: list[UrbanMcpTool], observations: list[dict[str, Any]]
+        tools: list[UrbanMcpTool],
+        observations: list[dict[str, Any]],
+        scenario_id: int | None,
     ) -> str:
         catalog = [tool.compact_prompt_entry() for tool in tools]
         response_shape = {
@@ -186,7 +189,10 @@ class ScenarioDataPlanBuilder:
 Правила:
 - Используй только точные group и tool_name из каталога.
 - Не повторяй уже выполненный вызов с теми же аргументами.
-- scenario_id подставляется системой. Не угадывай и не меняй его.
+- Контекст сценария: {scenario_id if scenario_id is not None else "не выбран"}.
+- Если scenario_id выбран, он подставляется системой: не угадывай и не меняй его.
+- Если scenario_id не выбран и вопрос требует данных конкретного сценария, заверши сбор
+  данных через final_answer: в итоговом ответе нужно попросить пользователя выбрать сценарий.
 - Сначала используй справочники, если для основного запроса нужно узнать ID по названию.
 - Для запроса слоя выбирай инструмент, возвращающий GeoJSON/геометрию.
 - Если собранных наблюдений достаточно для полного ответа, выбери final_answer.

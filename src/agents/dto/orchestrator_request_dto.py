@@ -12,8 +12,9 @@ class OrchestratorRequestDTO(SimpleRequestDTO):
     provision agents.
     Attributes:
         scenario_id (int | None): Scenario ID from Urban API. Required for
-            restriction/provision steps; without it the planner only routes to
-            the documents/norms agents.
+            restriction/provision steps. Without it the scenario-data agent can
+            still answer general Urban API questions, while documents/norms remain
+            available as before.
         chat_id (str | None): Chat Storage UUID for history continuity.
         request_id (str | None): Existing pipeline request ID — pass it to
             replay the buffered events of an interrupted stream.
@@ -24,8 +25,9 @@ class OrchestratorRequestDTO(SimpleRequestDTO):
         examples=[772],
         description=(
             "Scenario ID from Urban API (optional). Required for the restriction "
-            "and provision agents; when chat_id is not provided, a new chat is "
-            "created in ChatStorage tagged with this scenario_id."
+            "and provision agents; the scenario-data agent can work without it "
+            "using tools that do not require scenario context. When chat_id is not "
+            "provided, a new chat is created in ChatStorage tagged with this ID."
         ),
     )
     chat_id: str | None = Field(

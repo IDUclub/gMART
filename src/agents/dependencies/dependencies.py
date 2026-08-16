@@ -22,6 +22,7 @@ from src.agents.services.provsion_service import ProvisionService
 from src.agents.services.restriction_parser_service import (
     RestrictionParserService,
 )
+from src.agents.services.scenario_data_a2a_service import ScenarioDataA2AService
 from src.agents.services.scenario_data_service import ScenarioDataService
 from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.system_service import SystemService
@@ -244,6 +245,15 @@ def get_scenario_data_service() -> ScenarioDataService:
     service = app_deps["scenario_data_service"]
     if not isinstance(service, ScenarioDataService):
         raise TypeError(f"Expected ScenarioDataService, got {type(service)}")
+    return service
+
+
+async def get_scenario_data_a2a_service() -> ScenarioDataA2AService:
+    """Return the initialized scenario-data A2A JSON-RPC service."""
+
+    service = app_deps["scenario_data_a2a_service"]
+    if not isinstance(service, ScenarioDataA2AService):
+        raise TypeError(f"Expected ScenarioDataA2AService, got {type(service)}")
     return service
 
 

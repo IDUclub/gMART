@@ -188,6 +188,33 @@ async def test_sub_agents_run_without_persistence_and_own_request_ids(
 
 
 @pytest.mark.asyncio
+async def test_scenario_data_agent_runs_without_scenario_id(orchestrator, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [{"agent": "scenario_data", "task": "Перечисли типы сервисов"}]
+        )
+    ]
+    pipeline = FakePipeline(
+        [{"type": "chunk", "content": {"text": "Школы", "done": True}}]
+    )
+    orchestrator.scenario_data_service = SimpleNamespace(
+        run_scenario_data_pipeline=pipeline
+    )
+
+    events = await run_pipeline(
+        orchestrator,
+        scenario_id=None,
+        urban_mcp_client=Mock(),
+    )
+
+    assert (
+        events_of_type(events, "step_finished")[0]["content"]["status"] == "completed"
+    )
+    assert pipeline.calls[0]["scenario_id"] is None
+    assert pipeline.calls[0]["persist_history"] is False
+
+
+@pytest.mark.asyncio
 async def test_second_step_receives_first_step_digest(orchestrator, fake_llm):
     fake_llm.json_responses = [
         orchestration_plan_json(
