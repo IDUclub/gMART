@@ -24,6 +24,9 @@ MAX_PLANNER_RETRIES = 2
 #: reply usually means the reasoning trace consumed everything before any content was emitted.
 PLANNER_NUM_PREDICT = 900
 PLANNER_NUM_PREDICT_RETRY = 3000
+#: Effort used on a retry after an empty reply. "low" is exactly the value that produces no
+#: content on a Harmony-served gpt-oss, so escalating to "medium" is the fix, not a guess.
+PLANNER_RETRY_REASONING_EFFORT = "medium"
 
 #: Subjects a tool can be *about* that a general data question is not asking for. These tools
 #: stay in the catalogue — restriction zones are legitimate Urban API data and must remain
@@ -87,11 +90,14 @@ class ScenarioDataPlanBuilder:
                     }
                 )
             # Escalate on each retry. Repeating an identical call is pointless when the
-            # server answered with an empty string: observed on a Harmony-served gpt-oss,
-            # where the whole budget can go to the reasoning channel and leave no content.
-            # Reasoning cannot simply be switched off there — Harmony rejects both
-            # reasoning_effort="none" and "minimal" — so the levers are the answer budget
-            # and the schema constraint, which measurably shortens output on this server.
+            # server answered with an empty string, and on a Harmony-served gpt-oss the
+            # lever that actually matters is the reasoning effort, not the budget:
+            # measured on the same prompt, reasoning_effort="low" returns *no content at
+            # all* — the model finishes its analysis channel and stops without emitting a
+            # final message — while "medium", "high" and omitting the field all answer.
+            # Prompt size is not the factor: six tools (2k tokens) fail on "low" just as
+            # forty-one (11.5k) do. So a retry raises the effort explicitly, which wins
+            # over the configured default because _apply_think uses setdefault.
             budget = PLANNER_NUM_PREDICT if attempt == 0 else PLANNER_NUM_PREDICT_RETRY
             call: dict[str, Any] = {
                 "model": model,
@@ -99,6 +105,8 @@ class ScenarioDataPlanBuilder:
                 "think": False,
                 "options": {"temperature": 0, "num_predict": budget},
             }
+            if attempt > 0:
+                call["reasoning_effort"] = PLANNER_RETRY_REASONING_EFFORT
             if attempt < MAX_PLANNER_RETRIES:
                 call["format"] = ScenarioDataAction.model_json_schema()
             else:
@@ -117,10 +125,25 @@ class ScenarioDataPlanBuilder:
             response = await self.llm_client.chat(**call)
             raw = response["message"]["content"]
             if not (raw or "").strip():
-                error = "модель вернула пустой ответ"
+                # Name the real cause. "Empty answer" on its own sent a reader looking for a
+                # vague prompt, when the model had in fact reasoned to a conclusion and
+                # simply never emitted it.
+                trace = (response["message"].get("thinking") or "").strip()
+                error = (
+                    "модель не выдала финальный ответ"
+                    + (
+                        f" (сгенерирован только след рассуждений: {trace[:160]}…)"
+                        if trace
+                        else " (пустой ответ без следа рассуждений)"
+                    )
+                    + "; на gpt-oss через Harmony это даёт reasoning_effort=low — "
+                    "поднимите OPENAI_THINK_EFFORT до medium"
+                )
                 logger.warning(
                     f"Empty scenario-data action, attempt {attempt + 1} "
-                    f"(num_predict={budget}, format={'format' in call})"
+                    f"(num_predict={budget}, format={'format' in call}, "
+                    f"reasoning_effort={call.get('reasoning_effort', 'configured')}, "
+                    f"reasoning_trace_len={len(trace)})"
                 )
                 continue
             try:

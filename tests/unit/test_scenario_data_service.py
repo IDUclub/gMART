@@ -408,8 +408,11 @@ class TestPlannerEmptyResponse:
 
         assert action.action == ScenarioDataActionKind.FINAL_ANSWER
         assert len(calls) == 2
-        # The retry must actually differ: a bigger answer budget.
+        # The retry must actually differ: a bigger answer budget, and — the lever that
+        # actually decides this on a Harmony-served gpt-oss — a higher reasoning effort.
         assert calls[1]["options"]["num_predict"] > calls[0]["options"]["num_predict"]
+        assert "reasoning_effort" not in calls[0]
+        assert calls[1]["reasoning_effort"] == "medium"
 
     async def test_the_last_attempt_drops_the_schema_constraint(self):
         """Structured output measurably shortens replies on this server; it goes last."""
