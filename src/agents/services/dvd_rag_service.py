@@ -79,7 +79,7 @@ class DvdRagService(BaseLlmService):
         self,
         dvd_mcp_client: "DvdMcpClient",
         token: str,
-        model: str,
+        model: str | None,
         temperature: float,
         user_query: str,
         scenario_id: int | None = None,
@@ -87,6 +87,9 @@ class DvdRagService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        # Fill in the provider's model when the caller named none; keeps REST and A2A
+        # on one behaviour and out of backend-specific literals.
+        model = await self.resolve_model(model)
         collected: dict[str, Any] = {
             "final_answer": "",
             "tool_calls": [],
@@ -154,6 +157,7 @@ class DvdRagService(BaseLlmService):
                         scenario_id=scenario_id,
                         project_id=project_id,
                         resolve_project_id=False,
+                        agent_id="documents",
                     )
                     yield self._buf(
                         request_id, self._chat_created_event(chat_id, title)

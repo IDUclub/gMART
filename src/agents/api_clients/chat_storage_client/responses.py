@@ -35,6 +35,7 @@ class MessageAdded:
     chat_id: str
     message_id: str
     message_type: MessageUploadType
+    seq: int | None = None
 
 
 @dataclass(frozen=True)

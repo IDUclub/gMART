@@ -36,32 +36,36 @@ class SimpleLlmService(BaseLlmService):
             urban_api_client=urban_api_client,
         )
 
-    async def generate_message(self, user_request: str, model: str) -> dict[str, Any]:
+    async def generate_message(
+        self, user_request: str, model: str | None
+    ) -> dict[str, Any]:
         """
         Generate a message from a user request.
         Args:
             user_request (str): User request.
-            model (str): Model name gto generate response on.
+            model (str | None): Model name; None resolves to the provider's default.
         Returns:
             dict[str, Any]: Response message.
         """
 
+        model = await self.resolve_model(model)
         await self.validate_model(model)
         messages = [{"role": "user", "content": user_request}]
         return await self.llm_client.chat(model, messages, stream=False)
 
     async def generate_stream_message(
-        self, user_request: str, model: str
+        self, user_request: str, model: str | None
     ) -> AsyncGenerator[dict[str, str], None]:
         """
         Generate a message from a user request.
         Args:
             user_request (str): User request.
-            model (str): Model name to generate response on.
+            model (str | None): Model name; None resolves to the provider's default.
         Returns:
             AsyncGenerator[dict[str, Any], None]: generator of chunks from the LLM backend.
         """
 
+        model = await self.resolve_model(model)
         messages = [{"role": "user", "content": user_request}]
         async for part in await self.llm_client.chat(model, messages, stream=True):
             part: LlmChatResponse

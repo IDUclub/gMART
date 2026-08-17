@@ -94,14 +94,18 @@ class RestrictionParserService(BaseLlmService):
         self,
         mcp_client: IduMcpClient,
         temperature: float,
-        model: str,
+        model: str | None,
         user_query: str,
         scenario_id: int,
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
         normgraph_mcp_client: NormGraphMcpClient | None = None,
+        history_agent: str = "restrictions",
     ) -> AsyncGenerator:
+        # Fill in the provider's model when the caller named none; keeps REST and A2A
+        # on one behaviour and out of backend-specific literals.
+        model = await self.resolve_model(model)
         # Mutable container so the inner pipeline can update the token on
         # refresh and the outer generator sees the latest value.
         token_ref: list[str] = [
@@ -123,6 +127,7 @@ class RestrictionParserService(BaseLlmService):
             token_ref=token_ref,
             persist_history=persist_history,
             normgraph_mcp_client=normgraph_mcp_client,
+            history_agent=history_agent,
         ):
             chat_id = self._chat_id_from_storage_event(item) or chat_id
             if item.get("type") == "tool_call":
@@ -178,6 +183,7 @@ class RestrictionParserService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
         normgraph_mcp_client: NormGraphMcpClient | None = None,
+        history_agent: str = "restrictions",
     ) -> AsyncGenerator:
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
@@ -218,8 +224,9 @@ class RestrictionParserService(BaseLlmService):
                             user_query,
                             additional_instructions="""Первый запрос пользователя был отправлен к сервису
                                 создания слоёв с ограничениями ихз запроса пользователя.
-                                """,
+                            """,
                             scenario_id=scenario_id,
+                            agent_id=history_agent,
                         ),
                         chat_result,
                     ):

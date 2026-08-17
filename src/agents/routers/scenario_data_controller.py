@@ -36,6 +36,7 @@ async def stream_scenario_data(
         service,
         user_request.model,
         rerun=False,
+        continue_on_disconnect=True,
         urban_mcp_client=urban_mcp_client,
         token=token,
         user_query=user_request.request,

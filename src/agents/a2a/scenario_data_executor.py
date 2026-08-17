@@ -21,7 +21,9 @@ A2AEventData = dict[str, Any]
 class ScenarioDataAgentExecutor:
     """Execute scenario-data pipelines and map their SSE items to A2A events."""
 
-    DEFAULT_MODEL = "gpt-oss:20b"
+    # None means "whatever the provider serves" — resolved by
+    # BaseLlmService.resolve_model, so A2A and REST share one default.
+    DEFAULT_MODEL = None
     DEFAULT_TEMPERATURE = 1.0
 
     def __init__(

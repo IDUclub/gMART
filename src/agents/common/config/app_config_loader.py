@@ -47,6 +47,15 @@ def load_config() -> AgentsAppConfig:
                 auth_helper_api_key=os.getenv("AUTH_HELPER_API_KEY"),
                 llm_backend=os.getenv("LLM_BACKEND"),
                 openai_base_url=os.getenv("OPENAI_BASE_URL"),
+                scenario_data_linear_workflow_enabled=os.getenv(
+                    "SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED", "false"
+                ).lower()
+                in {"1", "true", "yes", "on"},
+                scenario_data_workspace_enabled=os.getenv(
+                    "SCENARIO_DATA_WORKSPACE_ENABLED", "false"
+                ).lower()
+                in {"1", "true", "yes", "on"},
+                context_internal_api_key=os.getenv("CONTEXT_INTERNAL_API_KEY"),
             )
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
     try:
@@ -65,6 +74,15 @@ def load_config() -> AgentsAppConfig:
             auth_helper_api_key=os.getenv("AUTH_HELPER_API_KEY"),
             llm_backend=os.getenv("LLM_BACKEND"),
             openai_base_url=os.getenv("OPENAI_BASE_URL"),
+            scenario_data_linear_workflow_enabled=os.getenv(
+                "SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED", "false"
+            ).lower()
+            in {"1", "true", "yes", "on"},
+            scenario_data_workspace_enabled=os.getenv(
+                "SCENARIO_DATA_WORKSPACE_ENABLED", "false"
+            ).lower()
+            in {"1", "true", "yes", "on"},
+            context_internal_api_key=os.getenv("CONTEXT_INTERNAL_API_KEY"),
         )
     except ValueError:
         raise

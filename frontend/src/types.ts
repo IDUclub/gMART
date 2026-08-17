@@ -42,14 +42,29 @@ export type MessagePart = {
   part_seq: number;
   kind: string;
   payload: Record<string, any>;
+  mcp_source?: string | null;
 };
 export type Message = {
   message_id: string;
+  chat_id?: string;
+  seq?: number;
   role: string;
   parts: MessagePart[];
   created_at: string;
+  updated_at?: string;
+  metadata?: Record<string, unknown>;
 };
-export type Chat = ChatSummary & { messages: Message[] };
+export type Chat = ChatSummary & {
+  messages: Message[];
+  has_more?: boolean;
+  next_before_seq?: number | null;
+};
+export type StatusEntry = {
+  id: string;
+  text: string;
+  time: string;
+  state: "active" | "done" | "warning";
+};
 export type Settings = {
   theme: "light" | "dark";
   basemap: string;

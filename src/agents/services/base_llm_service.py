@@ -9,6 +9,7 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
     StatusPartRequest,
+    StructuredPartRequest,
     TablePartRequest,
     TextPartRequest,
     ToolCallPartRequest,
@@ -18,6 +19,7 @@ from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiCli
 from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
 from src.agents.model_clients.base_client import BaseLlmClient
 from src.agents.model_clients.llm_base import LlmResponseError
+from src.agents.model_clients.model_defaults import resolve_default_model
 
 
 class BaseLlmService(BaseLlmClient):
@@ -72,6 +74,27 @@ class BaseLlmService(BaseLlmClient):
         available_models = await self.get_models()
         if model_name not in available_models:
             raise ModelNotFound(model_name, available_models)
+
+    async def resolve_model(self, model_name: str | None) -> str:
+        """
+        Resolve the model for a pipeline run, filling in the provider's default.
+
+        Every pipeline entry point calls this first, so REST and A2A share one behaviour and
+        no agent has to carry a backend-specific literal. A name the caller supplied is passed
+        through untouched — validating it here would cost a model-list round trip on every
+        request, and an unknown one already surfaces as the provider's own 404.
+
+        Args:
+            model_name (str | None): Model requested by the caller, or None.
+        Returns:
+            str: The model to run with.
+        Raises:
+            NoModelsAvailable: No model was named and the provider serves none.
+        """
+
+        if model_name:
+            return model_name
+        return await resolve_default_model(self.llm_client)
 
     # TODO revise chat title generation after full generation or update chat name after full generation
     async def generate_chat_title(
@@ -237,6 +260,7 @@ class BaseLlmService(BaseLlmClient):
             token, chat_id, role, text, **kwargs
         )
         logger.info(f"Added message with {asdict(message_info)}")
+        return message_info
 
     async def add_complex_message(
         self,
@@ -244,7 +268,11 @@ class BaseLlmService(BaseLlmClient):
         chat_id: str,
         role: RoleEnum,
         parts: list[
-            TextPartRequest | StatusPartRequest | ToolCallPartRequest | TablePartRequest
+            TextPartRequest
+            | StatusPartRequest
+            | ToolCallPartRequest
+            | TablePartRequest
+            | StructuredPartRequest
         ],
         **kwargs,
     ):
@@ -264,6 +292,7 @@ class BaseLlmService(BaseLlmClient):
             token, chat_id, role, parts, **kwargs
         )
         logger.info(f"Added messages with {asdict(message_info)}")
+        return message_info
 
     async def get_chat_messages(self, token: str, chat_id: str) -> ChatHistory:
         """

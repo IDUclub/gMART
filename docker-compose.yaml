@@ -37,6 +37,22 @@ services:
     networks:
       - localnet
 
+  context_worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile-agents
+    container_name: gmart_context_worker
+    command: ["python", "-m", "src.agents.workers.context_worker"]
+    env_file:
+      - ./env/.env.agents.example
+    depends_on:
+      pipeline_storage:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: ["context-worker"]
+    networks:
+      - localnet
+
   pipeline_storage:
     image: redis:7-alpine
     container_name: pipeline_storage

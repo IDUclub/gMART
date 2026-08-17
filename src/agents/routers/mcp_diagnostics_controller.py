@@ -2,46 +2,54 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from src.agents.dependencies.dependencies import get_idu_mcp_client
-from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
+from src.agents.dependencies.dependencies import get_mcp_diagnostics_service
 from src.agents.schema.mcp_diagnostics import McpToolCallRequest
+from src.agents.services.mcp_diagnostics_service import McpDiagnosticsService
 
 mcp_diagnostics_router = APIRouter(prefix="/mcp-diagnostics", tags=["mcp-diagnostics"])
 
 
+@mcp_diagnostics_router.get("/sources")
+async def list_sources(
+    service: McpDiagnosticsService = Depends(get_mcp_diagnostics_service),
+) -> list[dict[str, Any]]:
+    """List the fixed MCP sources configured for this Agents instance."""
+
+    return service.sources()
+
+
 @mcp_diagnostics_router.get("/tools")
 async def list_tools(
-    mcp_client: IduMcpClient = Depends(get_idu_mcp_client),
+    source: str = "idu",
+    service: McpDiagnosticsService = Depends(get_mcp_diagnostics_service),
 ) -> list[dict[str, Any]]:
-    """List tools exposed by the IDU MCP configured for this Agents instance."""
+    """List safe tools exposed by one configured MCP source."""
 
-    return await mcp_client.load_ollama_tools()
+    return await service.list_tools(source)
 
 
 @mcp_diagnostics_router.get("/prompts")
 async def list_prompts(
-    mcp_client: IduMcpClient = Depends(get_idu_mcp_client),
+    source: str = "idu",
+    service: McpDiagnosticsService = Depends(get_mcp_diagnostics_service),
 ) -> list[dict[str, Any]]:
-    """List prompts exposed by the configured IDU MCP server."""
+    """List prompts exposed by one configured MCP source."""
 
-    prompts = await mcp_client.get_prompts()
-    return [
-        prompt.model_dump(mode="json") if hasattr(prompt, "model_dump") else prompt
-        for prompt in prompts
-    ]
+    return await service.list_prompts(source)
 
 
 @mcp_diagnostics_router.post("/tools/call")
 async def call_tool(
     request: McpToolCallRequest,
-    mcp_client: IduMcpClient = Depends(get_idu_mcp_client),
+    service: McpDiagnosticsService = Depends(get_mcp_diagnostics_service),
 ) -> dict[str, Any]:
-    """Execute one configured IDU MCP tool and return its unmodified data payload."""
+    """Execute one allowlisted read-only MCP tool and return its data payload."""
 
-    result = await mcp_client.execute_tool(
+    result = await service.call_tool(
+        request.source,
         request.name,
         request.arguments,
+        group=request.group,
         meta=request.meta,
-        log=True,
     )
     return {"result": result}
