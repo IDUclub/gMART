@@ -241,6 +241,7 @@ class ProvisionService(BaseLlmService):
                                 "расчёта эффектов обеспеченности."
                             ),
                             scenario_id=scenario_id,
+                            agent_id="provision",
                         ),
                         chat_result,
                     ):

@@ -1,3 +1,6 @@
+import os
+
+
 class IduFastMcpConfig:
     """
     IDU Fast MCP Server configuration class
@@ -31,3 +34,24 @@ class IduFastMcpConfig:
                 )
         self.URBAN_API_URL = urban_api_url
         self.APP_WORKERS = workers
+        self.REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+        self.WORKSPACE_ENABLED = os.getenv(
+            "IDU_MCP_WORKSPACE_ENABLED", "false"
+        ).lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self.WORKSPACE_DIR = os.getenv(
+            "IDU_MCP_WORKSPACE_DIR", "/dev/shm/idu-workspace"
+        )
+        self.WORKSPACE_TTL_SECONDS = int(
+            os.getenv("IDU_MCP_WORKSPACE_TTL_SECONDS", "3600")
+        )
+        self.WORKSPACE_MAX_DATASET_BYTES = int(
+            os.getenv("IDU_MCP_WORKSPACE_MAX_DATASET_BYTES", str(128 * 1024 * 1024))
+        )
+        self.WORKSPACE_MAX_TOTAL_BYTES = int(
+            os.getenv("IDU_MCP_WORKSPACE_MAX_TOTAL_BYTES", str(2 * 1024 * 1024 * 1024))
+        )

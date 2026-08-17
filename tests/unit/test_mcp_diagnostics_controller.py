@@ -1,91 +1,109 @@
-"""Unit tests for the MCP diagnostics API used by the embedded UI console."""
+"""Unit tests for the allowlisted MCP diagnostics API handlers."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import pytest
+from pydantic import ValidationError
 
-from src.agents.dependencies.dependencies import get_idu_mcp_client
-from src.agents.routers.mcp_diagnostics_controller import mcp_diagnostics_router
+from src.agents.routers.mcp_diagnostics_controller import (
+    call_tool,
+    list_prompts,
+    list_sources,
+    list_tools,
+)
+from src.agents.schema.mcp_diagnostics import McpToolCallRequest
+from src.agents.services.mcp_diagnostics_service import _is_safe_tool
 
 
-def _client(mcp_client: AsyncMock) -> TestClient:
-    app = FastAPI()
-    app.include_router(mcp_diagnostics_router)
-    app.dependency_overrides[get_idu_mcp_client] = lambda: mcp_client
-    return TestClient(app)
+@pytest.mark.asyncio
+async def test_lists_configured_sources():
+    service = MagicMock()
+    service.sources.return_value = [
+        {"id": "idu", "title": "IDU MCP", "available": True}
+    ]
+
+    result = await list_sources(service)
+
+    assert result[0]["id"] == "idu"
+    service.sources.assert_called_once_with()
 
 
-def test_lists_current_mcp_tools():
-    mcp_client = AsyncMock()
-    mcp_client.load_ollama_tools.return_value = [
+@pytest.mark.asyncio
+async def test_lists_tools_for_selected_source():
+    service = AsyncMock()
+    service.list_tools.return_value = [
         {
             "type": "function",
-            "function": {
-                "name": "GetServices",
-                "description": "Services",
-                "parameters": {"type": "object"},
-            },
+            "source": "urban",
+            "group": "projects",
+            "read_only": True,
+            "function": {"name": "GetScenarios"},
         }
     ]
 
-    response = _client(mcp_client).get("/mcp-diagnostics/tools")
+    result = await list_tools("urban", service)
 
-    assert response.status_code == 200
-    assert response.json()[0]["function"]["name"] == "GetServices"
-    mcp_client.load_ollama_tools.assert_awaited_once_with()
-
-
-def test_lists_serialized_prompts():
-    prompt = SimpleNamespace(
-        model_dump=lambda **kwargs: {
-            "name": "GetAvailableServices",
-            "arguments": [{"name": "scenario_id", "required": True}],
-        }
-    )
-    mcp_client = AsyncMock()
-    mcp_client.get_prompts.return_value = [prompt]
-
-    response = _client(mcp_client).get("/mcp-diagnostics/prompts")
-
-    assert response.status_code == 200
-    assert response.json() == [
-        {
-            "name": "GetAvailableServices",
-            "arguments": [{"name": "scenario_id", "required": True}],
-        }
-    ]
-    mcp_client.get_prompts.assert_awaited_once_with()
+    assert result[0]["group"] == "projects"
+    service.list_tools.assert_awaited_once_with("urban")
 
 
-def test_calls_tool_with_arguments_and_meta():
-    mcp_client = AsyncMock()
-    mcp_client.execute_tool.return_value = {"type": "FeatureCollection", "features": []}
+@pytest.mark.asyncio
+async def test_lists_prompts_for_selected_source():
+    service = AsyncMock()
+    service.list_prompts.return_value = [{"name": "SearchDocuments"}]
 
-    response = _client(mcp_client).post(
-        "/mcp-diagnostics/tools/call",
-        json={
-            "name": "GetServices",
-            "arguments": {"scenario_id": 772},
-            "meta": {"source": "diagnostics"},
-        },
-    )
+    result = await list_prompts("dvd", service)
 
-    assert response.status_code == 200
-    assert response.json() == {"result": {"type": "FeatureCollection", "features": []}}
-    mcp_client.execute_tool.assert_awaited_once_with(
-        "GetServices",
-        {"scenario_id": 772},
+    assert result == [{"name": "SearchDocuments"}]
+    service.list_prompts.assert_awaited_once_with("dvd")
+
+
+@pytest.mark.asyncio
+async def test_calls_tool_with_source_group_arguments_and_meta():
+    service = AsyncMock()
+    service.call_tool.return_value = {"type": "FeatureCollection", "features": []}
+    request = McpToolCallRequest(
+        source="urban",
+        group="projects",
+        name="GetScenarioObjects",
+        arguments={"scenario_id": 772},
         meta={"source": "diagnostics"},
-        log=True,
+    )
+
+    result = await call_tool(request, service)
+
+    assert result == {"result": {"type": "FeatureCollection", "features": []}}
+    service.call_tool.assert_awaited_once_with(
+        "urban",
+        "GetScenarioObjects",
+        {"scenario_id": 772},
+        group="projects",
+        meta={"source": "diagnostics"},
     )
 
 
-def test_rejects_non_object_arguments():
-    response = _client(AsyncMock()).post(
-        "/mcp-diagnostics/tools/call",
-        json={"name": "GetServices", "arguments": []},
+def test_rejects_unknown_source_and_non_object_arguments():
+    with pytest.raises(ValidationError):
+        McpToolCallRequest(source="external", name="GetServices", arguments={})
+    with pytest.raises(ValidationError):
+        McpToolCallRequest(name="GetServices", arguments=[])
+
+
+def test_read_only_annotation_takes_priority_over_tool_name():
+    forbidden = SimpleNamespace(
+        name="GetButMutates",
+        annotations={"readOnlyHint": False},
+    )
+    allowed = SimpleNamespace(
+        name="CustomLookup",
+        annotations={"readOnlyHint": True},
     )
 
-    assert response.status_code == 422
+    assert _is_safe_tool(forbidden) is False
+    assert _is_safe_tool(allowed) is True
+
+
+def test_legacy_tools_use_conservative_name_allowlist():
+    assert _is_safe_tool(SimpleNamespace(name="CalculateObjectEffects")) is True
+    assert _is_safe_tool(SimpleNamespace(name="DeleteScenario")) is False

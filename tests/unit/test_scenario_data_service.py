@@ -96,6 +96,39 @@ def test_planner_requests_scenario_clarification_when_context_is_missing():
     assert "попросить пользователя выбрать сценарий" in prompt
 
 
+def test_planner_prompt_uses_concrete_action_values():
+    prompt = ScenarioDataPlanBuilder._build_prompt([], [], 772)
+
+    assert '"action": "call_tool | final_answer"' not in prompt
+    assert '"call_tool" или "final_answer"' in prompt
+    assert '"action": "final_answer"' in prompt
+
+
+async def test_pipeline_completion_awaits_chat_storage_persistence(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: fake_llm,
+    )
+    service = ScenarioDataService("http://llm", AsyncMock(), fake_urban, state_store)
+    service.add_complex_message = AsyncMock()
+    parts = [AsyncMock()]
+
+    await service._complete_pipeline(
+        "request",
+        "token",
+        "chat",
+        parts,
+        scenario_id=772,
+        persist_history=True,
+    )
+
+    service.add_complex_message.assert_awaited_once()
+    assert service.add_complex_message.await_args.args[1] == "chat"
+    assert service.add_complex_message.await_args.args[3] == parts
+
+
 async def test_pipeline_without_scenario_skips_scenario_only_catalog(
     monkeypatch, fake_llm, fake_urban, state_store
 ):
@@ -177,6 +210,44 @@ def test_list_result_becomes_strict_table():
     }
 
 
+def test_table_keeps_domain_fields_when_properties_is_metadata():
+    table = ScenarioDataService._table_from_result(
+        [
+            {
+                "service_type_id": 7,
+                "name": "Школа",
+                "properties": {"weight_value": 1},
+            }
+        ],
+        name="service types",
+        title="Типы сервисов",
+    )
+
+    assert table is not None
+    assert [column["key"] for column in table["columns"]] == [
+        "service_type_id",
+        "name",
+        "properties",
+    ]
+
+
+def test_table_unwraps_geojson_feature_properties():
+    table = ScenarioDataService._table_from_result(
+        [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [30, 60]},
+                "properties": {"id": 1, "name": "Школа"},
+            }
+        ],
+        name="features",
+        title="Объекты",
+    )
+
+    assert table is not None
+    assert table["rows"] == [{"id": 1, "name": "Школа"}]
+
+
 async def test_pipeline_replay_buffer_serializes_geojson_datetimes():
     redis = AsyncMock()
     store = PipelineStateStore(redis)
@@ -208,6 +279,45 @@ async def test_pipeline_replay_buffer_serializes_geojson_datetimes():
             "properties"
         ]["updated_at"]
         == "2026-08-15 10:00:00+00:00"
+    )
+
+
+async def test_chat_single_flight_is_released_by_cancel(state_store):
+    await state_store.create(
+        "request-1",
+        chat_id="chat-1",
+        user_query="question",
+        scenario_id=772,
+        model="model",
+        temperature=0,
+    )
+    assert await state_store.acquire_chat("chat-1", "request-1") is True
+    assert await state_store.acquire_chat("chat-1", "request-2") is False
+
+    assert await state_store.cancel("request-1") is True
+    assert await state_store.acquire_chat("chat-1", "request-2") is True
+
+
+async def test_token_wait_is_accumulated_in_pipeline_state(state_store):
+    await state_store.create(
+        "request-1",
+        chat_id=None,
+        user_query="question",
+        scenario_id=772,
+        model="model",
+        temperature=0,
+    )
+
+    await state_store.add_token_wait("request-1", 12.5)
+    await state_store.add_token_wait("request-1", 2.5)
+
+    state = await state_store.get_state("request-1")
+    assert state["token_wait_seconds"] == 15.0
+    assert state["started_at"] > 0
+    assert (
+        0
+        < await state_store._redis.ttl(state_store._key("request-1", "state"))
+        <= 15 * 60
     )
 
 
@@ -432,3 +542,95 @@ class TestPlannerEmptyResponse:
 
         assert "format" in calls[0] and "format" in calls[1]
         assert "format" not in calls[-1]
+
+
+class TestPlannerAmbiguousActionRepair:
+    @staticmethod
+    def _tool() -> UrbanMcpTool:
+        return UrbanMcpTool(
+            group="physical_objects",
+            name="GetPhysicalObjects",
+            title="Физические объекты сценария",
+            description="",
+            input_schema={"type": "object", "properties": {}},
+            tags=(),
+        )
+
+    async def test_exact_old_placeholder_is_repaired_to_a_real_tool_call(self):
+        tool = self._tool()
+
+        class PlaceholderLlm:
+            async def chat(self, **kwargs):
+                return {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "action": "call_tool | final_answer",
+                                "group": tool.group,
+                                "tool_name": tool.name,
+                                "arguments": {},
+                            }
+                        )
+                    }
+                }
+
+        action = await ScenarioDataPlanBuilder(PlaceholderLlm()).choose_action(
+            "model", "Какие объекты есть?", [tool], []
+        )
+
+        assert action.action == ScenarioDataActionKind.CALL_TOOL
+        assert action.tool_name == tool.name
+
+    async def test_exact_old_placeholder_is_repaired_to_final_answer(self):
+        class PlaceholderLlm:
+            async def chat(self, **kwargs):
+                return {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "action": "call_tool | final_answer",
+                                "group": None,
+                                "tool_name": None,
+                                "reason": "готово",
+                            }
+                        )
+                    }
+                }
+
+        action = await ScenarioDataPlanBuilder(PlaceholderLlm()).choose_action(
+            "model", "Какие объекты есть?", [], []
+        )
+
+        assert action.action == ScenarioDataActionKind.FINAL_ANSWER
+
+    async def test_an_ambiguous_partial_tool_is_not_guessed(self):
+        calls = 0
+
+        class InvalidLlm:
+            async def chat(self, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "action": "call_tool | final_answer",
+                                    "group": "physical_objects",
+                                    "tool_name": None,
+                                }
+                            )
+                        }
+                    }
+                assert any(
+                    "не объединяй варианты через символ |" in message["content"]
+                    for message in kwargs["messages"]
+                )
+                return {"message": {"content": '{"action": "final_answer"}'}}
+
+        action = await ScenarioDataPlanBuilder(InvalidLlm()).choose_action(
+            "model", "Какие объекты есть?", [self._tool()], []
+        )
+
+        assert calls == 2
+        assert action.action == ScenarioDataActionKind.FINAL_ANSWER

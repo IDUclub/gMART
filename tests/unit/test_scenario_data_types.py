@@ -57,6 +57,21 @@ class TestClassifyTypeQuery:
             ScenarioEntityKind.SERVICE,
         )
 
+    def test_both_sets_resolves_the_previous_clarification(self):
+        history = [
+            {
+                "role": "user",
+                "content": "Какие объекты есть в сценарии и сколько их по типам?",
+            }
+        ]
+
+        intent = classify_type_query("Оба набора", history)
+
+        assert intent.kinds == (
+            ScenarioEntityKind.PHYSICAL_OBJECT,
+            ScenarioEntityKind.SERVICE,
+        )
+
     def test_an_unrelated_question_stays_on_the_general_agent_path(self):
         assert classify_type_query("Покажи показатели населения") is None
 

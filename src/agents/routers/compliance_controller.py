@@ -46,5 +46,6 @@ async def check_compliance(
         chat_id=user_request.chat_id,
         temperature=user_request.temperature,
         request_id=user_request.request_id,
+        history_agent="compliance",
     ):
         yield RestrictionsResponse(**chunk)

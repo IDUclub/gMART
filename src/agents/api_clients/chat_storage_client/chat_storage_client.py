@@ -10,6 +10,7 @@ from src.agents.api_clients.chat_storage_client.entities import (
 )
 from src.agents.api_clients.chat_storage_client.request_models import (
     StatusPartRequest,
+    StructuredPartRequest,
     TablePartRequest,
     TextPartRequest,
     ToolCallPartRequest,
@@ -43,6 +44,7 @@ class ChatStorageApiClient:
             chat_id=message["chat_id"],
             message_id=message["message_id"],
             message_type=creation_type,
+            seq=message.get("seq"),
         )
 
     async def get_user_chats_titles(self, token: str) -> list[str]:
@@ -97,7 +99,7 @@ class ChatStorageApiClient:
             "title": title,
             "scenario_id": scenario_id,
             "project_id": project_id,
-            "meta": kwargs,
+            "metadata": kwargs,
         }
         chat = await self.json_handler.post(
             endpoint="/api/v1/chat_history/create_chat",
@@ -132,7 +134,7 @@ class ChatStorageApiClient:
             data={
                 "role": RoleEnum.parse(role).value,
                 "content": content,
-                "meta": kwargs,
+                "metadata": kwargs,
             },
         )
         return await self._message_created(message, MessageUploadType.TEXT)
@@ -143,7 +145,11 @@ class ChatStorageApiClient:
         chat_id: str,
         role: RoleEnum | str,
         parts: list[
-            TextPartRequest | StatusPartRequest | ToolCallPartRequest | TablePartRequest
+            TextPartRequest
+            | StatusPartRequest
+            | ToolCallPartRequest
+            | TablePartRequest
+            | StructuredPartRequest
         ],
         **kwargs,
     ) -> MessageAdded:
@@ -165,7 +171,37 @@ class ChatStorageApiClient:
             data={
                 "role": RoleEnum.parse(role).value,
                 "parts": [part.model_dump(exclude_none=True) for part in parts],
-                "meta": kwargs,
+                "metadata": kwargs,
             },
         )
         return await self._message_created(message, MessageUploadType.PARTS)
+
+    async def get_context(self, token: str, chat_id: str) -> dict[str, Any]:
+        """Load the published context plus its unsummarized message tail."""
+
+        result = await self.json_handler.get(
+            endpoint=f"/api/v1/chat_context/{chat_id}", auth_token=token
+        )
+        return result or {}
+
+    async def enqueue_context_refresh(
+        self,
+        token: str,
+        chat_id: str,
+        *,
+        target_seq: int | None,
+        model: str,
+        prompt_version: str = "scenario-data-v1",
+    ) -> dict[str, Any]:
+        """Schedule non-blocking context refresh after a finalized turn."""
+
+        result = await self.json_handler.post(
+            endpoint=f"/api/v1/chat_context/{chat_id}/jobs",
+            auth_token=token,
+            data={
+                "target_seq": target_seq,
+                "model": model,
+                "prompt_version": prompt_version,
+            },
+        )
+        return result or {}

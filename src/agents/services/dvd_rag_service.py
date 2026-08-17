@@ -157,6 +157,7 @@ class DvdRagService(BaseLlmService):
                         scenario_id=scenario_id,
                         project_id=project_id,
                         resolve_project_id=False,
+                        agent_id="documents",
                     )
                     yield self._buf(
                         request_id, self._chat_created_event(chat_id, title)

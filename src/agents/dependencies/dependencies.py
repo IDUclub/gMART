@@ -13,6 +13,7 @@ from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 from src.agents.services.a2a_service import A2AService
 from src.agents.services.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd_rag_service import DvdRagService
+from src.agents.services.mcp_diagnostics_service import McpDiagnosticsService
 from src.agents.services.normgraph_a2a_service import NormGraphA2AService
 from src.agents.services.normgraph_rag_service import NormGraphRagService
 from src.agents.services.orchestrator_service import OrchestratorService
@@ -28,6 +29,14 @@ from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.system_service import SystemService
 
 app_deps: dict[str, object] = init_dependencies()
+
+
+async def get_mcp_diagnostics_service(
+    token: str = Depends(verify_bearer_token),
+) -> McpDiagnosticsService:
+    """Return the request-scoped, allowlisted MCP console service."""
+
+    return McpDiagnosticsService(get_app_config(), token)
 
 
 def get_app_config() -> AgentsAppConfig:

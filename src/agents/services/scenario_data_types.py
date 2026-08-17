@@ -51,7 +51,14 @@ _COUNT_MARKERS = (
 _PHYSICAL_MARKERS = ("физическ", "физобъект")
 _SERVICE_MARKERS = ("сервис", "услуг")
 _GENERIC_OBJECT_MARKERS = ("объект",)
-_BOTH_MARKERS = ("и те и те", "и то и другое", "оба варианта", "всё вместе")
+_BOTH_MARKERS = (
+    "и те и те",
+    "и то и другое",
+    "оба варианта",
+    "оба набора",
+    "обе группы",
+    "все вместе",
+)
 
 
 def classify_type_query(

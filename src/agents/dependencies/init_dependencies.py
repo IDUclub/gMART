@@ -79,6 +79,9 @@ def init_dependencies() -> dict[
         chat_storage_client,
         urban_api_client,
         pipeline_state_store,
+        linear_workflow_enabled=app_config.SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED,
+        workspace_enabled=app_config.SCENARIO_DATA_WORKSPACE_ENABLED,
+        idu_mcp_url=app_config.IDU_MCP_URL,
     )
     dvd_rag_service = DvdRagService(
         app_config.OLLAMA_URL,

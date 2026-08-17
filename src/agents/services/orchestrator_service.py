@@ -150,6 +150,7 @@ class OrchestratorService(BaseLlmService):
                         "задачи между агентами платформы."
                     ),
                     scenario_id=scenario_id,
+                    agent_id="orchestrator",
                 )
                 yield self._buf(request_id, self._chat_created_event(chat_id, title))
             except Exception as exc:

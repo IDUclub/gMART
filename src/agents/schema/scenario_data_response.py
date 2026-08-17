@@ -16,6 +16,7 @@ class ScenarioDataStatus(BaseModel):
         "tool_discovery",
         "planning",
         "tool_execution",
+        "workspace",
         "response_analysis",
         # The answer-review loop. Every status the service can emit must be listed here:
         # the SSE payload is validated against this model, so an unlisted one does not
@@ -68,6 +69,19 @@ class ScenarioDataResponse(BaseModel):
         "pipeline_suspended",
         "warning",
         "error",
+        "plan_created",
+        "mapping_started",
+        "mapping_completed",
+        "plan_revision_created",
+        "step_started",
+        "step_completed",
+        "artifact_created",
+        "validation_started",
+        "validation_completed",
+        "budget_warning",
+        "clarification_required",
+        "replanning",
+        "pipeline_failed",
     ]
     content: (
         ScenarioDataStatus
@@ -79,4 +93,5 @@ class ScenarioDataResponse(BaseModel):
         | PipelineStartedContent
         | PipelineEventContent
         | SseBaseError
+        | dict[str, Any]
     )

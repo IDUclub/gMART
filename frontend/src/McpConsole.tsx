@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { request } from "./api";
 import type { Settings } from "./types";
 
@@ -14,11 +14,21 @@ type JsonSchema = {
 
 type McpTool = {
   type: "function";
+  source: string;
+  group?: string | null;
+  read_only?: boolean;
   function: {
     name: string;
     description?: string;
     parameters?: JsonSchema;
   };
+};
+
+type McpSource = {
+  id: string;
+  title: string;
+  description: string;
+  available: boolean;
 };
 
 type McpPrompt = {
@@ -59,6 +69,9 @@ export default function McpConsole({
   setToken: (token: string) => void;
 }) {
   const [tools, setTools] = useState<McpTool[]>([]);
+  const [sources, setSources] = useState<McpSource[]>([]);
+  const [source, setSource] = useState("idu");
+  const [group, setGroup] = useState("");
   const [prompts, setPrompts] = useState<McpPrompt[]>([]);
   const [selectedName, setSelectedName] = useState("");
   const [search, setSearch] = useState("");
@@ -69,42 +82,61 @@ export default function McpConsole({
   const [busy, setBusy] = useState(false);
   const [manualToken, setManualToken] = useState(token);
 
-  const selected = tools.find((tool) => tool.function.name === selectedName);
+  const selected = tools.find(
+    (tool) => `${tool.group || ""}:${tool.function.name}` === selectedName,
+  );
+  const groups = useMemo(
+    () => [...new Set(tools.map((tool) => tool.group).filter(Boolean))] as string[],
+    [tools],
+  );
   const visibleTools = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase("ru");
-    if (!needle) return tools;
     return tools.filter((tool) =>
-      `${tool.function.name} ${tool.function.description || ""}`
-        .toLocaleLowerCase("ru")
-        .includes(needle),
+      (!group || tool.group === group) &&
+      (!needle ||
+        `${tool.group || ""} ${tool.function.name} ${tool.function.description || ""}`
+          .toLocaleLowerCase("ru")
+          .includes(needle)),
     );
-  }, [search, tools]);
+  }, [group, search, tools]);
+
+  useEffect(() => {
+    if (!token) return;
+    request<McpSource[]>(settings.agentsUrl, "/mcp-diagnostics/sources", token)
+      .then(setSources)
+      .catch((error) => setStatus(error instanceof Error ? error.message : String(error)));
+  }, [settings.agentsUrl, token]);
 
   function selectTool(tool: McpTool) {
-    setSelectedName(tool.function.name);
+    setSelectedName(`${tool.group || ""}:${tool.function.name}`);
     setArgumentsJson(pretty(exampleValue(tool.function.parameters || {})));
     setResult("");
   }
 
   async function loadCatalog() {
     setBusy(true);
-    setStatus("Подключаюсь к IDU MCP…");
+    const selectedSource = sources.find((item) => item.id === source);
+    setStatus(`Подключаюсь: ${selectedSource?.title || source}…`);
     try {
+      const query = `?source=${encodeURIComponent(source)}`;
       const [nextTools, nextPrompts] = await Promise.all([
-        request<McpTool[]>(settings.agentsUrl, "/mcp-diagnostics/tools", token),
+        request<McpTool[]>(settings.agentsUrl, `/mcp-diagnostics/tools${query}`, token),
         request<McpPrompt[]>(
           settings.agentsUrl,
-          "/mcp-diagnostics/prompts",
+          `/mcp-diagnostics/prompts${query}`,
           token,
         ),
       ]);
       setTools(nextTools);
       setPrompts(nextPrompts);
+      setGroup("");
       setStatus(
         `Подключено: ${nextTools.length} инструментов, ${nextPrompts.length} промптов`,
       );
       const current =
-        nextTools.find((tool) => tool.function.name === selectedName) ||
+        nextTools.find(
+          (tool) => `${tool.group || ""}:${tool.function.name}` === selectedName,
+        ) ||
         nextTools[0];
       if (current) selectTool(current);
     } catch (error) {
@@ -142,6 +174,8 @@ export default function McpConsole({
         {
           method: "POST",
           body: JSON.stringify({
+            source,
+            group: selected.group || null,
             name: selected.function.name,
             arguments: argumentsValue,
             meta: metaValue,
@@ -163,9 +197,9 @@ export default function McpConsole({
     <div className="mcp-console">
       <header>
         <div>
-          <span className="context-title">Диагностика IDU MCP</span>
+          <span className="context-title">Безопасный доступ к MCP</span>
           <h1>MCP-консоль</h1>
-          <p>Каталог и прямой запуск инструментов текущего MCP-контура</p>
+          <p>Каталог и прямой запуск read-only инструментов связанных сервисов</p>
         </div>
         <div className="mcp-header-actions">
           <label className="mcp-token">
@@ -195,6 +229,26 @@ export default function McpConsole({
         </div>
       </header>
 
+      <section className="mcp-sources" aria-label="MCP-источники">
+        {sources.map((item) => (
+          <button
+            key={item.id}
+            className={source === item.id ? "active" : ""}
+            disabled={!item.available || busy}
+            onClick={() => {
+              setSource(item.id);
+              setTools([]);
+              setPrompts([]);
+              setSelectedName("");
+              setStatus(`${item.title}: нажмите «Обновить каталог»`);
+            }}
+          >
+            <span>{item.title}</span>
+            <small>{item.available ? item.description : "Не настроен"}</small>
+          </button>
+        ))}
+      </section>
+
       <div className="mcp-layout">
         <section className="mcp-catalog">
           <div className="panel-head">
@@ -209,14 +263,23 @@ export default function McpConsole({
               placeholder="Имя или описание"
             />
           </div>
+          {!!groups.length && (
+            <div className="mcp-groups">
+              <button className={!group ? "active" : ""} onClick={() => setGroup("")}>Все</button>
+              {groups.map((item) => (
+                <button className={group === item ? "active" : ""} onClick={() => setGroup(item)} key={item}>{item}</button>
+              ))}
+            </div>
+          )}
           <div className="mcp-tool-list">
             {visibleTools.map((tool) => (
               <button
-                key={tool.function.name}
-                className={selectedName === tool.function.name ? "active" : ""}
+                key={`${tool.group || ""}:${tool.function.name}`}
+                className={selectedName === `${tool.group || ""}:${tool.function.name}` ? "active" : ""}
                 onClick={() => selectTool(tool)}
               >
                 <strong>{tool.function.name}</strong>
+                {tool.group && <em>{tool.group}</em>}
                 <small>{tool.function.description || "Без описания"}</small>
               </button>
             ))}
@@ -235,6 +298,7 @@ export default function McpConsole({
                 <div>
                   <span className="context-title">Выбранный инструмент</span>
                   <h2>{selected.function.name}</h2>
+                  {selected.group && <small className="tool-source">Urban MCP · {selected.group}</small>}
                   <p>
                     {selected.function.description || "Описание отсутствует"}
                   </p>

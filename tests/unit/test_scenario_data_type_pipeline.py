@@ -158,6 +158,48 @@ async def test_physical_type_count_bypasses_llm_and_returns_complete_table(
     assert "2 уникальных физических объекта" in text
 
 
+async def test_linear_type_count_emits_plan_steps_and_validation(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: fake_llm,
+    )
+    service = ScenarioDataService(
+        "http://llm",
+        AsyncMock(),
+        fake_urban,
+        state_store,
+        linear_workflow_enabled=True,
+    )
+    type_5 = _type(5, "Нежилое здание")
+    mcp = FakeUrbanMcp(
+        {
+            "GetScenarioPhysicalObjects": [
+                {"physical_object_id": 1, "physical_object_type": type_5}
+            ],
+            "GetScenarioPhysicalObjectTypes": [type_5],
+        }
+    )
+
+    events = [
+        event
+        async for event in service.run_scenario_data_pipeline(
+            urban_mcp_client=mcp,
+            token="token",
+            model="model",
+            temperature=0,
+            user_query="Сколько физических объектов в сценарии по типам?",
+            scenario_id=772,
+            persist_history=False,
+        )
+    ]
+
+    assert any(event["type"] == "plan_created" for event in events)
+    assert len([event for event in events if event["type"] == "step_started"]) == 2
+    assert any(event["type"] == "validation_completed" for event in events)
+
+
 async def test_unknown_project_type_is_resolved_from_global_dictionary(
     monkeypatch, fake_llm, fake_urban, state_store
 ):
