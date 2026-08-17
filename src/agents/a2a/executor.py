@@ -24,13 +24,15 @@ class RestrictionAgentExecutor:
     """
     Executor for A2A restriction creation tasks.
     Attributes:
-        DEFAULT_MODEL (str): Default model for restriction pipeline.
+        DEFAULT_MODEL (None): No hardcoded model; the provider's default is used.
         DEFAULT_TEMPERATURE (float): Default LLM temperature.
         restriction_service (RestrictionParserService): Restriction pipeline service.
         task_store (A2ATaskStore): A2A task storage.
     """
 
-    DEFAULT_MODEL = "gpt-oss:20b"
+    # None means "whatever the provider serves" — resolved by
+    # BaseLlmService.resolve_model, so A2A and REST share one default.
+    DEFAULT_MODEL = None
     DEFAULT_TEMPERATURE = 1.0
 
     def __init__(
