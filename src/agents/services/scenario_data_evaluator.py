@@ -118,6 +118,21 @@ def deterministic_checks(
                 "числа — распределение не приведено."
             )
 
+    pending = sorted(
+        {
+            reference
+            for observation in observations
+            for reference in (observation.get("unresolved_references") or [])
+        }
+    )
+    if pending:
+        reasons.append(
+            "Записи ссылаются на справочник полями "
+            f"{', '.join(pending)}, но их названия так и не получены — ответ по номерам "
+            "вместо названий не отвечает на вопрос. Нужен вызов справочника и "
+            "сопоставление идентификаторов с названиями."
+        )
+
     if wants_layers(user_query) and _layer_count(observations) == 0:
         reasons.append(
             "Пользователь просил показать объекты на карте, но ни один слой "

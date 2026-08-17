@@ -30,7 +30,10 @@ from src.agents.services.pipeline_state import (
     PipelineStateStore,
     PipelineStatus,
 )
-from src.agents.services.scenario_data_aggregate import aggregate_result
+from src.agents.services.scenario_data_aggregate import (
+    aggregate_result,
+    unresolved_references,
+)
 from src.agents.services.scenario_data_evaluator import (
     MAX_ANSWER_ATTEMPTS,
     ScenarioDataEvaluator,
@@ -191,6 +194,20 @@ class ScenarioDataService(BaseLlmService):
                     scenario_id=scenario_id,
                 )
                 if action.action == ScenarioDataActionKind.FINAL_ANSWER:
+                    if attempt > 0 and successful_calls == 0:
+                        # A retry that finishes without fetching anything can only reproduce
+                        # the answer that was just rejected. Push back once and re-plan.
+                        observations.append(
+                            {
+                                "context": "Повторный проход",
+                                "summary": (
+                                    "Нельзя завершать сбор, не получив новых данных: "
+                                    "предыдущий ответ уже отклонён по этим наблюдениям. "
+                                    "Выбери инструмент, закрывающий указанный пробел."
+                                ),
+                            }
+                        )
+                        continue
                     break
                 if successful_calls >= MAX_SCENARIO_TOOL_CALLS:
                     break
@@ -316,6 +333,18 @@ class ScenarioDataService(BaseLlmService):
                 aggregate = aggregate_result(result)
                 if aggregate is not None:
                     observation["aggregate"] = aggregate
+                    # "12 services of type 3" is not an answer. Naming an unresolved
+                    # reference is a follow-up call, and the planner is told so explicitly
+                    # rather than being left to notice on its own — it does not.
+                    pending = unresolved_references(aggregate)
+                    if pending:
+                        observation["unresolved_references"] = pending
+                        observation["next_step"] = (
+                            "Эти поля — ссылки на справочник: "
+                            f"{', '.join(pending)}. Названия по ним ещё не получены. "
+                            "Вызови справочный инструмент, возвращающий названия для "
+                            "этих идентификаторов, и только потом завершай сбор."
+                        )
                 observations.append(observation)
 
             yield self._buf(

@@ -10,20 +10,21 @@ from src.agents.services.scenario_data_aggregate import (
     aggregate_records,
     aggregate_result,
     extract_records,
+    unresolved_references,
 )
 
 
 def _objects(counts: dict[str, int]) -> list[dict]:
     rows = []
     index = 0
-    for type_name, count in counts.items():
+    for type_id, (type_name, count) in enumerate(counts.items(), start=1):
         for _ in range(count):
             index += 1
             rows.append(
                 {
                     "physical_object_id": index,
                     "name": f"объект {index}",
-                    "physical_object_type": {"id": 1, "name": type_name},
+                    "physical_object_type": {"id": type_id, "name": type_name},
                 }
             )
     return rows
@@ -37,11 +38,35 @@ class TestAggregateRecords:
         counts = result["breakdown"]["physical_object_type.name"]["counts"]
         assert counts == {"Жилой дом": 900, "Банк": 20, "Школа": 4}
 
-    def test_identifiers_are_not_a_breakdown(self):
+    def test_row_identifiers_are_not_a_breakdown(self):
+        """One value per row carries no distribution."""
         result = aggregate_records(_objects({"Жилой дом": 30}))
 
         assert "physical_object_id" not in result["breakdown"]
-        assert "physical_object_type.id" not in result["breakdown"]
+
+    def test_a_foreign_key_is_kept_as_a_join_hint(self):
+        """`service_type_id`-style keys are the join keys the planner needs to resolve.
+
+        Dropping them wholesale is what hid the very field a "which types" question turns on.
+        """
+        result = aggregate_records(_objects({"Жилой дом": 20, "Банк": 10}))
+
+        assert result["breakdown"]["physical_object_type.id"]["distinct_values"] == 2
+
+    def test_a_category_outranks_a_near_constant_field(self):
+        """Ranking by fewest-distinct alone let booleans crowd the type out of the list."""
+        rows = [
+            dict(row, is_capacity_real=True, some_flag=False, other_flag=True)
+            for row in _objects({f"тип {i}": 3 for i in range(10)})
+        ]
+
+        breakdown = aggregate_records(rows)["breakdown"]
+
+        assert "physical_object_type.name" in breakdown
+        names = list(breakdown)
+        assert names.index("physical_object_type.name") < names.index(
+            "is_capacity_real"
+        )
 
     def test_free_text_fields_are_skipped(self):
         """A per-row unique name is an identifier in disguise."""
@@ -63,7 +88,9 @@ class TestAggregateRecords:
         """60 types across 60 rows is indistinguishable from an id, and is dropped."""
         rows = _objects({f"тип {i}": 1 for i in range(60)})
 
-        assert aggregate_records(rows) is None
+        breakdown = (aggregate_records(rows) or {}).get("breakdown", {})
+
+        assert "physical_object_type.name" not in breakdown
 
     def test_returns_none_when_nothing_is_categorical(self):
         rows = [{"id": i, "name": f"n{i}"} for i in range(20)]
@@ -122,3 +149,25 @@ class TestAggregateResult:
         assert result["total_records"] == 5
         assert result["breakdown"]["physical_object_type.name"]["counts"] == {"Банк": 5}
         assert not any("geometry" in key for key in result["breakdown"])
+
+
+class TestUnresolvedReferences:
+    def test_a_bare_foreign_key_needs_a_lookup(self):
+        rows = [{"service_id": i, "service_type_id": i % 12} for i in range(900)]
+
+        aggregate = aggregate_records(rows)
+
+        assert unresolved_references(aggregate) == ["service_type_id"]
+
+    def test_a_key_with_its_name_alongside_needs_nothing(self):
+        rows = [
+            {"service_id": i, "service_type": {"id": i % 3, "name": f"тип {i % 3}"}}
+            for i in range(90)
+        ]
+
+        aggregate = aggregate_records(rows)
+
+        assert unresolved_references(aggregate) == []
+
+    def test_no_aggregate_means_nothing_pending(self):
+        assert unresolved_references(None) == []

@@ -178,3 +178,53 @@ class TestVerdict:
     def test_defaults(self):
         assert Verdict(sufficient=True).hint == ""
         assert Verdict(sufficient=True).reasons == []
+
+
+UNRESOLVED = [
+    {
+        "tool": "projects.GetScenarioServices",
+        "layer_count": 0,
+        "aggregate": {
+            "total_records": 900,
+            "breakdown": {
+                "service_type_id": {"distinct_values": 12, "counts": {"3": 90}}
+            },
+        },
+        "unresolved_references": ["service_type_id"],
+    }
+]
+
+
+class TestUnresolvedReferences:
+    def test_an_answer_by_id_instead_of_name_is_rejected(self):
+        """ "90 services of type 3" is not what "which services" asked for."""
+        answer = "Всего 900 сервисов, из них 90 относятся к типу 3."
+
+        reasons = deterministic_checks("Какие сервисы?", UNRESOLVED, answer)
+
+        assert any("справочник" in reason for reason in reasons)
+
+    def test_the_reason_names_the_field_to_resolve(self):
+        reasons = deterministic_checks("Какие сервисы?", UNRESOLVED, "900 сервисов.")
+
+        assert any("service_type_id" in reason for reason in reasons)
+
+    def test_nothing_is_flagged_once_the_names_are_present(self):
+        observations = [
+            {
+                "tool": "projects.GetScenarioServices",
+                "layer_count": 0,
+                "aggregate": {
+                    "total_records": 900,
+                    "breakdown": {
+                        "service_type.name": {
+                            "distinct_values": 2,
+                            "counts": {"Школа": 500, "Банк": 400},
+                        }
+                    },
+                },
+            }
+        ]
+        answer = "Всего 900 сервисов: школ 500, банков 400."
+
+        assert deterministic_checks("Какие сервисы?", observations, answer) == []

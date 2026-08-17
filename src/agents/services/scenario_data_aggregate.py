@@ -68,9 +68,48 @@ def _flatten(
     return flat
 
 
-def _is_identifier(path: str) -> bool:
+def _is_reference(path: str) -> bool:
+    """True for a key that points at another entity (``service_type_id``)."""
+
     tail = path.rsplit(".", 1)[-1].lower()
     return tail == "id" or tail.endswith("_id") or tail.endswith("_ids")
+
+
+#: Fields that read as a category rather than a measurement. A breakdown by these is what a
+#: "what is there and how much" question is actually asking for, so they outrank everything
+#: else — ranking purely by "fewest distinct values" let near-constant booleans crowd out
+#: ``service_type.name`` and produced a breakdown that answered nothing.
+_CATEGORY_HINTS = ("name", "type", "category", "status", "function", "kind", "level")
+
+
+def _is_category(path: str) -> bool:
+    lowered = path.lower()
+    return any(hint in lowered for hint in _CATEGORY_HINTS)
+
+
+def unresolved_references(aggregate: dict[str, Any] | None) -> list[str]:
+    """Reference fields in ``aggregate`` that have no sibling name to read them by.
+
+    ``service_type_id`` counted 12 ways is a real distribution, but "12 services of type 3"
+    is not an answer. When the sibling ``service_type.name`` is absent, the id has to be
+    resolved through a dictionary tool — this is what tells the planner to make that call
+    instead of stopping.
+    """
+
+    if not aggregate:
+        return []
+    fields = set(aggregate.get("breakdown") or {})
+    pending = []
+    for path in fields:
+        if not _is_reference(path):
+            continue
+        stem = path.rsplit(".", 1)[-1].removesuffix("_ids").removesuffix("_id")
+        if not stem or stem == "id":
+            continue
+        named = {f"{stem}.name", f"{stem}_name", "name"}
+        if not any(candidate in field for field in fields for candidate in named):
+            pending.append(path)
+    return sorted(pending)
 
 
 def aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -86,28 +125,36 @@ def aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any] | None:
     counters: dict[str, Counter] = {}
     for record in records:
         for path, value in _flatten(record).items():
-            if _is_identifier(path):
-                continue
+            # Reference keys are deliberately kept: a low-cardinality `service_type_id` is a
+            # real distribution and the join key that tells the planner which dictionary to
+            # fetch. True row identifiers are dropped below by the distinct == total rule.
             counters.setdefault(path, Counter())[
                 "—" if value is None or value == "" else str(value)
             ] += 1
 
-    scored: list[tuple[int, str, Counter]] = []
+    scored: list[tuple[int, int, str, Counter]] = []
     for path, counter in counters.items():
         distinct = len(counter)
         if distinct <= 1 and total > 1 and counter.most_common(1)[0][0] == "—":
             continue  # a column that is empty everywhere says nothing
-        if distinct > max(1, int(total * MAX_DISTINCT_RATIO)):
-            continue  # effectively an identifier or free text
-        scored.append((distinct, path, counter))
+        if distinct == total and total > 1:
+            continue  # one value per row: an identifier or free text, never a category
+        if not _is_category(path) and distinct > max(
+            1, int(total * MAX_DISTINCT_RATIO)
+        ):
+            # High-cardinality *and* not category-shaped: a measurement or a note. A
+            # category keeps its place even when rows are few and types many, which is
+            # exactly the case a ratio rule alone gets wrong.
+            continue
+        scored.append((0 if _is_category(path) else 1, distinct, path, counter))
 
     if not scored:
         return None
 
-    # Fewer distinct values first: those read as clean categories ("type", "status").
-    scored.sort(key=lambda item: (item[0], item[1]))
+    # Categories first, then the more informative field (fewest distinct) within each rank.
+    scored.sort(key=lambda item: (item[0], item[1], item[2]))
     breakdown: dict[str, Any] = {}
-    for distinct, path, counter in scored[:MAX_FIELDS]:
+    for _rank, distinct, path, counter in scored[:MAX_FIELDS]:
         top = counter.most_common(MAX_VALUES_PER_FIELD)
         entry: dict[str, Any] = {
             "distinct_values": distinct,
