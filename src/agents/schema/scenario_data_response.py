@@ -17,6 +17,12 @@ class ScenarioDataStatus(BaseModel):
         "planning",
         "tool_execution",
         "response_analysis",
+        # The answer-review loop. Every status the service can emit must be listed here:
+        # the SSE payload is validated against this model, so an unlisted one does not
+        # degrade to an unknown label — it raises mid-stream and the client hangs waiting
+        # for a terminal event that never arrives.
+        "answer_review",
+        "answer_retry",
     ]
     text: str
 

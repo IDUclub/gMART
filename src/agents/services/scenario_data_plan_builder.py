@@ -20,6 +20,49 @@ from src.agents.services.service_entities.scenario_data_action import (
 
 MAX_SCENARIO_TOOL_CALLS = 6
 MAX_PLANNER_RETRIES = 2
+#: Answer budget for the planner. The retry budget is deliberately much larger: an empty
+#: reply usually means the reasoning trace consumed everything before any content was emitted.
+#: How many tools the planner is shown. The window is the binding constraint, not the model's
+#: ability to choose: gpt-oss is served with a 16k context, and 41 tools cost 10.3k prompt
+#: tokens, leaving too little for the reasoning channel *and* a final message. Measured on the
+#: same question at reasoning_effort=medium — 41 tools: no content, whether the budget ran out
+#: (finish=length) or the model gave up (finish=stop); 12 tools: answers on a 3k budget.
+SHORTLIST_SIZE = 12
+#: gpt-oss spends this budget on its reasoning channel before any answer: a measured planner
+#: call produced a 4163-character trace, well past what 900 tokens allows, so every first
+#: attempt failed and the run only recovered on the retry. Sized to cover the trace *and* the
+#: JSON, while leaving room inside a 16k window next to a ~4k prompt.
+PLANNER_NUM_PREDICT = 2500
+PLANNER_NUM_PREDICT_RETRY = 3000
+#: Effort used on a retry after an empty reply. "low" is exactly the value that produces no
+#: content on a Harmony-served gpt-oss, so escalating to "medium" is the fix, not a guess.
+PLANNER_RETRY_REASONING_EFFORT = "medium"
+
+#: Subjects a tool can be *about* that a general data question is not asking for. These tools
+#: stay in the catalogue — restriction zones are legitimate Urban API data and must remain
+#: answerable — but they must not outrank an on-topic tool merely by sharing generic words.
+#: "Получить зоны ограничений объектов на территории" matches "объекты" and "территория" in its
+#: title, so on a question about which objects exist it scored level with the plain objects
+#: tool, and the model was free to pick either.
+_TOPIC_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ограничен", ("ограничен", "буфер", "зон", "buffer", "restrict")),
+    ("буфер", ("ограничен", "буфер", "буферн", "buffer")),
+    ("показател", ("показател", "индикатор", "indicator", "значени")),
+    ("социальн", ("социальн", "soc_group", "ценност")),
+    ("норматив", ("норматив", "норм")),
+)
+#: Enough to drop an off-subject tool below an on-subject one without hiding it outright.
+_OFF_TOPIC_PENALTY = 4
+
+
+def _off_topic_penalty(tool: UrbanMcpTool, context: str) -> int:
+    """Penalise a tool whose declared subject the question never mentions."""
+
+    title = tool.title.lower()
+    for marker, query_words in _TOPIC_MARKERS:
+        if marker in title and not any(word in context for word in query_words):
+            return _OFF_TOPIC_PENALTY
+    return 0
 
 
 class ScenarioDataPlanBuilder:
@@ -56,14 +99,63 @@ class ScenarioDataPlanBuilder:
                         ),
                     }
                 )
-            response = await self.llm_client.chat(
-                model=model,
-                messages=messages,
-                think=False,
-                format=ScenarioDataAction.model_json_schema(),
-                options={"temperature": 0, "num_predict": 900},
-            )
+            # Escalate on each retry. Repeating an identical call is pointless when the
+            # server answered with an empty string, and on a Harmony-served gpt-oss the
+            # lever that actually matters is the reasoning effort, not the budget:
+            # measured on the same prompt, reasoning_effort="low" returns *no content at
+            # all* — the model finishes its analysis channel and stops without emitting a
+            # final message — while "medium", "high" and omitting the field all answer.
+            # Prompt size is not the factor: six tools (2k tokens) fail on "low" just as
+            # forty-one (11.5k) do. So a retry raises the effort explicitly, which wins
+            # over the configured default because _apply_think uses setdefault.
+            budget = PLANNER_NUM_PREDICT if attempt == 0 else PLANNER_NUM_PREDICT_RETRY
+            call: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "think": False,
+                "options": {"temperature": 0, "num_predict": budget},
+            }
+            if attempt > 0:
+                call["reasoning_effort"] = PLANNER_RETRY_REASONING_EFFORT
+            if attempt < MAX_PLANNER_RETRIES:
+                call["format"] = ScenarioDataAction.model_json_schema()
+            else:
+                # Last chance: no structured-output constraint at all, JSON asked for in
+                # words. A model that returns nothing under the schema usually answers here.
+                messages = messages + [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Ответь ТОЛЬКО JSON-объектом по описанной схеме, без "
+                            "пояснений и без markdown-ограждения."
+                        ),
+                    }
+                ]
+                call["messages"] = messages
+            response = await self.llm_client.chat(**call)
             raw = response["message"]["content"]
+            if not (raw or "").strip():
+                # Name the real cause. "Empty answer" on its own sent a reader looking for a
+                # vague prompt, when the model had in fact reasoned to a conclusion and
+                # simply never emitted it.
+                trace = (response["message"].get("thinking") or "").strip()
+                error = (
+                    "модель не выдала финальный ответ"
+                    + (
+                        f" (сгенерирован только след рассуждений: {trace[:160]}…)"
+                        if trace
+                        else " (пустой ответ без следа рассуждений)"
+                    )
+                    + "; на gpt-oss через Harmony это даёт reasoning_effort=low — "
+                    "поднимите OPENAI_THINK_EFFORT до medium"
+                )
+                logger.warning(
+                    f"Empty scenario-data action, attempt {attempt + 1} "
+                    f"(num_predict={budget}, format={'format' in call}, "
+                    f"reasoning_effort={call.get('reasoning_effort', 'configured')}, "
+                    f"reasoning_trace_len={len(trace)})"
+                )
+                continue
             try:
                 action = ScenarioDataAction.model_validate_json(strip_json_fence(raw))
                 return self._canonicalize(action, shortlist)
@@ -133,22 +225,27 @@ class ScenarioDataPlanBuilder:
                     " ".join(tool.tags),
                 )
             ).lower()
-            return sum(
+            base = sum(
                 3 if token in tool.title.lower() else 1
                 for token in query_tokens
                 if token in haystack
             )
+            return base - _off_topic_penalty(tool, context.lower())
 
+        ranked = sorted(tools, key=lambda item: (-score(item), item.name))
         chosen: dict[tuple[str, str], UrbanMcpTool] = {}
-        for group in URBAN_MCP_GROUPS:
-            group_tools = sorted(
-                (tool for tool in tools if tool.group == group),
-                key=lambda tool: (-score(tool), tool.name),
-            )
-            for tool in group_tools[:5]:
-                chosen[(tool.group, tool.name)] = tool
-        for tool in sorted(tools, key=lambda item: (-score(item), item.name))[:24]:
+        # Best matches first, regardless of group. Reserving slots per group is what pushed
+        # the catalogue to 41 entries and 10.3k prompt tokens — see SHORTLIST_SIZE.
+        for tool in ranked[:SHORTLIST_SIZE]:
             chosen[(tool.group, tool.name)] = tool
+        # One dictionary tool is kept even when it did not score: resolving an id to a name is
+        # the second half of nearly every question, and the planner cannot call what it
+        # cannot see.
+        if not any(group == "dictionaries" for group, _ in chosen):
+            for tool in ranked:
+                if tool.group == "dictionaries":
+                    chosen[(tool.group, tool.name)] = tool
+                    break
         return list(chosen.values())
 
     @staticmethod
@@ -194,7 +291,18 @@ class ScenarioDataPlanBuilder:
 - Если scenario_id не выбран и вопрос требует данных конкретного сценария, заверши сбор
   данных через final_answer: в итоговом ответе нужно попросить пользователя выбрать сценарий.
 - Сначала используй справочники, если для основного запроса нужно узнать ID по названию.
+- ОБРАТНОЕ НАПРАВЛЕНИЕ ВАЖНЕЕ: если в наблюдении есть unresolved_references, названия по
+  этим идентификаторам ещё не получены. Вызови справочник, который вернёт их названия
+  (например, типы сервисов или типы объектов), и не выбирай final_answer, пока это не
+  сделано, — иначе ответ будет про номера, а не про то, что человек спросил.
+- Один вызов почти никогда не отвечает на вопрос целиком. Типичная последовательность:
+  получить записи -> получить справочник типов -> сопоставить -> завершить.
 - Для запроса слоя выбирай инструмент, возвращающий GeoJSON/геометрию.
-- Если собранных наблюдений достаточно для полного ответа, выбери final_answer.
+- Выбирай инструмент, ПРЕДМЕТ которого совпадает с вопросом. Инструменты про зоны
+  ограничений, буферы, показатели и социальные группы доступны и уместны, только если
+  спросили именно о них; на вопрос «какие объекты/сервисы есть и сколько» бери инструменты
+  по объектам и сервисам, а не по зонам ограничений.
+- Выбирай final_answer, только если по наблюдениям можно назвать конкретные сущности и
+  числа, а не только их идентификаторы и общее количество.
 - Не вызывай инструменты для создания, изменения или удаления данных.
 - layer_name заполняй только если ожидается географический слой."""
