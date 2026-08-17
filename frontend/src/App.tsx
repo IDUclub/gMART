@@ -1413,6 +1413,12 @@ function labelStatus(s: string) {
   return (
     (
       {
+        tool_discovery: "Загружаю источники данных",
+        planning: "Выбираю источник данных",
+        tool_execution: "Получаю данные",
+        response_analysis: "Считаю результат",
+        answer_review: "Проверяю результат",
+        answer_retry: "Дополняю данные",
         retrieval_planning: "Планирую поиск",
         searching: "Ищу источники",
         executing: "Выполняю инструменты",

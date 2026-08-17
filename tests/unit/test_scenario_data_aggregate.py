@@ -74,23 +74,33 @@ class TestAggregateRecords:
 
         assert "name" not in result["breakdown"]
 
-    def test_long_tails_are_folded_into_other_values(self):
+    def test_long_tails_keep_every_available_type(self):
         # 60 types over 300 rows: a real catalogue, not a per-row unique value.
         rows = _objects({f"тип {i}": 5 for i in range(60)})
 
         entry = aggregate_records(rows)["breakdown"]["physical_object_type.name"]
 
         assert entry["distinct_values"] == 60
-        assert len(entry["counts"]) == 30
-        assert entry["other_values"] == 150  # the 30 types not listed, 5 rows each
+        assert len(entry["counts"]) == 60
+        assert "other_values" not in entry
 
-    def test_a_value_unique_per_row_is_treated_as_an_identifier(self):
-        """60 types across 60 rows is indistinguishable from an id, and is dropped."""
+    def test_a_type_value_unique_per_row_is_still_a_real_category(self):
         rows = _objects({f"тип {i}": 1 for i in range(60)})
 
         breakdown = (aggregate_records(rows) or {}).get("breakdown", {})
 
-        assert "physical_object_type.name" not in breakdown
+        assert len(breakdown["physical_object_type.name"]["counts"]) == 60
+
+    def test_duplicate_entity_rows_are_counted_once(self):
+        rows = _objects({"Школа": 2, "Банк": 1})
+
+        result = aggregate_records([rows[0], rows[0], rows[1], rows[2]])
+
+        assert result["total_records"] == 3
+        assert result["breakdown"]["physical_object_type.name"]["counts"] == {
+            "Школа": 2,
+            "Банк": 1,
+        }
 
     def test_returns_none_when_nothing_is_categorical(self):
         rows = [{"id": i, "name": f"n{i}"} for i in range(20)]

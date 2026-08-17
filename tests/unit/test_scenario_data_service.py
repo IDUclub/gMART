@@ -144,7 +144,7 @@ async def test_pipeline_without_scenario_skips_scenario_only_catalog(
 
     assert any(
         event.get("type") == "chunk"
-        and event["content"]["text"] == "Выберите сценарий."
+        and "выберите сценарий" in event["content"]["text"].lower()
         for event in events
     )
 

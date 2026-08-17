@@ -43,6 +43,14 @@ from src.agents.services.scenario_data_plan_builder import (
     MAX_SCENARIO_TOOL_CALLS,
     ScenarioDataPlanBuilder,
 )
+from src.agents.services.scenario_data_types import (
+    ScenarioEntityKind,
+    ScenarioTypeIntent,
+    build_type_distribution,
+    classify_type_query,
+    distribution_answer,
+    distribution_table,
+)
 from src.agents.services.service_entities.scenario_data_action import (
     ScenarioDataActionKind,
 )
@@ -132,6 +140,35 @@ class ScenarioDataService(BaseLlmService):
 
         token_ref = [token]
         parts: list[TextPartRequest | TablePartRequest | ToolCallPartRequest] = []
+        type_intent = classify_type_query(user_query, history)
+        clarification = None
+        if type_intent is not None and scenario_id is None:
+            clarification = (
+                "Сначала выберите сценарий, для которого нужно посчитать объекты "
+                "или сервисы по типам."
+            )
+        elif type_intent is not None:
+            clarification = type_intent.clarification
+        if clarification:
+            yield self._buf(
+                request_id,
+                self._status("planning", "Уточняю параметры запроса…"),
+            )
+            for event in self._answer_events(clarification):
+                yield self._buf(request_id, event)
+            parts.append(
+                TextPartRequest(kind="text", payload=TextPayload(text=clarification))
+            )
+            await self._complete_pipeline(
+                request_id,
+                token_ref[0],
+                chat_id,
+                parts,
+                scenario_id=scenario_id,
+                persist_history=persist_history,
+            )
+            return
+
         observations: list[dict[str, Any]] = []
         if scenario_id is None:
             observations.append(
@@ -168,6 +205,33 @@ class ScenarioDataService(BaseLlmService):
                 {
                     "context": "Нет инструментов без контекста сценария.",
                     "summary": "Попроси пользователя выбрать сценарий.",
+                }
+            )
+
+        if type_intent is not None and type_intent.kinds:
+            type_tools = self._resolve_type_tools(tools, type_intent)
+            if type_tools is not None:
+                async for event in self._run_type_distribution_pipeline(
+                    request_id=request_id,
+                    urban_mcp_client=urban_mcp_client,
+                    token_ref=token_ref,
+                    type_intent=type_intent,
+                    type_tools=type_tools,
+                    scenario_id=scenario_id,
+                    chat_id=chat_id,
+                    parts=parts,
+                    persist_history=persist_history,
+                ):
+                    yield event
+                return
+            observations.append(
+                {
+                    "context": "Детерминированный подсчёт по типам недоступен.",
+                    "summary": (
+                        "В текущем каталоге Urban MCP не найдена полная пара "
+                        "инструментов записей и проектного справочника; используй "
+                        "обычное планирование и не угадывай данные."
+                    ),
                 }
             )
 
@@ -410,11 +474,14 @@ class ScenarioDataService(BaseLlmService):
         if answer:
             parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
 
-        await self.state_store.set_status(request_id, PipelineStatus.DONE)
-        if persist_history and chat_id and parts:
-            self._schedule_persist(
-                token_ref[0], chat_id, parts, scenario_id=scenario_id
-            )
+        await self._complete_pipeline(
+            request_id,
+            token_ref[0],
+            chat_id,
+            parts,
+            scenario_id=scenario_id,
+            persist_history=persist_history,
+        )
 
     @staticmethod
     def _prepare_arguments(
@@ -451,6 +518,289 @@ class ScenarioDataService(BaseLlmService):
             for tool in tools
             if "scenario_id" not in set(tool.input_schema.get("required") or [])
         ]
+
+    @classmethod
+    def _resolve_type_tools(
+        cls,
+        tools: list[UrbanMcpTool],
+        intent: ScenarioTypeIntent,
+    ) -> (
+        dict[
+            ScenarioEntityKind,
+            tuple[UrbanMcpTool, UrbanMcpTool, UrbanMcpTool | None],
+        ]
+        | None
+    ):
+        names = {
+            ScenarioEntityKind.PHYSICAL_OBJECT: (
+                "GetScenarioPhysicalObjects",
+                "GetScenarioPhysicalObjectTypes",
+                "GetPhysicalObjectTypes",
+            ),
+            ScenarioEntityKind.SERVICE: (
+                "GetScenarioServices",
+                "GetScenarioServiceTypes",
+                "GetServiceTypes",
+            ),
+        }
+        resolved = {}
+        for kind in intent.kinds:
+            entity_name, project_types_name, dictionary_name = names[kind]
+            entity_tool = cls._find_type_tool(tools, entity_name, kind, role="entities")
+            project_types_tool = cls._find_type_tool(
+                tools, project_types_name, kind, role="project_types"
+            )
+            dictionary_tool = cls._find_type_tool(
+                tools, dictionary_name, kind, role="dictionary"
+            )
+            # Older Urban MCP catalogues may expose only the global dictionary. It is
+            # still authoritative, but current catalogues let us fetch the smaller
+            # scenario-specific type set first and consult the global dictionary only
+            # for an unresolved ID.
+            catalog_tool = project_types_tool or dictionary_tool
+            if entity_tool is None or catalog_tool is None:
+                return None
+            fallback_tool = (
+                dictionary_tool
+                if project_types_tool is not None
+                and dictionary_tool is not project_types_tool
+                else None
+            )
+            resolved[kind] = (entity_tool, catalog_tool, fallback_tool)
+        return resolved
+
+    @staticmethod
+    def _find_type_tool(
+        tools: list[UrbanMcpTool],
+        preferred_name: str,
+        kind: ScenarioEntityKind,
+        *,
+        role: str,
+    ) -> UrbanMcpTool | None:
+        exact = next((tool for tool in tools if tool.name == preferred_name), None)
+        if exact is not None:
+            return exact
+
+        subject = "физическ" if kind == ScenarioEntityKind.PHYSICAL_OBJECT else "сервис"
+        candidates = []
+        for tool in tools:
+            title = tool.title.lower().replace("ё", "е")
+            properties = tool.input_schema.get("properties") or {}
+            if subject not in title:
+                continue
+            if role == "entities":
+                matches = (
+                    tool.group == "projects"
+                    and "scenario_id" in properties
+                    and "сценар" in title
+                    and "тип" not in title
+                    and "геометр" not in title
+                    and "контекст" not in title
+                )
+            elif role == "project_types":
+                matches = (
+                    tool.group == "projects"
+                    and "scenario_id" in properties
+                    and "сценар" in title
+                    and "тип" in title
+                )
+            else:
+                matches = (
+                    tool.group == "dictionaries"
+                    and "тип" in title
+                    and " по " not in title
+                )
+            if matches:
+                candidates.append(tool)
+        return (
+            sorted(candidates, key=lambda tool: (len(tool.title), tool.name))[0]
+            if candidates
+            else None
+        )
+
+    async def _run_type_distribution_pipeline(
+        self,
+        *,
+        request_id: str,
+        urban_mcp_client: UrbanMcpClient,
+        token_ref: list[str],
+        type_intent: ScenarioTypeIntent,
+        type_tools: dict[
+            ScenarioEntityKind,
+            tuple[UrbanMcpTool, UrbanMcpTool, UrbanMcpTool | None],
+        ],
+        scenario_id: int | None,
+        chat_id: str | None,
+        parts: list[TextPartRequest | TablePartRequest | ToolCallPartRequest],
+        persist_history: bool,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        if scenario_id is None:
+            raise ValueError("scenario_id is required for a type distribution")
+
+        distributions = []
+        step = 0
+        for kind in type_intent.kinds:
+            entity_tool, catalog_tool, fallback_tool = type_tools[kind]
+            noun = (
+                "физические объекты"
+                if kind == ScenarioEntityKind.PHYSICAL_OBJECT
+                else "сервисы"
+            )
+            results = []
+            calls = (
+                (entity_tool, f"Получаю {noun} сценария…"),
+                (
+                    catalog_tool,
+                    f"Получаю типы сценария: {noun}…",
+                ),
+            )
+            for tool, status_text in calls:
+                step += 1
+                arguments = self._prepare_arguments(tool, {}, scenario_id)
+                source = f"URBAN_MCP/{tool.group}"
+                tool_call = {
+                    "tool_name": tool.name,
+                    "arguments": arguments,
+                    "group": tool.group,
+                }
+                yield self._buf(request_id, self._tool_call_event(tool_call, source))
+                parts.append(
+                    ToolCallPartRequest(
+                        kind="tool_call",
+                        payload=ToolCallPayload(
+                            execution_mode="sequential",
+                            calls=[
+                                ToolCall(
+                                    step=step,
+                                    tool_name=tool.name,
+                                    arguments=arguments,
+                                )
+                            ],
+                        ),
+                        mcp_source=source,
+                    )
+                )
+                yield self._buf(
+                    request_id,
+                    self._status("tool_execution", status_text),
+                )
+                result_box: list[Any] = []
+                async for event in self._retryable_operation(
+                    request_id,
+                    urban_mcp_client,
+                    token_ref,
+                    lambda tool=tool, arguments=arguments: urban_mcp_client.execute_tool(
+                        tool.group,
+                        tool.name,
+                        arguments,
+                        meta={"scenario_id": scenario_id},
+                    ),
+                    result_box,
+                ):
+                    yield self._buf(request_id, event)
+                results.append(self._unwrap_result(result_box[0]))
+
+            yield self._buf(
+                request_id,
+                self._status(
+                    "response_analysis", f"Считаю уникальные сущности: {noun}…"
+                ),
+            )
+            distribution = build_type_distribution(results[0], results[1], kind)
+            needs_fallback = any(
+                row["status"] != "точное соответствие"
+                for row in distribution.rows
+                if int(row["count"]) > 0
+            )
+            if needs_fallback and fallback_tool is not None:
+                step += 1
+                arguments = self._prepare_arguments(fallback_tool, {}, scenario_id)
+                source = f"URBAN_MCP/{fallback_tool.group}"
+                tool_call = {
+                    "tool_name": fallback_tool.name,
+                    "arguments": arguments,
+                    "group": fallback_tool.group,
+                }
+                yield self._buf(request_id, self._tool_call_event(tool_call, source))
+                parts.append(
+                    ToolCallPartRequest(
+                        kind="tool_call",
+                        payload=ToolCallPayload(
+                            execution_mode="sequential",
+                            calls=[
+                                ToolCall(
+                                    step=step,
+                                    tool_name=fallback_tool.name,
+                                    arguments=arguments,
+                                )
+                            ],
+                        ),
+                        mcp_source=source,
+                    )
+                )
+                yield self._buf(
+                    request_id,
+                    self._status(
+                        "tool_execution",
+                        f"Проверяю неопределённые ID в общем справочнике: {noun}…",
+                    ),
+                )
+                fallback_box: list[Any] = []
+                async for event in self._retryable_operation(
+                    request_id,
+                    urban_mcp_client,
+                    token_ref,
+                    lambda: urban_mcp_client.execute_tool(
+                        fallback_tool.group,
+                        fallback_tool.name,
+                        arguments,
+                        meta={"scenario_id": scenario_id},
+                    ),
+                    fallback_box,
+                ):
+                    yield self._buf(request_id, event)
+                distribution = build_type_distribution(
+                    results[0],
+                    results[1],
+                    kind,
+                    fallback_catalog_result=self._unwrap_result(fallback_box[0]),
+                )
+            distributions.append(distribution)
+
+            table = distribution_table(distribution)
+            yield self._buf(request_id, {"type": "table", "content": table})
+            parts.append(self._table_part(table))
+
+        yield self._buf(
+            request_id,
+            self._status("answer_review", "Проверяю итоговые количества…"),
+        )
+        answer = distribution_answer(scenario_id, distributions)
+        for event in self._answer_events(answer):
+            yield self._buf(request_id, event)
+        parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
+        await self._complete_pipeline(
+            request_id,
+            token_ref[0],
+            chat_id,
+            parts,
+            scenario_id=scenario_id,
+            persist_history=persist_history,
+        )
+
+    async def _complete_pipeline(
+        self,
+        request_id: str,
+        token: str,
+        chat_id: str | None,
+        parts: list[TextPartRequest | TablePartRequest | ToolCallPartRequest],
+        *,
+        scenario_id: int | None,
+        persist_history: bool,
+    ) -> None:
+        await self.state_store.set_status(request_id, PipelineStatus.DONE)
+        if persist_history and chat_id and parts:
+            self._schedule_persist(token, chat_id, parts, scenario_id=scenario_id)
 
     async def _retryable_operation(
         self,

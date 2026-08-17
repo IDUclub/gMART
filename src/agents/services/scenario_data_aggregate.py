@@ -23,10 +23,10 @@ from typing import Any
 MAX_FLATTEN_DEPTH = 2
 #: Fields kept in the breakdown, most-informative first.
 MAX_FIELDS = 8
-#: Values listed per field; the remainder is folded into ``other_values``.
-MAX_VALUES_PER_FIELD = 30
 #: A field whose values are nearly all distinct is an identifier, not a category.
 MAX_DISTINCT_RATIO = 0.5
+
+_ENTITY_ID_FIELDS = ("physical_object_id", "service_id", "object_geometry_id", "id")
 
 
 def extract_records(result: Any) -> list[dict[str, Any]] | None:
@@ -87,6 +87,35 @@ def _is_category(path: str) -> bool:
     return any(hint in lowered for hint in _CATEGORY_HINTS)
 
 
+def unique_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate entity rows by their stable Urban API identifier when available."""
+
+    id_field = next(
+        (
+            field
+            for field in _ENTITY_ID_FIELDS
+            if any(record.get(field) is not None for record in records)
+        ),
+        None,
+    )
+    if id_field is None:
+        return records
+    seen: set[str] = set()
+    unique = []
+    for record in records:
+        identifier = record.get(id_field)
+        if identifier is None:
+            # Do not collapse unrelated rows merely because one row lacks the dominant ID.
+            unique.append(record)
+            continue
+        key = str(identifier)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(record)
+    return unique
+
+
 def unresolved_references(aggregate: dict[str, Any] | None) -> list[str]:
     """Reference fields in ``aggregate`` that have no sibling name to read them by.
 
@@ -121,6 +150,7 @@ def aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any] | None:
 
     if not records:
         return None
+    records = unique_records(records)
     total = len(records)
     counters: dict[str, Counter] = {}
     for record in records:
@@ -138,7 +168,14 @@ def aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any] | None:
         if distinct <= 1 and total > 1 and counter.most_common(1)[0][0] == "—":
             continue  # a column that is empty everywhere says nothing
         if distinct == total and total > 1:
-            continue  # one value per row: an identifier or free text, never a category
+            # A type can legitimately occur once per entity. Keep nested type/category
+            # fields, but drop row IDs and free-text entity names.
+            tail = path.rsplit(".", 1)[-1].lower()
+            nested_category = "." in path and _is_category(path)
+            if (_is_reference(path) and not _is_category(path)) or (
+                tail == "name" and not nested_category
+            ):
+                continue
         if not _is_category(path) and distinct > max(
             1, int(total * MAX_DISTINCT_RATIO)
         ):
@@ -155,14 +192,13 @@ def aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any] | None:
     scored.sort(key=lambda item: (item[0], item[1], item[2]))
     breakdown: dict[str, Any] = {}
     for _rank, distinct, path, counter in scored[:MAX_FIELDS]:
-        top = counter.most_common(MAX_VALUES_PER_FIELD)
+        # Type-count questions require the full project catalogue; silently folding the
+        # long tail into "other" produces an answer that cannot name every available type.
+        top = counter.most_common()
         entry: dict[str, Any] = {
             "distinct_values": distinct,
             "counts": {value: count for value, count in top},
         }
-        listed = sum(count for _, count in top)
-        if listed < total:
-            entry["other_values"] = total - listed
         breakdown[path] = entry
 
     return {"total_records": total, "breakdown": breakdown}

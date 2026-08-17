@@ -22,7 +22,17 @@ MAX_SCENARIO_TOOL_CALLS = 6
 MAX_PLANNER_RETRIES = 2
 #: Answer budget for the planner. The retry budget is deliberately much larger: an empty
 #: reply usually means the reasoning trace consumed everything before any content was emitted.
-PLANNER_NUM_PREDICT = 900
+#: How many tools the planner is shown. The window is the binding constraint, not the model's
+#: ability to choose: gpt-oss is served with a 16k context, and 41 tools cost 10.3k prompt
+#: tokens, leaving too little for the reasoning channel *and* a final message. Measured on the
+#: same question at reasoning_effort=medium — 41 tools: no content, whether the budget ran out
+#: (finish=length) or the model gave up (finish=stop); 12 tools: answers on a 3k budget.
+SHORTLIST_SIZE = 12
+#: gpt-oss spends this budget on its reasoning channel before any answer: a measured planner
+#: call produced a 4163-character trace, well past what 900 tokens allows, so every first
+#: attempt failed and the run only recovered on the retry. Sized to cover the trace *and* the
+#: JSON, while leaving room inside a 16k window next to a ~4k prompt.
+PLANNER_NUM_PREDICT = 2500
 PLANNER_NUM_PREDICT_RETRY = 3000
 #: Effort used on a retry after an empty reply. "low" is exactly the value that produces no
 #: content on a Harmony-served gpt-oss, so escalating to "medium" is the fix, not a guess.
@@ -222,16 +232,20 @@ class ScenarioDataPlanBuilder:
             )
             return base - _off_topic_penalty(tool, context.lower())
 
+        ranked = sorted(tools, key=lambda item: (-score(item), item.name))
         chosen: dict[tuple[str, str], UrbanMcpTool] = {}
-        for group in URBAN_MCP_GROUPS:
-            group_tools = sorted(
-                (tool for tool in tools if tool.group == group),
-                key=lambda tool: (-score(tool), tool.name),
-            )
-            for tool in group_tools[:5]:
-                chosen[(tool.group, tool.name)] = tool
-        for tool in sorted(tools, key=lambda item: (-score(item), item.name))[:24]:
+        # Best matches first, regardless of group. Reserving slots per group is what pushed
+        # the catalogue to 41 entries and 10.3k prompt tokens — see SHORTLIST_SIZE.
+        for tool in ranked[:SHORTLIST_SIZE]:
             chosen[(tool.group, tool.name)] = tool
+        # One dictionary tool is kept even when it did not score: resolving an id to a name is
+        # the second half of nearly every question, and the planner cannot call what it
+        # cannot see.
+        if not any(group == "dictionaries" for group, _ in chosen):
+            for tool in ranked:
+                if tool.group == "dictionaries":
+                    chosen[(tool.group, tool.name)] = tool
+                    break
         return list(chosen.values())
 
     @staticmethod
