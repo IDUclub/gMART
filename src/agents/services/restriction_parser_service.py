@@ -94,7 +94,7 @@ class RestrictionParserService(BaseLlmService):
         self,
         mcp_client: IduMcpClient,
         temperature: float,
-        model: str,
+        model: str | None,
         user_query: str,
         scenario_id: int,
         chat_id: str | None = None,
@@ -102,6 +102,9 @@ class RestrictionParserService(BaseLlmService):
         persist_history: bool = True,
         normgraph_mcp_client: NormGraphMcpClient | None = None,
     ) -> AsyncGenerator:
+        # Fill in the provider's model when the caller named none; keeps REST and A2A
+        # on one behaviour and out of backend-specific literals.
+        model = await self.resolve_model(model)
         # Mutable container so the inner pipeline can update the token on
         # refresh and the outer generator sees the latest value.
         token_ref: list[str] = [

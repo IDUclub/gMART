@@ -151,7 +151,9 @@ const defaults: Settings = {
   keycloakUrl: "",
   keycloakRealm: "",
   keycloakClientId: "",
-  model: "gpt-oss:20b",
+  // Empty on purpose: the agents resolve the model from the provider's own list, so the
+  // UI must not ship a backend-specific id (an Ollama-style "gpt-oss:20b" 404s on vLLM).
+  model: "",
   temperature: 1,
 };
 const colors = [
@@ -297,10 +299,21 @@ export default function App() {
   useEffect(() => {
     if (!token) return;
     loadChats();
-    getModels(settings, token)
-      .then(setModels)
-      .catch(() => {});
   }, [token, scenario]);
+  // Unauthenticated on purpose: /llm/available_models carries no token requirement, and the
+  // list must be known before the first request so a stale saved model cannot be sent.
+  useEffect(() => {
+    getModels(settings, token)
+      .then((list) => {
+        setModels(list);
+        setSettings((prev) =>
+          list.length && !list.includes(prev.model)
+            ? { ...prev, model: list[0] }
+            : prev,
+        );
+      })
+      .catch(() => {});
+  }, [token, settings.agentsUrl]);
   useEffect(() => setQuery(agent.examples[0]), [agentId]);
   async function loadChats() {
     try {
@@ -500,7 +513,8 @@ export default function App() {
     setStatus("Подключение к агенту…");
     const url = new URL(agent.path, settings.agentsUrl);
     url.searchParams.set("request", query);
-    url.searchParams.set("model", settings.model);
+    // Omitted when unknown: the agents then use the provider's default.
+    if (settings.model) url.searchParams.set("model", settings.model);
     url.searchParams.set("temperature", String(settings.temperature));
     if (scenario) url.searchParams.set("scenario_id", scenario);
     if (chat?.chat_id) url.searchParams.set("chat_id", chat.chat_id);
@@ -1310,9 +1324,15 @@ function SettingsModal({
               value={s.model}
               onChange={(e) => setS({ ...s, model: e.target.value })}
             >
-              {[s.model, ...models.filter((x) => x !== s.model)].map((x) => (
+              {(models.length
+                ? models
+                : [s.model].filter(Boolean)
+              ).map((x) => (
                 <option key={x}>{x}</option>
               ))}
+              {!models.length && !s.model && (
+                <option value="">по умолчанию у провайдера</option>
+              )}
             </select>
           </label>
           <label>

@@ -58,7 +58,7 @@ class ScenarioDataService(BaseLlmService):
         self,
         urban_mcp_client: UrbanMcpClient,
         token: str,
-        model: str,
+        model: str | None,
         temperature: float,
         user_query: str,
         scenario_id: int | None = None,
@@ -66,6 +66,9 @@ class ScenarioDataService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        # Fill in the provider's model when the caller named none; keeps REST and A2A
+        # on one behaviour and out of backend-specific literals.
+        model = await self.resolve_model(model)
         if request_id is not None and await self.state_store.exists(request_id):
             for event in await self.state_store.get_buffered_events(request_id):
                 yield event

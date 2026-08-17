@@ -90,7 +90,7 @@ class NormGraphRagService(BaseLlmService):
         self,
         normgraph_mcp_client: "NormGraphMcpClient",
         token: str,
-        model: str,
+        model: str | None,
         temperature: float,
         user_query: str,
         scenario_id: int | None = None,
@@ -98,6 +98,9 @@ class NormGraphRagService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        # Fill in the provider's model when the caller named none; keeps REST and A2A
+        # on one behaviour and out of backend-specific literals.
+        model = await self.resolve_model(model)
         collected: dict[str, Any] = {
             "final_answer": "",
             "tool_calls": [],

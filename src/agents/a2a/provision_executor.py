@@ -22,7 +22,9 @@ A2AEventData = dict[str, Any]
 class ProvisionAgentExecutor:
     """Executor for A2A provision effects tasks."""
 
-    DEFAULT_MODEL = "gpt-oss:20b"
+    # None means "whatever the provider serves" — resolved by
+    # BaseLlmService.resolve_model, so A2A and REST share one default.
+    DEFAULT_MODEL = None
     DEFAULT_TEMPERATURE = 1.0
 
     def __init__(

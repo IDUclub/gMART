@@ -109,7 +109,7 @@ class OrchestratorService(BaseLlmService):
         dvd_mcp_client: "DvdMcpClient | None",
         normgraph_mcp_client: "NormGraphMcpClient | None",
         token: str,
-        model: str,
+        model: str | None,
         temperature: float,
         user_query: str,
         scenario_id: int | None = None,
@@ -118,6 +118,9 @@ class OrchestratorService(BaseLlmService):
         persist_history: bool = True,
         urban_mcp_client: "UrbanMcpClient | None" = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        # Fill in the provider's model when the caller named none; keeps REST and A2A
+        # on one behaviour and out of backend-specific literals.
+        model = await self.resolve_model(model)
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
         )
