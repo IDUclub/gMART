@@ -1,3 +1,13 @@
+## v0.16.0 (2026-08-17)
+
+### Feat
+
+- **llm**: resolve the default model from the connected provider
+
+### Fix
+
+- **llm**: document Harmony's real reasoning_effort set and cover it with tests
+
 ## v0.15.0 (2026-08-17)
 
 ### Feat
