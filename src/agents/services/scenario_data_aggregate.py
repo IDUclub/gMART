@@ -51,7 +51,9 @@ def extract_records(result: Any) -> list[dict[str, Any]] | None:
     return records
 
 
-def _flatten(record: dict[str, Any], depth: int = 0, prefix: str = "") -> dict[str, Any]:
+def _flatten(
+    record: dict[str, Any], depth: int = 0, prefix: str = ""
+) -> dict[str, Any]:
     flat: dict[str, Any] = {}
     for key, value in record.items():
         if key in {"geometry", "coordinates"}:

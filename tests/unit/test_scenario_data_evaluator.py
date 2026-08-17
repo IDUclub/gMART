@@ -128,7 +128,9 @@ class TestEvaluator:
 
     @pytest.mark.asyncio
     async def test_the_judge_can_reject_an_otherwise_clean_answer(self):
-        llm = FakeLlm({"sufficient": False, "missing": "Не назван ни один тип объекта."})
+        llm = FakeLlm(
+            {"sufficient": False, "missing": "Не назван ни один тип объекта."}
+        )
         evaluator = ScenarioDataEvaluator(llm)
 
         verdict = await evaluator.evaluate(

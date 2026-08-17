@@ -1,9 +1,11 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 from src.agents.dto.scenario_data_request_dto import ScenarioDataRequestDTO
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services import scenario_data_service as scenario_data_service_module
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.scenario_data_plan_builder import ScenarioDataPlanBuilder
 from src.agents.services.scenario_data_service import ScenarioDataService
@@ -303,3 +305,24 @@ async def test_a_rejected_answer_buys_a_second_pass_with_the_hint(
         event["content"]["text"] for event in events if event.get("type") == "chunk"
     )
     assert "924" in text and "неизвестны" not in text
+
+
+def test_every_status_the_service_emits_is_in_the_sse_contract():
+    """A status missing from the Literal kills the stream, it does not degrade gracefully.
+
+    The response model validates each SSE payload, so an unlisted status raises mid-stream and
+    the client waits forever for a terminal event. Adding a status to the service without
+    adding it here is therefore a hang, which is how `answer_review` first shipped.
+    """
+
+    import re as _re
+    from typing import get_args
+
+    from src.agents.schema.scenario_data_response import ScenarioDataStatus
+
+    source = Path(scenario_data_service_module.__file__).read_text(encoding="utf-8")
+    emitted = set(_re.findall(r'self\._status\(\s*"([a-z_]+)"', source))
+    declared = set(get_args(ScenarioDataStatus.model_fields["status"].annotation))
+
+    assert emitted, "no statuses found — did _status change shape?"
+    assert emitted <= declared, f"not in the SSE contract: {sorted(emitted - declared)}"

@@ -37,6 +37,16 @@
 `feature_collection`, `table`, `chunk`, `token_expired`, `pipeline_suspended` и
 `error`.
 
+Значения `status.status`: `tool_discovery`, `planning`, `tool_execution`,
+`response_analysis`, `answer_review`, `answer_retry`. Последние два относятся к проверке
+ответа: `answer_review` — черновик оценивается, `answer_retry` — оценка отклонила его и
+пайплайн идёт на второй проход за недостающими данными. Клиенту достаточно показать
+`status.text`; список закрыт схемой `ScenarioDataStatus`, поэтому новый статус на стороне
+сервиса требует и правки схемы.
+
+Ответ приходит одним блоком событий `chunk` после проверки, а не по мере генерации:
+черновик нужно оценить до показа пользователю. Формат событий при этом не изменился.
+
 ## A2A
 
 ### Обнаружение
