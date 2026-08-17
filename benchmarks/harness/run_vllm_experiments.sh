@@ -105,7 +105,7 @@ run_arm() {                             # $1 = dataset, $2 = out dir, $3 = label
     python3 -u benchmarks/harness/run_benchmark.py \
       --models "$model" \
       --dataset "$1" \
-      --temperature 0 --timeout 600 --concurrency "$CONCURRENCY" \
+      --temperature 0 --timeout "${ROW_TIMEOUT:-1800}" --concurrency "$CONCURRENCY" \
       --ablation "$3" --retry-errors \
       --llm-api openai --model-endpoints "$ENDPOINTS" \
       --agents-base http://localhost:80 \

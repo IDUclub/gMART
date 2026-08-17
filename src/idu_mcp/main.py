@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from datetime import datetime
 
 import anyio
@@ -156,10 +157,47 @@ docs = FastMCPDocs(
     base_url="http://localhost:8000",
 )
 
-asyncio.run(docs.setup())
 
-mcp_app = main_mcp.http_app(host_origin_protection=False)
+def _setup_docs() -> None:
+    """Build the docs pages, whatever loop the import happens on.
+
+    ``FastMCPDocs.setup()`` is async and this module is imported at start-up —
+    which under ``uvicorn --workers N`` happens inside a running event loop,
+    where ``asyncio.run`` refuses to run and the whole import fails. A
+    short-lived thread gives it a loop of its own in both cases.
+    """
+
+    thread = threading.Thread(target=lambda: asyncio.run(docs.setup()), daemon=True)
+    thread.start()
+    thread.join()
+
+
+_setup_docs()
+
+
+def _stateless_http() -> bool:
+    """Whether each request stands alone instead of belonging to a session.
+
+    A session lives in the memory of the worker that created it, so several
+    uvicorn workers behind one port only work when there is no session to find:
+    the follow-up requests of one call land wherever the load balancer sends
+    them. Stateless mode is what makes ``FASTMCP_WORKERS > 1`` usable, and the
+    geometry tools are the reason to want it — they are CPU-bound and a single
+    worker saturates one core while the rest of the machine idles.
+
+    Off by default: it also gives up SSE resumability, which a deployment
+    serving a UI may rely on.
+    """
+
+    return os.getenv("MCP_STATELESS_HTTP", "").strip().lower() in {"1", "true", "yes"}
+
+
+mcp_app = main_mcp.http_app(
+    host_origin_protection=False, stateless_http=_stateless_http() or None
+)
 mcp_app.add_middleware(RequestLoggingMiddleware)
+if _stateless_http():
+    logger.info("MCP runs stateless: no sessions, so several workers can serve")
 
 
 async def redirect_to_docs(request):
