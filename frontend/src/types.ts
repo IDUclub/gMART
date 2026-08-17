@@ -13,7 +13,6 @@ export type Agent = {
   caption: string;
   path: string;
   needsScenario: boolean;
-  icon: string;
   examples: string[];
 };
 export type TableData = {

@@ -76,9 +76,13 @@ export default function MapPanel({
             "circle-stroke-width": 2,
           },
         });
-      layer.geojson.features.forEach((f) =>
-        walk((f.geometry as GeoJSON.Geometry & { coordinates?: unknown })?.coordinates, bounds),
-      );
+        layer.geojson.features.forEach((f) =>
+          walk(
+            (f.geometry as GeoJSON.Geometry & { coordinates?: unknown })
+              ?.coordinates,
+            bounds,
+          ),
+        );
       });
       if (!bounds.isEmpty()) m.fitBounds(bounds, { padding: 55, maxZoom: 15 });
     };
@@ -89,7 +93,7 @@ export default function MapPanel({
     <div className="map-card">
       <div className="map-toolbar">
         <div>
-          <span className="eyebrow">ГЕОДАННЫЕ</span>
+          <span className="context-title">Пространственный результат</span>
           <strong>Карта результата</strong>
         </div>
         <select value={basemap} onChange={(e) => onBasemap(e.target.value)}>
