@@ -924,10 +924,6 @@ p {
   background: linear-gradient(135deg, var(--surface2), color-mix(in srgb, var(--soft) 60%, var(--surface)));
   box-shadow: 0 18px 42px color-mix(in srgb, var(--accent) 8%, transparent);
 }
-.live-status.active {
-  position: sticky;
-  top: 18px;
-}
 .live-status-head {
   display: grid;
   grid-template-columns: auto 1fr auto;
