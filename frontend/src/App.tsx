@@ -931,8 +931,12 @@ export default function App() {
           </button>
         </nav>
         <div className="side-bottom">
-          <button onClick={() => setHistoryOpen(true)} aria-label="История">
-            <ClockCounterClockwise /> <span>История</span>
+          <button
+            className="history-trigger"
+            onClick={() => setHistoryOpen(true)}
+            aria-label="История сообщений"
+          >
+            <ClockCounterClockwise /> <span>История сообщений</span>
           </button>
           <button onClick={() => setSettingsOpen(true)}>
             <SlidersHorizontal /> <span>Настройки</span>
