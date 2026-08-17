@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useGSAP } from "@gsap/react";
 import {
   ArrowUp,
+  ArrowCounterClockwise,
   Buildings,
   CaretDown,
   ChartDonut,
@@ -26,6 +27,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import gsap from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
 import Keycloak from "keycloak-js";
 import ReactMarkdown from "react-markdown";
 import MapPanel from "./MapPanel";
@@ -38,6 +40,7 @@ import {
   getChats,
   getModels,
   readSse,
+  replayToolCall,
   request,
 } from "./api";
 import type {
@@ -47,11 +50,13 @@ import type {
   ChatSummary,
   LayerData,
   Message,
+  MessagePart,
   Settings,
+  StatusEntry,
   StreamEvent,
   TableData,
 } from "./types";
-gsap.registerPlugin(useGSAP);
+gsap.registerPlugin(useGSAP, ScrollTrigger);
 const AGENTS: Agent[] = [
   {
     id: "orchestrator",
@@ -193,6 +198,10 @@ export default function App() {
       [],
     ),
     [status, setStatus] = useState("Готов к работе"),
+    [statusEntries, setStatusEntries] = useState<StatusEntry[]>([]),
+    [pendingQuestion, setPendingQuestion] = useState(""),
+    [restoreState, setRestoreState] = useState<Record<string, string>>({}),
+    [undoLayers, setUndoLayers] = useState<LayerData[] | null>(null),
     [busy, setBusy] = useState(false),
     [rightTab, setRightTab] = useState<"map" | "data" | "process">("map"),
     [historyOpen, setHistoryOpen] = useState(false),
@@ -213,7 +222,10 @@ export default function App() {
     helperCreds = useRef<{ username: string; password: string } | null>(null),
     reloginTimer = useRef<number | null>(null),
     resultAutoOpened = useRef(false),
-    stepBase = useRef("");
+    stepBase = useRef(""),
+    chatIdRef = useRef<string | undefined>(undefined),
+    messagesEnd = useRef<HTMLDivElement>(null),
+    undoTimer = useRef<number | null>(null);
   const agent = AGENTS.find((a) => a.id === agentId)!;
   useGSAP(
     () => {
@@ -299,7 +311,10 @@ export default function App() {
   useEffect(() => {
     if (!token) return;
     loadChats();
-  }, [token, scenario]);
+  }, [token]);
+  useEffect(() => {
+    messagesEnd.current?.scrollIntoView({ behavior: busy ? "smooth" : "auto" });
+  }, [answer, busy, pendingQuestion, statusEntries, chat?.messages.length]);
   // Unauthenticated on purpose: /llm/available_models carries no token requirement, and the
   // list must be known before the first request so a stale saved model cannot be sent.
   useEffect(() => {
@@ -317,17 +332,26 @@ export default function App() {
   useEffect(() => setQuery(agent.examples[0]), [agentId]);
   async function loadChats() {
     try {
-      setChats((await getChats(settings, token, scenario)).items);
+      setChats((await getChats(settings, token)).items);
     } catch (e) {
       setStatus(err(e));
     }
   }
   async function openChat(id: string) {
     try {
-      setChat(await getChat(settings, token, id));
+      const stored = await getChat(settings, token, id);
+      setChat(stored);
+      chatIdRef.current = stored.chat_id;
+      if (stored.scenario_id != null) setScenario(String(stored.scenario_id));
+      if (stored.project_id != null) setProject(String(stored.project_id));
+      const storedAgent = String(stored.metadata?.agent_id || "");
+      if (AGENTS.some((item) => item.id === storedAgent))
+        setAgentId(storedAgent as AgentId);
       setAnswer("");
+      setPendingQuestion("");
+      setStatusEntries([]);
       setLayers([]);
-      setTables([]);
+      setTables(extractStoredTables(stored.messages));
     } catch (e) {
       setStatus(err(e));
     }
@@ -335,7 +359,10 @@ export default function App() {
   async function removeChat(id: string) {
     if (!confirm("Удалить этот диалог?")) return;
     await deleteChat(settings, token, id);
-    if (chat?.chat_id === id) setChat(null);
+    if (chat?.chat_id === id) {
+      setChat(null);
+      chatIdRef.current = undefined;
+    }
     loadChats();
   }
   function login() {
@@ -391,10 +418,38 @@ export default function App() {
     );
     route(event);
   }
+  function updateStatus(
+    text: string,
+    state: StatusEntry["state"] = "active",
+  ) {
+    if (!text) return;
+    setStatus(text);
+    setStatusEntries((previous) => {
+      const completed = previous.map((entry) =>
+        entry.state === "active" ? { ...entry, state: "done" as const } : entry,
+      );
+      const last = completed.at(-1);
+      if (last?.text === text)
+        return [...completed.slice(0, -1), { ...last, state }];
+      return [
+        ...completed,
+        {
+          id: crypto.randomUUID(),
+          text,
+          time: new Date().toLocaleTimeString("ru", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          }),
+          state,
+        },
+      ].slice(-30);
+    });
+  }
   function route(event: StreamEvent, nested = false) {
-    if (event.type === "pipeline_started") setStatus("Агент начал работу");
+    if (event.type === "pipeline_started") updateStatus("Агент начал работу");
     if (event.type === "status")
-      setStatus(event.content?.text || labelStatus(event.content?.status));
+      updateStatus(event.content?.text || labelStatus(event.content?.status));
     if (event.type === "chunk" || event.type === "Text") {
       const text =
         typeof event.content === "string"
@@ -407,13 +462,13 @@ export default function App() {
       );
       if (event.content?.done && !nested) {
         setBusy(false);
-        setStatus("Ответ готов");
-        loadChats();
+        updateStatus("Ответ готов", "done");
+        syncStoredChat();
       }
     }
     if (event.type === "plan") {
       const steps = event.content?.steps || [];
-      setStatus(`План готов: шагов — ${steps.length}`);
+      updateStatus(`План готов: шагов — ${steps.length}`);
       if (steps.length)
         setAnswer(
           (v) =>
@@ -431,7 +486,7 @@ export default function App() {
     if (event.type === "step_started") {
       const step = event.content?.step,
         agent = labelAgent(event.content?.agent);
-      setStatus(`Шаг ${step}: ${agent}`);
+      updateStatus(`Шаг ${step}: ${agent}`);
       setAnswer(
         (v) => (stepBase.current = `${v}---\n\n**Шаг ${step} · ${agent}**\n\n`),
       );
@@ -445,15 +500,15 @@ export default function App() {
             v +
             `\n\n> Шаг ${event.content.step} не выполнен: ${event.content.summary || "ошибка агента"}\n\n`,
         );
-      setStatus(`Шаг ${event.content?.step} завершён`);
+      updateStatus(`Шаг ${event.content?.step} завершён`);
     }
     if (event.type === "clarification") {
       setAnswer((v) => v + (event.content?.question || ""));
-      setStatus("Нужно уточнение");
+      updateStatus("Нужно уточнение", "warning");
     }
     if (event.type === "orchestrator_final") {
-      setStatus("Ответ готов");
-      loadChats();
+      updateStatus("Ответ готов", "done");
+      syncStoredChat();
     }
     if (event.type === "feature_collection") {
       const fc =
@@ -486,11 +541,96 @@ export default function App() {
       }
     }
     if (event.type === "warning" || event.type === "error")
-      setStatus(event.content?.message || "Ошибка выполнения");
-    if (event.type === "service_event" && event.content?.event?.chat_id)
-      setChat((v) => (v ? { ...v, chat_id: event.content.event.chat_id } : v));
+      updateStatus(event.content?.message || "Ошибка выполнения", "warning");
+    if (event.type === "service_event" && event.content?.event?.chat_id) {
+      const id = String(event.content.event.chat_id);
+      chatIdRef.current = id;
+      setChat((value) =>
+        value
+          ? { ...value, chat_id: id }
+          : {
+              chat_id: id,
+              title: pendingQuestion || null,
+              scenario_id: scenario || null,
+              project_id: project || null,
+              updated_at: new Date().toISOString(),
+              metadata: { agent_id: agentId },
+              messages: [],
+            },
+      );
+    }
     if (event.type === "token_expired")
       refreshPipeline(event.content?.request_id);
+  }
+  async function syncStoredChat() {
+    await loadChats();
+    const id = chatIdRef.current;
+    if (!id) return;
+    window.setTimeout(async () => {
+      try {
+        const stored = await getChat(settings, token, id);
+        setChat(stored);
+        setPendingQuestion("");
+        setAnswer("");
+      } catch {
+        // ChatStorage may still be committing the final assistant message.
+      }
+    }, 350);
+  }
+  async function restoreLayers(message: Message, part: MessagePart) {
+    const key = `${message.message_id}:${part.part_seq}`;
+    setRestoreState((value) => ({ ...value, [key]: "Восстанавливаю…" }));
+    try {
+      const calls = Array.isArray(part.payload?.tool_calls)
+        ? part.payload.tool_calls
+        : Array.isArray(part.payload?.calls)
+          ? part.payload.calls
+          : [];
+      const targetCall = calls.at(-1);
+      const response = await replayToolCall(
+        settings,
+        token,
+        message.message_id,
+        part.part_seq,
+        Number(targetCall?.step || calls.length || 1),
+        scenario,
+        project,
+      );
+      const collections = findFeatureCollections(response);
+      if (!collections.length)
+        throw new Error("В сохранённом результате нет геометрий");
+      setLayers((current) => [
+        ...current,
+        ...collections.map((geojson, index) => ({
+          id: crypto.randomUUID(),
+          name: `Восстановленный слой ${current.length + index + 1}`,
+          color: colors[(current.length + index) % colors.length],
+          visible: true,
+          geojson,
+          count: geojson.features.length,
+        })),
+      ]);
+      setRightTab("map");
+      setResultOpen(true);
+      setRestoreState((value) => ({
+        ...value,
+        [key]: `Восстановлено: ${collections.length}`,
+      }));
+    } catch (error) {
+      setRestoreState((value) => ({ ...value, [key]: err(error) }));
+    }
+  }
+  function clearLayers() {
+    if (!layers.length) return;
+    setUndoLayers(layers);
+    setLayers([]);
+    if (undoTimer.current) window.clearTimeout(undoTimer.current);
+    undoTimer.current = window.setTimeout(() => setUndoLayers(null), 8000);
+  }
+  function restoreClearedLayers() {
+    if (!undoLayers) return;
+    setLayers(undoLayers);
+    setUndoLayers(null);
   }
   async function refreshPipeline(id: string) {
     const t = await freshToken();
@@ -505,26 +645,30 @@ export default function App() {
       return;
     }
     if (!query.trim() || busy) return;
+    const submittedQuery = query.trim();
     setBusy(true);
+    setPendingQuestion(submittedQuery);
+    setQuery("");
     setAnswer("");
     setTables([]);
     setEvents([]);
+    setStatusEntries([]);
     stepBase.current = "";
-    setStatus("Подключение к агенту…");
+    updateStatus("Подключение к агенту…");
     const url = new URL(agent.path, settings.agentsUrl);
-    url.searchParams.set("request", query);
+    url.searchParams.set("request", submittedQuery);
     // Omitted when unknown: the agents then use the provider's default.
     if (settings.model) url.searchParams.set("model", settings.model);
     url.searchParams.set("temperature", String(settings.temperature));
     if (scenario) url.searchParams.set("scenario_id", scenario);
-    if (chat?.chat_id) url.searchParams.set("chat_id", chat.chat_id);
+    if (chatIdRef.current) url.searchParams.set("chat_id", chatIdRef.current);
     abort.current = new AbortController();
     try {
       await readSse(url, await freshToken(), abort.current.signal, handle);
       setBusy(false);
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
-        setStatus(err(e));
+        updateStatus(err(e), "warning");
         setBusy(false);
       }
     }
@@ -704,26 +848,37 @@ export default function App() {
             <div className={`work-grid ${resultOpen ? "result-open" : ""}`}>
               <section className="conversation">
                 <div className="messages">
-                  {!history.length && !answer ? (
+                  {!history.length && !answer && !pendingQuestion ? (
                     <Welcome agent={agent} onExample={setQuery} />
                   ) : (
                     <>
                       {history.map((m) => (
-                        <MessageView key={m.message_id} message={m} />
+                        <MessageView
+                          key={m.message_id}
+                          message={m}
+                          restore={restoreLayers}
+                          restoreState={restoreState}
+                        />
                       ))}
+                      {pendingQuestion && (
+                        <div className="message user pending-message">
+                          <div className="avatar">В</div>
+                          <div>{pendingQuestion}</div>
+                        </div>
+                      )}
+                      {!!statusEntries.length && (
+                        <LiveStatus
+                          entries={statusEntries}
+                          current={status}
+                          busy={busy}
+                        />
+                      )}
                       {answer && (
                         <div className="message assistant">
                           <div className="avatar">g</div>
                           <div>
                             <ReactMarkdown>{answer}</ReactMarkdown>
                           </div>
-                        </div>
-                      )}
-                      {busy && (
-                        <div className="thinking">
-                          <i />
-                          <i />
-                          <i /> {status}
                         </div>
                       )}
                       {(layers.length > 0 ||
@@ -739,6 +894,7 @@ export default function App() {
                           }}
                         />
                       )}
+                      <div ref={messagesEnd} />
                     </>
                   )}
                 </div>
@@ -811,6 +967,10 @@ export default function App() {
                         ),
                       )
                     }
+                    onRemove={(id) =>
+                      setLayers((value) => value.filter((layer) => layer.id !== id))
+                    }
+                    onClear={clearLayers}
                   />
                 )}{" "}
                 {rightTab === "data" && <Tables tables={tables} />}{" "}
@@ -837,7 +997,10 @@ export default function App() {
         close={() => setHistoryOpen(false)}
         create={() => {
           setChat(null);
+          chatIdRef.current = undefined;
           setAnswer("");
+          setPendingQuestion("");
+          setStatusEntries([]);
           setLayers([]);
           setTables([]);
           setEvents([]);
@@ -859,6 +1022,14 @@ export default function App() {
       )}
       {loginOpen && (
         <LoginModal login={helperLogin} close={() => setLoginOpen(false)} />
+      )}
+      {undoLayers && (
+        <div className="undo-toast" role="status">
+          <span>Слои удалены с карты</span>
+          <button onClick={restoreClearedLayers}>
+            <ArrowCounterClockwise /> Отменить
+          </button>
+        </div>
       )}
     </div>
   );
@@ -900,6 +1071,63 @@ function ArtifactSummary({
   );
 }
 
+function LiveStatus({
+  entries,
+  current,
+  busy,
+}: {
+  entries: StatusEntry[];
+  current: string;
+  busy: boolean;
+}) {
+  const root = useRef<HTMLElement>(null);
+  useGSAP(
+    () => {
+      gsap.fromTo(
+        ".status-step",
+        { y: 12, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.35, stagger: 0.04, ease: "power2.out" },
+      );
+      const scroller = root.current?.closest(".messages");
+      if (busy && root.current && scroller) {
+        ScrollTrigger.create({
+          trigger: root.current,
+          scroller,
+          start: "top 18px",
+          end: "+=180",
+          pin: true,
+          pinSpacing: false,
+        });
+      }
+    },
+    { scope: root, dependencies: [busy, entries.length] },
+  );
+  return (
+    <section className={`live-status ${busy ? "active" : "complete"}`} ref={root}>
+      <div className="live-status-head">
+        <span className="status-orb" />
+        <div>
+          <small>{busy ? "Агент работает" : "Выполнение завершено"}</small>
+          <strong>{current}</strong>
+        </div>
+        <time>{entries.at(-1)?.time}</time>
+      </div>
+      <details open={busy}>
+        <summary>Ход выполнения · {entries.length}</summary>
+        <ol>
+          {entries.map((entry) => (
+            <li className={`status-step ${entry.state}`} key={entry.id}>
+              <i />
+              <span>{entry.text}</span>
+              <time>{entry.time}</time>
+            </li>
+          ))}
+        </ol>
+      </details>
+    </section>
+  );
+}
+
 function ChatHistoryDrawer({
   open,
   chats,
@@ -917,6 +1145,22 @@ function ChatHistoryDrawer({
   openChat: (id: string) => void;
   removeChat: (id: string) => void;
 }) {
+  const [search, setSearch] = useState("");
+  const [scenarioFilter, setScenarioFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState("");
+  const [agentFilter, setAgentFilter] = useState("");
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase("ru");
+    return chats.filter((item) => {
+      const agent = String(item.metadata?.agent_id || "");
+      return (
+        (!needle || (item.title || "Новый диалог").toLocaleLowerCase("ru").includes(needle)) &&
+        (!scenarioFilter || String(item.scenario_id || "").includes(scenarioFilter)) &&
+        (!projectFilter || String(item.project_id || "").includes(projectFilter)) &&
+        (!agentFilter || agent === agentFilter)
+      );
+    });
+  }, [agentFilter, chats, projectFilter, scenarioFilter, search]);
   if (!open) return null;
 
   return (
@@ -944,10 +1188,44 @@ function ChatHistoryDrawer({
         </button>
         <div className="drawer-search">
           <List />
-          <input placeholder="Найти диалог" />
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Найти диалог"
+          />
+        </div>
+        <div className="history-filters">
+          <input
+            value={scenarioFilter}
+            onChange={(event) => setScenarioFilter(event.target.value)}
+            placeholder="Сценарий"
+          />
+          <input
+            value={projectFilter}
+            onChange={(event) => setProjectFilter(event.target.value)}
+            placeholder="Проект"
+          />
+          <select value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)}>
+            <option value="">Все агенты</option>
+            {AGENTS.map((item) => (
+              <option value={item.id} key={item.id}>{item.label}</option>
+            ))}
+          </select>
+        </div>
+        {!!chats.length && (
+          <div className="recent-chats" aria-label="Недавние диалоги">
+            {chats.slice(0, 6).map((item) => (
+              <button key={item.chat_id} onClick={() => openChat(item.chat_id)}>
+                {item.title || "Новый диалог"}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="history-count">
+          Найдено: {filtered.length}
         </div>
         <div className="drawer-chat-list">
-          {chats.map((item) => (
+          {filtered.map((item) => (
             <div
               className={`drawer-chat ${activeId === item.chat_id ? "active" : ""}`}
               key={item.chat_id}
@@ -955,7 +1233,7 @@ function ChatHistoryDrawer({
               <button onClick={() => openChat(item.chat_id)}>
                 <strong>{item.title || "Новый диалог"}</strong>
                 <small>
-                  {new Date(item.updated_at).toLocaleDateString("ru")}
+                  {labelAgent(String(item.metadata?.agent_id || ""))} · сценарий {item.scenario_id || "—"} · {new Date(item.updated_at).toLocaleDateString("ru")}
                 </small>
               </button>
               <button
@@ -967,7 +1245,7 @@ function ChatHistoryDrawer({
               </button>
             </div>
           ))}
-          {!chats.length && <div className="empty">История пока пуста</div>}
+          {!filtered.length && <div className="empty">Подходящих диалогов нет</div>}
         </div>
       </aside>
     </>
@@ -1099,7 +1377,15 @@ function Welcome({
     </div>
   );
 }
-function MessageView({ message }: { message: Message }) {
+function MessageView({
+  message,
+  restore,
+  restoreState,
+}: {
+  message: Message;
+  restore: (message: Message, part: MessagePart) => void;
+  restoreState: Record<string, string>;
+}) {
   return (
     <div className={`message ${message.role}`}>
       <div className="avatar">{message.role === "user" ? "В" : "g"}</div>
@@ -1111,11 +1397,59 @@ function MessageView({ message }: { message: Message }) {
             </ReactMarkdown>
           ) : p.kind === "table" ? (
             <Tables key={p.part_seq} tables={[p.payload as TableData]} />
+          ) : p.kind === "tool_call" ? (
+            <div className="stored-tool-call" key={p.part_seq}>
+              <div>
+                <MapTrifold />
+                <span>
+                  <strong>Сохранённый результат инструментов</strong>
+                  <small>{p.mcp_source || "MCP-источник"}</small>
+                </span>
+              </div>
+              <button onClick={() => restore(message, p)}>
+                <ArrowCounterClockwise /> Восстановить слои
+              </button>
+              {restoreState[`${message.message_id}:${p.part_seq}`] && (
+                <small>{restoreState[`${message.message_id}:${p.part_seq}`]}</small>
+              )}
+            </div>
+          ) : p.kind === "status" ? (
+            <div className="stored-status" key={p.part_seq}>
+              {String(p.payload.text || p.payload.status || "Этап выполнен")}
+            </div>
           ) : null,
         )}
       </div>
     </div>
   );
+}
+
+function extractStoredTables(messages: Message[]): TableData[] {
+  return messages.flatMap((message) =>
+    message.parts
+      .filter((part) => part.kind === "table")
+      .map((part) => part.payload as TableData),
+  );
+}
+
+function findFeatureCollections(value: unknown): GeoJSON.FeatureCollection[] {
+  const found: GeoJSON.FeatureCollection[] = [];
+  const seen = new Set<unknown>();
+  function walkValue(current: unknown) {
+    if (!current || typeof current !== "object" || seen.has(current)) return;
+    seen.add(current);
+    if (
+      (current as { type?: string }).type === "FeatureCollection" &&
+      Array.isArray((current as { features?: unknown[] }).features)
+    ) {
+      found.push(current as GeoJSON.FeatureCollection);
+      return;
+    }
+    if (Array.isArray(current)) current.forEach(walkValue);
+    else Object.values(current as Record<string, unknown>).forEach(walkValue);
+  }
+  walkValue(value);
+  return found;
 }
 function Tables({ tables }: { tables: TableData[] }) {
   return (
@@ -1399,14 +1733,18 @@ function labelAgent(key?: string) {
     (
       {
         restriction: "Ограничения",
+        restrictions: "Ограничения",
+        compliance: "Соответствие",
         provision: "Обеспеченность",
         scenario_data: "Данные сценария",
         documents: "Документы",
         norms: "Нормы",
+        orchestrator: "Оркестратор",
+        llm: "Ассистент",
       } as Record<string, string>
     )[key || ""] ||
     key ||
-    "агент"
+    "Не определён"
   );
 }
 function labelStatus(s: string) {

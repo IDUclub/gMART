@@ -97,7 +97,7 @@ class ChatStorageApiClient:
             "title": title,
             "scenario_id": scenario_id,
             "project_id": project_id,
-            "meta": kwargs,
+            "metadata": kwargs,
         }
         chat = await self.json_handler.post(
             endpoint="/api/v1/chat_history/create_chat",
@@ -132,7 +132,7 @@ class ChatStorageApiClient:
             data={
                 "role": RoleEnum.parse(role).value,
                 "content": content,
-                "meta": kwargs,
+                "metadata": kwargs,
             },
         )
         return await self._message_created(message, MessageUploadType.TEXT)
@@ -165,7 +165,7 @@ class ChatStorageApiClient:
             data={
                 "role": RoleEnum.parse(role).value,
                 "parts": [part.model_dump(exclude_none=True) for part in parts],
-                "meta": kwargs,
+                "metadata": kwargs,
             },
         )
         return await self._message_created(message, MessageUploadType.PARTS)

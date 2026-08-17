@@ -105,6 +105,7 @@ class ScenarioDataService(BaseLlmService):
                         "Вопрос по данным и географическим слоям городского сценария."
                     ),
                     scenario_id=scenario_id,
+                    agent_id="scenario_data",
                 )
                 yield self._buf(request_id, self._chat_created(chat_id, title))
             except Exception as exc:  # ChatStorage must not break analysis

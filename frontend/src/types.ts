@@ -42,6 +42,7 @@ export type MessagePart = {
   part_seq: number;
   kind: string;
   payload: Record<string, any>;
+  mcp_source?: string | null;
 };
 export type Message = {
   message_id: string;
@@ -50,6 +51,12 @@ export type Message = {
   created_at: string;
 };
 export type Chat = ChatSummary & { messages: Message[] };
+export type StatusEntry = {
+  id: string;
+  text: string;
+  time: string;
+  state: "active" | "done" | "warning";
+};
 export type Settings = {
   theme: "light" | "dark";
   basemap: string;
