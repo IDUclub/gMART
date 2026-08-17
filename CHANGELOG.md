@@ -1,3 +1,14 @@
+## v0.15.0 (2026-08-17)
+
+### Feat
+
+- **ui**: add MCP diagnostics console (#128)
+- **scenario-data**: add optional-context A2A agent (#127)
+
+### Refactor
+
+- **frontend**: simplify workspace UI (#129)
+
 ## v0.14.1 (2026-07-14)
 
 ### Fix
