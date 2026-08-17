@@ -7,6 +7,10 @@ from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.scenario_data_plan_builder import ScenarioDataPlanBuilder
 from src.agents.services.scenario_data_service import ScenarioDataService
+from src.agents.services.service_entities.scenario_data_action import (
+    ScenarioDataAction,
+    ScenarioDataActionKind,
+)
 
 
 def test_scenario_id_is_enforced_over_model_arguments():
@@ -115,14 +119,11 @@ async def test_pipeline_without_scenario_skips_scenario_only_catalog(
         def update_token(self, token):
             raise AssertionError("token refresh is not expected")
 
-    async def stream_answer(model, user_query, observations, temperature, history):
+    async def draft_answer(model, user_query, observations, temperature, history):
         assert any("выбрать сценарий" in item["summary"] for item in observations)
-        yield {
-            "type": "chunk",
-            "content": {"text": "Выберите сценарий.", "done": True},
-        }
+        return "Выберите сценарий."
 
-    service._stream_answer = stream_answer
+    service._draft_answer = draft_answer
     events = [
         event
         async for event in service.run_scenario_data_pipeline(
@@ -203,3 +204,102 @@ async def test_pipeline_replay_buffer_serializes_geojson_datetimes():
         ]["updated_at"]
         == "2026-08-15 10:00:00+00:00"
     )
+
+
+async def test_a_rejected_answer_buys_a_second_pass_with_the_hint(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    """The evaluator must re-run the pipeline, not just annotate the answer.
+
+    Reported case: the agent said "types are not specified" while the exact counts sat in the
+    observations. A retry only helps if it is *steered*, so the rejection reason is asserted to
+    reach the observations the second draft sees.
+    """
+
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: fake_llm,
+    )
+    service = ScenarioDataService("http://llm", AsyncMock(), fake_urban, state_store)
+
+    tool = UrbanMcpTool(
+        group="projects",
+        name="GetScenarioPhysicalObjects",
+        title="Physical objects",
+        description="",
+        input_schema={
+            "type": "object",
+            "properties": {"scenario_id": {"type": "integer"}},
+            "required": ["scenario_id"],
+        },
+        tags=(),
+    )
+
+    class FakeUrbanMcp:
+        async def load_tools(self):
+            return [tool]
+
+        def update_token(self, token):
+            raise AssertionError("token refresh is not expected")
+
+    # The planner finishes immediately; this test is about the answer loop, not tool choice.
+    async def choose_action(*args, **kwargs):
+        return ScenarioDataAction(action=ScenarioDataActionKind.FINAL_ANSWER)
+
+    service.plan_builder.choose_action = choose_action
+
+    # Counts are present from the start, so an "unknown types" draft trips a rule.
+    aggregate_observation = {
+        "tool": "projects.GetScenarioPhysicalObjects",
+        "layer_count": 0,
+        "aggregate": {
+            "total_records": 924,
+            "breakdown": {
+                "physical_object_type.name": {
+                    "distinct_values": 2,
+                    "counts": {"Жилой дом": 900, "Банк": 24},
+                }
+            },
+        },
+    }
+
+    drafts = ["Типы объектов неизвестны.", "Всего 924 объекта: домов 900, банков 24."]
+    seen_observations: list[list[dict]] = []
+
+    async def draft_answer(model, user_query, observations, temperature, history):
+        if not seen_observations:
+            observations.append(aggregate_observation)
+        seen_observations.append([dict(item) for item in observations])
+        return drafts[min(len(seen_observations) - 1, len(drafts) - 1)]
+
+    service._draft_answer = draft_answer
+
+    events = [
+        event
+        async for event in service.run_scenario_data_pipeline(
+            urban_mcp_client=FakeUrbanMcp(),
+            token="token",
+            model="model",
+            temperature=0,
+            user_query="Какие объекты есть в сценарии?",
+            scenario_id=7,
+            persist_history=False,
+        )
+    ]
+
+    # Two drafts means the pipeline genuinely ran a second pass.
+    assert len(seen_observations) == 2
+    assert any(
+        event.get("type") == "status"
+        and event["content"].get("status") == "answer_retry"
+        for event in events
+    )
+    # The second pass was told why the first was rejected.
+    assert any(
+        "Что исправить" in (item.get("summary") or "") for item in seen_observations[1]
+    )
+    # Only the accepted answer reaches the user.
+    text = "".join(
+        event["content"]["text"] for event in events if event.get("type") == "chunk"
+    )
+    assert "924" in text and "неизвестны" not in text
