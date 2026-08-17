@@ -801,7 +801,18 @@ class ScenarioDataService(BaseLlmService):
     ) -> None:
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
         if persist_history and chat_id and parts:
-            self._schedule_persist(token, chat_id, parts, scenario_id=scenario_id)
+            try:
+                await self.add_complex_message(
+                    token,
+                    chat_id,
+                    RoleEnum.ASSISTANT,
+                    parts,
+                    scenario_id=scenario_id,
+                )
+            except Exception as exc:
+                # The accepted SSE answer has already been emitted and remains authoritative
+                # for the active browser window; persistence failure must not fail the stream.
+                logger.exception(f"Scenario data: failed to persist response: {exc}")
 
     async def _retryable_operation(
         self,
@@ -1027,27 +1038,6 @@ class ScenarioDataService(BaseLlmService):
                 rows=table["rows"],
             ),
         )
-
-    def _schedule_persist(
-        self,
-        token: str,
-        chat_id: str,
-        parts: list[TextPartRequest | TablePartRequest | ToolCallPartRequest],
-        **metadata,
-    ) -> None:
-        task = asyncio.create_task(
-            self.add_complex_message(
-                token, chat_id, RoleEnum.ASSISTANT, parts, **metadata
-            )
-        )
-        task.add_done_callback(self._log_persist_result)
-
-    @staticmethod
-    def _log_persist_result(task: asyncio.Task) -> None:
-        try:
-            task.result()
-        except Exception as exc:
-            logger.exception(f"Scenario data: failed to persist response: {exc}")
 
     def _buf(self, request_id: str, event: dict[str, Any]) -> dict[str, Any]:
         asyncio.create_task(self.state_store.buffer_event(request_id, event))

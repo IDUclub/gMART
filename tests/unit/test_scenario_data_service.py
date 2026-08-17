@@ -104,6 +104,31 @@ def test_planner_prompt_uses_concrete_action_values():
     assert '"action": "final_answer"' in prompt
 
 
+async def test_pipeline_completion_awaits_chat_storage_persistence(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: fake_llm,
+    )
+    service = ScenarioDataService("http://llm", AsyncMock(), fake_urban, state_store)
+    service.add_complex_message = AsyncMock()
+    parts = [AsyncMock()]
+
+    await service._complete_pipeline(
+        "request",
+        "token",
+        "chat",
+        parts,
+        scenario_id=772,
+        persist_history=True,
+    )
+
+    service.add_complex_message.assert_awaited_once()
+    assert service.add_complex_message.await_args.args[1] == "chat"
+    assert service.add_complex_message.await_args.args[3] == parts
+
+
 async def test_pipeline_without_scenario_skips_scenario_only_catalog(
     monkeypatch, fake_llm, fake_urban, state_store
 ):
