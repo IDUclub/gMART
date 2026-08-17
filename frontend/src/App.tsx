@@ -32,6 +32,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import MapPanel from "./MapPanel";
 import McpConsole from "./McpConsole";
+import {
+  appendSseExchange,
+  CHAT_PAGE_SIZE,
+  mergeMessageWindow,
+  oldestServerSequence,
+} from "./chatWindow";
 import { buildMessageBlocks, normalizeMessages } from "./messageHistory";
 import {
   authAvailable,
@@ -170,6 +176,24 @@ const colors = [
   "#ff6b7a",
   "#35c9ce",
 ];
+type ActiveExchange = {
+  question: string;
+  answer: string;
+  tables: TableData[];
+  finalized: boolean;
+};
+type HistoryWindow = {
+  hasMore: boolean;
+  nextBeforeSeq: number | null;
+  loading: boolean;
+};
+type CachedChatWindow = { chat: Chat; history: HistoryWindow };
+const emptyHistoryWindow: HistoryWindow = {
+  hasMore: false,
+  nextBeforeSeq: null,
+  loading: false,
+};
+const MAX_CACHED_CHAT_WINDOWS = 6;
 function load() {
   try {
     return {
@@ -191,6 +215,8 @@ export default function App() {
     [auth, setAuth] = useState("loading"),
     [chats, setChats] = useState<ChatSummary[]>([]),
     [chat, setChat] = useState<Chat | null>(null),
+    [historyWindow, setHistoryWindow] =
+      useState<HistoryWindow>(emptyHistoryWindow),
     [query, setQuery] = useState(""),
     [answer, setAnswer] = useState(""),
     [layers, setLayers] = useState<LayerData[]>([]),
@@ -225,6 +251,9 @@ export default function App() {
     resultAutoOpened = useRef(false),
     stepBase = useRef(""),
     chatIdRef = useRef<string | undefined>(undefined),
+    activeExchangeRef = useRef<ActiveExchange | null>(null),
+    chatWindowsRef = useRef<Map<string, CachedChatWindow>>(new Map()),
+    messagesScroller = useRef<HTMLDivElement>(null),
     messagesEnd = useRef<HTMLDivElement>(null),
     undoTimer = useRef<number | null>(null);
   const agent = AGENTS.find((a) => a.id === agentId)!;
@@ -315,7 +344,11 @@ export default function App() {
   }, [token]);
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: busy ? "smooth" : "auto" });
-  }, [answer, busy, pendingQuestion, statusEntries, chat?.messages.length]);
+  }, [answer, busy, pendingQuestion, statusEntries]);
+  useEffect(() => {
+    if (!chat) return;
+    rememberChatWindow(chat, historyWindow);
+  }, [chat, historyWindow]);
   // Unauthenticated on purpose: /llm/available_models carries no token requirement, and the
   // list must be known before the first request so a stale saved model cannot be sent.
   useEffect(() => {
@@ -338,11 +371,60 @@ export default function App() {
       setStatus(err(e));
     }
   }
+  function rememberChatWindow(value: Chat, history: HistoryWindow) {
+    const windows = chatWindowsRef.current;
+    windows.delete(value.chat_id);
+    windows.set(value.chat_id, {
+      chat: value,
+      history: { ...history, loading: false },
+    });
+    while (windows.size > MAX_CACHED_CHAT_WINDOWS) {
+      const oldestId = windows.keys().next().value;
+      if (!oldestId) break;
+      windows.delete(oldestId);
+    }
+  }
+  function scrollChatToBottom() {
+    window.requestAnimationFrame(() => {
+      messagesEnd.current?.scrollIntoView({ behavior: "auto" });
+    });
+  }
   async function openChat(id: string) {
+    if (busy || chat?.chat_id === id) return;
+    if (chat) rememberChatWindow(chat, historyWindow);
+    const cached = chatWindowsRef.current.get(id);
+    if (cached) {
+      setChat(cached.chat);
+      setHistoryWindow(cached.history);
+      chatIdRef.current = cached.chat.chat_id;
+      activeExchangeRef.current = null;
+      if (cached.chat.scenario_id != null)
+        setScenario(String(cached.chat.scenario_id));
+      if (cached.chat.project_id != null)
+        setProject(String(cached.chat.project_id));
+      const cachedAgent = String(cached.chat.metadata?.agent_id || "");
+      if (AGENTS.some((item) => item.id === cachedAgent))
+        setAgentId(cachedAgent as AgentId);
+      setAnswer("");
+      setPendingQuestion("");
+      setStatusEntries([]);
+      setLayers([]);
+      setTables(extractStoredTables(cached.chat.messages));
+      scrollChatToBottom();
+      return;
+    }
     try {
-      const stored = await getChat(settings, token, id);
+      const stored = await getChat(settings, token, id, {
+        limit: CHAT_PAGE_SIZE,
+      });
       setChat(stored);
+      setHistoryWindow({
+        hasMore: Boolean(stored.has_more),
+        nextBeforeSeq: stored.next_before_seq ?? null,
+        loading: false,
+      });
       chatIdRef.current = stored.chat_id;
+      activeExchangeRef.current = null;
       if (stored.scenario_id != null) setScenario(String(stored.scenario_id));
       if (stored.project_id != null) setProject(String(stored.project_id));
       const storedAgent = String(stored.metadata?.agent_id || "");
@@ -353,8 +435,54 @@ export default function App() {
       setStatusEntries([]);
       setLayers([]);
       setTables(extractStoredTables(stored.messages));
+      scrollChatToBottom();
     } catch (e) {
       setStatus(err(e));
+    }
+  }
+  async function loadOlderMessages() {
+    const current = chat;
+    const beforeSeq = historyWindow.nextBeforeSeq;
+    if (
+      !current ||
+      busy ||
+      !historyWindow.hasMore ||
+      !beforeSeq ||
+      historyWindow.loading
+    )
+      return;
+
+    const scroller = messagesScroller.current;
+    const previousHeight = scroller?.scrollHeight || 0;
+    const previousTop = scroller?.scrollTop || 0;
+    setHistoryWindow((value) => ({ ...value, loading: true }));
+    try {
+      const page = await getChat(settings, token, current.chat_id, {
+        limit: CHAT_PAGE_SIZE,
+        beforeSeq,
+      });
+      const merged = mergeMessageWindow(page.messages, current.messages);
+      setChat((value) => {
+        if (!value || value.chat_id !== current.chat_id) return value;
+        return {
+          ...value,
+          messages: mergeMessageWindow(page.messages, value.messages).messages,
+        };
+      });
+      setTables(extractStoredTables(merged.messages));
+      setHistoryWindow({
+        hasMore: Boolean(page.has_more),
+        nextBeforeSeq: page.next_before_seq ?? null,
+        loading: false,
+      });
+      window.requestAnimationFrame(() => {
+        if (!scroller) return;
+        scroller.scrollTop =
+          scroller.scrollHeight - previousHeight + previousTop;
+      });
+    } catch (error) {
+      setHistoryWindow((value) => ({ ...value, loading: false }));
+      setStatus(err(error));
     }
   }
   async function removeChat(id: string) {
@@ -363,7 +491,9 @@ export default function App() {
     if (chat?.chat_id === id) {
       setChat(null);
       chatIdRef.current = undefined;
+      setHistoryWindow(emptyHistoryWindow);
     }
+    chatWindowsRef.current.delete(id);
     loadChats();
   }
   function login() {
@@ -419,10 +549,7 @@ export default function App() {
     );
     route(event);
   }
-  function updateStatus(
-    text: string,
-    state: StatusEntry["state"] = "active",
-  ) {
+  function updateStatus(text: string, state: StatusEntry["state"] = "active") {
     if (!text) return;
     setStatus(text);
     setStatusEntries((previous) => {
@@ -447,6 +574,59 @@ export default function App() {
       ].slice(-30);
     });
   }
+  function updateSseAnswer(
+    update: string | ((current: string) => string),
+  ): string {
+    const exchange = activeExchangeRef.current;
+    const current = exchange?.answer || "";
+    const next = typeof update === "function" ? update(current) : update;
+    if (exchange) exchange.answer = next;
+    setAnswer(next);
+    return next;
+  }
+  function finalizeActiveExchange(fallbackAnswer?: string) {
+    const exchange = activeExchangeRef.current;
+    if (!exchange || exchange.finalized) return;
+    if (!exchange.answer.trim() && fallbackAnswer)
+      exchange.answer = fallbackAnswer;
+    exchange.finalized = true;
+
+    const id = chatIdRef.current;
+    if (!id) return;
+    setChat((current) => {
+      const base: Chat = current || {
+        chat_id: id,
+        title: exchange.question || null,
+        scenario_id: scenario || null,
+        project_id: project || null,
+        updated_at: new Date().toISOString(),
+        metadata: { agent_id: agentId },
+        messages: [],
+      };
+      const result = appendSseExchange(id, base.messages, exchange);
+      if (
+        result.removed.some(
+          (message) => !message.message_id.startsWith("browser:"),
+        )
+      ) {
+        const nextBeforeSeq = oldestServerSequence(result.messages);
+        if (nextBeforeSeq != null)
+          setHistoryWindow((value) => ({
+            ...value,
+            hasMore: true,
+            nextBeforeSeq,
+          }));
+      }
+      return {
+        ...base,
+        updated_at: new Date().toISOString(),
+        messages: result.messages,
+      };
+    });
+    setPendingQuestion("");
+    setAnswer("");
+    void loadChats();
+  }
   function route(event: StreamEvent, nested = false) {
     if (event.type === "pipeline_started") updateStatus("Агент начал работу");
     if (event.type === "status")
@@ -456,24 +636,24 @@ export default function App() {
         typeof event.content === "string"
           ? event.content
           : event.content?.text || "";
-      setAnswer((v) =>
+      updateSseAnswer((current) =>
         event.content?.iteration && event.content.iteration > 1
           ? stepBase.current + text
-          : v + text,
+          : current + text,
       );
       if (event.content?.done && !nested) {
         setBusy(false);
         updateStatus("Ответ готов", "done");
-        syncStoredChat();
+        finalizeActiveExchange();
       }
     }
     if (event.type === "plan") {
       const steps = event.content?.steps || [];
       updateStatus(`План готов: шагов — ${steps.length}`);
       if (steps.length)
-        setAnswer(
-          (v) =>
-            v +
+        updateSseAnswer(
+          (current) =>
+            current +
             "**План работы**\n\n" +
             steps
               .map(
@@ -488,28 +668,29 @@ export default function App() {
       const step = event.content?.step,
         agent = labelAgent(event.content?.agent);
       updateStatus(`Шаг ${step}: ${agent}`);
-      setAnswer(
-        (v) => (stepBase.current = `${v}---\n\n**Шаг ${step} · ${agent}**\n\n`),
+      updateSseAnswer(
+        (current) =>
+          (stepBase.current = `${current}---\n\n**Шаг ${step} · ${agent}**\n\n`),
       );
     }
     if (event.type === "step_event" && event.content?.event)
       route(event.content.event, true);
     if (event.type === "step_finished") {
       if (event.content?.status === "failed")
-        setAnswer(
-          (v) =>
-            v +
+        updateSseAnswer(
+          (current) =>
+            current +
             `\n\n> Шаг ${event.content.step} не выполнен: ${event.content.summary || "ошибка агента"}\n\n`,
         );
       updateStatus(`Шаг ${event.content?.step} завершён`);
     }
     if (event.type === "clarification") {
-      setAnswer((v) => v + (event.content?.question || ""));
+      updateSseAnswer((current) => current + (event.content?.question || ""));
       updateStatus("Нужно уточнение", "warning");
     }
     if (event.type === "orchestrator_final") {
       updateStatus("Ответ готов", "done");
-      syncStoredChat();
+      finalizeActiveExchange();
     }
     if (event.type === "feature_collection") {
       const fc =
@@ -534,6 +715,8 @@ export default function App() {
       }
     }
     if (event.type === "table") {
+      if (activeExchangeRef.current)
+        activeExchangeRef.current.tables.push(event.content);
       setTables((v) => [...v, event.content]);
       setRightTab("data");
       if (!resultAutoOpened.current) {
@@ -551,7 +734,7 @@ export default function App() {
           ? { ...value, chat_id: id }
           : {
               chat_id: id,
-              title: pendingQuestion || null,
+              title: activeExchangeRef.current?.question || null,
               scenario_id: scenario || null,
               project_id: project || null,
               updated_at: new Date().toISOString(),
@@ -562,21 +745,6 @@ export default function App() {
     }
     if (event.type === "token_expired")
       refreshPipeline(event.content?.request_id);
-  }
-  async function syncStoredChat() {
-    await loadChats();
-    const id = chatIdRef.current;
-    if (!id) return;
-    window.setTimeout(async () => {
-      try {
-        const stored = await getChat(settings, token, id);
-        setChat(stored);
-        setPendingQuestion("");
-        setAnswer("");
-      } catch {
-        // ChatStorage may still be committing the final assistant message.
-      }
-    }, 350);
   }
   async function restoreLayers(message: Message, part: MessagePart) {
     const key = `${message.message_id}:${part.part_seq}`;
@@ -647,6 +815,12 @@ export default function App() {
     }
     if (!query.trim() || busy) return;
     const submittedQuery = query.trim();
+    activeExchangeRef.current = {
+      question: submittedQuery,
+      answer: "",
+      tables: [],
+      finalized: false,
+    };
     setBusy(true);
     setPendingQuestion(submittedQuery);
     setQuery("");
@@ -667,11 +841,15 @@ export default function App() {
     try {
       await readSse(url, await freshToken(), abort.current.signal, handle);
       setBusy(false);
+      finalizeActiveExchange(
+        "Поток завершился без отдельного финального сообщения.",
+      );
     } catch (e) {
-      if ((e as Error).name !== "AbortError") {
-        updateStatus(err(e), "warning");
-        setBusy(false);
-      }
+      const aborted = (e as Error).name === "AbortError";
+      const message = aborted ? "Запрос остановлен пользователем." : err(e);
+      updateStatus(message, "warning");
+      finalizeActiveExchange(message);
+      setBusy(false);
     }
   }
   async function loadSystem() {
@@ -851,11 +1029,26 @@ export default function App() {
             </header>
             <div className={`work-grid ${resultOpen ? "result-open" : ""}`}>
               <section className="conversation">
-                <div className="messages">
+                <div
+                  className="messages"
+                  ref={messagesScroller}
+                >
                   {!history.length && !answer && !pendingQuestion ? (
                     <Welcome agent={agent} onExample={setQuery} />
                   ) : (
                     <>
+                      {historyWindow.hasMore && (
+                        <button
+                          className="history-load-more"
+                          onClick={() => void loadOlderMessages()}
+                          disabled={historyWindow.loading}
+                        >
+                          <ClockCounterClockwise />
+                          {historyWindow.loading
+                            ? "Загружаю историю…"
+                            : "Показать предыдущие сообщения"}
+                        </button>
+                      )}
                       {history.map((m) => (
                         <MessageView
                           key={m.message_id}
@@ -977,7 +1170,9 @@ export default function App() {
                       )
                     }
                     onRemove={(id) =>
-                      setLayers((value) => value.filter((layer) => layer.id !== id))
+                      setLayers((value) =>
+                        value.filter((layer) => layer.id !== id),
+                      )
                     }
                     onClear={clearLayers}
                   />
@@ -1005,8 +1200,11 @@ export default function App() {
         activeId={chat?.chat_id}
         close={() => setHistoryOpen(false)}
         create={() => {
+          if (chat) rememberChatWindow(chat, historyWindow);
           setChat(null);
           chatIdRef.current = undefined;
+          activeExchangeRef.current = null;
+          setHistoryWindow(emptyHistoryWindow);
           setAnswer("");
           setPendingQuestion("");
           setStatusEntries([]);
@@ -1101,7 +1299,10 @@ function LiveStatus({
     { scope: root, dependencies: [busy, entries.length] },
   );
   return (
-    <section className={`live-status ${busy ? "active" : "complete"}`} ref={root}>
+    <section
+      className={`live-status ${busy ? "active" : "complete"}`}
+      ref={root}
+    >
       <div className="live-status-head">
         <span className="status-orb" />
         <div>
@@ -1152,9 +1353,14 @@ function ChatHistoryDrawer({
     return chats.filter((item) => {
       const agent = String(item.metadata?.agent_id || "");
       return (
-        (!needle || (item.title || "Новый диалог").toLocaleLowerCase("ru").includes(needle)) &&
-        (!scenarioFilter || String(item.scenario_id || "").includes(scenarioFilter)) &&
-        (!projectFilter || String(item.project_id || "").includes(projectFilter)) &&
+        (!needle ||
+          (item.title || "Новый диалог")
+            .toLocaleLowerCase("ru")
+            .includes(needle)) &&
+        (!scenarioFilter ||
+          String(item.scenario_id || "").includes(scenarioFilter)) &&
+        (!projectFilter ||
+          String(item.project_id || "").includes(projectFilter)) &&
         (!agentFilter || agent === agentFilter)
       );
     });
@@ -1203,10 +1409,15 @@ function ChatHistoryDrawer({
             onChange={(event) => setProjectFilter(event.target.value)}
             placeholder="Проект"
           />
-          <select value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)}>
+          <select
+            value={agentFilter}
+            onChange={(event) => setAgentFilter(event.target.value)}
+          >
             <option value="">Все агенты</option>
             {AGENTS.map((item) => (
-              <option value={item.id} key={item.id}>{item.label}</option>
+              <option value={item.id} key={item.id}>
+                {item.label}
+              </option>
             ))}
           </select>
         </div>
@@ -1219,9 +1430,7 @@ function ChatHistoryDrawer({
             ))}
           </div>
         )}
-        <div className="history-count">
-          Найдено: {filtered.length}
-        </div>
+        <div className="history-count">Найдено: {filtered.length}</div>
         <div className="drawer-chat-list">
           {filtered.map((item) => (
             <div
@@ -1231,7 +1440,9 @@ function ChatHistoryDrawer({
               <button onClick={() => openChat(item.chat_id)}>
                 <strong>{item.title || "Новый диалог"}</strong>
                 <small>
-                  {labelAgent(String(item.metadata?.agent_id || ""))} · сценарий {item.scenario_id || "—"} · {new Date(item.updated_at).toLocaleDateString("ru")}
+                  {labelAgent(String(item.metadata?.agent_id || ""))} · сценарий{" "}
+                  {item.scenario_id || "—"} ·{" "}
+                  {new Date(item.updated_at).toLocaleDateString("ru")}
                 </small>
               </button>
               <button
@@ -1243,7 +1454,9 @@ function ChatHistoryDrawer({
               </button>
             </div>
           ))}
-          {!filtered.length && <div className="empty">Подходящих диалогов нет</div>}
+          {!filtered.length && (
+            <div className="empty">Подходящих диалогов нет</div>
+          )}
         </div>
       </aside>
     </>
@@ -1449,7 +1662,13 @@ function MessageView({
   );
 }
 
-function StoredTablePart({ table, open }: { table: TableData; open: () => void }) {
+function StoredTablePart({
+  table,
+  open,
+}: {
+  table: TableData;
+  open: () => void;
+}) {
   const rows = Array.isArray(table.rows) ? table.rows.length : 0;
   const columns = Array.isArray(table.columns) ? table.columns.length : 0;
   return (
@@ -1530,7 +1749,12 @@ function formatMessageTime(value: string): string {
   }).format(date);
 }
 
-function pluralize(value: number, one: string, few: string, many: string): string {
+function pluralize(
+  value: number,
+  one: string,
+  few: string,
+  many: string,
+): string {
   const tens = value % 100;
   const units = value % 10;
   if (tens >= 11 && tens <= 19) return many;
@@ -1773,10 +1997,7 @@ function SettingsModal({
               value={s.model}
               onChange={(e) => setS({ ...s, model: e.target.value })}
             >
-              {(models.length
-                ? models
-                : [s.model].filter(Boolean)
-              ).map((x) => (
+              {(models.length ? models : [s.model].filter(Boolean)).map((x) => (
                 <option key={x}>{x}</option>
               ))}
               {!models.length && !s.model && (

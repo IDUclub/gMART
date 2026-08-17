@@ -17,7 +17,10 @@ export async function request<T>(
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(
-      body?.detail?.message ?? body?.detail ?? body?.message ?? `Ошибка API: ${response.status}`,
+      body?.detail?.message ??
+        body?.detail ??
+        body?.message ??
+        `Ошибка API: ${response.status}`,
     );
   }
   return response.json();
@@ -34,7 +37,9 @@ export async function readSse(
     signal,
   });
   if (!response.ok)
-    throw new Error(`Не удалось открыть поток: ${response.status} ${await response.text()}`);
+    throw new Error(
+      `Не удалось открыть поток: ${response.status} ${await response.text()}`,
+    );
   const reader = response.body?.getReader();
   if (!reader) throw new Error("Пустой SSE-поток");
   const decoder = new TextDecoder();
@@ -65,11 +70,27 @@ export async function getChats(settings: Settings, token: string) {
   );
 }
 
-export const getChat = (settings: Settings, token: string, id: string) =>
-  request<Chat>(settings.chatStorageUrl, `/api/v1/chat_history/${id}`, token);
+export const getChat = (
+  settings: Settings,
+  token: string,
+  id: string,
+  page?: { limit: number; beforeSeq?: number | null },
+) => {
+  const query = new URLSearchParams();
+  if (page) query.set("message_limit", String(page.limit));
+  if (page?.beforeSeq != null) query.set("before_seq", String(page.beforeSeq));
+  const suffix = query.size ? `?${query}` : "";
+  return request<Chat>(
+    settings.chatStorageUrl,
+    `/api/v1/chat_history/${id}${suffix}`,
+    token,
+  );
+};
 
 export const deleteChat = (settings: Settings, token: string, id: string) =>
-  request(settings.chatStorageUrl, `/api/v1/chat_history/${id}`, token, { method: "DELETE" });
+  request(settings.chatStorageUrl, `/api/v1/chat_history/${id}`, token, {
+    method: "DELETE",
+  });
 
 export const replayToolCall = (
   settings: Settings,
@@ -122,7 +143,10 @@ export async function authLogin(
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(
-      body?.detail?.message ?? body?.detail ?? body?.message ?? `Ошибка входа: ${response.status}`,
+      body?.detail?.message ??
+        body?.detail ??
+        body?.message ??
+        `Ошибка входа: ${response.status}`,
     );
   }
   return response.json();

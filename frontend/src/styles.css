@@ -1,5 +1,6 @@
 :root {
-  font-family: Satoshi, "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
+  font-family:
+    Satoshi, "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
   color-scheme: light;
   --bg: #e9ede8;
   --surface: #f9faf7;
@@ -481,6 +482,26 @@ p {
   margin-left: auto;
   margin-right: auto;
 }
+.history-load-more {
+  min-height: 40px;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface2);
+  color: var(--muted);
+}
+.history-load-more:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+.history-load-more:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
 
 .welcome {
   position: relative;
@@ -921,7 +942,11 @@ p {
   padding: 16px;
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
   border-radius: 18px;
-  background: linear-gradient(135deg, var(--surface2), color-mix(in srgb, var(--soft) 60%, var(--surface)));
+  background: linear-gradient(
+    135deg,
+    var(--surface2),
+    color-mix(in srgb, var(--soft) 60%, var(--surface))
+  );
   box-shadow: 0 18px 42px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .live-status-head {
@@ -975,8 +1000,12 @@ p {
   border-radius: 50%;
   background: var(--muted);
 }
-.status-step.active i { background: var(--accent); }
-.status-step.warning i { background: var(--danger); }
+.status-step.active i {
+  background: var(--accent);
+}
+.status-step.warning i {
+  background: var(--danger);
+}
 .stored-tool-call {
   margin: 12px 0;
   padding: 13px;
@@ -989,9 +1018,17 @@ p {
 .stored-tool-call > small {
   display: flex;
 }
-.stored-tool-call > div { align-items: center; gap: 9px; }
-.stored-tool-call > div span { flex-direction: column; }
-.stored-tool-call small { color: var(--muted); font-size: 10px; }
+.stored-tool-call > div {
+  align-items: center;
+  gap: 9px;
+}
+.stored-tool-call > div span {
+  flex-direction: column;
+}
+.stored-tool-call small {
+  color: var(--muted);
+  font-size: 10px;
+}
 .stored-tool-call > button {
   margin-top: 10px;
   padding: 8px 11px;
@@ -1228,7 +1265,10 @@ p {
   display: grid;
   place-items: center;
 }
-.layer-remove svg { width: 13px; height: 13px; }
+.layer-remove svg {
+  width: 13px;
+  height: 13px;
+}
 .layer-chip:hover {
   transform: translateY(-2px);
 }
@@ -1422,7 +1462,9 @@ th {
   border-radius: 10px;
   background: var(--surface2);
 }
-.history-filters select { grid-column: 1 / -1; }
+.history-filters select {
+  grid-column: 1 / -1;
+}
 .recent-chats {
   margin: 12px 0;
   display: flex;
@@ -1667,9 +1709,13 @@ select:focus {
   border-color: var(--accent2);
   background: var(--soft);
 }
-.mcp-sources button:disabled { opacity: 0.45; }
+.mcp-sources button:disabled {
+  opacity: 0.45;
+}
 .mcp-sources span,
-.mcp-sources small { display: block; }
+.mcp-sources small {
+  display: block;
+}
 .mcp-sources small {
   margin-top: 3px;
   overflow: hidden;
@@ -1769,7 +1815,10 @@ select:focus {
   font-size: 9px;
   white-space: nowrap;
 }
-.mcp-groups button.active { background: var(--soft); color: var(--accent2); }
+.mcp-groups button.active {
+  background: var(--soft);
+  color: var(--accent2);
+}
 .mcp-tool-list em {
   display: inline-block;
   margin-top: 4px;
@@ -1777,7 +1826,9 @@ select:focus {
   font-size: 9px;
   font-style: normal;
 }
-.tool-source { color: var(--accent2); }
+.tool-source {
+  color: var(--accent2);
+}
 .mcp-tool-list {
   display: grid;
   gap: 6px;
@@ -2232,8 +2283,12 @@ select:focus {
     align-items: stretch;
     flex-direction: column-reverse;
   }
-  .clear-layers { justify-content: center; }
-  .mcp-sources { grid-template-columns: 1fr; }
+  .clear-layers {
+    justify-content: center;
+  }
+  .mcp-sources {
+    grid-template-columns: 1fr;
+  }
   .artifact-actions {
     width: 100%;
   }
