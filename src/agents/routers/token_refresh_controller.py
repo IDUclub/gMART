@@ -8,6 +8,20 @@ from src.agents.services.pipeline_state import PipelineStateStore
 token_refresh_router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
 
+@token_refresh_router.post("/{request_id}/cancel", summary="Cancel an active pipeline")
+async def cancel_pipeline(
+    request_id: str,
+    _token: str = Depends(verify_bearer_token),
+    store: PipelineStateStore = Depends(get_pipeline_state_store),
+) -> dict:
+    if not await store.cancel(request_id):
+        raise AgentsNotFound(
+            f"Pipeline request_id={request_id!r} was not found",
+            error_input={"request_id": request_id},
+        )
+    return {"status": "cancelled", "request_id": request_id}
+
+
 @token_refresh_router.post(
     "/{request_id}/token",
     summary="Provide a refreshed token to resume a suspended pipeline",

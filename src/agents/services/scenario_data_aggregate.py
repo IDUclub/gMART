@@ -15,6 +15,7 @@ give 924 distinct ids) and are skipped, as are free-text and numeric measurement
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from typing import Any
 
@@ -211,3 +212,85 @@ def aggregate_result(result: Any) -> dict[str, Any] | None:
     if records is None:
         return None
     return aggregate_records(records)
+
+
+def answer_records(result: Any, *, limit: int = 100) -> list[dict[str, Any]] | None:
+    """Keep a bounded complete id/name catalogue when it fits in model context."""
+
+    records = extract_records(result)
+    if records is None or len(records) > limit:
+        return None
+    selected: list[dict[str, Any]] = []
+    for record in records:
+        row = {
+            str(key): value
+            for key, value in record.items()
+            if key in {"id", "name", "title", "code"}
+            or key.endswith("_id")
+            or key.endswith("_name")
+        }
+        if row:
+            selected.append(row)
+    return selected or None
+
+
+def bounded_observation_context(
+    observations: list[dict[str, Any]], *, max_chars: int
+) -> str:
+    """Serialize recent evidence first without ever cutting JSON mid-document."""
+
+    compacted: list[dict[str, Any]] = []
+    for observation in reversed(observations):
+        item = {
+            key: observation[key]
+            for key in (
+                "context",
+                "tool",
+                "arguments",
+                "layer_count",
+                "summary",
+                "satisfies",
+                "aggregate",
+                "answer_records",
+                "unresolved_references",
+            )
+            if key in observation
+        }
+        if isinstance(item.get("summary"), str):
+            item["summary"] = item["summary"][:3000]
+        mapping = observation.get("mapping")
+        if isinstance(mapping, dict):
+            item["mapping"] = {
+                key: mapping[key]
+                for key in (
+                    "domain",
+                    "direction",
+                    "requested_values",
+                    "source_tool",
+                    "matches",
+                )
+                if key in mapping
+            }
+            if isinstance(item["mapping"].get("matches"), list):
+                item["mapping"]["matches"] = item["mapping"]["matches"][:50]
+        artifact = observation.get("artifact")
+        if isinstance(artifact, dict):
+            item["artifact"] = {
+                key: artifact[key]
+                for key in ("rows", "columns", "format", "source_tool")
+                if key in artifact
+            }
+        candidate = [*compacted, item]
+        payload = json.dumps(
+            {"order": "most_recent_first", "observations": candidate},
+            ensure_ascii=False,
+            default=str,
+        )
+        if len(payload) > max_chars:
+            continue
+        compacted = candidate
+    return json.dumps(
+        {"order": "most_recent_first", "observations": compacted},
+        ensure_ascii=False,
+        default=str,
+    )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from typing import Any
 
 from loguru import logger
@@ -16,6 +17,12 @@ from src.agents.services.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.scenario_data_action import (
     ScenarioDataAction,
     ScenarioDataActionKind,
+)
+from src.agents.services.service_entities.scenario_data_plan import (
+    AcquisitionPlan,
+    ExecutionPlanRevision,
+    PlanStep,
+    PlanStepKind,
 )
 
 MAX_SCENARIO_TOOL_CALLS = 6
@@ -37,6 +44,34 @@ PLANNER_NUM_PREDICT_RETRY = 5000
 #: Effort used on a retry after an empty reply. "low" is exactly the value that produces no
 #: content on a Harmony-served gpt-oss, so escalating to "medium" is the fix, not a guess.
 PLANNER_RETRY_REASONING_EFFORT = "medium"
+
+WORKSPACE_TOOL_CATALOG: dict[str, dict[str, Any]] = {
+    "WorkspaceDescribe": {"required": ["handle"]},
+    "WorkspaceUniqueValues": {"required": ["handle", "column"], "optional": ["limit"]},
+    "WorkspaceSample": {"required": ["handle"], "optional": ["limit"]},
+    "WorkspaceFilter": {"required": ["handle", "conditions"]},
+    "WorkspaceSelect": {"required": ["handle", "columns"]},
+    "WorkspaceSort": {"required": ["handle", "columns"], "optional": ["ascending"]},
+    "WorkspaceDeduplicate": {
+        "required": ["handle", "columns"],
+        "optional": ["keep"],
+    },
+    "WorkspaceAggregate": {
+        "required": ["handle", "group_by", "aggregations"],
+    },
+    "WorkspaceJoinMapping": {
+        "required": ["handle", "mapping_handle", "left_on", "right_on"],
+        "optional": ["how"],
+    },
+    "WorkspaceSpatialFilter": {
+        "required": ["handle", "mask_handle"],
+        "optional": ["predicate"],
+    },
+    "WorkspaceToFeatureCollection": {
+        "required": ["handle"],
+        "optional": ["limit"],
+    },
+}
 
 #: Subjects a tool can be *about* that a general data question is not asking for. These tools
 #: stay in the catalogue — restriction zones are legitimate Urban API data and must remain
@@ -70,6 +105,406 @@ class ScenarioDataPlanBuilder:
 
     def __init__(self, llm_client) -> None:
         self.llm_client = llm_client
+
+    async def build_acquisition_plan(
+        self,
+        model: str,
+        user_query: str,
+        history: list[dict] | None,
+        scenario_id: int | None,
+        context: dict[str, Any] | None = None,
+    ) -> AcquisitionPlan:
+        """Decide what must be known before selecting concrete tools."""
+
+        prompt = f"""Ты составляешь логический план получения городских данных.
+Сначала определи необходимые факты, маппинги и критерии полноты. Не называй MCP-инструменты
+и не придумывай идентификаторы. Если задача неоднозначна настолько, что разные трактовки
+дадут разные результаты, заполни clarification одним коротким вопросом на русском языке.
+
+Сценарий: {scenario_id if scenario_id is not None else "не выбран"}.
+Сжатый подтверждённый контекст чата:
+{json.dumps(context or {}, ensure_ascii=False)[:12000]}
+
+Ответ должен соответствовать JSON Schema. requirement_id — короткий латинский идентификатор.
+Для mapping_needs укажи domain, direction name_to_id/id_to_name и известные values.
+required_output перечисляет ожидаемые таблицы, слои и обязательные поля. Не включай
+внутренние рассуждения, только проверяемый план."""
+        return await self._structured_plan_call(
+            model,
+            [
+                {"role": "system", "content": prompt},
+                *(history or []),
+                {"role": "user", "content": user_query},
+            ],
+            AcquisitionPlan,
+            "acquisition plan",
+        )
+
+    async def build_execution_plan(
+        self,
+        model: str,
+        user_query: str,
+        acquisition: AcquisitionPlan,
+        tools: list[UrbanMcpTool],
+        mappings: list[dict[str, Any]],
+        *,
+        scenario_id: int | None,
+        revision: int = 1,
+        reason: str = "initial plan",
+        observations: list[dict[str, Any]] | None = None,
+        completed_fingerprints: list[str] | None = None,
+        completed_step_ids: list[str] | None = None,
+        workspace_enabled: bool = False,
+    ) -> ExecutionPlanRevision:
+        """Bind a logical plan to exact catalogue tools and ordered arguments."""
+
+        shortlist = self._shortlist(tools, user_query, observations or [])
+        catalog = [tool.compact_prompt_entry() for tool in shortlist]
+        prompt = f"""Построй целиком исполнимый план read-only Urban MCP до начала выполнения.
+Используй только точные group/tool_name и параметры из каталога. Шаги идут строго
+последовательно; depends_on может ссылаться только на предыдущие step_id. parallel_group
+можно заполнить для независимых шагов на будущее, но порядок списка остаётся безопасным.
+Не повторяй уже выполненные fingerprints и ранее завершённые step_id. scenario_id
+подставляется системой, не меняй его.
+{self._workspace_prompt(workspace_enabled)}
+
+Задача: {user_query}
+Логический план: {acquisition.model_dump_json()}
+Актуальные маппинги: {json.dumps(mappings, ensure_ascii=False)[:10000]}
+Наблюдения: {json.dumps(observations or [], ensure_ascii=False)[:12000]}
+Выполненные fingerprints: {json.dumps(completed_fingerprints or [], ensure_ascii=False)}
+Ранее завершённые step_id, на чьи artifact можно ссылаться:
+{json.dumps(completed_step_ids or [], ensure_ascii=False)}
+Каталог: {json.dumps(catalog, ensure_ascii=False)}
+Сценарий: {scenario_id if scenario_id is not None else "не выбран"}
+Требуемая revision: {revision}; reason: {reason}.
+
+Верни JSON по схеме ExecutionPlanRevision. Не завершай план до получения всех данных и
+справочников, необходимых для required_output. Каждый requirement_id логического плана
+должен встречаться в satisfies хотя бы одного шага, который реально его закрывает."""
+
+        def validate_plan(plan: ExecutionPlanRevision) -> ExecutionPlanRevision:
+            plan = plan.model_copy(update={"revision": revision, "reason": reason})
+            if acquisition.requirements and not plan.steps:
+                raise ValueError("execution plan has requirements but no steps")
+            urban_count = sum(
+                step.kind == PlanStepKind.URBAN_TOOL for step in plan.steps
+            )
+            workspace_count = sum(
+                step.kind == PlanStepKind.WORKSPACE for step in plan.steps
+            )
+            scenario_scoped = scenario_id is not None and (
+                "scenario" in acquisition.objective.lower()
+                or "сценар" in acquisition.objective.lower()
+                or "сценар" in user_query.lower()
+            )
+            if revision == 1 and scenario_scoped and urban_count == 0:
+                scenario_steps = self._scenario_seed_steps(
+                    acquisition, tools, scenario_id
+                )
+                if not scenario_steps:
+                    raise ValueError(
+                        "initial scenario-scoped plan must call an Urban MCP scenario "
+                        "tool; a global mapping artifact cannot prove scenario membership"
+                    )
+                covered = {
+                    requirement
+                    for step in scenario_steps
+                    for requirement in step.satisfies
+                }
+                remaining = [
+                    step
+                    for step in plan.steps
+                    if not (
+                        step.kind == PlanStepKind.WORKSPACE
+                        and step.satisfies
+                        and set(step.satisfies).issubset(covered)
+                    )
+                ]
+                plan = plan.model_copy(update={"steps": [*scenario_steps, *remaining]})
+                urban_count = len(scenario_steps)
+                workspace_count = sum(
+                    step.kind == PlanStepKind.WORKSPACE for step in remaining
+                )
+            if urban_count > 10 or workspace_count > 20:
+                raise ValueError(
+                    "execution plan exceeds call budgets: "
+                    f"urban={urban_count}, workspace={workspace_count}"
+                )
+            return self._canonicalize_plan(
+                plan,
+                tools,
+                workspace_enabled=workspace_enabled,
+                completed_step_ids=set(completed_step_ids or []),
+            )
+
+        return await self._structured_plan_call(
+            model,
+            [{"role": "system", "content": prompt}],
+            ExecutionPlanRevision,
+            "execution plan",
+            post_validate=validate_plan,
+        )
+
+    @staticmethod
+    def _scenario_seed_steps(
+        acquisition: AcquisitionPlan,
+        tools: list[UrbanMcpTool],
+        scenario_id: int,
+    ) -> list[PlanStep]:
+        """Repair an initial plan that mistakes a global mapping for scenario data."""
+
+        available = {tool.name: tool for tool in tools}
+        steps: list[PlanStep] = []
+        used: set[str] = set()
+        for requirement in acquisition.requirements:
+            domain = " ".join(
+                [acquisition.objective, requirement.description]
+                + [need.domain for need in requirement.mapping_needs]
+            ).lower()
+            if "physical_object_type" in domain or (
+                "physical" in domain and "object" in domain and "type" in domain
+            ):
+                tool_name = "GetScenarioPhysicalObjectTypes"
+            elif "service_type" in domain or ("service" in domain and "type" in domain):
+                tool_name = "GetScenarioServiceTypes"
+            elif "physical_object" in domain or (
+                "physical" in domain and "object" in domain
+            ):
+                tool_name = "GetScenarioPhysicalObjects"
+            elif "service" in domain or "сервис" in domain:
+                tool_name = "GetScenarioServices"
+            else:
+                continue
+            tool = available.get(tool_name)
+            if tool is None or tool_name in used:
+                continue
+            arguments = (
+                {"scenario_id": scenario_id}
+                if "scenario_id" in ((tool.input_schema or {}).get("properties") or {})
+                else {}
+            )
+            steps.append(
+                PlanStep(
+                    step_id=f"scenario_data_{len(steps) + 1}",
+                    purpose=requirement.description,
+                    group=tool.group,
+                    tool_name=tool.name,
+                    arguments=arguments,
+                    satisfies=[requirement.requirement_id],
+                    expected_output="scenario records",
+                )
+            )
+            used.add(tool_name)
+        return steps
+
+    @staticmethod
+    def _workspace_prompt(enabled: bool) -> str:
+        if not enabled:
+            return "Workspace-шаги не создавай: workspace отключён."
+        return f"""Для фильтрации, дедупликации, агрегации, join и получения ограниченной
+выборки разрешены только workspace-инструменты из каталога ниже. Результат каждого Urban
+шага автоматически становится artifact. В аргументе handle/mapping_handle/mask_handle
+ссылайся на него строкой $artifact:<step_id>. Не передавай chat_id — его добавит система.
+Workspace-шаг обязан depends_on на шаг, чей artifact он использует. Нельзя использовать
+query/eval/apply/Python/SQL, URL или файловые пути.
+Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False)}"""
+
+    async def _structured_plan_call(
+        self,
+        model: str,
+        messages: list[dict],
+        schema,
+        label: str,
+        post_validate: Callable[[Any], Any] | None = None,
+    ):
+        error = ""
+        for attempt in range(MAX_PLANNER_RETRIES + 1):
+            call: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "think": False,
+                "options": {
+                    "temperature": 0,
+                    "num_predict": (
+                        PLANNER_NUM_PREDICT
+                        if attempt == 0
+                        else PLANNER_NUM_PREDICT_RETRY
+                    ),
+                },
+            }
+            if attempt:
+                call["reasoning_effort"] = PLANNER_RETRY_REASONING_EFFORT
+                call["messages"] = messages + [
+                    {
+                        "role": "user",
+                        "content": f"Исправь JSON: {error}. Верни только JSON.",
+                    }
+                ]
+            if attempt < MAX_PLANNER_RETRIES:
+                call["format"] = schema.model_json_schema()
+            response = await self.llm_client.chat(**call)
+            raw = (response.get("message") or {}).get("content") or ""
+            try:
+                payload = json.loads(strip_json_fence(raw))
+                if schema is ExecutionPlanRevision:
+                    payload = self._normalize_execution_plan_payload(payload)
+                parsed = schema.model_validate(payload)
+                return post_validate(parsed) if post_validate else parsed
+            except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+                error = str(exc)
+                logger.warning(
+                    f"Invalid scenario-data {label}, attempt {attempt + 1}: {error}"
+                )
+        raise ValueError(f"invalid scenario-data {label} after retries: {error}")
+
+    @staticmethod
+    def _normalize_execution_plan_payload(payload: Any) -> Any:
+        """Repair harmless source-kind artefacts commonly emitted by gpt-oss.
+
+        ``group`` selects one of the remote Urban MCP endpoints and has no meaning for
+        local workspace operations.  Some otherwise valid structured replies copy the
+        preceding Urban step's group into every step, or label a grouped remote Get*
+        call as a workspace step.  The source fields make both repairs unambiguous and
+        cannot broaden tool access; all tool names and arguments are still checked by
+        :meth:`_canonicalize_plan`.
+        """
+
+        if not isinstance(payload, dict):
+            return payload
+        normalized = dict(payload)
+        steps = normalized.get("steps")
+        if not isinstance(steps, list):
+            return normalized
+        normalized_steps = []
+        for step in steps:
+            if not isinstance(step, dict):
+                normalized_steps.append(step)
+                continue
+            repaired = dict(step)
+            tool_name = repaired.get("tool_name")
+            if isinstance(tool_name, str) and "." in tool_name:
+                prefix, bare_name = tool_name.split(".", 1)
+                if prefix in URBAN_MCP_GROUPS and bare_name:
+                    repaired["group"] = prefix
+                    repaired["tool_name"] = bare_name
+                    tool_name = bare_name
+            if repaired.get("kind") != "workspace":
+                normalized_steps.append(repaired)
+            elif tool_name in WORKSPACE_TOOL_CATALOG:
+                normalized_steps.append({**repaired, "group": None})
+            elif repaired.get("group"):
+                # The model occasionally labels a remote Get* call as workspace even
+                # though it preserved its exact Urban group.  Restore the only kind
+                # compatible with that declared source; canonical catalogue validation
+                # below still rejects unknown group/tool pairs and arguments.
+                normalized_steps.append({**repaired, "kind": "urban_tool"})
+            else:
+                normalized_steps.append(repaired)
+        normalized["steps"] = normalized_steps
+        return normalized
+
+    @staticmethod
+    def _canonicalize_plan(
+        plan: ExecutionPlanRevision,
+        tools: list[UrbanMcpTool],
+        *,
+        workspace_enabled: bool = False,
+        completed_step_ids: set[str] | None = None,
+    ) -> ExecutionPlanRevision:
+        available = {(tool.group, tool.name): tool for tool in tools}
+        prior_completed = set(completed_step_ids or set())
+        known = set(prior_completed)
+        canonical_steps = []
+        for step in plan.steps:
+            if step.step_id in prior_completed:
+                raise ValueError(f"replan reuses completed step_id: {step.step_id}")
+            missing_dependencies = set(step.depends_on) - known
+            if missing_dependencies:
+                raise ValueError(
+                    f"unknown dependencies for {step.step_id}: "
+                    f"{sorted(missing_dependencies)}"
+                )
+            if step.kind == PlanStepKind.WORKSPACE:
+                if not workspace_enabled:
+                    raise ValueError("workspace step is disabled")
+                spec = WORKSPACE_TOOL_CATALOG.get(step.tool_name)
+                if spec is None:
+                    raise ValueError(f"unknown workspace tool: {step.tool_name}")
+                arguments = dict(step.arguments)
+                if (
+                    "handle" in spec.get("required", [])
+                    and "handle" not in arguments
+                    and len(step.depends_on) == 1
+                ):
+                    arguments["handle"] = f"$artifact:{step.depends_on[0]}"
+                if (
+                    step.tool_name == "WorkspaceSelect"
+                    and "columns" not in arguments
+                    and plan.required_output.fields
+                ):
+                    arguments["columns"] = list(plan.required_output.fields)
+                if arguments != step.arguments:
+                    step = step.model_copy(update={"arguments": arguments})
+                allowed = set(spec.get("required", [])) | set(spec.get("optional", []))
+                unknown = set(step.arguments) - allowed
+                missing = set(spec.get("required", [])) - set(step.arguments)
+                if unknown or missing:
+                    raise ValueError(
+                        f"invalid arguments for {step.tool_name}: "
+                        f"unknown={sorted(unknown)}, missing={sorted(missing)}"
+                    )
+                references = ScenarioDataPlanBuilder._artifact_references(
+                    step.arguments
+                )
+                undeclared = references - set(step.depends_on)
+                if undeclared:
+                    raise ValueError(
+                        f"workspace step {step.step_id} must depend_on artifact sources: "
+                        f"{sorted(undeclared)}"
+                    )
+                known.add(step.step_id)
+                canonical_steps.append(step)
+                continue
+            if step.kind != PlanStepKind.URBAN_TOOL:
+                continue
+            tool = available.get((step.group, step.tool_name))
+            if tool is None:
+                matches = [
+                    candidate for candidate in tools if candidate.name == step.tool_name
+                ]
+                if len(matches) != 1:
+                    raise ValueError(
+                        f"unknown plan tool: {step.group}.{step.tool_name}"
+                    )
+                tool = matches[0]
+                step = step.model_copy(update={"group": tool.group})
+            properties = tool.input_schema.get("properties") or {}
+            unknown = set(step.arguments) - set(properties)
+            if unknown:
+                raise ValueError(
+                    f"unknown arguments for {step.tool_name}: {sorted(unknown)}"
+                )
+            known.add(step.step_id)
+            canonical_steps.append(step)
+        return plan.model_copy(update={"steps": canonical_steps})
+
+    @staticmethod
+    def _artifact_references(value: Any) -> set[str]:
+        if isinstance(value, str) and value.startswith("$artifact:"):
+            return {value.removeprefix("$artifact:")}
+        if isinstance(value, list):
+            return set().union(
+                *(ScenarioDataPlanBuilder._artifact_references(item) for item in value)
+            )
+        if isinstance(value, dict):
+            return set().union(
+                *(
+                    ScenarioDataPlanBuilder._artifact_references(item)
+                    for item in value.values()
+                )
+            )
+        return set()
 
     async def choose_action(
         self,

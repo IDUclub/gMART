@@ -9,6 +9,8 @@ from __future__ import annotations
 from src.agents.services.scenario_data_aggregate import (
     aggregate_records,
     aggregate_result,
+    answer_records,
+    bounded_observation_context,
     extract_records,
     unresolved_references,
 )
@@ -159,6 +161,42 @@ class TestAggregateResult:
         assert result["total_records"] == 5
         assert result["breakdown"]["physical_object_type.name"]["counts"] == {"Банк": 5}
         assert not any("geometry" in key for key in result["breakdown"])
+
+
+def test_small_type_catalogue_is_preserved_for_the_final_answer():
+    rows = [
+        {"service_type_id": index, "name": f"Тип {index}", "capacity": 100}
+        for index in range(1, 25)
+    ]
+
+    assert answer_records(rows) == [
+        {"service_type_id": index, "name": f"Тип {index}"} for index in range(1, 25)
+    ]
+
+
+def test_large_entity_collection_is_not_copied_into_model_context():
+    rows = [
+        {"physical_object_id": index, "name": f"Объект {index}"} for index in range(101)
+    ]
+
+    assert answer_records(rows) is None
+
+
+def test_bounded_context_keeps_recent_evidence_and_valid_json():
+    context = bounded_observation_context(
+        [
+            {"mapping": {"result": "x" * 50000, "source_tool": "old"}},
+            {
+                "tool": "projects.GetScenarioServiceTypes",
+                "answer_records": [{"service_type_id": 22, "name": "Школа"}],
+            },
+        ],
+        max_chars=1000,
+    )
+
+    assert '"name": "Школа"' in context
+    assert "x" * 100 not in context
+    assert context.startswith('{"order": "most_recent_first"')
 
 
 class TestUnresolvedReferences:

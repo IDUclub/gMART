@@ -251,6 +251,7 @@ export default function App() {
     resultAutoOpened = useRef(false),
     stepBase = useRef(""),
     chatIdRef = useRef<string | undefined>(undefined),
+    activeRequestIdRef = useRef<string | undefined>(undefined),
     activeExchangeRef = useRef<ActiveExchange | null>(null),
     chatWindowsRef = useRef<Map<string, CachedChatWindow>>(new Map()),
     messagesScroller = useRef<HTMLDivElement>(null),
@@ -628,7 +629,10 @@ export default function App() {
     void loadChats();
   }
   function route(event: StreamEvent, nested = false) {
-    if (event.type === "pipeline_started") updateStatus("Агент начал работу");
+    if (event.type === "pipeline_started") {
+      activeRequestIdRef.current = event.content?.request_id;
+      updateStatus("Агент начал работу");
+    }
     if (event.type === "status")
       updateStatus(event.content?.text || labelStatus(event.content?.status));
     if (event.type === "chunk" || event.type === "Text") {
@@ -642,10 +646,20 @@ export default function App() {
           : current + text,
       );
       if (event.content?.done && !nested) {
+        activeRequestIdRef.current = undefined;
         setBusy(false);
         updateStatus("Ответ готов", "done");
         finalizeActiveExchange();
       }
+    }
+    if (event.type === "plan_created") {
+      const steps = event.content?.steps || [];
+      updateStatus(`План составлен: ${steps.length} ${pluralize(steps.length, "шаг", "шага", "шагов")}`);
+    }
+    if (event.type === "plan_revision_created") {
+      const revision = event.content?.revision || 1;
+      const steps = event.content?.steps || [];
+      updateStatus(`План №${revision}: ${steps.length} ${pluralize(steps.length, "шаг", "шага", "шагов")}`);
     }
     if (event.type === "plan") {
       const steps = event.content?.steps || [];
@@ -665,6 +679,10 @@ export default function App() {
         );
     }
     if (event.type === "step_started") {
+      if (event.content?.step_id) {
+        updateStatus(event.content?.purpose || `Выполняю ${event.content.step_id}`);
+        return;
+      }
       const step = event.content?.step,
         agent = labelAgent(event.content?.agent);
       updateStatus(`Шаг ${step}: ${agent}`);
@@ -673,6 +691,30 @@ export default function App() {
           (stepBase.current = `${current}---\n\n**Шаг ${step} · ${agent}**\n\n`),
       );
     }
+    if (event.type === "step_completed")
+      updateStatus(`Шаг ${event.content?.step_id || "плана"} завершён`);
+    if (event.type === "mapping_started")
+      updateStatus(event.content?.text || "Получаю актуальные справочники…");
+    if (event.type === "mapping_completed")
+      updateStatus(event.content?.text || "Актуальные справочники получены");
+    if (event.type === "artifact_created")
+      updateStatus(`Набор данных подготовлен: ${event.content?.rows ?? 0} строк`);
+    if (event.type === "validation_started")
+      updateStatus(event.content?.text || "Проверяю полноту результата…");
+    if (event.type === "validation_completed")
+      updateStatus("Результат проверен");
+    if (event.type === "replanning")
+      updateStatus(`Уточняю план: редакция ${event.content?.revision || ""}`);
+    if (event.type === "clarification_required") {
+      updateStatus("Нужно уточнение", "warning");
+    }
+    if (event.type === "pipeline_failed")
+      updateStatus(
+        Array.isArray(event.content?.reasons)
+          ? event.content.reasons.join("; ")
+          : "Получен частичный результат",
+        "warning",
+      );
     if (event.type === "step_event" && event.content?.event)
       route(event.content.event, true);
     if (event.type === "step_finished") {
@@ -744,7 +786,7 @@ export default function App() {
       );
     }
     if (event.type === "token_expired")
-      refreshPipeline(event.content?.request_id);
+      void refreshPipeline(event.content?.request_id);
   }
   async function restoreLayers(message: Message, part: MessagePart) {
     const key = `${message.message_id}:${part.part_seq}`;
@@ -802,11 +844,44 @@ export default function App() {
     setUndoLayers(null);
   }
   async function refreshPipeline(id: string) {
+    updateStatus("Обновляю доступ к данным…");
     const t = await freshToken();
-    await request(settings.agentsUrl, `/pipelines/${id}/token`, t, {
-      method: "POST",
-      body: JSON.stringify({ token: t }),
-    });
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await request(settings.agentsUrl, `/pipelines/${id}/token`, t, {
+          method: "POST",
+          body: JSON.stringify({ token: t }),
+        });
+        updateStatus("Доступ обновлён, продолжаю запрос…");
+        return;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      }
+    }
+    updateStatus(`Не удалось обновить доступ: ${err(lastError)}`, "warning");
+  }
+  async function cancelActivePipeline() {
+    const requestId = activeRequestIdRef.current;
+    try {
+      if (requestId) {
+        const currentToken = await freshToken();
+        await request(
+          settings.agentsUrl,
+          `/pipelines/${requestId}/cancel`,
+          currentToken,
+          { method: "POST" },
+        );
+      }
+      updateStatus("Запрос остановлен", "warning");
+    } catch (error) {
+      updateStatus(`Не удалось остановить запрос: ${err(error)}`, "warning");
+    } finally {
+      activeRequestIdRef.current = undefined;
+      abort.current?.abort();
+      setBusy(false);
+    }
   }
   async function submit() {
     if (!token) {
@@ -1120,9 +1195,7 @@ export default function App() {
                     <span>Enter — отправить · Shift+Enter — новая строка</span>
                     <button
                       onClick={() =>
-                        busy
-                          ? (abort.current?.abort(), setBusy(false))
-                          : submit()
+                        busy ? void cancelActivePipeline() : void submit()
                       }
                       className="send"
                     >
@@ -1654,6 +1727,17 @@ function MessageView({
               <div className="stored-status" key={block.key}>
                 {String(p.payload.text || p.payload.status || "Этап выполнен")}
               </div>
+            ) : [
+                "plan",
+                "plan_revision",
+                "artifact_ref",
+                "validation",
+                "failure",
+              ].includes(p.kind) ? (
+              <details className="stored-status" key={block.key}>
+                <summary>{storedPartTitle(p.kind, p.payload)}</summary>
+                <pre>{JSON.stringify(p.payload, null, 2)}</pre>
+              </details>
             ) : (
               <div className="stored-status" key={block.key}>
                 Сохранённая часть: {p.kind}
@@ -1664,6 +1748,17 @@ function MessageView({
       </div>
     </article>
   );
+}
+
+function storedPartTitle(kind: string, payload: Record<string, any>) {
+  if (kind === "plan") return "План получения данных";
+  if (kind === "plan_revision")
+    return `Редакция плана №${payload.revision || 1}`;
+  if (kind === "artifact_ref")
+    return `Набор данных: ${payload.rows ?? 0} строк`;
+  if (kind === "validation") return "Проверка полноты ответа";
+  if (kind === "failure") return "Ограничения выполнения";
+  return "Служебная часть";
 }
 
 function StoredTablePart({

@@ -7,6 +7,7 @@ from src.idu_mcp.dependencies.tool_deps.urban_api_tools_deps import (
 )
 from src.idu_mcp.tools_services.geometry_tools import GeometryTools
 from src.idu_mcp.tools_services.urb_api_tools import UrbanApiTool
+from src.idu_mcp.tools_services.workspace_store import WorkspaceStore
 
 mcp_deps: dict[str, BaseDep | UrbanApiToolsDeps | GeomToolsDeps] = init_dependencies()
 
@@ -21,3 +22,10 @@ def get_geom_tools() -> GeometryTools:
 
 def get_urban_api_client() -> UrbanApiClient:
     return mcp_deps["urban_api_tools"].urban_api_client
+
+
+def get_workspace_store() -> WorkspaceStore:
+    store = mcp_deps.get("workspace_store")
+    if not isinstance(store, WorkspaceStore):
+        raise RuntimeError("Workspace tools are disabled")
+    return store

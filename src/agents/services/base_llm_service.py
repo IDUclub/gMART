@@ -9,6 +9,7 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
     StatusPartRequest,
+    StructuredPartRequest,
     TablePartRequest,
     TextPartRequest,
     ToolCallPartRequest,
@@ -259,6 +260,7 @@ class BaseLlmService(BaseLlmClient):
             token, chat_id, role, text, **kwargs
         )
         logger.info(f"Added message with {asdict(message_info)}")
+        return message_info
 
     async def add_complex_message(
         self,
@@ -266,7 +268,11 @@ class BaseLlmService(BaseLlmClient):
         chat_id: str,
         role: RoleEnum,
         parts: list[
-            TextPartRequest | StatusPartRequest | ToolCallPartRequest | TablePartRequest
+            TextPartRequest
+            | StatusPartRequest
+            | ToolCallPartRequest
+            | TablePartRequest
+            | StructuredPartRequest
         ],
         **kwargs,
     ):
@@ -286,6 +292,7 @@ class BaseLlmService(BaseLlmClient):
             token, chat_id, role, parts, **kwargs
         )
         logger.info(f"Added messages with {asdict(message_info)}")
+        return message_info
 
     async def get_chat_messages(self, token: str, chat_id: str) -> ChatHistory:
         """

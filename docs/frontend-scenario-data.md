@@ -42,6 +42,23 @@ Urban MCP, исключает дубликаты и формирует текс�
 каталога, получение данных, подсчёт и проверка результата. Отдельный heartbeat не
 требуется — интерфейс должен обновлять показанный текст статуса при каждом этапе.
 
+## Линейный plan-first workflow
+
+Пилот включается флагом `SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED`. При включении агент
+сначала строит логический план, получает только необходимые актуальные справочники,
+создаёт неизменяемую исполнимую ревизию и затем выполняет её строго последовательно.
+После выполнения работает отдельная проверка полноты; нехватка данных создаёт новую
+ревизию плана, а не изменяет уже исполнявшуюся. Ограничения: 10 вызовов Urban MCP,
+20 workspace-операций, 3 перепланирования, 5 минут активной работы и 15 минут
+абсолютного времени. Ожидание обновлённого токена не входит в активное время.
+
+`SCENARIO_DATA_WORKSPACE_ENABLED` разрешает фиксированные операции над временными
+DataFrame/GeoDataFrame-артефактами: описание, выборку, фильтр, выбор столбцов,
+сортировку, дедупликацию, агрегацию, join справочника, пространственный фильтр и
+выгрузку GeoJSON. Произвольные выражения, Python/SQL, URL и пользовательские пути
+не поддерживаются. Payload хранится в tmpfs IDU MCP, а Redis содержит только
+часовую метаинформацию и opaque handle, изолированный по пользователю и чату.
+
 ## REST/SSE
 
 ### `GET /scenario-data/qa/stream`
@@ -59,7 +76,17 @@ Urban MCP, исключает дубликаты и формирует текс�
 
 Основные SSE-события: `pipeline_started`, `status`, `tool_call`,
 `feature_collection`, `table`, `chunk`, `token_expired`, `pipeline_suspended` и
-`error`.
+`error`. Линейный workflow дополнительно отправляет `plan_created`,
+`plan_revision_created`, `mapping_started`, `mapping_completed`, `step_started`,
+`step_completed`, `artifact_created`, `validation_started`, `validation_completed`,
+`replanning`, `clarification_required` и `pipeline_failed`. Это проверяемая трасса
+плана и статусов, а не внутренние рассуждения модели.
+
+Явная остановка выполняется `POST /pipelines/{request_id}/cancel`. При истечении JWT
+клиент получает `token_expired`, обновляет токен и в течение 60 секунд повторяет
+`POST /pipelines/{request_id}/token`; пайплайн продолжает тот же шаг. Разрыв SSE не
+останавливает серверное выполнение, а повторное подключение с `request_id` получает
+буфер событий.
 
 Значения `status.status`: `tool_discovery`, `planning`, `tool_execution`,
 `response_analysis`, `answer_review`, `answer_retry`. Последние два относятся к проверке

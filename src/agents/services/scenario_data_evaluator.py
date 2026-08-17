@@ -27,6 +27,7 @@ from typing import Any
 from loguru import logger
 
 from src.agents.services.restriction_catalog import strip_json_fence
+from src.agents.services.scenario_data_aggregate import bounded_observation_context
 
 #: Extra tool-loop passes allowed after a rejected answer.
 MAX_ANSWER_ATTEMPTS = 2
@@ -50,8 +51,6 @@ _LAYER_REQUEST_MARKERS = (
     "слоев",
     "на карте",
     "на карту",
-    "покажи",
-    "отобрази",
     "geojson",
     "featurecollection",
     "границ",
@@ -118,13 +117,12 @@ def deterministic_checks(
                 "числа — распределение не приведено."
             )
 
-    pending = sorted(
-        {
-            reference
-            for observation in observations
-            for reference in (observation.get("unresolved_references") or [])
-        }
-    )
+    pending_set: set[str] = set()
+    for index, observation in enumerate(observations):
+        for reference in observation.get("unresolved_references") or []:
+            if not _reference_resolved(reference, observations[index + 1 :]):
+                pending_set.add(reference)
+    pending = sorted(pending_set)
     if pending:
         reasons.append(
             "Записи ссылаются на справочник полями "
@@ -141,6 +139,30 @@ def deterministic_checks(
         )
 
     return reasons
+
+
+def _reference_resolved(reference: str, later: list[dict[str, Any]]) -> bool:
+    """Recognize a later dictionary result instead of keeping stale pending state."""
+
+    tail = reference.rsplit(".", 1)[-1]
+    stem = tail.removesuffix("_ids").removesuffix("_id").lower()
+    stem_tokens = {token for token in stem.split("_") if len(token) > 2}
+    for observation in later:
+        mapping = observation.get("mapping") or {}
+        domain = str(mapping.get("domain") or "").lower()
+        if stem_tokens and any(token in domain for token in stem_tokens):
+            return True
+        aggregate = observation.get("aggregate") or {}
+        fields = set((aggregate.get("breakdown") or {}).keys())
+        has_id = any(
+            stem in field.lower() and field.lower().endswith("id") for field in fields
+        )
+        has_name = any(
+            stem in field.lower() and "name" in field.lower() for field in fields
+        )
+        if has_id and has_name:
+            return True
+    return False
 
 
 class ScenarioDataEvaluator:
@@ -182,9 +204,7 @@ class ScenarioDataEvaluator:
         observations: list[dict[str, Any]],
         answer: str,
     ) -> tuple[bool, str] | None:
-        context = json.dumps(observations, ensure_ascii=False)
-        if len(context) > 12000:
-            context = context[:12000] + "…"
+        context = bounded_observation_context(observations, max_chars=12000)
         prompt = (
             "Ты проверяешь ответ агента по городским данным. Верни строгий JSON "
             '{"sufficient": bool, "missing": str}.\n'

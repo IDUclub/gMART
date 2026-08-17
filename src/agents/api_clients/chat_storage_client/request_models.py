@@ -127,3 +127,15 @@ class ToolCallPartRequest(BaseModel):
     kind: Literal["tool_call"]
     payload: ToolCallPayload
     mcp_source: str | None = None
+
+
+StructuredPartKind = Literal[
+    "plan", "plan_revision", "artifact_ref", "validation", "failure"
+]
+
+
+class StructuredPartRequest(BaseModel):
+    """Typed scenario-data trace without raw frames or model reasoning."""
+
+    kind: StructuredPartKind
+    payload: dict[str, Any]

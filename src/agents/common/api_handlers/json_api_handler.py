@@ -68,7 +68,9 @@ class JsonApiHandler:
             DownstreamServiceError: On any other non-2xx status.
         """
 
-        if response.status in (200, 201):
+        if 200 <= response.status < 300:
+            if response.status == 204:
+                return None
             return await response.json(content_type="application/json")
         if response.status == 401:
             info = await response.json()

@@ -112,6 +112,9 @@ class TestWantsLayers:
     def test_a_plain_count_question_is_not_a_layer_request(self):
         assert wants_layers("Сколько объектов в сценарии?") is False
 
+    def test_plain_show_word_without_spatial_context_is_not_a_layer_request(self):
+        assert wants_layers("Покажи названия и идентификаторы типов") is False
+
 
 class TestEvaluator:
     @pytest.mark.asyncio

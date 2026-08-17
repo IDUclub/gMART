@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 import uuid
 from enum import StrEnum
 from typing import Any
@@ -8,8 +10,8 @@ from typing import Any
 import redis.asyncio as aioredis
 from loguru import logger
 
-TOKEN_REFRESH_TIMEOUT: float = 360.0
-PIPELINE_TTL: int = 360  # seconds
+TOKEN_REFRESH_TIMEOUT: float = 60.0
+PIPELINE_TTL: int = 15 * 60  # absolute reconnect/token-refresh window
 
 
 class PipelineStatus(StrEnum):
@@ -18,6 +20,7 @@ class PipelineStatus(StrEnum):
     SUSPENDED = "suspended"
     DONE = "done"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class PipelineStep(StrEnum):
@@ -62,7 +65,7 @@ class PipelineStateStore:
         *,
         chat_id: str | None,
         user_query: str,
-        scenario_id: int,
+        scenario_id: int | None,
         model: str,
         temperature: float,
     ) -> None:
@@ -73,6 +76,8 @@ class PipelineStateStore:
             "scenario_id": scenario_id,
             "model": model,
             "temperature": temperature,
+            "token_wait_seconds": 0.0,
+            "started_at": time.time(),
         }
         await self._redis.setex(
             self._key(request_id, "state"),
@@ -90,10 +95,10 @@ class PipelineStateStore:
             return
         state = json.loads(raw)
         state["status"] = status
-        await self._redis.setex(
+        await self._redis.set(
             self._key(request_id, "state"),
-            PIPELINE_TTL,
             json.dumps(state, ensure_ascii=False),
+            keepttl=True,
         )
 
     async def save_checkpoint(self, request_id: str, step: str, data: Any) -> None:
@@ -133,7 +138,10 @@ class PipelineStateStore:
         try:
             async for message in pubsub.listen():
                 if message["type"] == "message":
-                    return json.loads(message["data"])["token"]
+                    payload = json.loads(message["data"])
+                    if payload.get("cancelled"):
+                        raise asyncio.CancelledError
+                    return payload["token"]
         finally:
             try:
                 await pubsub.unsubscribe(channel)
@@ -149,3 +157,54 @@ class PipelineStateStore:
         """
         channel = self._key(request_id, "token_channel")
         return await self._redis.publish(channel, json.dumps({"token": new_token}))
+
+    async def acquire_chat(self, chat_id: str, request_id: str) -> bool:
+        """Allow only one active pipeline per chat across all agents workers."""
+
+        return bool(
+            await self._redis.set(
+                self._key(chat_id, "active_request"),
+                request_id,
+                ex=PIPELINE_TTL,
+                nx=True,
+            )
+        )
+
+    async def release_chat(self, chat_id: str, request_id: str) -> None:
+        """Release a chat lock only when this pipeline still owns it."""
+
+        key = self._key(chat_id, "active_request")
+        owner = await self._redis.get(key)
+        if owner == request_id:
+            await self._redis.delete(key)
+
+    async def cancel(self, request_id: str) -> bool:
+        """Mark a pipeline cancelled and release its single-flight chat lock."""
+
+        state = await self.get_state(request_id)
+        if not state:
+            return False
+        await self.set_status(request_id, PipelineStatus.CANCELLED)
+        await self._redis.publish(
+            self._key(request_id, "token_channel"), json.dumps({"cancelled": True})
+        )
+        if state.get("chat_id"):
+            await self.release_chat(state["chat_id"], request_id)
+        return True
+
+    async def is_cancelled(self, request_id: str) -> bool:
+        state = await self.get_state(request_id)
+        return bool(state and state.get("status") == PipelineStatus.CANCELLED)
+
+    async def add_token_wait(self, request_id: str, seconds: float) -> None:
+        state = await self.get_state(request_id)
+        if not state:
+            return
+        state["token_wait_seconds"] = (
+            float(state.get("token_wait_seconds", 0)) + seconds
+        )
+        await self._redis.set(
+            self._key(request_id, "state"),
+            json.dumps(state, ensure_ascii=False),
+            keepttl=True,
+        )

@@ -210,6 +210,44 @@ def test_list_result_becomes_strict_table():
     }
 
 
+def test_table_keeps_domain_fields_when_properties_is_metadata():
+    table = ScenarioDataService._table_from_result(
+        [
+            {
+                "service_type_id": 7,
+                "name": "Школа",
+                "properties": {"weight_value": 1},
+            }
+        ],
+        name="service types",
+        title="Типы сервисов",
+    )
+
+    assert table is not None
+    assert [column["key"] for column in table["columns"]] == [
+        "service_type_id",
+        "name",
+        "properties",
+    ]
+
+
+def test_table_unwraps_geojson_feature_properties():
+    table = ScenarioDataService._table_from_result(
+        [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [30, 60]},
+                "properties": {"id": 1, "name": "Школа"},
+            }
+        ],
+        name="features",
+        title="Объекты",
+    )
+
+    assert table is not None
+    assert table["rows"] == [{"id": 1, "name": "Школа"}]
+
+
 async def test_pipeline_replay_buffer_serializes_geojson_datetimes():
     redis = AsyncMock()
     store = PipelineStateStore(redis)
@@ -241,6 +279,45 @@ async def test_pipeline_replay_buffer_serializes_geojson_datetimes():
             "properties"
         ]["updated_at"]
         == "2026-08-15 10:00:00+00:00"
+    )
+
+
+async def test_chat_single_flight_is_released_by_cancel(state_store):
+    await state_store.create(
+        "request-1",
+        chat_id="chat-1",
+        user_query="question",
+        scenario_id=772,
+        model="model",
+        temperature=0,
+    )
+    assert await state_store.acquire_chat("chat-1", "request-1") is True
+    assert await state_store.acquire_chat("chat-1", "request-2") is False
+
+    assert await state_store.cancel("request-1") is True
+    assert await state_store.acquire_chat("chat-1", "request-2") is True
+
+
+async def test_token_wait_is_accumulated_in_pipeline_state(state_store):
+    await state_store.create(
+        "request-1",
+        chat_id=None,
+        user_query="question",
+        scenario_id=772,
+        model="model",
+        temperature=0,
+    )
+
+    await state_store.add_token_wait("request-1", 12.5)
+    await state_store.add_token_wait("request-1", 2.5)
+
+    state = await state_store.get_state("request-1")
+    assert state["token_wait_seconds"] == 15.0
+    assert state["started_at"] > 0
+    assert (
+        0
+        < await state_store._redis.ttl(state_store._key("request-1", "state"))
+        <= 15 * 60
     )
 
 

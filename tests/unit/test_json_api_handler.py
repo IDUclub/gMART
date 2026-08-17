@@ -96,6 +96,14 @@ async def test_get_success_returns_json():
     assert session.methods == ["get"]
 
 
+async def test_post_accepts_202_and_empty_204():
+    accepted = FakeSession([FakeResponse(202, json_body={"status": "pending"})])
+    assert await _handler().post("/jobs", session=accepted) == {"status": "pending"}
+
+    empty = FakeSession([FakeResponse(204, json_body=None)])
+    assert await _handler().post("/jobs/claim", session=empty) is None
+
+
 # --------------------------------------------------------------------------- #
 # Terminal statuses raise immediately (no recursion) — the incident regression
 # --------------------------------------------------------------------------- #

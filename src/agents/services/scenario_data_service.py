@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
@@ -10,6 +11,7 @@ from loguru import logger
 
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
+    StructuredPartRequest,
     TableColumn,
     TablePartRequest,
     TablePayload,
@@ -32,6 +34,7 @@ from src.agents.services.pipeline_state import (
 )
 from src.agents.services.scenario_data_aggregate import (
     aggregate_result,
+    bounded_observation_context,
     unresolved_references,
 )
 from src.agents.services.scenario_data_evaluator import (
@@ -39,6 +42,7 @@ from src.agents.services.scenario_data_evaluator import (
     ScenarioDataEvaluator,
     wants_layers,
 )
+from src.agents.services.scenario_data_linear import ScenarioDataLinearWorkflow
 from src.agents.services.scenario_data_plan_builder import (
     MAX_SCENARIO_TOOL_CALLS,
     ScenarioDataPlanBuilder,
@@ -65,13 +69,74 @@ class ScenarioDataService(BaseLlmService):
         chat_storage_client,
         urban_api_client,
         state_store: PipelineStateStore,
+        *,
+        linear_workflow_enabled: bool = False,
+        workspace_enabled: bool = False,
+        idu_mcp_url: str | None = None,
     ) -> None:
         super().__init__(llm_host, chat_storage_client, urban_api_client)
         self.state_store = state_store
         self.plan_builder = ScenarioDataPlanBuilder(self.llm_client)
         self.evaluator = ScenarioDataEvaluator(self.llm_client)
+        self.linear_workflow_enabled = linear_workflow_enabled
+        self.linear_workflow = ScenarioDataLinearWorkflow(
+            self,
+            workspace_enabled=workspace_enabled,
+            idu_mcp_url=idu_mcp_url,
+        )
 
     async def run_scenario_data_pipeline(
+        self,
+        urban_mcp_client: UrbanMcpClient,
+        token: str,
+        model: str | None,
+        temperature: float,
+        user_query: str,
+        scenario_id: int | None = None,
+        chat_id: str | None = None,
+        request_id: str | None = None,
+        persist_history: bool = True,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Run the pipeline and always release its distributed chat lock."""
+
+        tracked_request_id = request_id
+        try:
+            async for event in self._run_scenario_data_pipeline(
+                urban_mcp_client=urban_mcp_client,
+                token=token,
+                model=model,
+                temperature=temperature,
+                user_query=user_query,
+                scenario_id=scenario_id,
+                chat_id=chat_id,
+                request_id=request_id,
+                persist_history=persist_history,
+            ):
+                if event.get("type") == "pipeline_started":
+                    tracked_request_id = (event.get("content") or {}).get("request_id")
+                yield event
+        finally:
+            if tracked_request_id:
+                try:
+                    state = await self.state_store.get_state(tracked_request_id)
+                    if state and state.get("status") != PipelineStatus.DONE:
+                        if state.get("status") not in {
+                            PipelineStatus.CANCELLED,
+                            PipelineStatus.SUSPENDED,
+                        }:
+                            await self.state_store.set_status(
+                                tracked_request_id, PipelineStatus.FAILED
+                            )
+                        if state.get("chat_id"):
+                            await self.state_store.release_chat(
+                                state["chat_id"], tracked_request_id
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        f"Scenario data: failed to clean pipeline lock: {exc}"
+                    )
+
+    async def _run_scenario_data_pipeline(
         self,
         urban_mcp_client: UrbanMcpClient,
         token: str,
@@ -112,6 +177,11 @@ class ScenarioDataService(BaseLlmService):
                 logger.warning(f"Scenario data: failed to create chat: {exc}")
                 chat_id = None
 
+        if chat_id and not await self.state_store.acquire_chat(chat_id, request_id):
+            raise ValueError(
+                "В этом чате уже выполняется запрос. Дождитесь его завершения или остановите его."
+            )
+
         await self.state_store.create(
             request_id,
             chat_id=chat_id,
@@ -122,6 +192,7 @@ class ScenarioDataService(BaseLlmService):
         )
 
         history: list[dict] = []
+        chat_context: dict[str, Any] = {}
         if original_chat_id:
             try:
                 chat_info = await self.get_chat_messages(token, original_chat_id)
@@ -136,11 +207,20 @@ class ScenarioDataService(BaseLlmService):
                         user_query,
                         scenario_id=scenario_id,
                     )
+                if self.linear_workflow_enabled:
+                    chat_context = await self.chat_storage_client.get_context(
+                        token, original_chat_id
+                    )
             except Exception as exc:
                 logger.warning(f"Scenario data: failed to load/persist history: {exc}")
 
         token_ref = [token]
-        parts: list[TextPartRequest | TablePartRequest | ToolCallPartRequest] = []
+        parts: list[
+            TextPartRequest
+            | TablePartRequest
+            | ToolCallPartRequest
+            | StructuredPartRequest
+        ] = []
         type_intent = classify_type_query(user_query, history)
         clarification = None
         if type_intent is not None and scenario_id is None:
@@ -167,10 +247,26 @@ class ScenarioDataService(BaseLlmService):
                 parts,
                 scenario_id=scenario_id,
                 persist_history=persist_history,
+                context_model=model if self.linear_workflow_enabled else None,
             )
             return
 
         observations: list[dict[str, Any]] = []
+        if chat_context:
+            observations.append(
+                {
+                    "context": "Подтверждённый контекст диалога",
+                    "summary": json.dumps(
+                        {
+                            "published": chat_context.get("content") or {},
+                            "unsummarized_tail": chat_context.get("tail") or [],
+                            "tail_has_more": chat_context.get("tail_has_more", False),
+                        },
+                        ensure_ascii=False,
+                    )[:12000],
+                    "updated_through_seq": chat_context.get("updated_through_seq", 0),
+                }
+            )
         if scenario_id is None:
             observations.append(
                 {
@@ -212,6 +308,35 @@ class ScenarioDataService(BaseLlmService):
         if type_intent is not None and type_intent.kinds:
             type_tools = self._resolve_type_tools(tools, type_intent)
             if type_tools is not None:
+                if self.linear_workflow_enabled:
+                    type_plan = {
+                        "objective": "Посчитать уникальные сущности по актуальным типам",
+                        "revision": 1,
+                        "steps": [
+                            {
+                                "step_id": f"{kind.value}_entities",
+                                "purpose": "Получить уникальные сущности сценария",
+                            }
+                            for kind in type_intent.kinds
+                        ]
+                        + [
+                            {
+                                "step_id": f"{kind.value}_types",
+                                "purpose": "Получить актуальный справочник типов и сопоставить ID",
+                            }
+                            for kind in type_intent.kinds
+                        ],
+                        "required_output": {
+                            "answer": True,
+                            "tables": ["type_distribution"],
+                            "completeness": "verified",
+                        },
+                    }
+                    yield self._buf(
+                        request_id,
+                        {"type": "plan_created", "content": type_plan},
+                    )
+                    parts.append(StructuredPartRequest(kind="plan", payload=type_plan))
                 async for event in self._run_type_distribution_pipeline(
                     request_id=request_id,
                     urban_mcp_client=urban_mcp_client,
@@ -222,6 +347,7 @@ class ScenarioDataService(BaseLlmService):
                     chat_id=chat_id,
                     parts=parts,
                     persist_history=persist_history,
+                    context_model=model if self.linear_workflow_enabled else None,
                 ):
                     yield event
                 return
@@ -235,6 +361,26 @@ class ScenarioDataService(BaseLlmService):
                     ),
                 }
             )
+
+        if self.linear_workflow_enabled:
+            async for event in self.linear_workflow.run(
+                request_id=request_id,
+                urban_mcp_client=urban_mcp_client,
+                token_ref=token_ref,
+                model=model,
+                temperature=temperature,
+                user_query=user_query,
+                scenario_id=scenario_id,
+                chat_id=chat_id,
+                history=history,
+                context=chat_context,
+                tools=tools,
+                observations=observations,
+                parts=parts,
+                persist_history=persist_history,
+            ):
+                yield event
+            return
 
         # One pass = plan/execute tools, draft an answer, judge it. A rejected answer buys
         # another pass with the evaluator's hint in the observations, so the retry is
@@ -632,8 +778,14 @@ class ScenarioDataService(BaseLlmService):
         ],
         scenario_id: int | None,
         chat_id: str | None,
-        parts: list[TextPartRequest | TablePartRequest | ToolCallPartRequest],
+        parts: list[
+            TextPartRequest
+            | TablePartRequest
+            | ToolCallPartRequest
+            | StructuredPartRequest
+        ],
         persist_history: bool,
+        context_model: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         if scenario_id is None:
             raise ValueError("scenario_id is required for a type distribution")
@@ -659,6 +811,18 @@ class ScenarioDataService(BaseLlmService):
                 step += 1
                 arguments = self._prepare_arguments(tool, {}, scenario_id)
                 source = f"URBAN_MCP/{tool.group}"
+                if context_model:
+                    yield self._buf(
+                        request_id,
+                        {
+                            "type": "step_started",
+                            "content": {
+                                "step_id": f"type_step_{step}",
+                                "purpose": status_text.rstrip("…"),
+                                "tool_name": tool.name,
+                            },
+                        },
+                    )
                 tool_call = {
                     "tool_name": tool.name,
                     "arguments": arguments,
@@ -700,6 +864,14 @@ class ScenarioDataService(BaseLlmService):
                 ):
                     yield self._buf(request_id, event)
                 results.append(self._unwrap_result(result_box[0]))
+                if context_model:
+                    yield self._buf(
+                        request_id,
+                        {
+                            "type": "step_completed",
+                            "content": {"step_id": f"type_step_{step}", "revision": 1},
+                        },
+                    )
 
             yield self._buf(
                 request_id,
@@ -714,6 +886,17 @@ class ScenarioDataService(BaseLlmService):
                 if int(row["count"]) > 0
             )
             if needs_fallback and fallback_tool is not None:
+                if context_model:
+                    yield self._buf(
+                        request_id,
+                        {
+                            "type": "mapping_started",
+                            "content": {
+                                "count": 1,
+                                "text": f"Уточняю маппинг: {noun}…",
+                            },
+                        },
+                    )
                 step += 1
                 arguments = self._prepare_arguments(fallback_tool, {}, scenario_id)
                 source = f"URBAN_MCP/{fallback_tool.group}"
@@ -766,6 +949,14 @@ class ScenarioDataService(BaseLlmService):
                     kind,
                     fallback_catalog_result=self._unwrap_result(fallback_box[0]),
                 )
+                if context_model:
+                    yield self._buf(
+                        request_id,
+                        {
+                            "type": "mapping_completed",
+                            "content": {"count": 1, "text": "Маппинг уточнён"},
+                        },
+                    )
             distributions.append(distribution)
 
             table = distribution_table(distribution)
@@ -776,7 +967,29 @@ class ScenarioDataService(BaseLlmService):
             request_id,
             self._status("answer_review", "Проверяю итоговые количества…"),
         )
+        if context_model:
+            yield self._buf(
+                request_id,
+                {
+                    "type": "validation_started",
+                    "content": {"revision": 1, "text": "Проверяю итоговые количества…"},
+                },
+            )
         answer = distribution_answer(scenario_id, distributions)
+        if context_model:
+            validation = {
+                "sufficient": True,
+                "revision": 1,
+                "criteria": {
+                    "unique_entities": True,
+                    "all_present_types_named": True,
+                },
+            }
+            yield self._buf(
+                request_id,
+                {"type": "validation_completed", "content": validation},
+            )
+            parts.append(StructuredPartRequest(kind="validation", payload=validation))
         for event in self._answer_events(answer):
             yield self._buf(request_id, event)
         parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
@@ -787,6 +1000,7 @@ class ScenarioDataService(BaseLlmService):
             parts,
             scenario_id=scenario_id,
             persist_history=persist_history,
+            context_model=context_model,
         )
 
     async def _complete_pipeline(
@@ -794,25 +1008,45 @@ class ScenarioDataService(BaseLlmService):
         request_id: str,
         token: str,
         chat_id: str | None,
-        parts: list[TextPartRequest | TablePartRequest | ToolCallPartRequest],
+        parts: list[
+            TextPartRequest
+            | TablePartRequest
+            | ToolCallPartRequest
+            | StructuredPartRequest
+        ],
         *,
         scenario_id: int | None,
         persist_history: bool,
+        context_model: str | None = None,
     ) -> None:
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
         if persist_history and chat_id and parts:
             try:
-                await self.add_complex_message(
+                message = await self.add_complex_message(
                     token,
                     chat_id,
                     RoleEnum.ASSISTANT,
                     parts,
                     scenario_id=scenario_id,
                 )
+                if context_model:
+                    try:
+                        await self.chat_storage_client.enqueue_context_refresh(
+                            token,
+                            chat_id,
+                            target_seq=message.seq,
+                            model=context_model,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            f"Scenario data: failed to enqueue context refresh: {exc}"
+                        )
             except Exception as exc:
                 # The accepted SSE answer has already been emitted and remains authoritative
                 # for the active browser window; persistence failure must not fail the stream.
                 logger.exception(f"Scenario data: failed to persist response: {exc}")
+        if chat_id:
+            await self.state_store.release_chat(chat_id, request_id)
 
     async def _retryable_operation(
         self,
@@ -823,14 +1057,17 @@ class ScenarioDataService(BaseLlmService):
         result: list[Any],
     ) -> AsyncGenerator[dict[str, Any], None]:
         while True:
+            if await self.state_store.is_cancelled(request_id):
+                raise asyncio.CancelledError
             try:
-                result.append(await operation())
+                result.append(await asyncio.wait_for(operation(), timeout=60.0))
                 return
             except TokenExpiredError:
-                yield self._token_expired(request_id)
                 await self.state_store.set_status(
                     request_id, PipelineStatus.WAITING_TOKEN
                 )
+                yield self._token_expired(request_id)
+                wait_started = time.monotonic()
                 try:
                     token = await asyncio.wait_for(
                         self.state_store.wait_for_token(request_id),
@@ -842,6 +1079,10 @@ class ScenarioDataService(BaseLlmService):
                     )
                     yield self._pipeline_suspended(request_id)
                     raise PipelineSuspendedError(request_id) from exc
+                finally:
+                    await self.state_store.add_token_wait(
+                        request_id, time.monotonic() - wait_started
+                    )
                 client.update_token(token)
                 token_ref[0] = token
                 await self.state_store.set_status(request_id, PipelineStatus.RUNNING)
@@ -893,14 +1134,24 @@ class ScenarioDataService(BaseLlmService):
         """One non-streamed answer over the observations, for the evaluator to judge."""
 
         messages = self._answer_messages(user_query, observations, history)
-        response = await self.llm_client.chat(
-            model,
-            messages,
-            think=False,
-            stream=False,
-            options={"temperature": temperature, "num_predict": 1400},
-        )
-        return (response["message"]["content"] or "").strip()
+        for attempt in range(2):
+            call: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "think": False,
+                "stream": False,
+                "options": {
+                    "temperature": temperature if attempt == 0 else 0,
+                    "num_predict": 1400 if attempt == 0 else 2200,
+                },
+            }
+            if attempt:
+                call["reasoning_effort"] = "medium"
+            response = await self.llm_client.chat(**call)
+            answer = (response["message"]["content"] or "").strip()
+            if answer:
+                return answer
+        return ""
 
     def _answer_messages(
         self,
@@ -908,9 +1159,7 @@ class ScenarioDataService(BaseLlmService):
         observations: list[dict[str, Any]],
         history: list[dict],
     ) -> list[dict]:
-        context = json.dumps(observations, ensure_ascii=False)
-        if len(context) > 18000:
-            context = context[:18000] + "…"
+        context = bounded_observation_context(observations, max_chars=18000)
         return [
             {
                 "role": "system",
@@ -994,8 +1243,22 @@ class ScenarioDataService(BaseLlmService):
         cls, result: Any, *, name: str, title: str
     ) -> dict[str, Any] | None:
         rows = result
-        if isinstance(rows, dict) and isinstance(rows.get("result"), list):
-            rows = rows["result"]
+        if isinstance(rows, dict):
+            for key in ("result", "results", "rows", "items", "data", "features"):
+                if isinstance(rows.get(key), list):
+                    rows = rows[key]
+                    break
+        if (
+            isinstance(rows, list)
+            and rows
+            and all(
+                isinstance(row, dict)
+                and isinstance(row.get("properties"), dict)
+                and (row.get("type") == "Feature" or "geometry" in row)
+                for row in rows
+            )
+        ):
+            rows = [row["properties"] for row in rows]
         if (
             not isinstance(rows, list)
             or not rows
