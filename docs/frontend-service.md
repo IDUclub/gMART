@@ -4,6 +4,10 @@
 
 > Помимо построения ограничений, сервис `agents` предоставляет **агента вопросов по нормативной документации** (RAG поверх IDU_DVD). Его эндпоинт (`/documents/qa/stream`, `/documents/a2a`) и события описаны в [frontend-document-qa.md](frontend-document-qa.md).
 
+> REST/SSE и A2A-контракт агента городских данных (`/scenario-data/qa/stream`,
+> `/scenario-data/a2a`) описан в
+> [frontend-scenario-data.md](frontend-scenario-data.md).
+
 ## Назначение сервиса
 
 `agents` — FastAPI-сервис, который даёт фронтенду HTTP-интерфейс к LLM-агентам и геопространственному пайплайну ограничений. Для построения слоёв сервис обращается к `idu_mcp`, а `idu_mcp` уже работает с Urban API и геометрическими инструментами.

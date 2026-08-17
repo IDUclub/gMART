@@ -1,12 +1,18 @@
 export type AgentId =
-  "orchestrator" | "restrictions" | "provision" | "documents" | "norms" | "llm";
+  | "orchestrator"
+  | "restrictions"
+  | "compliance"
+  | "provision"
+  | "scenario_data"
+  | "documents"
+  | "norms"
+  | "llm";
 export type Agent = {
   id: AgentId;
   label: string;
   caption: string;
   path: string;
   needsScenario: boolean;
-  icon: string;
   examples: string[];
 };
 export type TableData = {

@@ -14,13 +14,15 @@ import pytest
 @pytest.fixture
 def orchestrator(monkeypatch, fake_llm, fake_urban, state_store):
     monkeypatch.setattr(
-        "src.agents.model_clients.base_client.AsyncOllamaClient",
+        "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
     from src.agents.services.orchestrator_service import OrchestratorService
 
     app_config = SimpleNamespace(
-        DVD_MCP_URL="http://dvd", NORM_GRAPH_MCP_URL="http://norms"
+        DVD_MCP_URL="http://dvd",
+        NORM_GRAPH_MCP_URL="http://norms",
+        URBAN_MCP_URL="http://urban-mcp",
     )
     svc = OrchestratorService(
         "http://ollama",

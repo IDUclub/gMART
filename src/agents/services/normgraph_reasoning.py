@@ -44,8 +44,15 @@ async def _request_json(
     for attempt in range(retries + 1):
         response = await llm_client.chat(
             model=model,
-            options={"temperature": 0, "num_predict": 512},
             messages=messages,
+            # Reasoning models such as gpt-oss may spend the entire prediction
+            # budget in ``message.thinking`` and leave ``message.content`` empty.
+            # Planning/critique need deterministic machine-readable output, not
+            # a reasoning trace, so explicitly disable thinking and let Ollama
+            # constrain the response with the Pydantic JSON schema.
+            think=False,
+            format=model_cls.model_json_schema(),
+            options={"temperature": 0, "num_predict": 1024},
         )
         content = response["message"]["content"]
         logger.debug(f"LLM {model_cls.__name__} response [{model}]: {content}")

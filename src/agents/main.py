@@ -16,14 +16,18 @@ from src.agents.common.middlewares.exception_handler import (
 from src.agents.dependencies.dependencies import app_deps
 from src.agents.routers.a2a_controller import a2a_router, restriction_a2a_router
 from src.agents.routers.auth_controller import auth_router
+from src.agents.routers.compliance_controller import compliance_router
 from src.agents.routers.dvd_a2a_controller import dvd_a2a_router
 from src.agents.routers.dvd_controller import dvd_router
+from src.agents.routers.mcp_diagnostics_controller import mcp_diagnostics_router
 from src.agents.routers.norms_a2a_controller import norms_a2a_router
 from src.agents.routers.norms_controller import norms_router
 from src.agents.routers.orchestrator_controller import orchestrator_router
 from src.agents.routers.provision_a2a_controller import provision_a2a_router
 from src.agents.routers.provision_controller import provision_router
 from src.agents.routers.restriction_parser_controller import restriction_router
+from src.agents.routers.scenario_data_a2a_controller import scenario_data_a2a_router
+from src.agents.routers.scenario_data_controller import scenario_data_router
 from src.agents.routers.simple_llm_controller import llm_router
 from src.agents.routers.system_controller import system_router
 from src.agents.routers.token_refresh_controller import token_refresh_router
@@ -73,10 +77,14 @@ async def ping_server():
 app.include_router(auth_router)
 app.include_router(llm_router)
 app.include_router(restriction_router)
+app.include_router(compliance_router)
 app.include_router(provision_router)
 app.include_router(dvd_router)
+app.include_router(mcp_diagnostics_router)
 app.include_router(norms_router)
 app.include_router(orchestrator_router)
+app.include_router(scenario_data_router)
+app.include_router(scenario_data_a2a_router)
 app.include_router(token_refresh_router)
 app.include_router(restriction_a2a_router)
 app.include_router(provision_a2a_router)

@@ -40,10 +40,13 @@ def load_config() -> AgentsAppConfig:
                 urban_api_url=os.getenv("URBAN_API_URL"),
                 dvd_mcp_url=os.getenv("DVD_MCP_SERVER"),
                 norm_graph_mcp_url=os.getenv("NORM_GRAPH_MCP_SERVER"),
+                urban_mcp_url=os.getenv("URBAN_MCP_SERVER"),
                 redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
                 system_password=os.getenv("SYSTEM_PASSWORD"),
                 auth_helper_url=os.getenv("AUTH_HELPER_URL"),
                 auth_helper_api_key=os.getenv("AUTH_HELPER_API_KEY"),
+                llm_backend=os.getenv("LLM_BACKEND"),
+                openai_base_url=os.getenv("OPENAI_BASE_URL"),
             )
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
     try:
@@ -55,10 +58,13 @@ def load_config() -> AgentsAppConfig:
             urban_api_url=os.getenv("URBAN_API_URL"),
             dvd_mcp_url=os.getenv("DVD_MCP_SERVER"),
             norm_graph_mcp_url=os.getenv("NORM_GRAPH_MCP_SERVER"),
+            urban_mcp_url=os.getenv("URBAN_MCP_SERVER"),
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
             system_password=os.getenv("SYSTEM_PASSWORD"),
             auth_helper_url=os.getenv("AUTH_HELPER_URL"),
             auth_helper_api_key=os.getenv("AUTH_HELPER_API_KEY"),
+            llm_backend=os.getenv("LLM_BACKEND"),
+            openai_base_url=os.getenv("OPENAI_BASE_URL"),
         )
     except ValueError:
         raise

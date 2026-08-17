@@ -30,7 +30,7 @@ _RID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
 def _build_service(monkeypatch, fake_llm, state_store):
     monkeypatch.setattr(
-        "src.agents.model_clients.base_client.AsyncOllamaClient",
+        "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
     from src.agents.services.dvd_rag_service import DvdRagService

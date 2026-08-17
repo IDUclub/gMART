@@ -21,6 +21,7 @@ class PipelineStatus(StrEnum):
 
 
 class PipelineStep(StrEnum):
+    NORMGRAPH = "normgraph"
     PLAN = "plan"
     PLAN_EXPLANATION = "plan_explanation"
     LAYERS = "layers"
@@ -111,7 +112,10 @@ class PipelineStateStore:
 
     async def buffer_event(self, request_id: str, event: dict) -> None:
         key = self._key(request_id, "events")
-        await self._redis.rpush(key, json.dumps(event, ensure_ascii=False))
+        # Urban API properties may contain Pydantic-coerced datetime values.
+        # SSE serialization handles those values, and the replay buffer must
+        # preserve the same event instead of failing in a background task.
+        await self._redis.rpush(key, json.dumps(event, ensure_ascii=False, default=str))
         await self._redis.expire(key, PIPELINE_TTL)
 
     async def get_buffered_events(self, request_id: str) -> list[dict]:

@@ -1,7 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useGSAP } from "@gsap/react";
+import {
+  ArrowUp,
+  Buildings,
+  CaretDown,
+  ChartDonut,
+  CheckCircle,
+  CirclesFour,
+  ClockCounterClockwise,
+  Command,
+  Database,
+  FileText,
+  GearSix,
+  List,
+  MapTrifold,
+  Moon,
+  Plus,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkle,
+  SquaresFour,
+  Sun,
+  TerminalWindow,
+  Trash,
+  X,
+} from "@phosphor-icons/react";
+import gsap from "gsap";
 import Keycloak from "keycloak-js";
 import ReactMarkdown from "react-markdown";
 import MapPanel from "./MapPanel";
+import McpConsole from "./McpConsole";
 import {
   authAvailable,
   authLogin,
@@ -23,10 +51,10 @@ import type {
   StreamEvent,
   TableData,
 } from "./types";
+gsap.registerPlugin(useGSAP);
 const AGENTS: Agent[] = [
   {
     id: "orchestrator",
-    icon: "⌬",
     label: "Оркестратор",
     caption: "Единая точка входа",
     path: "/orchestrator/route/stream",
@@ -38,7 +66,6 @@ const AGENTS: Agent[] = [
   },
   {
     id: "restrictions",
-    icon: "◈",
     label: "Ограничения",
     caption: "Геозоны и буферы",
     path: "/restrictions/generate_restrictions/stream",
@@ -49,8 +76,18 @@ const AGENTS: Agent[] = [
     ],
   },
   {
+    id: "compliance",
+    label: "Соответствие",
+    caption: "Проверка по нормам",
+    path: "/compliance/check/stream",
+    needsScenario: true,
+    examples: [
+      "Проверь соответствие проекта нормативным ограничениям",
+      "Какие объекты проекта нарушают противопожарные расстояния?",
+    ],
+  },
+  {
     id: "provision",
-    icon: "◎",
     label: "Обеспеченность",
     caption: "Сервисы и эффекты",
     path: "/provision/calculate_effects/stream",
@@ -61,8 +98,19 @@ const AGENTS: Agent[] = [
     ],
   },
   {
+    id: "scenario_data",
+    label: "Городские данные",
+    caption: "Справочники, объекты и слои",
+    path: "/scenario-data/qa/stream",
+    needsScenario: false,
+    examples: [
+      "Какие типы городских сервисов доступны?",
+      "Какие объекты есть в сценарии и сколько их по типам?",
+      "Покажи на карте физические объекты сценария",
+    ],
+  },
+  {
     id: "documents",
-    icon: "▤",
     label: "Документы",
     caption: "Поиск по IDU_DVD",
     path: "/documents/qa/stream",
@@ -74,7 +122,6 @@ const AGENTS: Agent[] = [
   },
   {
     id: "norms",
-    icon: "⌘",
     label: "Нормы",
     caption: "Граф NormGraph",
     path: "/norms/qa/stream",
@@ -86,7 +133,6 @@ const AGENTS: Agent[] = [
   },
   {
     id: "llm",
-    icon: "✦",
     label: "Ассистент",
     caption: "Свободный диалог",
     path: "/llm/message/stream",
@@ -127,9 +173,10 @@ function load() {
   }
 }
 export default function App() {
+  const appRoot = useRef<HTMLDivElement>(null);
   const [settings, setSettings] = useState<Settings>(load),
     [agentId, setAgentId] = useState<AgentId>("restrictions"),
-    [mode, setMode] = useState<"workspace" | "admin">("workspace"),
+    [mode, setMode] = useState<"workspace" | "mcp" | "admin">("workspace"),
     [scenario, setScenario] = useState("772"),
     [project, setProject] = useState(""),
     [token, setToken] = useState(""),
@@ -146,6 +193,9 @@ export default function App() {
     [status, setStatus] = useState("Готов к работе"),
     [busy, setBusy] = useState(false),
     [rightTab, setRightTab] = useState<"map" | "data" | "process">("map"),
+    [historyOpen, setHistoryOpen] = useState(false),
+    [agentMenuOpen, setAgentMenuOpen] = useState(false),
+    [resultOpen, setResultOpen] = useState(false),
     [models, setModels] = useState<string[]>([]),
     [settingsOpen, setSettingsOpen] = useState(false),
     [loginOpen, setLoginOpen] = useState(false),
@@ -160,8 +210,48 @@ export default function App() {
     // persisted) so the short-lived token can be re-requested before expiry.
     helperCreds = useRef<{ username: string; password: string } | null>(null),
     reloginTimer = useRef<number | null>(null),
+    resultAutoOpened = useRef(false),
     stepBase = useRef("");
   const agent = AGENTS.find((a) => a.id === agentId)!;
+  useGSAP(
+    () => {
+      gsap.fromTo(
+        ".sidebar",
+        { y: -24, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.7, ease: "power3.out" },
+      );
+      gsap.fromTo(
+        ".conversation, .inspector",
+        { y: 22, opacity: 0, scale: 0.985 },
+        {
+          y: 0,
+          opacity: 1,
+          scale: 1,
+          duration: 0.7,
+          stagger: 0.08,
+          ease: "power3.out",
+        },
+      );
+      gsap.fromTo(
+        ".terrain-orbit",
+        { scale: 0.8, opacity: 0.2 },
+        { scale: 1, opacity: 1, duration: 1.1, ease: "power2.out" },
+      );
+      gsap.fromTo(
+        ".prompt-grid button",
+        { y: 38, opacity: 0, scale: 0.96 },
+        {
+          y: 0,
+          opacity: 1,
+          scale: 1,
+          duration: 0.7,
+          stagger: 0.09,
+          ease: "power3.out",
+        },
+      );
+    },
+    { scope: appRoot },
+  );
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
     localStorage.setItem("gmart-ui", JSON.stringify(settings));
@@ -340,7 +430,7 @@ export default function App() {
         setAnswer(
           (v) =>
             v +
-            `\n\n> ⚠ Шаг ${event.content.step} не выполнен: ${event.content.summary || "ошибка агента"}\n\n`,
+            `\n\n> Шаг ${event.content.step} не выполнен: ${event.content.summary || "ошибка агента"}\n\n`,
         );
       setStatus(`Шаг ${event.content?.step} завершён`);
     }
@@ -369,10 +459,18 @@ export default function App() {
         },
       ]);
       setRightTab("map");
+      if (!resultAutoOpened.current) {
+        resultAutoOpened.current = true;
+        setResultOpen(true);
+      }
     }
     if (event.type === "table") {
       setTables((v) => [...v, event.content]);
       setRightTab("data");
+      if (!resultAutoOpened.current) {
+        resultAutoOpened.current = true;
+        setResultOpen(true);
+      }
     }
     if (event.type === "warning" || event.type === "error")
       setStatus(event.content?.message || "Ошибка выполнения");
@@ -431,21 +529,28 @@ export default function App() {
   }
   const history = useMemo(() => chat?.messages || [], [chat]);
   return (
-    <div className="app-shell">
+    <div className="app-shell" ref={appRoot}>
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">g</div>
+          <div className="brand-mark">
+            <Command weight="bold" />
+          </div>
           <div>
-            gMART<small>GEOSPATIAL INTELLIGENCE</small>
+            gMART<small>пространственный интеллект</small>
           </div>
         </div>
         <nav>
+          <p className="nav-label">Навигация</p>
           <button
             className={mode === "workspace" ? "active" : ""}
             onClick={() => setMode("workspace")}
           >
-            <span>⌂</span>Рабочее пространство
+            <span>
+              <Sparkle weight="duotone" />
+            </span>
+            Работа
           </button>
+          <p className="nav-label">Команда агентов</p>
           {AGENTS.map((a) => (
             <button
               className={
@@ -457,7 +562,9 @@ export default function App() {
               }}
               key={a.id}
             >
-              <span>{a.icon}</span>
+              <span>
+                <AgentGlyph id={a.id} />
+              </span>
               <div>
                 {a.label}
                 <small>{a.caption}</small>
@@ -465,14 +572,31 @@ export default function App() {
             </button>
           ))}
           <button
+            className={mode === "mcp" ? "active" : ""}
+            onClick={() => setMode("mcp")}
+          >
+            <span>
+              <TerminalWindow weight="duotone" />
+            </span>
+            MCP-консоль
+          </button>
+          <button
             className={mode === "admin" ? "active" : ""}
             onClick={() => setMode("admin")}
           >
-            <span>⚙</span>Система
+            <span>
+              <GearSix weight="duotone" />
+            </span>
+            Система
           </button>
         </nav>
         <div className="side-bottom">
-          <button onClick={() => setSettingsOpen(true)}>Настройки</button>
+          <button onClick={() => setHistoryOpen(true)} aria-label="История">
+            <ClockCounterClockwise /> <span>История</span>
+          </button>
+          <button onClick={() => setSettingsOpen(true)}>
+            <SlidersHorizontal /> <span>Настройки</span>
+          </button>
           <button
             onClick={() =>
               setSettings((s) => ({
@@ -482,18 +606,49 @@ export default function App() {
               }))
             }
           >
-            {settings.theme === "dark" ? "☀" : "◐"}
+            {settings.theme === "dark" ? <Sun /> : <Moon />}
           </button>
         </div>
       </aside>
-      <main>
+      <main className="main-stage">
         {mode === "workspace" ? (
           <>
-            <header>
-              <div>
-                <span className="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</span>
-                <h1>{agent.label}</h1>
-                <p>{agent.caption}</p>
+            <header className="workspace-header">
+              <div className="agent-picker-wrap">
+                <button
+                  className="agent-picker"
+                  onClick={() => setAgentMenuOpen((value) => !value)}
+                >
+                  <span className="agent-picker-icon">
+                    <AgentGlyph id={agent.id} />
+                  </span>
+                  <span>
+                    <small>Активный агент</small>
+                    <strong>{agent.label}</strong>
+                  </span>
+                  <CaretDown />
+                </button>
+                {agentMenuOpen && (
+                  <div className="agent-menu">
+                    {AGENTS.map((item) => (
+                      <button
+                        className={item.id === agent.id ? "active" : ""}
+                        key={item.id}
+                        onClick={() => {
+                          setAgentId(item.id);
+                          setAgentMenuOpen(false);
+                          resultAutoOpened.current = false;
+                        }}
+                      >
+                        <AgentGlyph id={item.id} />
+                        <span>
+                          <strong>{item.label}</strong>
+                          <small>{item.caption}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="context">
                 <label>
@@ -516,54 +671,23 @@ export default function App() {
                   <i />
                   {status}
                 </span>
+                <button
+                  className="result-toggle"
+                  onClick={() => setResultOpen((value) => !value)}
+                >
+                  <MapTrifold /> Результат
+                  {(layers.length || tables.length) > 0 && (
+                    <b>{layers.length + tables.length}</b>
+                  )}
+                </button>
                 {auth !== "ready" && (
-                  <button className="primary" onClick={login}>
+                  <button className="primary login-button" onClick={login}>
                     Войти
                   </button>
                 )}
               </div>
             </header>
-            <div className="work-grid">
-              <section className="history-panel">
-                <div className="panel-head">
-                  <strong>Диалоги</strong>
-                  <button
-                    onClick={() => {
-                      setChat(null);
-                      setAnswer("");
-                    }}
-                  >
-                    ＋
-                  </button>
-                </div>
-                <div className="search">
-                  ⌕ <input placeholder="Поиск по диалогам" />
-                </div>
-                <div className="chat-list">
-                  {chats.map((c) => (
-                    <div
-                      className={`chat-row ${chat?.chat_id === c.chat_id ? "active" : ""}`}
-                      key={c.chat_id}
-                    >
-                      <button onClick={() => openChat(c.chat_id)}>
-                        <strong>{c.title || "Новый диалог"}</strong>
-                        <small>
-                          {new Date(c.updated_at).toLocaleDateString("ru")}
-                        </small>
-                      </button>
-                      <button
-                        className="delete"
-                        onClick={() => removeChat(c.chat_id)}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                  {token && !chats.length && (
-                    <div className="empty">История пока пуста</div>
-                  )}
-                </div>
-              </section>
+            <div className={`work-grid ${resultOpen ? "result-open" : ""}`}>
               <section className="conversation">
                 <div className="messages">
                   {!history.length && !answer ? (
@@ -587,6 +711,19 @@ export default function App() {
                           <i />
                           <i /> {status}
                         </div>
+                      )}
+                      {(layers.length > 0 ||
+                        tables.length > 0 ||
+                        events.length > 0) && (
+                        <ArtifactSummary
+                          layers={layers}
+                          tables={tables}
+                          events={events}
+                          open={(tab) => {
+                            setRightTab(tab);
+                            setResultOpen(true);
+                          }}
+                        />
                       )}
                     </>
                   )}
@@ -613,30 +750,37 @@ export default function App() {
                       }
                       className="send"
                     >
-                      {busy ? "■" : "↑"}
+                      {busy ? <X weight="bold" /> : <ArrowUp weight="bold" />}
                     </button>
                   </div>
                 </div>
               </section>
-              <section className="inspector">
+              <section className={`inspector ${resultOpen ? "open" : ""}`}>
                 <div className="tabs">
                   <button
                     className={rightTab === "map" ? "active" : ""}
                     onClick={() => setRightTab("map")}
                   >
-                    Карта <b>{layers.length}</b>
+                    <MapTrifold /> Карта <b>{layers.length}</b>
                   </button>
                   <button
                     className={rightTab === "data" ? "active" : ""}
                     onClick={() => setRightTab("data")}
                   >
-                    Данные <b>{tables.length}</b>
+                    <Database /> Данные <b>{tables.length}</b>
                   </button>
                   <button
                     className={rightTab === "process" ? "active" : ""}
                     onClick={() => setRightTab("process")}
                   >
-                    Ход работы
+                    <ChartDonut /> Процесс
+                  </button>
+                  <button
+                    className="close-result"
+                    onClick={() => setResultOpen(false)}
+                    aria-label="Закрыть результат"
+                  >
+                    <X />
                   </button>
                 </div>
                 {rightTab === "map" && (
@@ -660,6 +804,8 @@ export default function App() {
               </section>
             </div>
           </>
+        ) : mode === "mcp" ? (
+          <McpConsole settings={settings} token={token} setToken={setToken} />
         ) : (
           <Admin
             settings={settings}
@@ -670,6 +816,25 @@ export default function App() {
           />
         )}
       </main>
+      <ChatHistoryDrawer
+        open={historyOpen}
+        chats={chats}
+        activeId={chat?.chat_id}
+        close={() => setHistoryOpen(false)}
+        create={() => {
+          setChat(null);
+          setAnswer("");
+          setLayers([]);
+          setTables([]);
+          setEvents([]);
+          setHistoryOpen(false);
+        }}
+        openChat={(id) => {
+          openChat(id);
+          setHistoryOpen(false);
+        }}
+        removeChat={removeChat}
+      />
       {settingsOpen && (
         <SettingsModal
           settings={settings}
@@ -683,6 +848,128 @@ export default function App() {
       )}
     </div>
   );
+}
+function ArtifactSummary({
+  layers,
+  tables,
+  events,
+  open,
+}: {
+  layers: LayerData[];
+  tables: TableData[];
+  events: Array<{ time: string; event: StreamEvent }>;
+  open: (tab: "map" | "data" | "process") => void;
+}) {
+  return (
+    <section className="artifact-summary">
+      <div>
+        <span className="artifact-icon">
+          <MapTrifold weight="duotone" />
+        </span>
+        <div>
+          <strong>Результаты собраны</strong>
+          <p>Карта, данные и ход анализа доступны в контексте ответа.</p>
+        </div>
+      </div>
+      <div className="artifact-actions">
+        <button onClick={() => open("map")}>
+          <MapTrifold /> Слои <b>{layers.length}</b>
+        </button>
+        <button onClick={() => open("data")}>
+          <Database /> Таблицы <b>{tables.length}</b>
+        </button>
+        <button onClick={() => open("process")}>
+          <ChartDonut /> Процесс <b>{events.length}</b>
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ChatHistoryDrawer({
+  open,
+  chats,
+  activeId,
+  close,
+  create,
+  openChat,
+  removeChat,
+}: {
+  open: boolean;
+  chats: ChatSummary[];
+  activeId?: string;
+  close: () => void;
+  create: () => void;
+  openChat: (id: string) => void;
+  removeChat: (id: string) => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <>
+      <button
+        className={`drawer-backdrop ${open ? "open" : ""}`}
+        onClick={close}
+        aria-label="Закрыть историю"
+      />
+      <aside
+        className={`history-drawer ${open ? "open" : ""}`}
+        aria-hidden={!open}
+      >
+        <div className="drawer-head">
+          <div>
+            <ClockCounterClockwise />
+            <h2>Диалоги</h2>
+          </div>
+          <button onClick={close} aria-label="Закрыть">
+            <X />
+          </button>
+        </div>
+        <button className="new-chat" onClick={create}>
+          <Plus /> Новый диалог
+        </button>
+        <div className="drawer-search">
+          <List />
+          <input placeholder="Найти диалог" />
+        </div>
+        <div className="drawer-chat-list">
+          {chats.map((item) => (
+            <div
+              className={`drawer-chat ${activeId === item.chat_id ? "active" : ""}`}
+              key={item.chat_id}
+            >
+              <button onClick={() => openChat(item.chat_id)}>
+                <strong>{item.title || "Новый диалог"}</strong>
+                <small>
+                  {new Date(item.updated_at).toLocaleDateString("ru")}
+                </small>
+              </button>
+              <button
+                className="delete"
+                onClick={() => removeChat(item.chat_id)}
+                aria-label="Удалить диалог"
+              >
+                <Trash />
+              </button>
+            </div>
+          ))}
+          {!chats.length && <div className="empty">История пока пуста</div>}
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function AgentGlyph({ id }: { id: AgentId }) {
+  const props = { weight: "duotone" as const };
+  if (id === "orchestrator") return <CirclesFour {...props} />;
+  if (id === "restrictions") return <ShieldCheck {...props} />;
+  if (id === "compliance") return <CheckCircle {...props} />;
+  if (id === "provision") return <ChartDonut {...props} />;
+  if (id === "scenario_data") return <Buildings {...props} />;
+  if (id === "documents") return <FileText {...props} />;
+  if (id === "norms") return <SquaresFour {...props} />;
+  return <Sparkle {...props} />;
 }
 function LoginModal({
   login,
@@ -715,7 +1002,7 @@ function LoginModal({
       <div className="modal-card">
         <div className="panel-head">
           <div>
-            <span className="eyebrow">АВТОРИЗАЦИЯ</span>
+            <span className="context-title">Безопасный вход</span>
             <h2>Вход в IDU</h2>
           </div>
           <button onClick={close}>×</button>
@@ -765,18 +1052,33 @@ function Welcome({
 }) {
   return (
     <div className="welcome">
-      <div className="hero-mark">{agent.icon}</div>
-      <span className="eyebrow">АГЕНТ · {agent.label.toUpperCase()}</span>
-      <h2>Что исследуем сегодня?</h2>
-      <p>
-        Опишите задачу естественным языком. Агент подберёт инструменты, покажет
-        ход анализа и соберёт результат.
-      </p>
-      <div>
-        {agent.examples.map((x) => (
+      <div className="welcome-copy">
+        <div className="agent-sign">
+          <AgentGlyph id={agent.id} />
+        </div>
+        <p className="welcome-kicker">{agent.label} готов к работе</p>
+        <h2>
+          Исследуйте город <span className="title-map" aria-hidden="true" />
+          через данные
+        </h2>
+        <p className="welcome-lead">
+          Опишите задачу своими словами. Агент соберёт инструменты, покажет ход
+          анализа и представит результат на карте.
+        </p>
+      </div>
+      <div className="terrain-orbit" aria-hidden="true">
+        <div className="terrain-ring ring-one" />
+        <div className="terrain-ring ring-two" />
+        <MapTrifold weight="thin" />
+      </div>
+      <div className="prompt-grid">
+        {agent.examples.map((x, index) => (
           <button key={x} onClick={() => onExample(x)}>
-            {x}
-            <span>↗</span>
+            <span>{x}</span>
+            <ArrowUp className="prompt-arrow" weight="bold" />
+            <small>
+              {index === 0 ? "Начать с примера" : "Попробовать запрос"}
+            </small>
           </button>
         ))}
       </div>
@@ -887,7 +1189,7 @@ function Admin({
     <div className="admin">
       <header>
         <div>
-          <span className="eyebrow">АДМИНИСТРИРОВАНИЕ</span>
+          <span className="context-title">Управление контуром</span>
           <h1>Состояние системы</h1>
           <p>Подключения, конфигурация и диагностика gMART</p>
         </div>
@@ -982,7 +1284,7 @@ function SettingsModal({
       <div className="modal-card">
         <div className="panel-head">
           <div>
-            <span className="eyebrow">НАСТРОЙКИ</span>
+            <span className="context-title">Персонализация пространства</span>
             <h2>Среда и модель</h2>
           </div>
           <button onClick={close}>×</button>
@@ -1078,6 +1380,7 @@ function labelAgent(key?: string) {
       {
         restriction: "Ограничения",
         provision: "Обеспеченность",
+        scenario_data: "Данные сценария",
         documents: "Документы",
         norms: "Нормы",
       } as Record<string, string>

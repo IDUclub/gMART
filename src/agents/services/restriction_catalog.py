@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+import re
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic import ValidationError
@@ -10,6 +11,7 @@ from src.agents.services.service_entities.restriction_plan import (
     BufferRule,
     EntityRef,
     RestrictionPlan,
+    RestrictionProvenance,
     RestrictionRule,
     RestrictionTaskMode,
 )
@@ -62,20 +64,27 @@ class RestrictionPlanBuilder:
         services_catalog: list[str],
         physical_objects_catalog: list[str],
         history: list[dict] | None = None,
+        normgraph_restrictions: list[dict[str, Any]] | None = None,
     ) -> RestrictionPlan:
+        normgraph_restrictions = normgraph_restrictions or []
         cache_key = self._plan_cache_key(
             model,
             scenario_id,
             user_query,
             services_catalog,
             physical_objects_catalog,
+            normgraph_restrictions,
         )
         if cache_key in self._plan_cache:
             return self._plan_cache[cache_key]
 
         raw_plan = await self._request_plan(
             model,
-            self._build_prompt(services_catalog, physical_objects_catalog),
+            self._build_prompt(
+                services_catalog,
+                physical_objects_catalog,
+                normgraph_restrictions,
+            ),
             user_query=user_query,
             history=history,
         )
@@ -85,6 +94,30 @@ class RestrictionPlanBuilder:
             services_catalog,
             physical_objects_catalog,
         )
+        plan = self._ground_normgraph_rules(plan, normgraph_restrictions)
+
+        semantic_issues = self._find_semantic_issues(
+            plan, user_query, normgraph_restrictions
+        )
+        if semantic_issues:
+            raw_plan = await self._request_plan(
+                model,
+                self._build_semantic_repair_prompt(
+                    user_query,
+                    raw_plan,
+                    semantic_issues,
+                    services_catalog,
+                    physical_objects_catalog,
+                    normgraph_restrictions,
+                ),
+            )
+            plan = self.validate_and_canonicalize_plan(
+                raw_plan,
+                user_query,
+                services_catalog,
+                physical_objects_catalog,
+            )
+            plan = self._ground_normgraph_rules(plan, normgraph_restrictions)
 
         unresolved_names = self._find_unresolved_names(
             raw_plan,
@@ -102,6 +135,7 @@ class RestrictionPlanBuilder:
                     unresolved_names,
                     services_catalog,
                     physical_objects_catalog,
+                    normgraph_restrictions,
                 ),
             )
             plan = self.validate_and_canonicalize_plan(
@@ -109,6 +143,23 @@ class RestrictionPlanBuilder:
                 user_query,
                 services_catalog,
                 physical_objects_catalog,
+            )
+            plan = self._ground_normgraph_rules(plan, normgraph_restrictions)
+
+        remaining_semantic_issues = self._find_semantic_issues(
+            plan, user_query, normgraph_restrictions
+        )
+        if remaining_semantic_issues:
+            plan = plan.model_copy(
+                update={
+                    "mode": RestrictionTaskMode.NEEDS_CLARIFICATION,
+                    "target_entities": [],
+                    "restriction_rules": [],
+                    "clarification_question": (
+                        "Не удалось однозначно определить целевые объекты проверки. "
+                        "Уточните, какие объекты нужно проверить на пересечение с буферной зоной."
+                    ),
+                }
             )
 
         if plan.mode == RestrictionTaskMode.NEEDS_CLARIFICATION:
@@ -184,14 +235,25 @@ class RestrictionPlanBuilder:
         user_query: str | None = None,
         history: list[dict] | None = None,
         _retries: int = 2,
+        _messages: list[dict] | None = None,
     ) -> RestrictionPlan:
-        messages: list[dict] = [{"role": "system", "content": prompt}]
-        if history:
-            messages.extend(history)
-        if user_query:
-            messages.append({"role": "user", "content": user_query})
+        # On a repair retry ``_messages`` carries the full conversation so far
+        # (system prompt + history + user query + the model's invalid answer +
+        # the fix instruction). Rebuilding it from ``prompt`` alone — as the old
+        # code did — discarded the invalid answer, the fix instruction AND the
+        # user query, turning the "repair" into a blind re-roll.
+        if _messages is not None:
+            messages = _messages
+        else:
+            messages = [{"role": "system", "content": prompt}]
+            if history:
+                messages.extend(history)
+            if user_query:
+                messages.append({"role": "user", "content": user_query})
         response = await self.llm_client.chat(
             model=model,
+            think=False,
+            format=RestrictionPlan.model_json_schema(),
             options={
                 "temperature": 0,
                 "num_predict": 4096,
@@ -223,6 +285,7 @@ class RestrictionPlanBuilder:
                     model=model,
                     prompt=prompt,
                     _retries=_retries - 1,
+                    _messages=messages,
                 )
             logger.exception(e)
             raise ValueError("Model returned invalid restriction plan") from e
@@ -234,6 +297,7 @@ class RestrictionPlanBuilder:
         user_query: str,
         services_catalog: list[str],
         physical_objects_catalog: list[str],
+        normgraph_restrictions: list[dict[str, Any]] | None = None,
     ) -> str:
         payload = {
             "model": model,
@@ -241,6 +305,7 @@ class RestrictionPlanBuilder:
             "user_query": normalize_name(user_query),
             "services_catalog": sorted(services_catalog),
             "physical_objects_catalog": sorted(physical_objects_catalog),
+            "normgraph_restrictions": normgraph_restrictions or [],
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -248,6 +313,7 @@ class RestrictionPlanBuilder:
     def _build_prompt(
         services_catalog: list[str],
         physical_objects_catalog: list[str],
+        normgraph_restrictions: list[dict[str, Any]] | None = None,
     ) -> str:
         response_structure = {
             "mode": "buffers_only | restrictions | needs_clarification",
@@ -263,6 +329,9 @@ class RestrictionPlanBuilder:
                     "buffer_size": 300,
                     "buffer_type": "round | flat | square",
                     "title": "string",
+                    "origin": "normgraph | user",
+                    "restriction_id": "string | null",
+                    "provenance": "object | null",
                 }
             ],
             "restriction_rules": [
@@ -271,6 +340,9 @@ class RestrictionPlanBuilder:
                     "target_names": ["string"],
                     "title": "string",
                     "description": "string",
+                    "origin": "normgraph | user",
+                    "restriction_id": "string | null",
+                    "provenance": "object | null",
                 }
             ],
             "selection_reasons": [
@@ -293,6 +365,9 @@ class RestrictionPlanBuilder:
         Доступные физические объекты:
         {physical_objects_catalog}
 
+        Релевантные канонические ограничения NormGraph:
+        {json.dumps(normgraph_restrictions or [], ensure_ascii=False)}
+
         Формат ответа:
         {json.dumps(response_structure, ensure_ascii=False)}
 
@@ -303,9 +378,17 @@ class RestrictionPlanBuilder:
         - Не возвращай обобщающую категорию, если в доступных списках есть более конкретные слои.
         - mode = "buffers_only", если пользователь просит построить/показать/получить только буферные зоны.
         - mode = "restrictions", если пользователь просит определить запрет, ограничение, затронутые объекты или применить буферы к другим объектам.
+        - Формулировки «какие объекты попадают», «пересекают зону», «затронуты» или
+          «выведи объекты» всегда означают mode = "restrictions": явно заполни
+          target_entities и restriction_rules. Нельзя выбирать buffers_only и обещать
+          отфильтровать целевые объекты позже — в этом режиме такая проверка не выполняется.
         - mode = "needs_clarification", если нет радиуса буфера или непонятно, от каких объектов строить буфер.
         - source_entities: объекты, от которых строятся буферы.
         - target_entities: объекты, на которые накладываются ограничения; для buffers_only оставь пустым списком.
+        - Объекты, которые пользователь просит проверить, найти или вывести, всегда являются
+          target_entities. Объект, от границы которого отсчитывается расстояние, является
+          source_entities. Например, для «какие жилые дома ближе 50 м к лесу» источник —
+          «лес», цель — «жилой дом», независимо от грамматического порядка слов в норме.
         - buffer_rules должны быть для каждого source_entities.
         - restriction_rules нужны только для mode = "restrictions".
         - selection_reasons: коротко объясни, почему выбран режим, источники, цели, радиусы и правила.
@@ -313,6 +396,18 @@ class RestrictionPlanBuilder:
         - Если пользователь не указал тип буфера, используй "round".
         - Если пользователь не указал title, сформируй короткое название из запроса.
         - confidence укажи от 0 до 1.
+        - Если релевантное ограничение NormGraph однозначно соответствует слоям каталогов,
+          используй subject как источник буфера, object как целевой слой, value.number как
+          радиус в метрах. Скопируй id в restriction_id, укажи origin = "normgraph" и
+          скопируй provenance. Текст extraction_text также включи в provenance.
+        - Не изменяй расстояние из NormGraph и не приписывай ему другие источники или цели.
+        - Если пользователь явно задал собственное расстояние в текущем запросе, можно создать
+          временное правило с origin = "user", restriction_id = null и provenance = null.
+        - Если пользователь сослался на СП, СНиП, ГОСТ, СанПиН, пункт документа или прямо
+          попросил каноническое правило и оно присутствует в списке NormGraph, обязательно
+          используй origin = "normgraph" и точный restriction_id. Повторённое пользователем
+          нормативное расстояние не превращает норму во временное пользовательское правило.
+        - Не показывай и не генерируй программный код.
 
         Строгие правила соответствия объектов:
         - Объект из каталога обязан семантически напрямую соответствовать тому, что запросил пользователь.
@@ -330,12 +425,113 @@ class RestrictionPlanBuilder:
         """
 
     @staticmethod
+    def _build_semantic_repair_prompt(
+        user_query: str,
+        plan: RestrictionPlan,
+        issues: list[str],
+        services_catalog: list[str],
+        physical_objects_catalog: list[str],
+        normgraph_restrictions: list[dict[str, Any]] | None = None,
+    ) -> str:
+        return f"""
+        Исправь семантически противоречивый JSON-план GIS-запроса.
+        Верни только валидный JSON той же структуры, без markdown и пояснений.
+
+        Запрос пользователя:
+        {user_query}
+
+        Текущий план:
+        {plan.model_dump_json(ensure_ascii=False)}
+
+        Обнаруженные противоречия:
+        {issues}
+
+        Доступные сервисы:
+        {services_catalog}
+
+        Доступные физические объекты:
+        {physical_objects_catalog}
+
+        Релевантные канонические ограничения NormGraph:
+        {json.dumps(normgraph_restrictions or [], ensure_ascii=False)}
+
+        Если пользователь просит найти, какие объекты попадают в буфер, пересекают его
+        или затронуты им, используй mode = "restrictions". Заполни target_entities и
+        restriction_rules точными именами из каталогов. mode = "buffers_only" допустим
+        только когда результатом должны быть сами буферные геометрии без проверки объектов.
+        Объекты, которые пользователь просит проверить или вывести, должны быть целями;
+        буфер строй вокруг объекта, от границы которого измеряется расстояние. Для запроса
+        «проверь жилые дома у леса» source = «лес», target = «жилой дом».
+        Для пользовательского временного правила используй origin = "user",
+        restriction_id = null и provenance = null.
+        """
+
+    @staticmethod
+    def _find_semantic_issues(
+        plan: RestrictionPlan,
+        user_query: str,
+        normgraph_restrictions: list[dict[str, Any]] | None = None,
+    ) -> list[str]:
+        """Detect plans that silently drop an explicitly requested intersection check."""
+
+        query = normalize_name(user_query)
+        intersection_intent = any(
+            marker in query
+            for marker in (
+                "попада",
+                "пересеч",
+                "затронут",
+                "провер",
+                "какие объекты",
+                "выведи объекты",
+            )
+        )
+        if plan.mode == RestrictionTaskMode.BUFFERS_ONLY and intersection_intent:
+            return [
+                "Пользователь запросил проверку и вывод затронутых объектов, но план "
+                "выбрал режим только построения буферов и потерял целевые объекты."
+            ]
+        if (
+            plan.mode == RestrictionTaskMode.NEEDS_CLARIFICATION
+            and intersection_intent
+            and plan.source_entities
+            and plan.buffer_rules
+        ):
+            return [
+                "План нашёл источник и расстояние, но потерял целевые объекты или "
+                "перепутал направление проверки. Объекты, которые пользователь просит "
+                "проверить и вывести, должны быть target_entities; объект, от границы "
+                "которого измеряется расстояние, должен быть source_entities."
+            ]
+        normative_intent = bool(
+            re.search(
+                r"\b(?:normgraph|сп\s*\d|снип|гост|санпин|санпин|пункт(?:а|е|у)?\s*\d)",
+                query,
+            )
+        )
+        if (
+            normative_intent
+            and normgraph_restrictions
+            and not any(
+                rule.origin == "normgraph" and rule.restriction_id
+                for rule in [*plan.buffer_rules, *plan.restriction_rules]
+            )
+        ):
+            return [
+                "Пользователь запросил каноническое ограничение и NormGraph вернул "
+                "подходящее правило, но план ошибочно создал пользовательское правило "
+                "или потерял restriction_id."
+            ]
+        return []
+
+    @staticmethod
     def _build_repair_prompt(
         user_query: str,
         plan: RestrictionPlan,
         unresolved_names: list[str],
         services_catalog: list[str],
         physical_objects_catalog: list[str],
+        normgraph_restrictions: list[dict[str, Any]] | None = None,
     ) -> str:
         return f"""
         Исправь JSON-план GIS-запроса.
@@ -356,6 +552,9 @@ class RestrictionPlanBuilder:
         Доступные физические объекты:
         {physical_objects_catalog}
 
+        Релевантные канонические ограничения NormGraph:
+        {json.dumps(normgraph_restrictions or [], ensure_ascii=False)}
+
         Правила исправления:
         - Используй только точные имена из доступных списков.
         - Не оставляй в плане обобщающие категории, если им соответствуют конкретные доступные имена.
@@ -363,6 +562,8 @@ class RestrictionPlanBuilder:
         - Для каждого source entity должна быть отдельная buffer_rule с тем же радиусом, типом буфера и названием.
         - Для restriction_rules замени обобщающие source_name и target_names на конкретные доступные имена.
         - Обнови selection_reasons так, чтобы они объясняли уже исправленный выбор простым языком.
+        - Для правил NormGraph сохрани точные origin, restriction_id, provenance и value.number
+          из приведённого ограничения; не подменяй их значениями из памяти.
 
         Строгие правила соответствия объектов:
         - Объект из каталога обязан семантически напрямую соответствовать тому, что запросил пользователь.
@@ -488,6 +689,9 @@ class RestrictionPlanBuilder:
                         buffer_size=rule.buffer_size,
                         buffer_type=rule.buffer_type,
                         title=rule.title,
+                        origin=rule.origin,
+                        restriction_id=rule.restriction_id,
+                        provenance=rule.provenance,
                     )
                 )
         return result
@@ -515,10 +719,123 @@ class RestrictionPlanBuilder:
                     target_names=target_names,
                     title=rule.title,
                     description=rule.description,
+                    origin=rule.origin,
+                    restriction_id=rule.restriction_id,
+                    provenance=rule.provenance,
                 )
                 for source_name in source_names
             )
         return result
+
+    @classmethod
+    def _ground_normgraph_rules(
+        cls,
+        plan: RestrictionPlan,
+        restrictions: list[dict[str, Any]],
+    ) -> RestrictionPlan:
+        """Replace LLM-copied normative metadata with the exact retrieved values."""
+
+        hits_by_id = {
+            str(hit.get("id")): hit
+            for hit in restrictions
+            if isinstance(hit, dict) and hit.get("id")
+        }
+
+        def ground(rule: BufferRule | RestrictionRule):
+            hit = hits_by_id.get(str(rule.restriction_id))
+            if not hit:
+                if rule.origin == "normgraph":
+                    return None
+                return rule
+            provenance = cls._restriction_provenance(hit)
+            updates: dict[str, Any] = {
+                "origin": "normgraph",
+                "restriction_id": str(hit["id"]),
+                "provenance": provenance,
+            }
+            if isinstance(rule, BufferRule):
+                updates["buffer_size"] = float(hit["value"]["number"])
+            return rule.model_copy(update=updates)
+
+        buffer_rules = [
+            grounded
+            for rule in plan.buffer_rules
+            if (grounded := ground(rule)) is not None
+        ]
+        restriction_rules = [
+            grounded
+            for rule in plan.restriction_rules
+            if (grounded := ground(rule)) is not None
+        ]
+        updates: dict[str, Any] = {
+            "buffer_rules": buffer_rules,
+            "restriction_rules": restriction_rules,
+        }
+        # Only a plan that actually LOST rules here failed to ground. A plan that
+        # arrived without rules (e.g. the planner already decided the query needs
+        # clarification because an entity is missing from the scenario catalog)
+        # must keep its own, far more useful question instead of being overwritten
+        # with the generic normative one.
+        dropped = (len(plan.buffer_rules) - len(buffer_rules)) + (
+            len(plan.restriction_rules) - len(restriction_rules)
+        )
+        logger.info(
+            "NormGraph grounding: mode={} buffer_rules {} -> {}, "
+            "restriction_rules {} -> {}; dropped={}; retrieved hit ids {}".format(
+                plan.mode,
+                len(plan.buffer_rules),
+                len(buffer_rules),
+                len(plan.restriction_rules),
+                len(restriction_rules),
+                dropped,
+                list(hits_by_id)[:5],
+            )
+        )
+        if dropped and (
+            not buffer_rules
+            or (plan.mode == RestrictionTaskMode.RESTRICTIONS and not restriction_rules)
+        ):
+            updates.update(
+                mode=RestrictionTaskMode.NEEDS_CLARIFICATION,
+                target_entities=[],
+                clarification_question=(
+                    "Не удалось однозначно связать найденное нормативное ограничение "
+                    "с объектами сценария. Уточните источники, целевые объекты и, если "
+                    "это временное правило, расстояние."
+                ),
+            )
+        return plan.model_copy(
+            update={
+                **updates,
+            }
+        )
+
+    @staticmethod
+    def _restriction_provenance(hit: dict[str, Any]) -> RestrictionProvenance:
+        raw = hit.get("provenance") or {}
+        known = {
+            "document_id": raw.get("doc_id"),
+            "document_name": raw.get("name"),
+            "document_version": raw.get("version"),
+            "clause_id": raw.get("clause_node_id"),
+            "clause_number": raw.get("numbering"),
+            "breadcrumb": raw.get("breadcrumb"),
+            "extraction_text": hit.get("extraction_text"),
+        }
+        extra = {
+            key: value
+            for key, value in raw.items()
+            if key
+            not in {
+                "doc_id",
+                "name",
+                "version",
+                "clause_node_id",
+                "numbering",
+                "breadcrumb",
+            }
+        }
+        return RestrictionProvenance(**known, extra=extra)
 
     @staticmethod
     def _validate_mode(

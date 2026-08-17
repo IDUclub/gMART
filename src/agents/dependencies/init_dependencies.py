@@ -24,6 +24,8 @@ from src.agents.services.provsion_service import ProvisionService
 from src.agents.services.restriction_parser_service import (
     RestrictionParserService,
 )
+from src.agents.services.scenario_data_a2a_service import ScenarioDataA2AService
+from src.agents.services.scenario_data_service import ScenarioDataService
 from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.system_service import SystemService
 
@@ -44,6 +46,7 @@ def init_dependencies() -> dict[
     | ProvisionA2AService
     | DocumentQaA2AService
     | NormGraphA2AService
+    | ScenarioDataA2AService
     | JsonApiHandler
     | ChatStorageApiClient
     | UrbanApiClient
@@ -71,6 +74,12 @@ def init_dependencies() -> dict[
         urban_api_client,
         pipeline_state_store,
     )
+    scenario_data_service = ScenarioDataService(
+        app_config.OLLAMA_URL,
+        chat_storage_client,
+        urban_api_client,
+        pipeline_state_store,
+    )
     dvd_rag_service = DvdRagService(
         app_config.OLLAMA_URL,
         chat_storage_client,
@@ -93,6 +102,7 @@ def init_dependencies() -> dict[
         dvd_rag_service,
         normgraph_rag_service,
         app_config,
+        scenario_data_service=scenario_data_service,
     )
     return {
         "app_config": app_config,
@@ -104,6 +114,7 @@ def init_dependencies() -> dict[
         ),
         "restriction_parser_service": restriction_parser_service,
         "provision_service": provision_service,
+        "scenario_data_service": scenario_data_service,
         "dvd_rag_service": dvd_rag_service,
         "normgraph_rag_service": normgraph_rag_service,
         "orchestrator_service": orchestrator_service,
@@ -111,6 +122,7 @@ def init_dependencies() -> dict[
         "provision_a2a_service": ProvisionA2AService(provision_service),
         "dvd_a2a_service": DocumentQaA2AService(dvd_rag_service),
         "normgraph_a2a_service": NormGraphA2AService(normgraph_rag_service),
+        "scenario_data_a2a_service": ScenarioDataA2AService(scenario_data_service),
         "chat_storage_json_handler": chat_storage_json_handler,
         "chat_storage_client": chat_storage_client,
         "urban_api_json_handler": urban_api_json_handler,

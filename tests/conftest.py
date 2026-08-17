@@ -13,6 +13,7 @@ os.environ.setdefault("OLLAMA_API_URL", "http://localhost:11434")
 os.environ.setdefault("IDU_MCP_SERVER", "http://localhost:8000/mcp")
 os.environ.setdefault("OBJECTS_EFFECTS_MCP_SERVER", "http://localhost:8080/mcp")
 os.environ.setdefault("DVD_MCP_SERVER", "http://localhost:8000/mcp")
+os.environ.setdefault("URBAN_MCP_SERVER", "https://urban-mcp.testing.idulab.ru")
 os.environ.setdefault("CHAT_STORAGE", "http://localhost:8010")
 os.environ.setdefault("URBAN_API_URL", "http://localhost/api")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
@@ -59,7 +60,7 @@ def service(monkeypatch, fake_llm, fake_urban, state_store):
     default so loop tests stay focused; tests that exercise those paths override the stubs.
     """
     monkeypatch.setattr(
-        "src.agents.model_clients.base_client.AsyncOllamaClient",
+        "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
     from src.agents.services.dvd_rag_service import DvdRagService

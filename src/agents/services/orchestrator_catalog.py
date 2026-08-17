@@ -42,14 +42,15 @@ AGENT_CATALOG: dict[OrchestratorAgent, AgentCatalogEntry] = {
         key=OrchestratorAgent.RESTRICTION,
         title="Агент градостроительных ограничений",
         description=(
-            "Извлекает из запроса градостроительные ограничения для выбранного "
-            "сценария, строит буферные зоны вокруг объектов и формирует слои "
-            "ограничений застройки (GeoJSON). Подходит для запросов про зоны "
-            "ограничений, санитарные/охранные буферы и территории, где нельзя строить."
+            "Проверяет канонические ограничения из NormGraph и временные правила "
+            "из запроса пользователя для выбранного сценария. Строит буферные зоны, "
+            "находит любые пересечения, возвращает затронутые объекты в GeoJSON и "
+            "объясняет для каждого объекта причину ограничения."
         ),
         examples=(
             "Построй ограничения застройки от рек и дорог",
             "Сформируй буферные зоны 100 метров вокруг промышленных объектов",
+            "Какие жилые дома попадают под нормативные ограничения от дорог и почему?",
         ),
         requires_scenario_id=True,
     ),
@@ -69,6 +70,23 @@ AGENT_CATALOG: dict[OrchestratorAgent, AgentCatalogEntry] = {
             "Дай сводку по обеспеченности сервисами",
         ),
         requires_scenario_id=True,
+    ),
+    OrchestratorAgent.SCENARIO_DATA: AgentCatalogEntry(
+        key=OrchestratorAgent.SCENARIO_DATA,
+        title="Агент данных сценария",
+        description=(
+            "Отвечает на произвольные фактические вопросы по Urban API: проекты, "
+            "территории, физические объекты, сервисы, справочники, показатели и "
+            "социальные группы. Может работать без выбранного сценария с общими "
+            "данными; для сценарных данных попросит выбрать сценарий. При "
+            "необходимости возвращает GeoJSON-слои и таблицы."
+        ),
+        examples=(
+            "Какие объекты есть в сценарии и сколько их по типам?",
+            "Покажи на карте физические объекты сценария",
+            "Какие значения показателей рассчитаны для сценария?",
+        ),
+        requires_scenario_id=False,
     ),
     OrchestratorAgent.DOCUMENTS: AgentCatalogEntry(
         key=OrchestratorAgent.DOCUMENTS,
@@ -125,6 +143,11 @@ def available_agents(
         if entry.key == OrchestratorAgent.DOCUMENTS and not app_config.DVD_MCP_URL:
             continue
         if entry.key == OrchestratorAgent.NORMS and not app_config.NORM_GRAPH_MCP_URL:
+            continue
+        if (
+            entry.key == OrchestratorAgent.SCENARIO_DATA
+            and not app_config.URBAN_MCP_URL
+        ):
             continue
         agents.append(entry)
     return agents

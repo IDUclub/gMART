@@ -9,10 +9,12 @@ from src.agents.common.executors.sse_executors import (
 )
 from src.agents.dependencies.dependencies import (
     get_idu_mcp_client,
+    get_optional_normgraph_mcp_client,
     get_restriction_parser_service,
 )
 from src.agents.dto.restriction_request_dto import RestrictionRequestDTO
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
+from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 from src.agents.schema.restrictions_response import RestrictionsResponse
 from src.agents.services.restriction_parser_service import (
     RestrictionParserService,
@@ -28,6 +30,9 @@ async def generate_restrictions_response(
     request: Request,
     user_request: Annotated[RestrictionRequestDTO, Depends(RestrictionRequestDTO)],
     idu_mcp_client: IduMcpClient = Depends(get_idu_mcp_client),
+    normgraph_mcp_client: NormGraphMcpClient | None = Depends(
+        get_optional_normgraph_mcp_client
+    ),
     restriction_service: RestrictionParserService = Depends(
         get_restriction_parser_service
     ),
@@ -40,6 +45,7 @@ async def generate_restrictions_response(
         user_request.model,
         rerun=False,
         mcp_client=idu_mcp_client,
+        normgraph_mcp_client=normgraph_mcp_client,
         user_query=user_request.request,
         scenario_id=user_request.scenario_id,
         chat_id=user_request.chat_id,

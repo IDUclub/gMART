@@ -41,6 +41,31 @@ def require_ollama() -> str:
 
 
 @pytest.fixture
+def require_openai_backend() -> tuple[str, str]:
+    """``(base_url, model)`` of a live OpenAI-compatible server, or skip.
+
+    Points at vLLM through ``VLLM_BASE_URL``; any other OpenAI-compatible server
+    works, including Ollama's own ``/v1``. The model is the first one served
+    unless ``VLLM_MODEL`` names it.
+    """
+
+    import httpx
+
+    url = os.environ.get("VLLM_BASE_URL", "").rstrip("/")
+    if not url:
+        pytest.skip("VLLM_BASE_URL is not set")
+    try:
+        served = httpx.get(f"{url}/models", timeout=5.0).raise_for_status().json()
+        models = [m["id"] for m in served["data"]]
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"OpenAI-compatible server unavailable at {url}: {exc}")
+    model = os.environ.get("VLLM_MODEL") or (models[0] if models else "")
+    if not model:
+        pytest.skip(f"no models served at {url}")
+    return url, model
+
+
+@pytest.fixture
 async def require_dvd_mcp():
     """A live DvdMcpClient (tools listable), or skip if the IDU_DVD MCP is down."""
     from fastmcp import Client

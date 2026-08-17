@@ -73,13 +73,15 @@ RESTRICTION_EVENTS = [
 @pytest.fixture
 def orchestrator(monkeypatch, fake_llm, fake_urban, state_store):
     monkeypatch.setattr(
-        "src.agents.model_clients.base_client.AsyncOllamaClient",
+        "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
     from src.agents.services.orchestrator_service import OrchestratorService
 
     app_config = SimpleNamespace(
-        DVD_MCP_URL="http://dvd", NORM_GRAPH_MCP_URL="http://norms"
+        DVD_MCP_URL="http://dvd",
+        NORM_GRAPH_MCP_URL="http://norms",
+        URBAN_MCP_URL="http://urban-mcp",
     )
     svc = OrchestratorService(
         "http://ollama",
@@ -183,6 +185,33 @@ async def test_sub_agents_run_without_persistence_and_own_request_ids(
         call["request_id"]
         == events_of_type(events, "step_started")[0]["content"]["step_request_id"]
     )
+
+
+@pytest.mark.asyncio
+async def test_scenario_data_agent_runs_without_scenario_id(orchestrator, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [{"agent": "scenario_data", "task": "Перечисли типы сервисов"}]
+        )
+    ]
+    pipeline = FakePipeline(
+        [{"type": "chunk", "content": {"text": "Школы", "done": True}}]
+    )
+    orchestrator.scenario_data_service = SimpleNamespace(
+        run_scenario_data_pipeline=pipeline
+    )
+
+    events = await run_pipeline(
+        orchestrator,
+        scenario_id=None,
+        urban_mcp_client=Mock(),
+    )
+
+    assert (
+        events_of_type(events, "step_finished")[0]["content"]["status"] == "completed"
+    )
+    assert pipeline.calls[0]["scenario_id"] is None
+    assert pipeline.calls[0]["persist_history"] is False
 
 
 @pytest.mark.asyncio

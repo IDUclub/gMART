@@ -6,18 +6,19 @@ from uuid import uuid4
 
 A2AData = dict[str, Any]
 
-# Stable identifier of the A2A profile extension that declares a project scenario id
-# (scenario_id) as a required, discoverable input on the geospatial agents (restriction +
-# provision). The URI is an opaque, globally-unique namespace string — it is never fetched
-# over HTTP; clients only match it. Bump the trailing version when the contract changes.
+# Stable identifier of the A2A profile extension that declares a project scenario id.
+# Restriction/provision require it; scenario-data advertises the same field as optional.
+# The URI is an opaque namespace string and is never fetched over HTTP.
 SCENARIO_CONTEXT_EXTENSION_URI = (
     "https://github.com/IDUclub/gMART/a2a/extensions/scenario-context/v1"
 )
 
 
-def scenario_context_extension() -> A2AData:
+def scenario_context_extension(required: bool = True) -> A2AData:
     """
-    Function builds the required scenario-context AgentExtension for an AgentCard.
+    Function builds a required or optional scenario-context AgentExtension.
+    Args:
+        required (bool): Whether every request must include scenario_id.
     Returns:
         A2AData: AgentExtension declaration (uri, required flag, JSON Schema params).
     """
@@ -25,16 +26,20 @@ def scenario_context_extension() -> A2AData:
     return {
         "uri": SCENARIO_CONTEXT_EXTENSION_URI,
         "description": (
-            "Requires a project scenario id (scenario_id) on every incoming message. "
-            'Pass it in a DataPart ({"kind": "data", "data": {"scenario_id": 772}}), '
+            (
+                "Requires a project scenario id (scenario_id) on every incoming message. "
+                if required
+                else "Accepts an optional project scenario id (scenario_id). "
+            )
+            + 'Pass it in a DataPart ({"kind": "data", "data": {"scenario_id": 772}}), '
             "in message.metadata under the extension uri, or inline as 'scenario_id=772' "
             "in the message text. Activate via the 'A2A-Extensions' header."
         ),
-        "required": True,
+        "required": required,
         "params": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object",
-            "required": ["scenario_id"],
+            "required": ["scenario_id"] if required else [],
             "properties": {
                 "scenario_id": {
                     "type": "integer",

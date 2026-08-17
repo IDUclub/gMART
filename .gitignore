@@ -37,3 +37,13 @@ frontend/dist/
 
 #Agents
 AGENTS.md
+CLAUDE.md
+/.claude
+/.codex
+/.agents
+
+# Skills
+/graphify-out
+
+# Exps
+/benchmarks
