@@ -163,7 +163,7 @@ export default function McpConsole({
     <div className="mcp-console">
       <header>
         <div>
-          <span className="eyebrow">ДИАГНОСТИКА · IDU MCP</span>
+          <span className="context-title">Диагностика IDU MCP</span>
           <h1>MCP-консоль</h1>
           <p>Каталог и прямой запуск инструментов текущего MCP-контура</p>
         </div>
@@ -233,7 +233,7 @@ export default function McpConsole({
             <>
               <div className="mcp-tool-heading">
                 <div>
-                  <span className="eyebrow">ИНСТРУМЕНТ</span>
+                  <span className="context-title">Выбранный инструмент</span>
                   <h2>{selected.function.name}</h2>
                   <p>
                     {selected.function.description || "Описание отсутствует"}
