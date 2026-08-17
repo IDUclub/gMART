@@ -46,9 +46,12 @@ export type MessagePart = {
 };
 export type Message = {
   message_id: string;
+  seq?: number;
   role: string;
   parts: MessagePart[];
   created_at: string;
+  updated_at?: string;
+  metadata?: Record<string, unknown>;
 };
 export type Chat = ChatSummary & { messages: Message[] };
 export type StatusEntry = {

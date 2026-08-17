@@ -29,8 +29,10 @@ import {
 import gsap from "gsap";
 import Keycloak from "keycloak-js";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import MapPanel from "./MapPanel";
 import McpConsole from "./McpConsole";
+import { buildMessageBlocks, normalizeMessages } from "./messageHistory";
 import {
   authAvailable,
   authLogin,
@@ -684,7 +686,10 @@ export default function App() {
       setStatus(err(e));
     }
   }
-  const history = useMemo(() => chat?.messages || [], [chat]);
+  const history = useMemo(
+    () => normalizeMessages(chat?.messages || []),
+    [chat?.messages],
+  );
   return (
     <div className="app-shell" ref={appRoot}>
       <aside className="sidebar">
@@ -857,13 +862,19 @@ export default function App() {
                           message={m}
                           restore={restoreLayers}
                           restoreState={restoreState}
+                          openTables={() => {
+                            setRightTab("data");
+                            setResultOpen(true);
+                          }}
                         />
                       ))}
                       {pendingQuestion && (
-                        <div className="message user pending-message">
-                          <div className="avatar">В</div>
-                          <div>{pendingQuestion}</div>
-                        </div>
+                        <TransientMessage
+                          role="user"
+                          text={pendingQuestion}
+                          detail="Запрос отправлен"
+                          pending
+                        />
                       )}
                       {!!statusEntries.length && (
                         <LiveStatus
@@ -873,12 +884,11 @@ export default function App() {
                         />
                       )}
                       {answer && (
-                        <div className="message assistant">
-                          <div className="avatar">g</div>
-                          <div>
-                            <ReactMarkdown>{answer}</ReactMarkdown>
-                          </div>
-                        </div>
+                        <TransientMessage
+                          role="assistant"
+                          text={answer}
+                          detail={busy ? "Ответ формируется" : "Ответ получен"}
+                        />
                       )}
                       {(layers.length > 0 ||
                         tables.length > 0 ||
@@ -1369,47 +1379,164 @@ function MessageView({
   message,
   restore,
   restoreState,
+  openTables,
 }: {
   message: Message;
   restore: (message: Message, part: MessagePart) => void;
   restoreState: Record<string, string>;
+  openTables: () => void;
 }) {
+  const isUser = message.role.toLowerCase() === "user";
+  const blocks = buildMessageBlocks(message.parts);
+  const formattedTime = formatMessageTime(message.created_at);
   return (
-    <div className={`message ${message.role}`}>
-      <div className="avatar">{message.role === "user" ? "В" : "g"}</div>
-      <div>
-        {message.parts.map((p) =>
-          p.kind === "text" ? (
-            <ReactMarkdown key={p.part_seq}>
-              {String(p.payload.text || "")}
-            </ReactMarkdown>
-          ) : p.kind === "table" ? (
-            <Tables key={p.part_seq} tables={[p.payload as TableData]} />
-          ) : p.kind === "tool_call" ? (
-            <div className="stored-tool-call" key={p.part_seq}>
-              <div>
-                <MapTrifold />
-                <span>
-                  <strong>Сохранённый результат инструментов</strong>
-                  <small>{p.mcp_source || "MCP-источник"}</small>
-                </span>
-              </div>
-              <button onClick={() => restore(message, p)}>
-                <ArrowCounterClockwise /> Восстановить слои
-              </button>
-              {restoreState[`${message.message_id}:${p.part_seq}`] && (
-                <small>{restoreState[`${message.message_id}:${p.part_seq}`]}</small>
-              )}
-            </div>
-          ) : p.kind === "status" ? (
-            <div className="stored-status" key={p.part_seq}>
-              {String(p.payload.text || p.payload.status || "Этап выполнен")}
-            </div>
-          ) : null,
-        )}
+    <article className={`message ${isUser ? "user" : "assistant"}`}>
+      <div className="avatar" aria-hidden="true">
+        {isUser ? "В" : "g"}
       </div>
+      <div className="message-card">
+        <header className="message-meta">
+          <strong>{isUser ? "Вы" : "gMART"}</strong>
+          {formattedTime && (
+            <time dateTime={message.created_at}>{formattedTime}</time>
+          )}
+        </header>
+        <div className="message-content">
+          {blocks.map((block) => {
+            if (block.kind === "markdown")
+              return (
+                <MarkdownContent key={block.key}>{block.text}</MarkdownContent>
+              );
+
+            const p = block.part;
+            return p.kind === "table" ? (
+              <StoredTablePart
+                key={block.key}
+                table={p.payload as TableData}
+                open={openTables}
+              />
+            ) : p.kind === "tool_call" ? (
+              <div className="stored-tool-call" key={block.key}>
+                <div>
+                  <MapTrifold />
+                  <span>
+                    <strong>Сохранённый результат инструментов</strong>
+                    <small>{p.mcp_source || "MCP-источник"}</small>
+                  </span>
+                </div>
+                <button onClick={() => restore(message, p)}>
+                  <ArrowCounterClockwise /> Восстановить слои
+                </button>
+                {restoreState[`${message.message_id}:${p.part_seq}`] && (
+                  <small>
+                    {restoreState[`${message.message_id}:${p.part_seq}`]}
+                  </small>
+                )}
+              </div>
+            ) : p.kind === "status" ? (
+              <div className="stored-status" key={block.key}>
+                {String(p.payload.text || p.payload.status || "Этап выполнен")}
+              </div>
+            ) : (
+              <div className="stored-status" key={block.key}>
+                Сохранённая часть: {p.kind}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function StoredTablePart({ table, open }: { table: TableData; open: () => void }) {
+  const rows = Array.isArray(table.rows) ? table.rows.length : 0;
+  const columns = Array.isArray(table.columns) ? table.columns.length : 0;
+  return (
+    <div className="stored-table-part">
+      <Database weight="duotone" />
+      <div>
+        <strong>{table.title || table.name || "Сохранённая таблица"}</strong>
+        <small>
+          {rows} {pluralize(rows, "строка", "строки", "строк")}
+          {columns > 0 && ` · ${columns} столбцов`}
+        </small>
+      </div>
+      <button onClick={open}>Открыть в данных</button>
     </div>
   );
+}
+
+function TransientMessage({
+  role,
+  text,
+  detail,
+  pending = false,
+}: {
+  role: "user" | "assistant";
+  text: string;
+  detail: string;
+  pending?: boolean;
+}) {
+  const isUser = role === "user";
+  return (
+    <article className={`message ${role} ${pending ? "pending-message" : ""}`}>
+      <div className="avatar" aria-hidden="true">
+        {isUser ? "В" : "g"}
+      </div>
+      <div className="message-card">
+        <header className="message-meta">
+          <strong>{isUser ? "Вы" : "gMART"}</strong>
+          <span>{detail}</span>
+        </header>
+        <div className="message-content">
+          <MarkdownContent>{text}</MarkdownContent>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function MarkdownContent({ children }: { children: string }) {
+  return (
+    <div className="message-markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ node: _node, ...props }) => (
+            <a {...props} target="_blank" rel="noreferrer" />
+          ),
+          table: ({ node: _node, ...props }) => (
+            <div className="markdown-table-wrap">
+              <table {...props} />
+            </div>
+          ),
+        }}
+      >
+        {children}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function formatMessageTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function pluralize(value: number, one: string, few: string, many: string): string {
+  const tens = value % 100;
+  const units = value % 10;
+  if (tens >= 11 && tens <= 19) return many;
+  if (units === 1) return one;
+  if (units >= 2 && units <= 4) return few;
+  return many;
 }
 
 function extractStoredTables(messages: Message[]): TableData[] {
