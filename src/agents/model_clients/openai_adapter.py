@@ -18,8 +18,9 @@ Ollama's own ``/v1`` — so it is the default and needs no configuration.
 ``OPENAI_THINK_MODE`` selects another spelling for servers that need one:
 
   ``reasoning_effort`` (default) — ``reasoning_effort=OPENAI_THINK_EFFORT`` (``"none"`` unless
-                                  overridden; a Harmony-served gpt-oss rejects ``"none"`` with a
-                                  400 and wants ``"minimal"``)
+                                  overridden; a Harmony-served gpt-oss rejects ``"none"`` *and*
+                                  ``"minimal"`` with a 400 and accepts only high/medium/low, so
+                                  set ``"low"`` there)
   ``chat_template``             — ``chat_template_kwargs={"enable_thinking": False}``,
                                   which vLLM honours but Ollama ignores; the variable
                                   name comes from OPENAI_THINK_CHAT_TEMPLATE_KWARG
@@ -81,10 +82,15 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             if think_mode is not None
             else os.getenv("OPENAI_THINK_MODE", THINK_REASONING_EFFORT)
         ).strip().lower() or THINK_OFF
-        # The reasoning_effort value that stands for "do not reason". Configurable because
-        # servers disagree on it: vLLM's Harmony path serves gpt-oss and rejects the obvious
-        # "none" outright (400 "Harmony does not support reasoning_effort='none'"), accepting
-        # only none|minimal|low|medium|high|xhigh|max — so "minimal" is the closest thing there.
+        # The reasoning_effort value that stands for "reason as little as possible".
+        # Configurable because servers disagree on it, and on vLLM the disagreement is in two
+        # layers: the request schema accepts none|minimal|low|medium|high|xhigh|max, but the
+        # Harmony path that serves gpt-oss then rejects all but high|medium|low —
+        #   reasoning_effort='none'    -> 400 "Harmony does not support reasoning_effort='none'"
+        #   reasoning_effort='minimal' -> 400 "not supported by Harmony. Supported values are:
+        #                                      high, medium, low"
+        # So "low" is the floor there, and reading the schema's literal list is not enough to
+        # know what a given server will accept. Measured on vLLM serving gpt-oss-20b.
         self.think_effort = (
             think_effort
             if think_effort is not None
