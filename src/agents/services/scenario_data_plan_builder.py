@@ -29,11 +29,11 @@ MAX_PLANNER_RETRIES = 2
 #: (finish=length) or the model gave up (finish=stop); 12 tools: answers on a 3k budget.
 SHORTLIST_SIZE = 12
 #: gpt-oss spends this budget on its reasoning channel before any answer: a measured planner
-#: call produced a 4163-character trace, well past what 900 tokens allows, so every first
-#: attempt failed and the run only recovered on the retry. Sized to cover the trace *and* the
-#: JSON, while leaving room inside a 16k window next to a ~4k prompt.
+#: retry exhausted 3000 tokens and produced only a 14723-character reasoning trace. The retry
+#: budget therefore leaves enough room for that trace *and* the small JSON answer while still
+#: fitting beside the roughly 4k-token prompt in the 16k context window.
 PLANNER_NUM_PREDICT = 2500
-PLANNER_NUM_PREDICT_RETRY = 3000
+PLANNER_NUM_PREDICT_RETRY = 5000
 #: Effort used on a retry after an empty reply. "low" is exactly the value that produces no
 #: content on a Harmony-served gpt-oss, so escalating to "medium" is the fix, not a guess.
 PLANNER_RETRY_REASONING_EFFORT = "medium"
@@ -95,7 +95,9 @@ class ScenarioDataPlanBuilder:
                         "role": "user",
                         "content": (
                             "Предыдущий JSON не прошёл проверку: "
-                            f"{error}. Верни исправленный JSON строго по схеме."
+                            f"{error}. Верни исправленный JSON строго по схеме. "
+                            'Поле action должно быть ровно "call_tool" или '
+                            '"final_answer"; не объединяй варианты через символ |.'
                         ),
                     }
                 )
@@ -157,7 +159,9 @@ class ScenarioDataPlanBuilder:
                 )
                 continue
             try:
-                action = ScenarioDataAction.model_validate_json(strip_json_fence(raw))
+                payload = json.loads(strip_json_fence(raw))
+                payload = self._repair_ambiguous_action(payload, shortlist)
+                action = ScenarioDataAction.model_validate(payload)
                 return self._canonicalize(action, shortlist)
             except (ValidationError, ValueError, json.JSONDecodeError) as exc:
                 error = str(exc)
@@ -165,6 +169,28 @@ class ScenarioDataPlanBuilder:
                     f"Invalid scenario-data action, attempt {attempt + 1}: {error}"
                 )
         raise ValueError(f"invalid scenario-data action after retries: {error}")
+
+    @staticmethod
+    def _repair_ambiguous_action(payload: Any, tools: list[UrbanMcpTool]) -> Any:
+        """Repair only the exact pseudo-enum emitted by the old planner prompt.
+
+        The choice is unambiguous when the response names a real shortlisted tool or omits
+        both tool coordinates. All other malformed values remain invalid and go through the
+        normal retry path instead of being guessed.
+        """
+
+        if not isinstance(payload, dict) or payload.get("action") != (
+            "call_tool | final_answer"
+        ):
+            return payload
+
+        group = payload.get("group")
+        tool_name = payload.get("tool_name")
+        if any(tool.group == group and tool.name == tool_name for tool in tools):
+            return {**payload, "action": ScenarioDataActionKind.CALL_TOOL.value}
+        if group is None and tool_name is None:
+            return {**payload, "action": ScenarioDataActionKind.FINAL_ANSWER.value}
+        return payload
 
     @staticmethod
     def _canonicalize(
@@ -263,13 +289,13 @@ class ScenarioDataPlanBuilder:
         scenario_id: int | None,
     ) -> str:
         catalog = [tool.compact_prompt_entry() for tool in tools]
-        response_shape = {
-            "action": "call_tool | final_answer",
-            "group": "имя MCP-группы или null",
-            "tool_name": "точное имя инструмента или null",
-            "arguments": {"имя параметра": "значение"},
-            "layer_name": "понятное название слоя или null",
-            "reason": "краткая причина выбора",
+        final_answer_example = {
+            "action": "final_answer",
+            "group": None,
+            "tool_name": None,
+            "arguments": {},
+            "layer_name": None,
+            "reason": "данных достаточно для ответа",
         }
         return f"""Ты — управляющий агент данных городского сценария. На каждом шаге выбери
 ровно одно действие: вызвать read-only Urban MCP инструмент или завершить сбор данных.
@@ -280,8 +306,17 @@ class ScenarioDataPlanBuilder:
 Результаты уже выполненных шагов (геометрия сокращена, полные слои уже отправлены клиенту):
 {json.dumps(observations, ensure_ascii=False)}
 
-Верни только JSON:
-{json.dumps(response_shape, ensure_ascii=False)}
+Верни только JSON-объект со следующими полями:
+- action: ровно одна из двух строк — "call_tool" или "final_answer". Никогда не записывай
+  сразу оба варианта и не используй символ | в значении.
+- group: точное имя MCP-группы из каталога для call_tool, иначе null.
+- tool_name: точное имя инструмента из каталога для call_tool, иначе null.
+- arguments: JSON-объект аргументов инструмента, иначе пустой объект.
+- layer_name: понятное название ожидаемого географического слоя или null.
+- reason: краткая причина выбора.
+
+Пример корректного завершения сбора данных:
+{json.dumps(final_answer_example, ensure_ascii=False)}
 
 Правила:
 - Используй только точные group и tool_name из каталога.

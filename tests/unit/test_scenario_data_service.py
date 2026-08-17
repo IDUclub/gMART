@@ -96,6 +96,14 @@ def test_planner_requests_scenario_clarification_when_context_is_missing():
     assert "попросить пользователя выбрать сценарий" in prompt
 
 
+def test_planner_prompt_uses_concrete_action_values():
+    prompt = ScenarioDataPlanBuilder._build_prompt([], [], 772)
+
+    assert '"action": "call_tool | final_answer"' not in prompt
+    assert '"call_tool" или "final_answer"' in prompt
+    assert '"action": "final_answer"' in prompt
+
+
 async def test_pipeline_without_scenario_skips_scenario_only_catalog(
     monkeypatch, fake_llm, fake_urban, state_store
 ):
@@ -432,3 +440,95 @@ class TestPlannerEmptyResponse:
 
         assert "format" in calls[0] and "format" in calls[1]
         assert "format" not in calls[-1]
+
+
+class TestPlannerAmbiguousActionRepair:
+    @staticmethod
+    def _tool() -> UrbanMcpTool:
+        return UrbanMcpTool(
+            group="physical_objects",
+            name="GetPhysicalObjects",
+            title="Физические объекты сценария",
+            description="",
+            input_schema={"type": "object", "properties": {}},
+            tags=(),
+        )
+
+    async def test_exact_old_placeholder_is_repaired_to_a_real_tool_call(self):
+        tool = self._tool()
+
+        class PlaceholderLlm:
+            async def chat(self, **kwargs):
+                return {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "action": "call_tool | final_answer",
+                                "group": tool.group,
+                                "tool_name": tool.name,
+                                "arguments": {},
+                            }
+                        )
+                    }
+                }
+
+        action = await ScenarioDataPlanBuilder(PlaceholderLlm()).choose_action(
+            "model", "Какие объекты есть?", [tool], []
+        )
+
+        assert action.action == ScenarioDataActionKind.CALL_TOOL
+        assert action.tool_name == tool.name
+
+    async def test_exact_old_placeholder_is_repaired_to_final_answer(self):
+        class PlaceholderLlm:
+            async def chat(self, **kwargs):
+                return {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "action": "call_tool | final_answer",
+                                "group": None,
+                                "tool_name": None,
+                                "reason": "готово",
+                            }
+                        )
+                    }
+                }
+
+        action = await ScenarioDataPlanBuilder(PlaceholderLlm()).choose_action(
+            "model", "Какие объекты есть?", [], []
+        )
+
+        assert action.action == ScenarioDataActionKind.FINAL_ANSWER
+
+    async def test_an_ambiguous_partial_tool_is_not_guessed(self):
+        calls = 0
+
+        class InvalidLlm:
+            async def chat(self, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "action": "call_tool | final_answer",
+                                    "group": "physical_objects",
+                                    "tool_name": None,
+                                }
+                            )
+                        }
+                    }
+                assert any(
+                    "не объединяй варианты через символ |" in message["content"]
+                    for message in kwargs["messages"]
+                )
+                return {"message": {"content": '{"action": "final_answer"}'}}
+
+        action = await ScenarioDataPlanBuilder(InvalidLlm()).choose_action(
+            "model", "Какие объекты есть?", [self._tool()], []
+        )
+
+        assert calls == 2
+        assert action.action == ScenarioDataActionKind.FINAL_ANSWER
