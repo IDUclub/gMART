@@ -120,6 +120,10 @@ class ScenarioDataPlanBuilder:
 Сначала определи необходимые факты, маппинги и критерии полноты. Не называй MCP-инструменты
 и не придумывай идентификаторы. Если задача неоднозначна настолько, что разные трактовки
 дадут разные результаты, заполни clarification одним коротким вопросом на русском языке.
+История сообщений перед текущей репликой — обязательная часть задачи. Короткие ответы вроде
+«да», «оба», «эти», «первый вариант» разрешай по последнему вопросу и предмету диалога.
+Не меняй предметную область на нормативы, ограничения, показатели или другую тему, если
+пользователь явно не переключил её в текущей реплике либо в недавней истории.
 
 Сценарий: {scenario_id if scenario_id is not None else "не выбран"}.
 Сжатый подтверждённый контекст чата:
@@ -138,6 +142,9 @@ required_output перечисляет ожидаемые таблицы, сло
             ],
             AcquisitionPlan,
             "acquisition plan",
+            post_validate=lambda plan: self._validate_acquisition_topic(
+                plan, user_query, history or []
+            ),
         )
 
     async def build_execution_plan(
@@ -158,7 +165,8 @@ required_output перечисляет ожидаемые таблицы, сло
     ) -> ExecutionPlanRevision:
         """Bind a logical plan to exact catalogue tools and ordered arguments."""
 
-        shortlist = self._shortlist(tools, user_query, observations or [])
+        resolved_query = self._resolved_planning_query(user_query, acquisition)
+        shortlist = self._shortlist(tools, resolved_query, observations or [])
         catalog = [tool.compact_prompt_entry() for tool in shortlist]
         prompt = f"""Построй целиком исполнимый план read-only Urban MCP до начала выполнения.
 Используй только точные group/tool_name и параметры из каталога. Шаги идут строго
@@ -168,7 +176,8 @@ required_output перечисляет ожидаемые таблицы, сло
 подставляется системой, не меняй его.
 {self._workspace_prompt(workspace_enabled)}
 
-Задача: {user_query}
+Текущая реплика: {user_query}
+Задача, уже восстановленная по истории: {resolved_query}
 Логический план: {acquisition.model_dump_json()}
 Актуальные маппинги: {json.dumps(mappings, ensure_ascii=False)[:10000]}
 Наблюдения: {json.dumps(observations or [], ensure_ascii=False)[:12000]}
@@ -181,7 +190,9 @@ required_output перечисляет ожидаемые таблицы, сло
 
 Верни JSON по схеме ExecutionPlanRevision. Не завершай план до получения всех данных и
 справочников, необходимых для required_output. Каждый requirement_id логического плана
-должен встречаться в satisfies хотя бы одного шага, который реально его закрывает."""
+должен встречаться в satisfies хотя бы одного шага, который реально его закрывает.
+Не переопределяй предмет задачи по короткой текущей реплике: логический план выше уже
+учёл историю диалога и является источником истины для выбора инструментов."""
 
         def validate_plan(plan: ExecutionPlanRevision) -> ExecutionPlanRevision:
             plan = plan.model_copy(update={"revision": revision, "reason": reason})
@@ -245,6 +256,62 @@ required_output перечисляет ожидаемые таблицы, сло
             "execution plan",
             post_validate=validate_plan,
         )
+
+    @staticmethod
+    def _resolved_planning_query(user_query: str, acquisition: AcquisitionPlan) -> str:
+        requirements = " ".join(
+            " ".join(
+                [requirement.description]
+                + [need.domain for need in requirement.mapping_needs]
+                + list(requirement.completion_criteria)
+            )
+            for requirement in acquisition.requirements
+        )
+        output = " ".join(
+            [
+                *acquisition.required_output.tables,
+                *acquisition.required_output.layers,
+                *acquisition.required_output.fields,
+            ]
+        )
+        return " ".join(
+            part
+            for part in (user_query, acquisition.objective, requirements, output)
+            if part
+        )
+
+    @staticmethod
+    def _validate_acquisition_topic(
+        plan: AcquisitionPlan, user_query: str, history: list[dict]
+    ) -> AcquisitionPlan:
+        user_evidence = " ".join(
+            [
+                *(
+                    str(message.get("content") or "")
+                    for message in history[-10:]
+                    if message.get("role") == "user"
+                ),
+                user_query,
+            ]
+        ).lower()
+        planned = plan.model_dump_json().lower()
+        normative_markers = (
+            "нормативн",
+            "зон ограничен",
+            "буферн",
+            "restriction zone",
+            "default buffer",
+        )
+        conversation_requests_norms = any(
+            marker in user_evidence for marker in normative_markers
+        )
+        plan_switched_to_norms = any(marker in planned for marker in normative_markers)
+        if plan_switched_to_norms and not conversation_requests_norms:
+            raise ValueError(
+                "acquisition plan switched to normative restrictions without support "
+                "in the current dialogue"
+            )
+        return plan
 
     @staticmethod
     def _scenario_seed_steps(

@@ -135,6 +135,169 @@ def test_mapping_resolver_prefers_matching_dictionary_for_empty_mapping_values()
     assert calls[0].tool.name == "GetServiceTypes"
 
 
+def test_mapping_resolver_never_falls_back_to_unrelated_normative_dictionary():
+    resolver = UrbanMappingResolver()
+    plan = AcquisitionPlan(
+        objective="resolve service types",
+        requirements=[
+            DataRequirement(
+                requirement_id="types",
+                description="service type names",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="service_type",
+                        direction=MappingDirection.ID_TO_NAME,
+                        values=[],
+                    )
+                ],
+            )
+        ],
+    )
+    normative_buffers = UrbanMcpTool(
+        group="dictionaries",
+        name="GetDefaultBufferValues",
+        title="Нормативные значения радиусов зон ограничений",
+        description="Буферы для типов физических объектов",
+        input_schema={"type": "object", "properties": {}},
+        tags=(),
+    )
+
+    assert resolver.plan_calls(plan, [normative_buffers], 772) == []
+
+
+@pytest.mark.asyncio
+async def test_acquisition_rejects_unrequested_normative_topic_drift():
+    calls = 0
+
+    class DriftingLlm:
+        async def chat(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                payload = AcquisitionPlan(
+                    objective="Получить нормативные зоны ограничений",
+                    requirements=[
+                        DataRequirement(
+                            requirement_id="buffers",
+                            description="Нормативные буферные зоны",
+                        )
+                    ],
+                )
+            else:
+                assert "without support" in kwargs["messages"][-1]["content"]
+                payload = AcquisitionPlan(
+                    objective="Посчитать физические объекты и сервисы",
+                    requirements=[
+                        DataRequirement(
+                            requirement_id="entities",
+                            description="Физические объекты и сервисы",
+                        )
+                    ],
+                )
+            return {"message": {"content": payload.model_dump_json()}}
+
+    result = await ScenarioDataPlanBuilder(DriftingLlm()).build_acquisition_plan(
+        "model",
+        "Оба набора",
+        [
+            {"role": "user", "content": "Что посчитать в сценарии?"},
+            {
+                "role": "assistant",
+                "content": (
+                    "Ошибочно предлагаю нормативные зоны ограничений. "
+                    "Физические объекты, сервисы или оба набора?"
+                ),
+            },
+        ],
+        772,
+    )
+
+    assert calls == 2
+    assert result.objective == "Посчитать физические объекты и сервисы"
+
+
+@pytest.mark.asyncio
+async def test_execution_shortlist_uses_intent_resolved_from_history():
+    scenario_tool = UrbanMcpTool(
+        group="projects",
+        name="GetScenarioServiceTypes",
+        title="Типы сервисов сценария",
+        description="Типы сервисов, доступные в сценарии",
+        input_schema={
+            "type": "object",
+            "properties": {"scenario_id": {"type": "integer"}},
+            "required": ["scenario_id"],
+        },
+        tags=(),
+    )
+    fillers = [
+        UrbanMcpTool(
+            group="projects",
+            name=f"GetA{index:02d}",
+            title=f"Прочие данные {index}",
+            description="Несвязанный набор",
+            input_schema={"type": "object", "properties": {}},
+            tags=(),
+        )
+        for index in range(12)
+    ]
+
+    class InspectingLlm:
+        async def chat(self, **kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            assert "GetScenarioServiceTypes" in prompt
+            return {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "revision": 1,
+                            "reason": "initial",
+                            "objective": "scenario service types",
+                            "steps": [
+                                {
+                                    "step_id": "types",
+                                    "kind": "urban_tool",
+                                    "purpose": "scenario service types",
+                                    "group": "projects",
+                                    "tool_name": "GetScenarioServiceTypes",
+                                    "arguments": {"scenario_id": 772},
+                                    "satisfies": ["types"],
+                                    "expected_output": "records",
+                                }
+                            ],
+                        }
+                    )
+                }
+            }
+
+    acquisition = AcquisitionPlan(
+        objective="Получить типы сервисов текущего сценария",
+        requirements=[
+            DataRequirement(
+                requirement_id="types",
+                description="Названия и ID типов сервисов",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="service_type",
+                        direction=MappingDirection.ID_TO_NAME,
+                    )
+                ],
+            )
+        ],
+    )
+
+    result = await ScenarioDataPlanBuilder(InspectingLlm()).build_execution_plan(
+        "model",
+        "Да, оба",
+        acquisition,
+        [*fillers, scenario_tool],
+        [],
+        scenario_id=772,
+    )
+
+    assert result.steps[0].tool_name == "GetScenarioServiceTypes"
+
+
 @pytest.mark.asyncio
 async def test_initial_scenario_plan_repairs_global_mapping_into_scenario_call():
     payload = {

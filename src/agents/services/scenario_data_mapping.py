@@ -75,12 +75,14 @@ class UrbanMappingResolver:
         }
 
         preferred_names: set[str] = set()
+        required_subject_tokens: set[str] = set()
         if (
             "service_type" in need.domain.lower()
             or {"service", "type"}.issubset(domain_words)
             or "servicetype" in compact_domain
         ):
             preferred_names = {"getservicetypes", "getscenarioservicetypes"}
+            required_subject_tokens = {"service", "type"}
         elif (
             "physical_object_type" in need.domain.lower()
             or {"physical", "object", "type"}.issubset(domain_words)
@@ -90,6 +92,21 @@ class UrbanMappingResolver:
                 "getphysicalobjecttypes",
                 "getscenariophysicalobjecttypes",
             }
+            required_subject_tokens = {"physical", "object", "type"}
+
+        def is_relevant(tool: UrbanMcpTool) -> bool:
+            name_and_title = re.sub(
+                r"[^a-zа-яё0-9]+", " ", f"{tool.name} {tool.title}".lower()
+            )
+            normalized_name = re.sub(r"[^a-z0-9]+", "", tool.name.lower())
+            if normalized_name in preferred_names:
+                return True
+            if required_subject_tokens:
+                return all(token in name_and_title for token in required_subject_tokens)
+            meaningful = tokens - {"type", "types", "data", "object", "objects"}
+            return bool(meaningful) and any(
+                token in name_and_title for token in meaningful
+            )
 
         def score(tool: UrbanMcpTool) -> tuple[int, str]:
             text = f"{tool.name} {tool.title} {tool.description}".lower()
@@ -109,7 +126,7 @@ class UrbanMappingResolver:
                 value += 1
             return (-value, tool.name)
 
-        return sorted(tools, key=score)
+        return sorted((tool for tool in tools if is_relevant(tool)), key=score)
 
     @staticmethod
     def _arguments(
