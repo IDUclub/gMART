@@ -20,6 +20,36 @@ from src.agents.services.service_entities.scenario_data_action import (
 
 MAX_SCENARIO_TOOL_CALLS = 6
 MAX_PLANNER_RETRIES = 2
+#: Answer budget for the planner. The retry budget is deliberately much larger: an empty
+#: reply usually means the reasoning trace consumed everything before any content was emitted.
+PLANNER_NUM_PREDICT = 900
+PLANNER_NUM_PREDICT_RETRY = 3000
+
+#: Subjects a tool can be *about* that a general data question is not asking for. These tools
+#: stay in the catalogue — restriction zones are legitimate Urban API data and must remain
+#: answerable — but they must not outrank an on-topic tool merely by sharing generic words.
+#: "Получить зоны ограничений объектов на территории" matches "объекты" and "территория" in its
+#: title, so on a question about which objects exist it scored level with the plain objects
+#: tool, and the model was free to pick either.
+_TOPIC_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ограничен", ("ограничен", "буфер", "зон", "buffer", "restrict")),
+    ("буфер", ("ограничен", "буфер", "буферн", "buffer")),
+    ("показател", ("показател", "индикатор", "indicator", "значени")),
+    ("социальн", ("социальн", "soc_group", "ценност")),
+    ("норматив", ("норматив", "норм")),
+)
+#: Enough to drop an off-subject tool below an on-subject one without hiding it outright.
+_OFF_TOPIC_PENALTY = 4
+
+
+def _off_topic_penalty(tool: UrbanMcpTool, context: str) -> int:
+    """Penalise a tool whose declared subject the question never mentions."""
+
+    title = tool.title.lower()
+    for marker, query_words in _TOPIC_MARKERS:
+        if marker in title and not any(word in context for word in query_words):
+            return _OFF_TOPIC_PENALTY
+    return 0
 
 
 class ScenarioDataPlanBuilder:
@@ -56,14 +86,43 @@ class ScenarioDataPlanBuilder:
                         ),
                     }
                 )
-            response = await self.llm_client.chat(
-                model=model,
-                messages=messages,
-                think=False,
-                format=ScenarioDataAction.model_json_schema(),
-                options={"temperature": 0, "num_predict": 900},
-            )
+            # Escalate on each retry. Repeating an identical call is pointless when the
+            # server answered with an empty string: observed on a Harmony-served gpt-oss,
+            # where the whole budget can go to the reasoning channel and leave no content.
+            # Reasoning cannot simply be switched off there — Harmony rejects both
+            # reasoning_effort="none" and "minimal" — so the levers are the answer budget
+            # and the schema constraint, which measurably shortens output on this server.
+            budget = PLANNER_NUM_PREDICT if attempt == 0 else PLANNER_NUM_PREDICT_RETRY
+            call: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "think": False,
+                "options": {"temperature": 0, "num_predict": budget},
+            }
+            if attempt < MAX_PLANNER_RETRIES:
+                call["format"] = ScenarioDataAction.model_json_schema()
+            else:
+                # Last chance: no structured-output constraint at all, JSON asked for in
+                # words. A model that returns nothing under the schema usually answers here.
+                messages = messages + [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Ответь ТОЛЬКО JSON-объектом по описанной схеме, без "
+                            "пояснений и без markdown-ограждения."
+                        ),
+                    }
+                ]
+                call["messages"] = messages
+            response = await self.llm_client.chat(**call)
             raw = response["message"]["content"]
+            if not (raw or "").strip():
+                error = "модель вернула пустой ответ"
+                logger.warning(
+                    f"Empty scenario-data action, attempt {attempt + 1} "
+                    f"(num_predict={budget}, format={'format' in call})"
+                )
+                continue
             try:
                 action = ScenarioDataAction.model_validate_json(strip_json_fence(raw))
                 return self._canonicalize(action, shortlist)
@@ -133,11 +192,12 @@ class ScenarioDataPlanBuilder:
                     " ".join(tool.tags),
                 )
             ).lower()
-            return sum(
+            base = sum(
                 3 if token in tool.title.lower() else 1
                 for token in query_tokens
                 if token in haystack
             )
+            return base - _off_topic_penalty(tool, context.lower())
 
         chosen: dict[tuple[str, str], UrbanMcpTool] = {}
         for group in URBAN_MCP_GROUPS:
@@ -201,6 +261,10 @@ class ScenarioDataPlanBuilder:
 - Один вызов почти никогда не отвечает на вопрос целиком. Типичная последовательность:
   получить записи -> получить справочник типов -> сопоставить -> завершить.
 - Для запроса слоя выбирай инструмент, возвращающий GeoJSON/геометрию.
+- Выбирай инструмент, ПРЕДМЕТ которого совпадает с вопросом. Инструменты про зоны
+  ограничений, буферы, показатели и социальные группы доступны и уместны, только если
+  спросили именно о них; на вопрос «какие объекты/сервисы есть и сколько» бери инструменты
+  по объектам и сервисам, а не по зонам ограничений.
 - Выбирай final_answer, только если по наблюдениям можно назвать конкретные сущности и
   числа, а не только их идентификаторы и общее количество.
 - Не вызывай инструменты для создания, изменения или удаления данных.

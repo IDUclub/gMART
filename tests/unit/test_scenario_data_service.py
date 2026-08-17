@@ -7,7 +7,10 @@ from src.agents.dto.scenario_data_request_dto import ScenarioDataRequestDTO
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
 from src.agents.services import scenario_data_service as scenario_data_service_module
 from src.agents.services.pipeline_state import PipelineStateStore
-from src.agents.services.scenario_data_plan_builder import ScenarioDataPlanBuilder
+from src.agents.services.scenario_data_plan_builder import (
+    ScenarioDataPlanBuilder,
+    _off_topic_penalty,
+)
 from src.agents.services.scenario_data_service import ScenarioDataService
 from src.agents.services.service_entities.scenario_data_action import (
     ScenarioDataAction,
@@ -326,3 +329,103 @@ def test_every_status_the_service_emits_is_in_the_sse_contract():
 
     assert emitted, "no statuses found — did _status change shape?"
     assert emitted <= declared, f"not in the SSE contract: {sorted(emitted - declared)}"
+
+
+class TestPlannerToolSubject:
+    """Restriction tools stay available, but stop outranking on-subject ones.
+
+    "Получить зоны ограничений объектов на территории" shares "объекты" and "территория" with
+    a plain objects question and scored level with the real objects tool, so the model was free
+    to answer about restriction zones instead.
+    """
+
+    @staticmethod
+    def _tool(group: str, name: str, title: str) -> UrbanMcpTool:
+        return UrbanMcpTool(
+            group=group,
+            name=name,
+            title=title,
+            description=title,
+            input_schema={"type": "object", "properties": {}},
+            tags=(),
+        )
+
+    def _catalogue(self) -> list[UrbanMcpTool]:
+        return [
+            self._tool(
+                "territories",
+                "GetTerritoryPhysicalObjects",
+                "Получить физические объекты на территории",
+            ),
+            self._tool(
+                "projects",
+                "GetContextBuffers",
+                "Получить зоны ограничений объектов на территории контекста",
+            ),
+        ]
+
+    def test_a_restriction_tool_is_penalised_for_an_objects_question(self):
+        buffers, objects = self._catalogue()[1], self._catalogue()[0]
+        question = "какие объекты есть на территории и сколько их?"
+
+        assert _off_topic_penalty(buffers, question) > 0
+        assert _off_topic_penalty(objects, question) == 0
+
+    def test_no_penalty_once_restrictions_are_what_was_asked(self):
+        buffers = self._catalogue()[1]
+
+        assert _off_topic_penalty(buffers, "какие зоны ограничений есть?") == 0
+
+    def test_a_restriction_question_still_reaches_them(self):
+        """They are Urban API data and must stay answerable when actually asked for."""
+        shortlist = ScenarioDataPlanBuilder._shortlist(
+            self._catalogue(), "Какие зоны ограничений есть на территории?", []
+        )
+
+        assert "GetContextBuffers" in [tool.name for tool in shortlist]
+
+
+class TestPlannerEmptyResponse:
+    async def test_an_empty_reply_escalates_instead_of_failing(self):
+        """An identical retry cannot help when the server returned nothing at all."""
+
+        calls: list[dict] = []
+
+        class FlakyLlm:
+            async def chat(self, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    return {"message": {"content": ""}}
+                return {
+                    "message": {
+                        "content": '{"action": "final_answer", "reason": "готово"}'
+                    }
+                }
+
+        action = await ScenarioDataPlanBuilder(FlakyLlm()).choose_action(
+            "model", "Какие объекты?", [], []
+        )
+
+        assert action.action == ScenarioDataActionKind.FINAL_ANSWER
+        assert len(calls) == 2
+        # The retry must actually differ: a bigger answer budget.
+        assert calls[1]["options"]["num_predict"] > calls[0]["options"]["num_predict"]
+
+    async def test_the_last_attempt_drops_the_schema_constraint(self):
+        """Structured output measurably shortens replies on this server; it goes last."""
+
+        calls: list[dict] = []
+
+        class SilentLlm:
+            async def chat(self, **kwargs):
+                calls.append(kwargs)
+                if len(calls) <= 2:
+                    return {"message": {"content": ""}}
+                return {"message": {"content": '{"action": "final_answer"}'}}
+
+        await ScenarioDataPlanBuilder(SilentLlm()).choose_action(
+            "model", "Какие объекты?", [], []
+        )
+
+        assert "format" in calls[0] and "format" in calls[1]
+        assert "format" not in calls[-1]
