@@ -27,7 +27,6 @@ import {
   X,
 } from "@phosphor-icons/react";
 import gsap from "gsap";
-import { ScrollTrigger } from "gsap/ScrollTrigger";
 import Keycloak from "keycloak-js";
 import ReactMarkdown from "react-markdown";
 import MapPanel from "./MapPanel";
@@ -56,7 +55,7 @@ import type {
   StreamEvent,
   TableData,
 } from "./types";
-gsap.registerPlugin(useGSAP, ScrollTrigger);
+gsap.registerPlugin(useGSAP);
 const AGENTS: Agent[] = [
   {
     id: "orchestrator",
@@ -1088,17 +1087,6 @@ function LiveStatus({
         { y: 12, opacity: 0 },
         { y: 0, opacity: 1, duration: 0.35, stagger: 0.04, ease: "power2.out" },
       );
-      const scroller = root.current?.closest(".messages");
-      if (busy && root.current && scroller) {
-        ScrollTrigger.create({
-          trigger: root.current,
-          scroller,
-          start: "top 18px",
-          end: "+=180",
-          pin: true,
-          pinSpacing: false,
-        });
-      }
     },
     { scope: root, dependencies: [busy, entries.length] },
   );

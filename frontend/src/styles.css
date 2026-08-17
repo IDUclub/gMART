@@ -60,6 +60,43 @@ body {
   font-feature-settings: "ss01", "ss03";
   -webkit-font-smoothing: antialiased;
 }
+.fatal-error {
+  min-height: 100vh;
+  padding: 24px;
+  display: grid;
+  place-items: center;
+}
+.fatal-error section {
+  width: min(620px, 100%);
+  padding: 32px;
+  border: 1px solid var(--line-strong);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.fatal-error span {
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 650;
+}
+.fatal-error h1 {
+  margin: 8px 0 12px;
+  font-size: clamp(1.8rem, 5vw, 3rem);
+  letter-spacing: -0.05em;
+}
+.fatal-error p {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.fatal-error button {
+  margin-top: 12px;
+  padding: 11px 14px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 650;
+}
 button,
 input,
 select,
@@ -711,12 +748,18 @@ p {
   animation-delay: 0.3s;
 }
 .live-status {
+  position: relative;
+  z-index: 2;
   margin: 8px auto 26px;
   padding: 16px;
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
   border-radius: 18px;
   background: linear-gradient(135deg, var(--surface2), color-mix(in srgb, var(--soft) 60%, var(--surface)));
   box-shadow: 0 18px 42px color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.live-status.active {
+  position: sticky;
+  top: 18px;
 }
 .live-status-head {
   display: grid;
