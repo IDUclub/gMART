@@ -203,6 +203,36 @@ def test_quoted_type_restores_a_mapping_need_dropped_by_the_planner():
     ]
 
 
+def test_selected_scenario_is_not_treated_as_a_dictionary_mapping():
+    acquisition = AcquisitionPlan(
+        objective="Вывести геослои всех школ сценария 772",
+        requirements=[
+            DataRequirement(
+                requirement_id="schools",
+                description="Получить объекты типа «Школа»",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="physical_object_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=["school"],
+                    ),
+                    MappingNeed(
+                        domain="scenario",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=["772"],
+                    ),
+                ],
+            )
+        ],
+    )
+
+    enriched = enrich_acquisition_mappings(acquisition, "Покажи школы", [])
+
+    assert [need.domain for need in enriched.requirements[0].mapping_needs] == [
+        "physical_object_type"
+    ]
+
+
 def test_mapping_resolver_prefers_matching_dictionary_for_empty_mapping_values():
     resolver = UrbanMappingResolver()
     plan = AcquisitionPlan(
@@ -592,8 +622,12 @@ async def test_execution_shortlist_uses_intent_resolved_from_history():
 
 @pytest.mark.asyncio
 async def test_invalid_llm_execution_plan_falls_back_to_scenario_service_query():
+    calls = 0
+
     class InvalidLlm:
         async def chat(self, **kwargs):
+            nonlocal calls
+            calls += 1
             return {"message": {"content": "not valid json"}}
 
     builder = ScenarioDataPlanBuilder(InvalidLlm())
@@ -643,6 +677,7 @@ async def test_invalid_llm_execution_plan_falls_back_to_scenario_service_query()
     assert result.steps[0].tool_name == "GetScenarioServicesWithGeometry"
     assert result.steps[0].arguments == {"scenario_id": 772}
     assert result.required_output.layers == ["schools_layer"]
+    assert calls == 1
 
 
 @pytest.mark.asyncio

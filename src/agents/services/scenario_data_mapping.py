@@ -301,7 +301,15 @@ def enrich_acquisition_mappings(
         haystack = " ".join(
             (user_query, acquisition.objective, requirement.description)
         )
-        needs = list(requirement.mapping_needs)
+        needs = [
+            need
+            for need in requirement.mapping_needs
+            if _canonical_domain(need.domain) not in {"scenario", "project"}
+        ]
+        if needs != requirement.mapping_needs:
+            # These ids are selected by the UI and bound by the service. Treating
+            # them as name/id dictionaries sends the resolver to unrelated tools.
+            changed = True
         if not needs:
             inferred_names = _quoted_type_names(haystack)
             if inferred_names:

@@ -291,6 +291,7 @@ physical_object_type.id — только как physical_object_type_id/physical
                 ExecutionPlanRevision,
                 "execution plan",
                 post_validate=validate_plan,
+                stop_after_first_error=revision == 1,
             )
         except ValueError:
             if revision != 1 or scenario_id is None:
@@ -491,6 +492,7 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
         schema,
         label: str,
         post_validate: Callable[[Any], Any] | None = None,
+        stop_after_first_error: bool = False,
     ):
         error = ""
         for attempt in range(MAX_PLANNER_RETRIES + 1):
@@ -541,6 +543,8 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                 logger.warning(
                     f"Invalid scenario-data {label}, attempt {attempt + 1}: {error}"
                 )
+                if stop_after_first_error:
+                    break
         raise ValueError(f"invalid scenario-data {label} after retries: {error}")
 
     @staticmethod
