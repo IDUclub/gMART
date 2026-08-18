@@ -97,6 +97,42 @@ async def test_ambiguous_objects_question_finishes_with_clarification(
     assert events[-1] == {"type": "chunk", "content": {"text": "", "done": True}}
 
 
+async def test_available_service_types_clarifies_catalog_scope_before_planning(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: fake_llm,
+    )
+    service = ScenarioDataService("http://llm", AsyncMock(), fake_urban, state_store)
+    service.plan_builder.build_acquisition_plan = AsyncMock(
+        side_effect=AssertionError("ambiguous scope must not reach the LLM planner")
+    )
+    mcp = FakeUrbanMcp({})
+
+    events = [
+        event
+        async for event in service.run_scenario_data_pipeline(
+            urban_mcp_client=mcp,
+            token="token",
+            model="model",
+            temperature=0,
+            user_query="Какие типы городских сервисов доступны?",
+            scenario_id=772,
+            persist_history=False,
+        )
+    ]
+
+    text = "".join(
+        event["content"]["text"] for event in events if event.get("type") == "chunk"
+    )
+    assert "полный список" in text
+    assert "проекте/сценарии" in text
+    assert mcp.load_calls == 0
+    assert not any(event["type"] == "plan_created" for event in events)
+    assert events[-1] == {"type": "chunk", "content": {"text": "", "done": True}}
+
+
 async def test_physical_type_count_bypasses_llm_and_returns_complete_table(
     monkeypatch, fake_llm, fake_urban, state_store
 ):

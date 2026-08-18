@@ -8,6 +8,20 @@ from src.agents.services.scenario_data_types import (
 
 
 class TestClassifyTypeQuery:
+    def test_available_service_types_need_scope_clarification(self):
+        intent = classify_type_query("Какие типы городских сервисов доступны?")
+
+        assert intent is not None
+        assert intent.kinds == ()
+        assert "полный список" in intent.clarification
+        assert "проекте/сценарии" in intent.clarification
+
+    def test_explicit_service_type_scope_needs_no_extra_clarification(self):
+        assert classify_type_query("Какие типы сервисов есть в базе?") is None
+        assert (
+            classify_type_query("Какие типы сервисов представлены в проекте?") is None
+        )
+
     def test_a_bare_objects_question_needs_clarification(self):
         intent = classify_type_query(
             "Какие объекты есть в сценарии и сколько их по типам?"

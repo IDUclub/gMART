@@ -1,8 +1,9 @@
-"""Deterministic handling of Russian scenario type-count questions.
+"""Deterministic handling of Russian scenario type questions.
 
 The general scenario-data agent still plans over the runtime Urban MCP catalogue.  Questions
-about counts by object/service type are different: their arithmetic, entity identity and
-dictionary join are deterministic contracts, so an LLM must not infer them from a sample.
+about counts by object/service type and ambiguous catalogue scope are different: their
+arithmetic, entity identity, dictionary join and clarification are deterministic contracts,
+so an LLM must not infer them from a sample.
 """
 
 from __future__ import annotations
@@ -51,6 +52,31 @@ _COUNT_MARKERS = (
 _PHYSICAL_MARKERS = ("физическ", "физобъект")
 _SERVICE_MARKERS = ("сервис", "услуг")
 _GENERIC_OBJECT_MARKERS = ("объект",)
+_SERVICE_LIST_MARKERS = (
+    "какие тип",
+    "какие виды",
+    "какие бывают",
+    "доступн",
+    "перечисл",
+    "список",
+)
+_SERVICE_SCOPE_MARKERS = (
+    "в проект",
+    "для проект",
+    "в сценар",
+    "для сценар",
+    "на территор",
+    "представлен",
+    "фактически",
+    "в базе",
+    "из базы",
+    "в справочник",
+    "из справочник",
+    "общий справочник",
+    "полный справочник",
+    "в системе",
+    "вообще",
+)
 _BOTH_MARKERS = (
     "и те и те",
     "и то и другое",
@@ -64,7 +90,7 @@ _BOTH_MARKERS = (
 def classify_type_query(
     user_query: str, history: list[dict[str, Any]] | None = None
 ) -> ScenarioTypeIntent | None:
-    """Recognise Russian questions about unique entities grouped by project types.
+    """Recognise Russian questions about project types or ambiguous catalogue scope.
 
     A bare ``объекты`` is deliberately ambiguous: in the product vocabulary it may mean
     physical objects or the services attached to them.  A short follow-up such as
@@ -103,6 +129,19 @@ def _classify_text(text: str) -> ScenarioTypeIntent | None:
             *_SERVICE_MARKERS,
         )
     )
+    asks_for_service_list = any(
+        marker in lowered for marker in _SERVICE_LIST_MARKERS
+    ) and any(marker in lowered for marker in _SERVICE_MARKERS)
+    has_explicit_scope = any(marker in lowered for marker in _SERVICE_SCOPE_MARKERS)
+    if asks_for_service_list and not has_explicit_scope:
+        return ScenarioTypeIntent(
+            effective_query=text,
+            clarification=(
+                "Уточните, пожалуйста: нужен полный список типов городских "
+                "сервисов из общего справочника или только типы сервисов, "
+                "фактически представленные в текущем проекте/сценарии?"
+            ),
+        )
     if not has_entity or not any(marker in lowered for marker in _COUNT_MARKERS):
         return None
 
