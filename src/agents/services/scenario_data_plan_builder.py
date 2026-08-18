@@ -14,6 +14,10 @@ from src.agents.mcp_clients.urban_mcp_client import (
     UrbanMcpTool,
 )
 from src.agents.services.restriction_catalog import strip_json_fence
+from src.agents.services.scenario_data_mapping import (
+    bind_mapping_arguments,
+    mapping_need_is_resolved,
+)
 from src.agents.services.service_entities.scenario_data_action import (
     ScenarioDataAction,
     ScenarioDataActionKind,
@@ -21,6 +25,7 @@ from src.agents.services.service_entities.scenario_data_action import (
 from src.agents.services.service_entities.scenario_data_plan import (
     AcquisitionPlan,
     ExecutionPlanRevision,
+    MappingDirection,
     PlanStep,
     PlanStepKind,
 )
@@ -125,16 +130,28 @@ class ScenarioDataPlanBuilder:
 «да», «оба», «эти», «первый вариант» разрешай по последнему вопросу и предмету диалога.
 Не меняй предметную область на нормативы, ограничения, показатели или другую тему, если
 пользователь явно не переключил её в текущей реплике либо в недавней истории.
+Проект в Urban API — контейнер сценариев. Физические объекты, сервисы, геометрия и
+остальные сущности физической реальности прикреплены к сценарию, а не к проекту. Если
+сценарий выбран, фразы пользователя «в проекте», «на территории проекта», «объекты
+проекта» и аналогичные всегда означают данные выбранного сценария. Не задавай уточнение
+между проектом и сценарием и не выбирай project-инструмент для таких сущностей. Project-
+инструменты нужны только для собственных метаданных проекта и списка его сценариев.
+Глобальный справочник выбирай лишь по явной просьбе «полный справочник», «во всей
+системе» или «в базе»; иначе при выбранном сценарии ищи фактически представленные в нём
+объекты и сервисы. Если сценарий не выбран, попроси выбрать его.
 Пользователь оперирует названиями и не обязан знать внутренние ID. Для каждого названного
 типа или объекта сохраняй домен mapping (например service_type или physical_object_type),
 направление name_to_id и исходное название. Никогда не превращай service_type_id в
-бездоменный type_id и не проси пользователя самостоятельно искать идентификатор.
+бездоменный type_id и не проси пользователя самостоятельно искать идентификатор. Запрос
+«покажи/выведи все <тип объектов>» всегда требует name_to_id маппинга, даже если точный
+домен между service_type и physical_object_type пока неясен.
 
 Сценарий: {scenario_id if scenario_id is not None else "не выбран"}.
 Проект выбранного сценария: {project_id if project_id is not None else "не определён"}.
-Сценарий является конкретным вариантом проекта. В вопросах о территории, расположении и
-параметрах «проекта» используй проект выбранного сценария. При этом ID различны:
-scenario_id передавай только в scenario-параметры, project_id — только в project-параметры.
+Сценарий входит в проект и является рабочей областью городских данных. Для территории,
+расположения, физических объектов, сервисов и их параметров всегда используй сценарий,
+даже если пользователь называет его проектом. При этом ID различны: scenario_id передавай
+только в scenario-параметры, project_id — только в project-параметры.
 Сжатый подтверждённый контекст чата:
 {json.dumps(context or {}, ensure_ascii=False)[:12000]}
 
@@ -172,11 +189,30 @@ required_output перечисляет ожидаемые таблицы, сло
         completed_fingerprints: list[str] | None = None,
         completed_step_ids: list[str] | None = None,
         workspace_enabled: bool = False,
+        execution_context: dict[str, Any] | None = None,
     ) -> ExecutionPlanRevision:
         """Bind a logical plan to exact catalogue tools and ordered arguments."""
 
+        unresolved_named_types = self._unresolved_named_type_requirements(
+            acquisition, mappings
+        )
+        if unresolved_named_types:
+            raise ValueError(
+                "named type mappings are unresolved for requirements: "
+                f"{sorted(unresolved_named_types)}"
+            )
         resolved_query = self._resolved_planning_query(user_query, acquisition)
-        shortlist = self._shortlist(tools, resolved_query, observations or [])
+        failed_tools = {
+            (str(attempt.get("group") or ""), str(attempt.get("tool_name") or ""))
+            for attempt in (execution_context or {}).get("attempts") or []
+            if isinstance(attempt, dict) and attempt.get("status") == "failed"
+        }
+        shortlist = self._shortlist(
+            tools,
+            resolved_query,
+            observations or [],
+            execution_context=execution_context,
+        )
         catalog = [tool.compact_prompt_entry() for tool in shortlist]
         prompt = f"""Построй целиком исполнимый план read-only Urban MCP до начала выполнения.
 Используй только точные group/tool_name и параметры из каталога. Шаги идут строго
@@ -187,8 +223,10 @@ required_output перечисляет ожидаемые таблицы, сло
 внутренние ID: бери их только из актуальных маппингов ниже. Сохраняй домен пары name/id:
 service_type.id можно передавать только как service_type_id/service_type_ids, а
 physical_object_type.id — только как physical_object_type_id/physical_object_type_ids.
-Если пользователь говорит «проект» при выбранном сценарии, это проект данного сценария;
-для scenario-инструмента всё равно используй scenario_id, для project-инструмента project_id.
+Проект — контейнер сценариев и не владеет физическими объектами или сервисами. Поэтому
+слово «проект» в запросе о территории, расположении, объектах, сервисах или их параметрах
+трактуй как выбранный сценарий и используй scenario-инструмент. Project-инструмент выбирай
+только для собственных метаданных проекта или списка сценариев.
 Для запроса о расположении именованного типа сначала получи записи сценария этого домена,
 затем отфильтруй их по подтверждённому ID. Один справочник типов не доказывает расположение.
 {self._workspace_prompt(workspace_enabled)}
@@ -198,6 +236,8 @@ physical_object_type.id — только как physical_object_type_id/physical
 Логический план: {acquisition.model_dump_json()}
 Актуальные маппинги: {json.dumps(mappings, ensure_ascii=False)[:10000]}
 Наблюдения: {json.dumps(observations or [], ensure_ascii=False)[:12000]}
+Контекст выполнения задачи и предыдущих попыток:
+{json.dumps(execution_context or {}, ensure_ascii=False)[:12000]}
 Выполненные fingerprints: {json.dumps(completed_fingerprints or [], ensure_ascii=False)}
 Ранее завершённые step_id, на чьи artifact можно ссылаться:
 {json.dumps(completed_step_ids or [], ensure_ascii=False)}
@@ -210,7 +250,11 @@ physical_object_type.id — только как physical_object_type_id/physical
 справочников, необходимых для required_output. Каждый requirement_id логического плана
 должен встречаться в satisfies хотя бы одного шага, который реально его закрывает.
 Не переопределяй предмет задачи по короткой текущей реплике: логический план выше уже
-учёл историю диалога и является источником истины для выбора инструментов."""
+учёл историю диалога и является источником истины для выбора инструментов.
+Если предыдущий шаг завершился ошибкой, сначала проверь его аргументы и подтверждённые
+маппинги, затем выбери семантически эквивалентный инструмент из каталога. Не повторяй
+тот же tool+arguments. Не отказывайся от всей задачи, если можно получить частичный
+проверяемый результат другим read-only путём."""
 
         def validate_plan(plan: ExecutionPlanRevision) -> ExecutionPlanRevision:
             plan = plan.model_copy(update={"revision": revision, "reason": reason})
@@ -224,6 +268,7 @@ physical_object_type.id — только как physical_object_type_id/physical
                         and step.group is not None
                         and not step.tool_name.endswith("WithGeometry")
                         and (step.group, geometry_name) in available_tools
+                        and (step.group, geometry_name) not in failed_tools
                     ):
                         step = step.model_copy(update={"tool_name": geometry_name})
                     upgraded_steps.append(step)
@@ -246,7 +291,7 @@ physical_object_type.id — только как physical_object_type_id/physical
             )
             if revision == 1 and scenario_scoped and urban_count == 0:
                 scenario_steps = self._scenario_seed_steps(
-                    acquisition, tools, scenario_id
+                    acquisition, tools, scenario_id, mappings
                 )
                 if not scenario_steps:
                     raise ValueError(
@@ -277,15 +322,23 @@ physical_object_type.id — только как physical_object_type_id/physical
                     "execution plan exceeds call budgets: "
                     f"urban={urban_count}, workspace={workspace_count}"
                 )
-            return self._canonicalize_plan(
+            canonical = self._canonicalize_plan(
                 plan,
                 tools,
                 workspace_enabled=workspace_enabled,
                 completed_step_ids=set(completed_step_ids or []),
             )
+            return self._bind_and_validate_named_type_filters(
+                canonical,
+                acquisition,
+                tools,
+                mappings,
+            )
 
         if revision == 1 and scenario_id is not None:
-            scenario_steps = self._scenario_seed_steps(acquisition, tools, scenario_id)
+            scenario_steps = self._scenario_seed_steps(
+                acquisition, tools, scenario_id, mappings
+            )
             covered = {
                 requirement_id
                 for step in scenario_steps
@@ -325,9 +378,32 @@ physical_object_type.id — только как physical_object_type_id/physical
                 stop_after_first_error=revision == 1,
             )
         except ValueError:
+            recovery_steps = self._recovery_seed_steps(
+                acquisition,
+                tools,
+                scenario_id=scenario_id,
+                project_id=project_id,
+                execution_context=execution_context or {},
+            )
+            if recovery_steps:
+                logger.warning(
+                    "Using deterministic scenario-data recovery plan after invalid "
+                    "LLM replan"
+                )
+                return validate_plan(
+                    ExecutionPlanRevision(
+                        revision=revision,
+                        reason=reason,
+                        objective=acquisition.objective,
+                        steps=recovery_steps,
+                        required_output=acquisition.required_output,
+                    )
+                )
             if revision != 1 or scenario_id is None:
                 raise
-            scenario_steps = self._scenario_seed_steps(acquisition, tools, scenario_id)
+            scenario_steps = self._scenario_seed_steps(
+                acquisition, tools, scenario_id, mappings
+            )
             if not scenario_steps:
                 raise
             logger.warning(
@@ -404,6 +480,7 @@ physical_object_type.id — только как physical_object_type_id/physical
         acquisition: AcquisitionPlan,
         tools: list[UrbanMcpTool],
         scenario_id: int,
+        mappings: list[dict[str, Any]],
     ) -> list[PlanStep]:
         """Repair an initial plan that mistakes a global mapping for scenario data."""
 
@@ -436,6 +513,12 @@ physical_object_type.id — только как physical_object_type_id/physical
             )
         )
         for requirement in acquisition.requirements:
+            named_type_needs = ScenarioDataPlanBuilder._named_type_needs(requirement)
+            if any(
+                not mapping_need_is_resolved(need, mappings)
+                for need in named_type_needs
+            ):
+                continue
             domain = " ".join(
                 [acquisition.objective, requirement.description]
                 + [need.domain for need in requirement.mapping_needs]
@@ -485,13 +568,41 @@ physical_object_type.id — только как physical_object_type_id/physical
             else:
                 continue
             tool = available.get(tool_name)
-            if tool is None or tool_name in used:
+            if tool is None:
                 continue
             arguments = (
                 {"scenario_id": scenario_id}
                 if "scenario_id" in ((tool.input_schema or {}).get("properties") or {})
                 else {}
             )
+            arguments = bind_mapping_arguments(
+                tool,
+                arguments,
+                mappings,
+                " ".join(
+                    (
+                        acquisition.objective,
+                        requirement.description,
+                        *(
+                            str(value)
+                            for need in named_type_needs
+                            for value in need.values
+                        ),
+                    )
+                ),
+            )
+            if named_type_needs and not ScenarioDataPlanBuilder._arguments_cover_needs(
+                tool, arguments, named_type_needs
+            ):
+                continue
+            call_fingerprint = json.dumps(
+                [tool.group, tool.name, arguments],
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            if call_fingerprint in used:
+                continue
             steps.append(
                 PlanStep(
                     step_id=f"scenario_data_{len(steps) + 1}",
@@ -503,8 +614,143 @@ physical_object_type.id — только как physical_object_type_id/physical
                     expected_output="scenario records",
                 )
             )
-            used.add(tool_name)
+            used.add(call_fingerprint)
         return steps
+
+    @staticmethod
+    def _type_mapping_domain(need) -> str | None:
+        if need.direction != MappingDirection.NAME_TO_ID or not need.values:
+            return None
+        normalized = re.sub(r"[^a-zа-яё0-9]+", "_", str(need.domain).casefold()).strip(
+            "_"
+        )
+        normalized = normalized.removesuffix("s")
+        if normalized in {"service_type", "physical_object_type"}:
+            return normalized
+        return None
+
+    @classmethod
+    def _named_type_needs(cls, requirement) -> list[Any]:
+        return [
+            need
+            for need in requirement.mapping_needs
+            if cls._type_mapping_domain(need) is not None
+        ]
+
+    @classmethod
+    def _unresolved_named_type_requirements(
+        cls,
+        acquisition: AcquisitionPlan,
+        mappings: list[dict[str, Any]],
+    ) -> set[str]:
+        return {
+            requirement.requirement_id
+            for requirement in acquisition.requirements
+            if any(
+                not mapping_need_is_resolved(need, mappings)
+                for need in cls._named_type_needs(requirement)
+            )
+        }
+
+    @classmethod
+    def _arguments_cover_needs(
+        cls,
+        tool: UrbanMcpTool,
+        arguments: dict[str, Any],
+        needs: list[Any],
+    ) -> bool:
+        properties = (tool.input_schema or {}).get("properties") or {}
+        for need in needs:
+            domain = cls._type_mapping_domain(need)
+            candidates = (f"{domain}_id", f"{domain}_ids")
+            supported = [name for name in candidates if name in properties]
+            if not supported or not any(
+                arguments.get(name) is not None for name in supported
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _bind_and_validate_named_type_filters(
+        cls,
+        plan: ExecutionPlanRevision,
+        acquisition: AcquisitionPlan,
+        tools: list[UrbanMcpTool],
+        mappings: list[dict[str, Any]],
+    ) -> ExecutionPlanRevision:
+        requirements = {
+            requirement.requirement_id: requirement
+            for requirement in acquisition.requirements
+            if cls._named_type_needs(requirement)
+        }
+        if not requirements:
+            return plan
+        unresolved = cls._unresolved_named_type_requirements(acquisition, mappings)
+        if unresolved:
+            raise ValueError(
+                "named type mappings are unresolved for requirements: "
+                f"{sorted(unresolved)}"
+            )
+
+        available = {(tool.group, tool.name): tool for tool in tools}
+        grounded: set[str] = set()
+        bound_steps: list[PlanStep] = []
+        for step in plan.steps:
+            relevant = [
+                requirements[requirement_id]
+                for requirement_id in step.satisfies
+                if requirement_id in requirements
+            ]
+            if step.kind != PlanStepKind.URBAN_TOOL or not relevant:
+                bound_steps.append(step)
+                continue
+            tool = available.get((step.group, step.tool_name))
+            if tool is None:
+                bound_steps.append(step)
+                continue
+            needs = [
+                need
+                for requirement in relevant
+                for need in cls._named_type_needs(requirement)
+            ]
+            type_argument_names = {
+                "service_type_id",
+                "service_type_ids",
+                "physical_object_type_id",
+                "physical_object_type_ids",
+            }
+            trusted_arguments = {
+                key: value
+                for key, value in step.arguments.items()
+                if key not in type_argument_names
+            }
+            intent_text = " ".join(
+                (
+                    acquisition.objective,
+                    *(requirement.description for requirement in relevant),
+                    *(str(value) for need in needs for value in need.values),
+                )
+            )
+            arguments = bind_mapping_arguments(
+                tool,
+                trusted_arguments,
+                mappings,
+                intent_text,
+            )
+            step = step.model_copy(update={"arguments": arguments})
+            for requirement in relevant:
+                requirement_needs = cls._named_type_needs(requirement)
+                if cls._arguments_cover_needs(tool, arguments, requirement_needs):
+                    grounded.add(requirement.requirement_id)
+            bound_steps.append(step)
+
+        missing = set(requirements) - grounded
+        if missing:
+            raise ValueError(
+                "named type requirements have no grounded type-id filter: "
+                f"{sorted(missing)}"
+            )
+        return plan.model_copy(update={"steps": bound_steps})
 
     @staticmethod
     def _workspace_prompt(enabled: bool) -> str:
@@ -890,6 +1136,8 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
         tools: list[UrbanMcpTool],
         user_query: str,
         observations: list[dict[str, Any]],
+        *,
+        execution_context: dict[str, Any] | None = None,
     ) -> list[UrbanMcpTool]:
         context = (
             user_query
@@ -917,9 +1165,13 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
 
         ranked = sorted(tools, key=lambda item: (-score(item), item.name))
         chosen: dict[tuple[str, str], UrbanMcpTool] = {}
+        for tool in cls._recovery_candidates(tools, execution_context or {})[:3]:
+            chosen[(tool.group, tool.name)] = tool
         # Best matches first, regardless of group. Reserving slots per group is what pushed
         # the catalogue to 41 entries and 10.3k prompt tokens — see SHORTLIST_SIZE.
-        for tool in ranked[:SHORTLIST_SIZE]:
+        for tool in ranked:
+            if len(chosen) >= SHORTLIST_SIZE:
+                break
             chosen[(tool.group, tool.name)] = tool
         # One dictionary tool is kept even when it did not score: resolving an id to a name is
         # the second half of nearly every question, and the planner cannot call what it
@@ -930,6 +1182,123 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                     chosen[(tool.group, tool.name)] = tool
                     break
         return list(chosen.values())
+
+    @classmethod
+    def _recovery_candidates(
+        cls,
+        tools: list[UrbanMcpTool],
+        execution_context: dict[str, Any],
+    ) -> list[UrbanMcpTool]:
+        attempts = [
+            attempt
+            for attempt in execution_context.get("attempts") or []
+            if isinstance(attempt, dict)
+        ]
+        failed = next(
+            (
+                attempt
+                for attempt in reversed(attempts)
+                if attempt.get("status") == "failed" and attempt.get("tool_name")
+            ),
+            None,
+        )
+        if failed is None:
+            return []
+        failed_tool = next(
+            (
+                tool
+                for tool in tools
+                if tool.group == failed.get("group")
+                and tool.name == failed.get("tool_name")
+            ),
+            None,
+        )
+        if failed_tool is None:
+            return []
+        attempted = {
+            (str(attempt.get("group") or ""), str(attempt.get("tool_name") or ""))
+            for attempt in attempts
+            if attempt.get("status") in {"failed", "completed"}
+        }
+        failed_tokens = cls._tool_family_tokens(failed_tool.name)
+        failed_properties = set(
+            ((failed_tool.input_schema or {}).get("properties") or {}).keys()
+        )
+        failed_tags = set(failed_tool.tags)
+
+        def score(tool: UrbanMcpTool) -> tuple[int, str]:
+            tokens = cls._tool_family_tokens(tool.name)
+            properties = set(((tool.input_schema or {}).get("properties") or {}).keys())
+            value = 8 * len(tokens & failed_tokens)
+            value += 5 * len(set(tool.tags) & failed_tags)
+            value += 3 if tool.group == failed_tool.group else 0
+            value += 2 * len(properties & failed_properties)
+            return (-value, tool.name)
+
+        candidates = [
+            tool
+            for tool in tools
+            if (tool.group, tool.name) not in attempted
+            and (
+                cls._tool_family_tokens(tool.name) & failed_tokens
+                or set(tool.tags) & failed_tags
+            )
+        ]
+        return sorted(candidates, key=score)
+
+    @staticmethod
+    def _tool_family_tokens(name: str) -> set[str]:
+        normalized = re.sub(r"(?<!^)(?=[A-Z])", " ", name).casefold()
+        return {
+            token
+            for token in re.findall(r"[a-z0-9]+", normalized)
+            if token not in {"get", "scenario", "with", "geometry", "by", "id"}
+        }
+
+    @classmethod
+    def _recovery_seed_steps(
+        cls,
+        acquisition: AcquisitionPlan,
+        tools: list[UrbanMcpTool],
+        *,
+        scenario_id: int | None,
+        project_id: int | None,
+        execution_context: dict[str, Any],
+    ) -> list[PlanStep]:
+        attempts = [
+            attempt
+            for attempt in execution_context.get("attempts") or []
+            if isinstance(attempt, dict) and attempt.get("status") == "failed"
+        ]
+        if not attempts:
+            return []
+        failed = attempts[-1]
+        for tool in cls._recovery_candidates(tools, execution_context):
+            properties = (tool.input_schema or {}).get("properties") or {}
+            arguments = {
+                key: value
+                for key, value in (failed.get("arguments") or {}).items()
+                if key in properties
+            }
+            if scenario_id is not None and "scenario_id" in properties:
+                arguments["scenario_id"] = scenario_id
+            if project_id is not None and "project_id" in properties:
+                arguments["project_id"] = project_id
+            required = set((tool.input_schema or {}).get("required") or [])
+            if required - set(arguments):
+                continue
+            return [
+                PlanStep(
+                    step_id=f"recovery_{len(attempts)}",
+                    purpose=str(failed.get("purpose") or acquisition.objective),
+                    group=tool.group,
+                    tool_name=tool.name,
+                    arguments=arguments,
+                    satisfies=list(failed.get("satisfies") or []),
+                    expected_output="alternative grounded result",
+                )
+            ]
+        return []
 
     @staticmethod
     def _tokens(text: str) -> set[str]:

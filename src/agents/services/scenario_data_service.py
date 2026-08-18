@@ -34,7 +34,8 @@ from src.agents.services.pipeline_state import (
 )
 from src.agents.services.scenario_data_aggregate import (
     aggregate_result,
-    bounded_observation_context,
+    bounded_public_observation_context,
+    sanitize_public_answer,
     unresolved_references,
 )
 from src.agents.services.scenario_data_evaluator import (
@@ -58,6 +59,42 @@ from src.agents.services.scenario_data_types import (
 from src.agents.services.service_entities.scenario_data_action import (
     ScenarioDataActionKind,
 )
+
+_TRANSIENT_TOOL_ERROR_MARKERS = (
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "temporary failure",
+    "connection reset",
+    "connection refused",
+    "connection closed",
+    "rate limit",
+    "too many requests",
+    "http 429",
+    "http 502",
+    "http 503",
+    "http 504",
+    "status 429",
+    "status 502",
+    "status 503",
+    "status 504",
+)
+
+
+def _is_transient_tool_error(error: Exception) -> bool:
+    """Classify only failures that are safe to retry for read-only Urban calls."""
+
+    if isinstance(error, (TimeoutError, asyncio.TimeoutError, ConnectionError)):
+        return True
+    seen: set[int] = set()
+    current: BaseException | None = error
+    messages: list[str] = []
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        messages.append(f"{type(current).__name__} {current}".casefold())
+        current = current.__cause__ or current.__context__
+    text = " ".join(messages)
+    return any(marker in text for marker in _TRANSIENT_TOOL_ERROR_MARKERS)
 
 
 class ScenarioDataService(BaseLlmService):
@@ -242,7 +279,11 @@ class ScenarioDataService(BaseLlmService):
             | ToolCallPartRequest
             | StructuredPartRequest
         ] = []
-        type_intent = classify_type_query(user_query, history)
+        type_intent = classify_type_query(
+            user_query,
+            history,
+            scenario_selected=scenario_id is not None,
+        )
         clarification = None
         if type_intent is not None and scenario_id is None:
             clarification = (
@@ -252,6 +293,7 @@ class ScenarioDataService(BaseLlmService):
         elif type_intent is not None:
             clarification = type_intent.clarification
         if clarification:
+            clarification = sanitize_public_answer(clarification)
             yield self._buf(
                 request_id,
                 self._status("planning", "Уточняю параметры запроса…"),
@@ -312,6 +354,7 @@ class ScenarioDataService(BaseLlmService):
             token_ref,
             urban_mcp_client.load_tools,
             tools_box,
+            retry_transient=True,
         ):
             yield self._buf(request_id, event)
         loaded_tools: list[UrbanMcpTool] = tools_box[0]
@@ -524,6 +567,7 @@ class ScenarioDataService(BaseLlmService):
                         ),
                     ),
                     result_box,
+                    retry_transient=True,
                 ):
                     yield self._buf(request_id, event)
                 result = self._unwrap_result(result_box[0])
@@ -639,7 +683,7 @@ class ScenarioDataService(BaseLlmService):
 
         for event in self._answer_events(answer):
             yield self._buf(request_id, event)
-        answer = answer.strip()
+        answer = sanitize_public_answer(answer)
         if answer:
             parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
 
@@ -886,6 +930,7 @@ class ScenarioDataService(BaseLlmService):
                         meta={"scenario_id": scenario_id},
                     ),
                     result_box,
+                    retry_transient=True,
                 ):
                     yield self._buf(request_id, event)
                 results.append(self._unwrap_result(result_box[0]))
@@ -966,6 +1011,7 @@ class ScenarioDataService(BaseLlmService):
                         meta={"scenario_id": scenario_id},
                     ),
                     fallback_box,
+                    retry_transient=True,
                 ):
                     yield self._buf(request_id, event)
                 distribution = build_type_distribution(
@@ -1000,7 +1046,7 @@ class ScenarioDataService(BaseLlmService):
                     "content": {"revision": 1, "text": "Проверяю итоговые количества…"},
                 },
             )
-        answer = distribution_answer(scenario_id, distributions)
+        answer = sanitize_public_answer(distribution_answer(distributions))
         if context_model:
             validation = {
                 "sufficient": True,
@@ -1080,7 +1126,10 @@ class ScenarioDataService(BaseLlmService):
         token_ref: list[str],
         operation: Callable,
         result: list[Any],
+        *,
+        retry_transient: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        transient_retries = 0
         while True:
             if await self.state_store.is_cancelled(request_id):
                 raise asyncio.CancelledError
@@ -1111,6 +1160,27 @@ class ScenarioDataService(BaseLlmService):
                 client.update_token(token)
                 token_ref[0] = token
                 await self.state_store.set_status(request_id, PipelineStatus.RUNNING)
+            except Exception as exc:
+                if (
+                    not retry_transient
+                    or not _is_transient_tool_error(exc)
+                    or transient_retries >= 2
+                ):
+                    raise
+                transient_retries += 1
+                delay = 0.5 * (2 ** (transient_retries - 1))
+                logger.warning(
+                    "Scenario-data read-only tool call failed transiently; "
+                    f"retry {transient_retries}/2 in {delay:.1f}s: {exc}"
+                )
+                yield self._status(
+                    "tool_retry",
+                    (
+                        "Временная ошибка Urban MCP. "
+                        f"Повторяю запрос ({transient_retries}/2)…"
+                    ),
+                )
+                await asyncio.sleep(delay)
 
     @staticmethod
     def _append_shortfall_note(answer: str, reasons: list[str]) -> str:
@@ -1131,7 +1201,7 @@ class ScenarioDataService(BaseLlmService):
         (and the A2A consumers) unchanged.
         """
 
-        text = answer.strip()
+        text = sanitize_public_answer(answer)
         if not text:
             return [
                 self._chunk(
@@ -1173,7 +1243,7 @@ class ScenarioDataService(BaseLlmService):
             if attempt:
                 call["reasoning_effort"] = "medium"
             response = await self.llm_client.chat(**call)
-            answer = (response["message"]["content"] or "").strip()
+            answer = sanitize_public_answer(response["message"]["content"] or "")
             done_reason = response.get("done_reason")
             if answer and done_reason != "length":
                 return answer
@@ -1192,7 +1262,7 @@ class ScenarioDataService(BaseLlmService):
         observations: list[dict[str, Any]],
         history: list[dict],
     ) -> list[dict]:
-        context = bounded_observation_context(observations, max_chars=18000)
+        context = bounded_public_observation_context(observations, max_chars=18000)
         return [
             {
                 "role": "system",
@@ -1200,6 +1270,18 @@ class ScenarioDataService(BaseLlmService):
 Не выдумывай отсутствующие данные и явно отмечай пустые результаты. Если были
 возвращены географические слои, скажи, какие именно слои отправлены на карту.
 Не показывай внутренние JSON, имена MCP-инструментов и технический процесс.
+
+Доменная модель Urban API: проект — контейнер сценариев. Физические объекты, сервисы,
+геометрия и другие сущности физической реальности принадлежат сценарию, а не проекту.
+Когда пользователь говорит «в проекте», «на территории проекта» или «объекты проекта»,
+описывай результат для выбранного сценария, не поправляя терминологию пользователя и не
+устраивая отдельное сравнение проекта со сценарием. Проектные данные упоминай только если
+вопрос действительно про карточку проекта или список его сценариев.
+
+Не показывай никакие внутренние идентификаторы и метаданные: scenario_id, project_id,
+service_type_id, physical_object_type_id, ID маппингов и числовой ID выбранного сценария
+или проекта. Пользователю нужны названия, количества и содержательный результат; ID
+остаются только во внутренних вызовах инструментов.
 
 Если наблюдение содержит table_count > 0, полная таблица уже отправлена пользователю
 отдельной частью ответа. Не перепечатывай все её строки в тексте: укажи точное общее

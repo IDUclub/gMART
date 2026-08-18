@@ -8,6 +8,29 @@ from src.agents.services.scenario_data_types import (
 
 
 class TestClassifyTypeQuery:
+    def test_available_service_types_need_scope_clarification(self):
+        intent = classify_type_query("Какие типы городских сервисов доступны?")
+
+        assert intent is not None
+        assert intent.kinds == ()
+        assert "полный список" in intent.clarification
+        assert "выбранном сценарии" in intent.clarification
+
+    def test_selected_scenario_is_the_default_scope_for_service_types(self):
+        intent = classify_type_query(
+            "Какие типы городских сервисов доступны?", scenario_selected=True
+        )
+
+        assert intent is not None
+        assert intent.kinds == (ScenarioEntityKind.SERVICE,)
+        assert intent.clarification is None
+
+    def test_explicit_service_type_scope_needs_no_extra_clarification(self):
+        assert classify_type_query("Какие типы сервисов есть в базе?") is None
+        assert classify_type_query(
+            "Какие типы сервисов представлены в проекте?"
+        ).kinds == (ScenarioEntityKind.SERVICE,)
+
     def test_a_bare_objects_question_needs_clarification(self):
         intent = classify_type_query(
             "Какие объекты есть в сценарии и сколько их по типам?"
@@ -155,10 +178,13 @@ def test_distribution_presentation_is_text_plus_full_table():
         ScenarioEntityKind.PHYSICAL_OBJECT,
     )
 
-    answer = distribution_answer(772, [distribution])
+    answer = distribution_answer([distribution])
     table = distribution_table(distribution)
 
-    assert "сценария 772" in answer
+    assert "выбранного сценария" in answer
+    assert "772" not in answer
     assert "1 уникальный физический объект" in answer
     assert "представлено 1 тип" in answer
     assert len(table["rows"]) == 1
+    assert "type_id" not in table["rows"][0]
+    assert all(column["key"] != "type_id" for column in table["columns"])

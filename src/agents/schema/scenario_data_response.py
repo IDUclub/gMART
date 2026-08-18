@@ -16,6 +16,7 @@ class ScenarioDataStatus(BaseModel):
         "tool_discovery",
         "planning",
         "tool_execution",
+        "tool_retry",
         "workspace",
         "response_analysis",
         # The answer-review loop. Every status the service can emit must be listed here:
@@ -74,7 +75,9 @@ class ScenarioDataResponse(BaseModel):
         "mapping_completed",
         "plan_revision_created",
         "step_started",
+        "step_context",
         "step_completed",
+        "step_failed",
         "artifact_created",
         "validation_started",
         "validation_completed",

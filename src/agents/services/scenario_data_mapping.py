@@ -77,6 +77,66 @@ class UrbanMappingResolver:
                 break
         return calls
 
+    def plan_entity_discovery_calls(
+        self,
+        acquisition: AcquisitionPlan,
+        user_query: str,
+        tools: list[UrbanMcpTool],
+        scenario_id: int | None,
+        project_id: int | None = None,
+    ) -> list[MappingCall]:
+        """Recover a named entity lookup when the LLM omitted mapping_needs.
+
+        The temporary mapping is intentionally checked against both Urban type
+        ontologies. It is not written into the acquisition plan: only matches
+        grounded in the returned dictionaries are added later by
+        ``enrich_acquisition_mappings``.
+        """
+
+        if scenario_id is None or not acquisition.requirements:
+            return []
+        if any(
+            _canonical_domain(need.domain) in _TYPE_DOMAINS
+            for requirement in acquisition.requirements
+            for need in requirement.mapping_needs
+        ):
+            return []
+        evidence = " ".join(
+            [
+                user_query,
+                acquisition.objective,
+                *(requirement.description for requirement in acquisition.requirements),
+            ]
+        )
+        if not _looks_like_entity_retrieval(evidence):
+            return []
+
+        requirement = acquisition.requirements[0].model_copy(
+            update={
+                "description": " ".join(
+                    (acquisition.requirements[0].description, user_query)
+                ),
+                "mapping_needs": [
+                    MappingNeed(
+                        domain="physical_object_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                    )
+                ],
+            }
+        )
+        discovery = acquisition.model_copy(
+            update={
+                "objective": " ".join((acquisition.objective, user_query)),
+                "requirements": [requirement],
+            }
+        )
+        return self.plan_calls(
+            discovery,
+            tools,
+            scenario_id,
+            project_id=project_id,
+        )
+
     @staticmethod
     def _rank(need: MappingNeed, tools: list[UrbanMcpTool]) -> list[UrbanMcpTool]:
         normalized_domain = re.sub(r"[^a-zа-яё0-9]+", " ", need.domain.lower())
@@ -439,6 +499,59 @@ def enrich_acquisition_mappings(
     return acquisition.model_copy(update={"requirements": requirements})
 
 
+def ensure_entity_retrieval_outputs(
+    acquisition: AcquisitionPlan, user_query: str
+) -> AcquisitionPlan:
+    """Default a grounded named-entity retrieval to both table and map layer."""
+
+    has_named_type = any(
+        _canonical_domain(need.domain) in _TYPE_DOMAINS
+        and need.direction == MappingDirection.NAME_TO_ID
+        and bool(need.values)
+        for requirement in acquisition.requirements
+        for need in requirement.mapping_needs
+    )
+    if acquisition.clarification or not has_named_type:
+        return acquisition
+
+    query = user_query.casefold()
+    table_requested = any(
+        marker in query
+        for marker in ("таблиц", "список", "переч", "данн", "реестр", "table", "list")
+    )
+    layer_requested = any(
+        marker in query
+        for marker in ("сло", "карт", "геометр", "geojson", "map", "layer")
+    )
+    default_both = not table_requested and not layer_requested
+    required_output = acquisition.required_output
+    tables = list(required_output.tables)
+    layers = list(required_output.layers)
+    requirement_id = (
+        acquisition.requirements[0].requirement_id
+        if acquisition.requirements
+        else "scenario_entities"
+    )
+    stem = (
+        tables[0]
+        if tables
+        else layers[0].removesuffix("_layer") if layers else requirement_id
+    )
+    if (table_requested or default_both) and not tables:
+        tables.append(stem)
+    if (layer_requested or default_both) and not layers:
+        layers.append(stem if stem.endswith("_layer") else f"{stem}_layer")
+    if tables == required_output.tables and layers == required_output.layers:
+        return acquisition
+    return acquisition.model_copy(
+        update={
+            "required_output": required_output.model_copy(
+                update={"tables": tables, "layers": layers}
+            )
+        }
+    )
+
+
 def mapping_need_is_resolved(
     need: MappingNeed, known_mappings: list[dict[str, Any]]
 ) -> bool:
@@ -560,6 +673,43 @@ def _explicit_type_domain(text: str) -> str | None:
     if service == physical:
         return None
     return "service_type" if service else "physical_object_type"
+
+
+def _looks_like_entity_retrieval(text: str) -> bool:
+    normalized = text.casefold()
+    if any(
+        marker in normalized
+        for marker in (
+            "какие типы",
+            "список типов",
+            "справочник типов",
+            "what types",
+            "type catalogue",
+            "type catalog",
+        )
+    ):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "вывед",
+            "покаж",
+            "получ",
+            "найд",
+            "отобраз",
+            "перечис",
+            "сло",
+            "карт",
+            "располож",
+            "где",
+            "show",
+            "list",
+            "find",
+            "display",
+            "map",
+            "layer",
+        )
+    )
 
 
 def _looks_like_id(value: Any) -> bool:

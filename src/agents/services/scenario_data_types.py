@@ -1,8 +1,9 @@
-"""Deterministic handling of Russian scenario type-count questions.
+"""Deterministic handling of Russian scenario type questions.
 
 The general scenario-data agent still plans over the runtime Urban MCP catalogue.  Questions
-about counts by object/service type are different: their arithmetic, entity identity and
-dictionary join are deterministic contracts, so an LLM must not infer them from a sample.
+about counts by object/service type and ambiguous catalogue scope are different: their
+arithmetic, entity identity, dictionary join and clarification are deterministic contracts,
+so an LLM must not infer them from a sample.
 """
 
 from __future__ import annotations
@@ -51,6 +52,33 @@ _COUNT_MARKERS = (
 _PHYSICAL_MARKERS = ("физическ", "физобъект")
 _SERVICE_MARKERS = ("сервис", "услуг")
 _GENERIC_OBJECT_MARKERS = ("объект",)
+_SERVICE_LIST_MARKERS = (
+    "какие тип",
+    "какие виды",
+    "какие бывают",
+    "доступн",
+    "перечисл",
+    "список",
+)
+_SCENARIO_SCOPE_MARKERS = (
+    "в проект",
+    "для проект",
+    "в сценар",
+    "для сценар",
+    "на территор",
+    "представлен",
+    "фактически",
+)
+_GLOBAL_SCOPE_MARKERS = (
+    "в базе",
+    "из базы",
+    "в справочник",
+    "из справочник",
+    "общий справочник",
+    "полный справочник",
+    "в системе",
+    "вообще",
+)
 _BOTH_MARKERS = (
     "и те и те",
     "и то и другое",
@@ -62,16 +90,19 @@ _BOTH_MARKERS = (
 
 
 def classify_type_query(
-    user_query: str, history: list[dict[str, Any]] | None = None
+    user_query: str,
+    history: list[dict[str, Any]] | None = None,
+    *,
+    scenario_selected: bool = False,
 ) -> ScenarioTypeIntent | None:
-    """Recognise Russian questions about unique entities grouped by project types.
+    """Recognise Russian questions about project types or ambiguous catalogue scope.
 
     A bare ``объекты`` is deliberately ambiguous: in the product vocabulary it may mean
     physical objects or the services attached to them.  A short follow-up such as
     ``физические`` is resolved against the last ambiguous user question in chat history.
     """
 
-    direct = _classify_text(user_query)
+    direct = _classify_text(user_query, scenario_selected=scenario_selected)
     if direct is not None:
         return direct
 
@@ -83,7 +114,7 @@ def classify_type_query(
         if str(message.get("role") or "").lower() != "user":
             continue
         previous = _content_text(message.get("content"))
-        previous_intent = _classify_text(previous)
+        previous_intent = _classify_text(previous, scenario_selected=scenario_selected)
         if previous_intent is None or previous_intent.clarification is None:
             continue
         return ScenarioTypeIntent(
@@ -93,7 +124,9 @@ def classify_type_query(
     return None
 
 
-def _classify_text(text: str) -> ScenarioTypeIntent | None:
+def _classify_text(
+    text: str, *, scenario_selected: bool = False
+) -> ScenarioTypeIntent | None:
     lowered = text.lower().replace("ё", "е")
     has_entity = any(
         marker in lowered
@@ -103,6 +136,26 @@ def _classify_text(text: str) -> ScenarioTypeIntent | None:
             *_SERVICE_MARKERS,
         )
     )
+    asks_for_service_list = any(
+        marker in lowered for marker in _SERVICE_LIST_MARKERS
+    ) and any(marker in lowered for marker in _SERVICE_MARKERS)
+    has_scenario_scope = any(marker in lowered for marker in _SCENARIO_SCOPE_MARKERS)
+    has_global_scope = any(marker in lowered for marker in _GLOBAL_SCOPE_MARKERS)
+    if asks_for_service_list:
+        if has_global_scope:
+            return None
+        if has_scenario_scope or scenario_selected:
+            return ScenarioTypeIntent(
+                kinds=(ScenarioEntityKind.SERVICE,), effective_query=text
+            )
+        return ScenarioTypeIntent(
+            effective_query=text,
+            clarification=(
+                "Уточните, пожалуйста: нужен полный список типов городских "
+                "сервисов из общего справочника или типы, фактически "
+                "представленные в выбранном сценарии?"
+            ),
+        )
     if not has_entity or not any(marker in lowered for marker in _COUNT_MARKERS):
         return None
 
@@ -331,18 +384,20 @@ def distribution_table(distribution: TypeDistribution) -> dict[str, Any]:
         "name": f"scenario_{distribution.kind.value}_types",
         "title": f"Распределение {noun} по типам",
         "columns": [
-            {"key": "type_id", "label": "ID типа"},
             {"key": "type_name", "label": "Тип"},
             {"key": "count", "label": "Количество"},
             {"key": "status", "label": "Статус"},
             {"key": "possible_types", "label": "Возможные варианты"},
         ],
-        "rows": distribution.rows,
+        "rows": [
+            {key: value for key, value in row.items() if key != "type_id"}
+            for row in distribution.rows
+        ],
     }
 
 
-def distribution_answer(scenario_id: int, distributions: list[TypeDistribution]) -> str:
-    paragraphs = [f"Результаты для сценария {scenario_id}:"]
+def distribution_answer(distributions: list[TypeDistribution]) -> str:
+    paragraphs = ["Результаты для выбранного сценария:"]
     for distribution in distributions:
         entity_phrase = (
             _plural_ru(
