@@ -27,7 +27,9 @@ from typing import Any
 from loguru import logger
 
 from src.agents.services.restriction_catalog import strip_json_fence
-from src.agents.services.scenario_data_aggregate import bounded_observation_context
+from src.agents.services.scenario_data_aggregate import (
+    bounded_public_observation_context,
+)
 
 #: Extra tool-loop passes allowed after a rejected answer.
 MAX_ANSWER_ATTEMPTS = 2
@@ -204,7 +206,7 @@ class ScenarioDataEvaluator:
         observations: list[dict[str, Any]],
         answer: str,
     ) -> tuple[bool, str] | None:
-        context = bounded_observation_context(observations, max_chars=12000)
+        context = bounded_public_observation_context(observations, max_chars=12000)
         prompt = (
             "Ты проверяешь ответ агента по городским данным. Верни строгий JSON "
             '{"sufficient": bool, "missing": str}.\n'

@@ -34,7 +34,8 @@ from src.agents.services.pipeline_state import (
 )
 from src.agents.services.scenario_data_aggregate import (
     aggregate_result,
-    bounded_observation_context,
+    bounded_public_observation_context,
+    sanitize_public_answer,
     unresolved_references,
 )
 from src.agents.services.scenario_data_evaluator import (
@@ -278,7 +279,11 @@ class ScenarioDataService(BaseLlmService):
             | ToolCallPartRequest
             | StructuredPartRequest
         ] = []
-        type_intent = classify_type_query(user_query, history)
+        type_intent = classify_type_query(
+            user_query,
+            history,
+            scenario_selected=scenario_id is not None,
+        )
         clarification = None
         if type_intent is not None and scenario_id is None:
             clarification = (
@@ -288,6 +293,7 @@ class ScenarioDataService(BaseLlmService):
         elif type_intent is not None:
             clarification = type_intent.clarification
         if clarification:
+            clarification = sanitize_public_answer(clarification)
             yield self._buf(
                 request_id,
                 self._status("planning", "Уточняю параметры запроса…"),
@@ -677,7 +683,7 @@ class ScenarioDataService(BaseLlmService):
 
         for event in self._answer_events(answer):
             yield self._buf(request_id, event)
-        answer = answer.strip()
+        answer = sanitize_public_answer(answer)
         if answer:
             parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
 
@@ -1040,7 +1046,7 @@ class ScenarioDataService(BaseLlmService):
                     "content": {"revision": 1, "text": "Проверяю итоговые количества…"},
                 },
             )
-        answer = distribution_answer(scenario_id, distributions)
+        answer = sanitize_public_answer(distribution_answer(distributions))
         if context_model:
             validation = {
                 "sufficient": True,
@@ -1195,7 +1201,7 @@ class ScenarioDataService(BaseLlmService):
         (and the A2A consumers) unchanged.
         """
 
-        text = answer.strip()
+        text = sanitize_public_answer(answer)
         if not text:
             return [
                 self._chunk(
@@ -1237,7 +1243,7 @@ class ScenarioDataService(BaseLlmService):
             if attempt:
                 call["reasoning_effort"] = "medium"
             response = await self.llm_client.chat(**call)
-            answer = (response["message"]["content"] or "").strip()
+            answer = sanitize_public_answer(response["message"]["content"] or "")
             done_reason = response.get("done_reason")
             if answer and done_reason != "length":
                 return answer
@@ -1256,7 +1262,7 @@ class ScenarioDataService(BaseLlmService):
         observations: list[dict[str, Any]],
         history: list[dict],
     ) -> list[dict]:
-        context = bounded_observation_context(observations, max_chars=18000)
+        context = bounded_public_observation_context(observations, max_chars=18000)
         return [
             {
                 "role": "system",
@@ -1264,6 +1270,18 @@ class ScenarioDataService(BaseLlmService):
 Не выдумывай отсутствующие данные и явно отмечай пустые результаты. Если были
 возвращены географические слои, скажи, какие именно слои отправлены на карту.
 Не показывай внутренние JSON, имена MCP-инструментов и технический процесс.
+
+Доменная модель Urban API: проект — контейнер сценариев. Физические объекты, сервисы,
+геометрия и другие сущности физической реальности принадлежат сценарию, а не проекту.
+Когда пользователь говорит «в проекте», «на территории проекта» или «объекты проекта»,
+описывай результат для выбранного сценария, не поправляя терминологию пользователя и не
+устраивая отдельное сравнение проекта со сценарием. Проектные данные упоминай только если
+вопрос действительно про карточку проекта или список его сценариев.
+
+Не показывай никакие внутренние идентификаторы и метаданные: scenario_id, project_id,
+service_type_id, physical_object_type_id, ID маппингов и числовой ID выбранного сценария
+или проекта. Пользователю нужны названия, количества и содержательный результат; ID
+остаются только во внутренних вызовах инструментов.
 
 Если наблюдение содержит table_count > 0, полная таблица уже отправлена пользователю
 отдельной частью ответа. Не перепечатывай все её строки в тексте: укажи точное общее

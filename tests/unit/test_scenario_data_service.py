@@ -352,8 +352,36 @@ def test_answer_prompt_treats_an_emitted_table_as_the_complete_catalogue():
 
     system_prompt = messages[0]["content"]
     assert '"table_count": 1' in system_prompt
-    assert '"physical_object_id": 70' in system_prompt
+    assert "physical_object_id" not in system_prompt
+    assert "проект — контейнер сценариев" in system_prompt
+    assert "принадлежат сценарию, а не проекту" in system_prompt
     assert "Не перепечатывай все её строки" in system_prompt
+
+
+async def test_draft_answer_strips_technical_metadata_ids(
+    monkeypatch, fake_urban, state_store
+):
+    class MetadataLlm:
+        async def chat(self, **kwargs):
+            return {
+                "message": {
+                    "content": (
+                        "Найдено 70 школ.\n"
+                        "Метаданные: scenario_id=772, project_id=604"
+                    )
+                },
+                "done_reason": "stop",
+            }
+
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: MetadataLlm(),
+    )
+    service = ScenarioDataService("http://llm", AsyncMock(), fake_urban, state_store)
+
+    answer = await service._draft_answer("model", "Покажи школы в проекте", [], 0, [])
+
+    assert answer == "Найдено 70 школ."
 
 
 async def test_pipeline_replay_buffer_serializes_geojson_datetimes():

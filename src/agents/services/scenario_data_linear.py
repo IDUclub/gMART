@@ -27,6 +27,7 @@ from src.agents.services.scenario_data_aggregate import (
     aggregate_result,
     answer_records,
     extract_records,
+    sanitize_public_answer,
     unresolved_references,
 )
 from src.agents.services.scenario_data_execution_context import (
@@ -140,17 +141,16 @@ class ScenarioDataLinearWorkflow:
         yield self._event(request_id, "plan_created", plan_payload)
         parts.append(StructuredPartRequest(kind="plan", payload=plan_payload))
         if acquisition.clarification:
+            clarification = sanitize_public_answer(acquisition.clarification)
             yield self._event(
                 request_id,
                 "clarification_required",
-                {"text": acquisition.clarification},
+                {"text": clarification},
             )
-            for event in self.owner._answer_events(acquisition.clarification):
+            for event in self.owner._answer_events(clarification):
                 yield self.owner._buf(request_id, event)
             parts.append(
-                TextPartRequest(
-                    kind="text", payload=TextPayload(text=acquisition.clarification)
-                )
+                TextPartRequest(kind="text", payload=TextPayload(text=clarification))
             )
             await self.owner._complete_pipeline(
                 request_id,
@@ -295,10 +295,6 @@ class ScenarioDataLinearWorkflow:
                         ledger.workspace_calls += 1
                         artifact_handles[mapping_step_id] = artifact["handle"]
                         snapshot["artifact"] = artifact
-                        parts.append(
-                            StructuredPartRequest(kind="artifact_ref", payload=artifact)
-                        )
-                        yield self._event(request_id, "artifact_created", artifact)
                 except PipelineSuspendedError:
                     raise
                 except Exception as exc:
@@ -313,13 +309,6 @@ class ScenarioDataLinearWorkflow:
             )
             bootstrap_satisfied.add(call.requirement_id)
             mappings.append(snapshot)
-            mapping_table = self.owner._table_from_result(
-                snapshot.get("matches"),
-                name=f"mapping_{snapshot['domain']}",
-                title=f"Маппинг {snapshot['domain']}: name ↔ id",
-            )
-            if mapping_table is not None:
-                parts.append(self.owner._table_part(mapping_table))
             mapping_observation = {
                 "context": "Актуальный маппинг",
                 "mapping": snapshot,
@@ -386,6 +375,7 @@ class ScenarioDataLinearWorkflow:
             }
             yield self._event(request_id, "pipeline_failed", failure)
             parts.append(StructuredPartRequest(kind="failure", payload=failure))
+            answer = sanitize_public_answer(answer)
             for event in self.owner._answer_events(answer):
                 yield self.owner._buf(request_id, event)
             parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
@@ -835,6 +825,7 @@ class ScenarioDataLinearWorkflow:
                 parts.append(StructuredPartRequest(kind="failure", payload=failure))
                 break
 
+        answer = sanitize_public_answer(answer)
         for event in self.owner._answer_events(answer):
             yield self.owner._buf(request_id, event)
         if answer.strip():

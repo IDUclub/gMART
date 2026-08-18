@@ -16,6 +16,7 @@ give 924 distinct ids) and are skipped, as are free-text and numeric measurement
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from typing import Any
 
@@ -28,6 +29,63 @@ MAX_FIELDS = 8
 MAX_DISTINCT_RATIO = 0.5
 
 _ENTITY_ID_FIELDS = ("physical_object_id", "service_id", "object_geometry_id", "id")
+
+_TECHNICAL_IDENTIFIER_TOKEN = re.compile(
+    r"(?<!\w)[\"']?(?:scenario_id|project_id|service_type_id|"
+    r"physical_object_type_id|service_id|physical_object_id|id|ids)[\"']?"
+    r"\s*[:=]\s*[^,;\s)\]}]+[,;]?\s*",
+    flags=re.IGNORECASE,
+)
+_HUMAN_IDENTIFIER_TOKEN = re.compile(
+    r"\b(?:(?:ID|идентификатор)\s+(?:сценария|проекта|типа(?:\s+сервиса|\s+"
+    r"физического\s+объекта)?|сервиса|физического\s+объекта)|(?:scenario|project)\s+ID)"
+    r"\s*[:=№#-]?\s*[\w-]+[,;]?\s*",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_technical_identifier_key(key: str) -> bool:
+    tail = key.rsplit(".", 1)[-1].casefold()
+    return tail in {"id", "ids", "scenario_id", "project_id"} or tail.endswith(
+        ("_id", "_ids")
+    )
+
+
+def _public_value(value: Any) -> Any:
+    """Remove internal Urban identifiers while retaining names and aggregates."""
+
+    if isinstance(value, dict):
+        return {
+            str(key): _public_value(child)
+            for key, child in value.items()
+            if not _is_technical_identifier_key(str(key))
+        }
+    if isinstance(value, list):
+        return [_public_value(child) for child in value]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                return _public_value(json.loads(stripped))
+            except (TypeError, ValueError):
+                pass
+        return _TECHNICAL_IDENTIFIER_TOKEN.sub("", value).strip()
+    return value
+
+
+def sanitize_public_answer(answer: str) -> str:
+    """Remove explicit implementation identifiers from user-visible prose."""
+
+    lines = []
+    for line in answer.splitlines():
+        cleaned = _TECHNICAL_IDENTIFIER_TOKEN.sub("", line)
+        cleaned = _HUMAN_IDENTIFIER_TOKEN.sub("", cleaned)
+        cleaned = re.sub(r"\(\s*\)", "", cleaned)
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+        if re.fullmatch(r"(?:метаданные|metadata)\s*[:.]?", cleaned, re.IGNORECASE):
+            continue
+        lines.append(cleaned)
+    return "\n".join(lines).strip()
 
 
 def extract_records(result: Any) -> list[dict[str, Any]] | None:
@@ -295,3 +353,46 @@ def bounded_observation_context(
         ensure_ascii=False,
         default=str,
     )
+
+
+def bounded_public_observation_context(
+    observations: list[dict[str, Any]], *, max_chars: int
+) -> str:
+    """Build answer evidence without exposing internal ids or tool arguments.
+
+    The planner receives the full observation context because it must bind verified ids to
+    Urban MCP calls. The answer model has a different contract: it needs names, counts and
+    layer/table facts, but project/scenario/type ids are implementation metadata for it.
+    """
+
+    public_observations: list[dict[str, Any]] = []
+    for observation in observations:
+        item = {
+            key: _public_value(observation[key])
+            for key in (
+                "context",
+                "layer_count",
+                "table_count",
+                "summary",
+                "aggregate",
+                "answer_records",
+            )
+            if key in observation
+        }
+        mapping = observation.get("mapping")
+        if isinstance(mapping, dict):
+            matches = mapping.get("matches") or []
+            names = [
+                str(match.get("name") or match.get("title") or "").strip()
+                for match in matches
+                if isinstance(match, dict) and (match.get("name") or match.get("title"))
+            ]
+            if names:
+                existing = item.get("answer_records")
+                public_records = existing if isinstance(existing, list) else []
+                item["answer_records"] = [
+                    *public_records,
+                    *({"name": name} for name in names[:50]),
+                ]
+        public_observations.append(item)
+    return bounded_observation_context(public_observations, max_chars=max_chars)

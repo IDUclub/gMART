@@ -719,6 +719,39 @@ async def test_acquisition_rejects_unrequested_normative_topic_drift():
 
 
 @pytest.mark.asyncio
+async def test_acquisition_treats_project_physical_reality_as_scenario_data():
+    prompts: list[str] = []
+
+    class InspectingLlm:
+        async def chat(self, **kwargs):
+            prompts.append(kwargs["messages"][0]["content"])
+            payload = AcquisitionPlan(
+                objective="Получить школы выбранного сценария",
+                requirements=[
+                    DataRequirement(
+                        requirement_id="schools",
+                        description="Школы на территории выбранного сценария",
+                    )
+                ],
+            )
+            return {"message": {"content": payload.model_dump_json()}}
+
+    result = await ScenarioDataPlanBuilder(InspectingLlm()).build_acquisition_plan(
+        "model",
+        "Покажи школы на территории проекта",
+        [],
+        772,
+        project_id=604,
+    )
+
+    assert result.objective == "Получить школы выбранного сценария"
+    assert "Проект в Urban API — контейнер сценариев" in prompts[0]
+    assert "прикреплены к сценарию, а не к проекту" in prompts[0]
+    assert "Не задавай уточнение" in prompts[0]
+    assert "между проектом и сценарием" in prompts[0]
+
+
+@pytest.mark.asyncio
 async def test_execution_shortlist_uses_intent_resolved_from_history():
     scenario_tool = UrbanMcpTool(
         group="projects",
