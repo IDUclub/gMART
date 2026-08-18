@@ -1174,8 +1174,16 @@ class ScenarioDataService(BaseLlmService):
                 call["reasoning_effort"] = "medium"
             response = await self.llm_client.chat(**call)
             answer = (response["message"]["content"] or "").strip()
-            if answer:
+            done_reason = response.get("done_reason")
+            if answer and done_reason != "length":
                 return answer
+            if answer and done_reason == "length":
+                logger.warning(
+                    "Scenario-data answer was truncated by the model output limit; "
+                    "retrying with a larger budget"
+                )
+                if attempt == 1:
+                    return answer
         return ""
 
     def _answer_messages(
@@ -1192,6 +1200,11 @@ class ScenarioDataService(BaseLlmService):
 Не выдумывай отсутствующие данные и явно отмечай пустые результаты. Если были
 возвращены географические слои, скажи, какие именно слои отправлены на карту.
 Не показывай внутренние JSON, имена MCP-инструментов и технический процесс.
+
+Если наблюдение содержит table_count > 0, полная таблица уже отправлена пользователю
+отдельной частью ответа. Не перепечатывай все её строки в тексте: укажи точное общее
+количество, кратко опиши результат и скажи, что полный перечень находится в таблице.
+Это считается полным ответом даже для просьб «выведи все».
 
 В наблюдениях поле "aggregate" содержит ТОЧНЫЕ количества, посчитанные по всем
 записям, а не по образцу: total_records — сколько всего записей, breakdown — сколько

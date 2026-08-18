@@ -273,6 +273,68 @@ def test_table_unwraps_geojson_feature_properties():
     assert table["rows"] == [{"id": 1, "name": "Школа"}]
 
 
+async def test_draft_answer_retries_a_nonempty_length_completion(
+    monkeypatch, fake_urban, state_store
+):
+    calls: list[dict] = []
+
+    class TruncatedLlm:
+        async def chat(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return {
+                    "message": {"content": "Первые 50 строк…"},
+                    "done_reason": "length",
+                }
+            return {
+                "message": {"content": "Всего 70 объектов. Полный перечень в таблице."},
+                "done_reason": "stop",
+            }
+
+    llm = TruncatedLlm()
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: llm,
+    )
+    service = ScenarioDataService("http://llm", AsyncMock(), fake_urban, state_store)
+
+    answer = await service._draft_answer(
+        "model",
+        "Выведи все дома",
+        [{"table_count": 1, "aggregate": {"total_records": 70}}],
+        0,
+        [],
+    )
+
+    assert answer == "Всего 70 объектов. Полный перечень в таблице."
+    assert len(calls) == 2
+    assert calls[1]["options"]["num_predict"] > calls[0]["options"]["num_predict"]
+
+
+def test_answer_prompt_treats_an_emitted_table_as_the_complete_catalogue():
+    records = [
+        {"physical_object_id": index, "name": f"Дом {index}"} for index in range(1, 71)
+    ]
+
+    messages = ScenarioDataService._answer_messages(
+        None,
+        "Выведи все дома",
+        [
+            {
+                "table_count": 1,
+                "aggregate": {"total_records": 70},
+                "answer_records": records,
+            }
+        ],
+        [],
+    )
+
+    system_prompt = messages[0]["content"]
+    assert '"table_count": 1' in system_prompt
+    assert '"physical_object_id": 70' in system_prompt
+    assert "Не перепечатывай все её строки" in system_prompt
+
+
 async def test_pipeline_replay_buffer_serializes_geojson_datetimes():
     redis = AsyncMock()
     store = PipelineStateStore(redis)

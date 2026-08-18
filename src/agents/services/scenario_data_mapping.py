@@ -22,6 +22,7 @@ class MappingCall:
     need: MappingNeed
     tool: UrbanMcpTool
     arguments: dict[str, Any]
+    intent_text: str
 
 
 class UrbanMappingResolver:
@@ -38,13 +39,13 @@ class UrbanMappingResolver:
         known_mappings: list[dict[str, Any]] | None = None,
     ) -> list[MappingCall]:
         needs = [
-            (requirement.requirement_id, need)
+            (requirement, need)
             for requirement in acquisition.requirements
             for need in requirement.mapping_needs
         ]
         calls: list[MappingCall] = []
         seen: set[tuple[str, str, str]] = set()
-        for requirement_id, need in needs:
+        for requirement, need in needs:
             if mapping_need_is_resolved(need, known_mappings or []):
                 continue
             for lookup_need in _lookup_needs(need):
@@ -59,10 +60,13 @@ class UrbanMappingResolver:
                         break
                     calls.append(
                         MappingCall(
-                            requirement_id=requirement_id,
+                            requirement_id=requirement.requirement_id,
                             need=lookup_need,
                             tool=tool,
                             arguments=arguments,
+                            intent_text=" ".join(
+                                (acquisition.objective, requirement.description)
+                            ),
                         )
                     )
                     seen.add(key)
@@ -224,6 +228,7 @@ _WORD_ENDINGS = (
     "ый",
     "ая",
     "ое",
+    "ой",
     "ов",
     "ев",
     "ам",
@@ -651,11 +656,15 @@ def mapping_snapshot(call: MappingCall, result: Any) -> dict[str, Any]:
             "name": record.get(name_keys[0]) if name_keys else None,
         }
         candidate_values = {str(value).casefold() for value in candidate.values()}
-        if requested and not any(
+        requested_match = any(
             left == right or left in right or right in left
             for left in requested
             for right in candidate_values
-        ):
+        )
+        intent_match = bool(candidate.get("name")) and _name_is_mentioned(
+            call.intent_text, str(candidate["name"])
+        )
+        if requested and not requested_match and not intent_match:
             continue
         normalized.append(candidate)
         if len(normalized) >= 100:

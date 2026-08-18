@@ -248,6 +248,7 @@ def bounded_observation_context(
                 "tool",
                 "arguments",
                 "layer_count",
+                "table_count",
                 "summary",
                 "satisfies",
                 "aggregate",

@@ -1048,6 +1048,13 @@ class ScenarioDataLinearWorkflow:
                 "требуется географический слой, но ни один выполненный шаг не "
                 "вернул геометрию"
             ]
+        if plan.required_output.tables and not any(
+            int(item.get("table_count") or 0) > 0 for item in observations
+        ):
+            return [
+                "требуется таблица, но ни один выполненный шаг не вернул табличные "
+                "данные"
+            ]
         return []
 
     async def _bounded_llm(self, request_id: str, started: float, awaitable):

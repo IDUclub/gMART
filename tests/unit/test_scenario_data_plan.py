@@ -6,10 +6,12 @@ from pydantic import ValidationError
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
 from src.agents.services.scenario_data_linear import ScenarioDataLinearWorkflow
 from src.agents.services.scenario_data_mapping import (
+    MappingCall,
     UrbanMappingResolver,
     bind_mapping_arguments,
     context_mapping_snapshots,
     enrich_acquisition_mappings,
+    mapping_snapshot,
 )
 from src.agents.services.scenario_data_plan_builder import ScenarioDataPlanBuilder
 from src.agents.services.service_entities.scenario_data_plan import (
@@ -831,6 +833,56 @@ def test_required_layer_cannot_validate_without_observed_geometry():
         ScenarioDataLinearWorkflow._required_output_reasons(plan, [{"layer_count": 1}])
         == []
     )
+
+
+def test_required_table_cannot_validate_without_observed_rows():
+    plan = ExecutionPlanRevision(
+        revision=1,
+        reason="test",
+        objective="show houses",
+        steps=[],
+        required_output={"answer": True, "tables": ["houses"]},
+    )
+
+    assert ScenarioDataLinearWorkflow._required_output_reasons(
+        plan, [{"table_count": 0}]
+    ) == ["требуется таблица, но ни один выполненный шаг не вернул табличные данные"]
+    assert (
+        ScenarioDataLinearWorkflow._required_output_reasons(plan, [{"table_count": 1}])
+        == []
+    )
+
+
+def test_mapping_uses_the_user_language_when_the_model_translates_a_type_name():
+    tool = UrbanMcpTool(
+        group="dictionaries",
+        name="GetPhysicalObjectTypes",
+        title="Physical object types",
+        description="",
+        input_schema={"type": "object", "properties": {}},
+        tags=(),
+    )
+    call = MappingCall(
+        requirement_id="houses",
+        need=MappingNeed(
+            domain="physical_object_type",
+            direction=MappingDirection.NAME_TO_ID,
+            values=["residential"],
+        ),
+        tool=tool,
+        arguments={},
+        intent_text="выведи мне все жилые дома на территории проекта",
+    )
+
+    snapshot = mapping_snapshot(
+        call,
+        [
+            {"physical_object_type_id": 4, "name": "Жилой дом"},
+            {"physical_object_type_id": 5, "name": "Нежилое здание"},
+        ],
+    )
+
+    assert snapshot["matches"] == [{"id": 4, "name": "Жилой дом"}]
 
 
 @pytest.mark.asyncio
