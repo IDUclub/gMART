@@ -158,6 +158,17 @@ class ScenarioDataService(BaseLlmService):
 
         request_id = request_id or self.state_store.new_request_id()
         original_chat_id = chat_id
+        project_id: int | None = None
+        if scenario_id is not None:
+            try:
+                project_id = await self.urban_api_client.get_project_by_scenario(
+                    token, scenario_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Scenario data: failed to resolve project for "
+                    f"scenario {scenario_id}: {exc}"
+                )
         yield self._buf(request_id, self._pipeline_started(request_id))
 
         if not chat_id and persist_history:
@@ -170,6 +181,8 @@ class ScenarioDataService(BaseLlmService):
                         "Вопрос по данным и географическим слоям городского сценария."
                     ),
                     scenario_id=scenario_id,
+                    project_id=project_id,
+                    resolve_project_id=False,
                     agent_id="scenario_data",
                 )
                 yield self._buf(request_id, self._chat_created(chat_id, title))
@@ -196,6 +209,14 @@ class ScenarioDataService(BaseLlmService):
         if original_chat_id:
             try:
                 chat_info = await self.get_chat_messages(token, original_chat_id)
+                if chat_info.project_id is not None:
+                    try:
+                        project_id = int(chat_info.project_id)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Scenario data: invalid project_id in chat metadata: "
+                            f"{chat_info.project_id!r}"
+                        )
                 history = self.build_llm_history(
                     chat_info.messages, current_user_query=user_query
                 )
@@ -371,6 +392,7 @@ class ScenarioDataService(BaseLlmService):
                 temperature=temperature,
                 user_query=user_query,
                 scenario_id=scenario_id,
+                project_id=project_id,
                 chat_id=chat_id,
                 history=history,
                 context=chat_context,
@@ -635,6 +657,7 @@ class ScenarioDataService(BaseLlmService):
         tool: UrbanMcpTool,
         arguments: dict[str, Any],
         scenario_id: int | None,
+        project_id: int | None = None,
     ) -> dict[str, Any]:
         properties = tool.input_schema.get("properties") or {}
         prepared = {
@@ -644,6 +667,8 @@ class ScenarioDataService(BaseLlmService):
         }
         if "scenario_id" in properties and scenario_id is not None:
             prepared["scenario_id"] = scenario_id
+        if "project_id" in properties and project_id is not None:
+            prepared["project_id"] = project_id
         required = set(tool.input_schema.get("required") or [])
         missing = required - set(prepared)
         if missing:

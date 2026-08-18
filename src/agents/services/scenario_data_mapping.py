@@ -10,6 +10,7 @@ from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
 from src.agents.services.scenario_data_aggregate import extract_records
 from src.agents.services.service_entities.scenario_data_plan import (
     AcquisitionPlan,
+    DataRequirement,
     MappingDirection,
     MappingNeed,
 )
@@ -33,6 +34,8 @@ class UrbanMappingResolver:
         acquisition: AcquisitionPlan,
         tools: list[UrbanMcpTool],
         scenario_id: int | None,
+        project_id: int | None = None,
+        known_mappings: list[dict[str, Any]] | None = None,
     ) -> list[MappingCall]:
         needs = [
             (requirement.requirement_id, need)
@@ -42,8 +45,10 @@ class UrbanMappingResolver:
         calls: list[MappingCall] = []
         seen: set[tuple[str, str, str]] = set()
         for requirement_id, need in needs:
+            if mapping_need_is_resolved(need, known_mappings or []):
+                continue
             for tool in self._rank(need, tools):
-                arguments = self._arguments(need, tool, scenario_id)
+                arguments = self._arguments(need, tool, scenario_id, project_id)
                 if arguments is None:
                     continue
                 key = (tool.group, tool.name, repr(sorted(arguments.items())))
@@ -130,7 +135,10 @@ class UrbanMappingResolver:
 
     @staticmethod
     def _arguments(
-        need: MappingNeed, tool: UrbanMcpTool, scenario_id: int | None
+        need: MappingNeed,
+        tool: UrbanMcpTool,
+        scenario_id: int | None,
+        project_id: int | None = None,
     ) -> dict[str, Any] | None:
         schema = tool.input_schema or {}
         properties = schema.get("properties") or {}
@@ -138,6 +146,8 @@ class UrbanMappingResolver:
         arguments: dict[str, Any] = {}
         if "scenario_id" in properties and scenario_id is not None:
             arguments["scenario_id"] = scenario_id
+        if "project_id" in properties and project_id is not None:
+            arguments["project_id"] = project_id
 
         values = list(need.values)
         if values:
@@ -170,6 +180,274 @@ class UrbanMappingResolver:
         if required - set(arguments):
             return None
         return arguments
+
+
+_DOMAIN_ALIASES = {
+    "service_types": "service_type",
+    "service_type": "service_type",
+    "physical_object_types": "physical_object_type",
+    "physical_object_type": "physical_object_type",
+}
+
+_WORD_ENDINGS = (
+    "иями",
+    "ями",
+    "ами",
+    "ого",
+    "ему",
+    "ому",
+    "ыми",
+    "ими",
+    "ские",
+    "ский",
+    "ская",
+    "ское",
+    "ие",
+    "ые",
+    "ий",
+    "ый",
+    "ая",
+    "ое",
+    "ов",
+    "ев",
+    "ам",
+    "ям",
+    "ах",
+    "ях",
+    "ы",
+    "и",
+    "а",
+    "я",
+    "у",
+    "ю",
+    "е",
+    "о",
+)
+
+
+def context_mapping_snapshots(context: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Convert published chat mappings into the planner's domain-aware snapshots."""
+
+    structured = ((context or {}).get("content") or {}).get("structured") or {}
+    raw_mappings = structured.get("mappings") or []
+    if isinstance(raw_mappings, dict):
+        raw_mappings = [raw_mappings]
+    elif not isinstance(raw_mappings, list):
+        raw_mappings = []
+    by_domain: dict[str, list[dict[str, Any]]] = {}
+    for item in raw_mappings:
+        if not isinstance(item, dict):
+            continue
+        if isinstance(item.get("domain"), str) and isinstance(
+            item.get("matches"), list
+        ):
+            domain = _canonical_domain(item["domain"])
+            for match in item["matches"]:
+                if isinstance(match, dict):
+                    _append_mapping(
+                        by_domain, domain, match.get("id"), match.get("name")
+                    )
+            continue
+        for raw_domain, values in item.items():
+            if not isinstance(values, dict):
+                continue
+            domain = _canonical_domain(str(raw_domain))
+            for left, right in values.items():
+                if _looks_like_id(left):
+                    _append_mapping(by_domain, domain, left, right)
+                elif _looks_like_id(right):
+                    _append_mapping(by_domain, domain, right, left)
+
+    return [
+        {
+            "domain": domain,
+            "direction": MappingDirection.NAME_TO_ID.value,
+            "requested_values": [],
+            "source_tool": "chat_context",
+            "matches": matches,
+        }
+        for domain, matches in sorted(by_domain.items())
+        if matches
+    ]
+
+
+def enrich_acquisition_mappings(
+    acquisition: AcquisitionPlan,
+    user_query: str,
+    known_mappings: list[dict[str, Any]],
+) -> AcquisitionPlan:
+    """Restore mapping needs that the model dropped after seeing a known numeric id."""
+
+    requirements: list[DataRequirement] = []
+    changed = False
+    for requirement in acquisition.requirements:
+        haystack = " ".join(
+            (user_query, acquisition.objective, requirement.description)
+        )
+        needs = list(requirement.mapping_needs)
+        for snapshot in known_mappings:
+            domain = _canonical_domain(str(snapshot.get("domain") or ""))
+            mentioned = [
+                str(match.get("name"))
+                for match in snapshot.get("matches") or []
+                if isinstance(match, dict)
+                and match.get("name")
+                and _name_is_mentioned(haystack, str(match["name"]))
+            ]
+            if not mentioned:
+                continue
+            existing = next(
+                (
+                    need
+                    for need in needs
+                    if _canonical_domain(need.domain) == domain
+                    and need.direction == MappingDirection.NAME_TO_ID
+                ),
+                None,
+            )
+            if existing is None:
+                needs.append(
+                    MappingNeed(
+                        domain=domain,
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=list(dict.fromkeys(mentioned)),
+                    )
+                )
+                changed = True
+            elif not existing.values:
+                replacement = existing.model_copy(
+                    update={"values": list(dict.fromkeys(mentioned))}
+                )
+                needs[needs.index(existing)] = replacement
+                changed = True
+        requirements.append(
+            requirement.model_copy(update={"mapping_needs": needs})
+            if needs != requirement.mapping_needs
+            else requirement
+        )
+    if not changed:
+        return acquisition
+    return acquisition.model_copy(update={"requirements": requirements})
+
+
+def mapping_need_is_resolved(
+    need: MappingNeed, known_mappings: list[dict[str, Any]]
+) -> bool:
+    """Return true only when every explicitly requested value has evidence."""
+
+    if not need.values:
+        return False
+    domain = _canonical_domain(need.domain)
+    matches = [
+        match
+        for snapshot in known_mappings
+        if _canonical_domain(str(snapshot.get("domain") or "")) == domain
+        for match in snapshot.get("matches") or []
+        if isinstance(match, dict)
+    ]
+    if need.direction == MappingDirection.NAME_TO_ID:
+        return all(
+            any(
+                _same_name(str(value), str(match.get("name") or ""))
+                for match in matches
+            )
+            for value in need.values
+        )
+    return all(
+        any(str(value) == str(match.get("id")) for match in matches)
+        for value in need.values
+    )
+
+
+def bind_mapping_arguments(
+    tool: UrbanMcpTool,
+    arguments: dict[str, Any],
+    known_mappings: list[dict[str, Any]],
+    intent_text: str,
+) -> dict[str, Any]:
+    """Fill domain-specific id arguments from verified mappings, never from guesses."""
+
+    prepared = dict(arguments)
+    properties = (tool.input_schema or {}).get("properties") or {}
+    for name, prop in properties.items():
+        domain = _domain_for_argument(name)
+        if domain is None:
+            continue
+        matches = [
+            match
+            for snapshot in known_mappings
+            if _canonical_domain(str(snapshot.get("domain") or "")) == domain
+            for match in snapshot.get("matches") or []
+            if isinstance(match, dict)
+            and match.get("id") is not None
+            and match.get("name")
+            and _name_is_mentioned(intent_text, str(match["name"]))
+        ]
+        if not matches:
+            continue
+        ids = list(dict.fromkeys(match["id"] for match in matches))
+        prop_type = prop.get("type") if isinstance(prop, dict) else None
+        if prop_type == "array" or name.endswith("_ids"):
+            prepared[name] = ids
+        elif len(ids) == 1:
+            prepared[name] = ids[0]
+    return prepared
+
+
+def _canonical_domain(value: str) -> str:
+    normalized = re.sub(r"[^a-zа-яё0-9]+", "_", value.casefold()).strip("_")
+    return _DOMAIN_ALIASES.get(normalized, normalized.removesuffix("s"))
+
+
+def _domain_for_argument(name: str) -> str | None:
+    lowered = name.casefold()
+    if lowered in {"scenario_id", "project_id", "id", "ids"}:
+        return None
+    if lowered.endswith("_ids"):
+        return _canonical_domain(lowered[:-4])
+    if lowered.endswith("_id"):
+        return _canonical_domain(lowered[:-3])
+    return None
+
+
+def _looks_like_id(value: Any) -> bool:
+    return isinstance(value, int) or (isinstance(value, str) and value.isdigit())
+
+
+def _append_mapping(
+    target: dict[str, list[dict[str, Any]]], domain: str, raw_id: Any, raw_name: Any
+) -> None:
+    if not domain or raw_id is None or raw_name is None:
+        return
+    identifier = int(raw_id) if isinstance(raw_id, str) and raw_id.isdigit() else raw_id
+    candidate = {"id": identifier, "name": str(raw_name)}
+    bucket = target.setdefault(domain, [])
+    if candidate not in bucket:
+        bucket.append(candidate)
+
+
+def _tokens(value: str) -> set[str]:
+    return {
+        _stem(token)
+        for token in re.findall(r"[a-zа-яё0-9]+", value.casefold())
+        if token
+    }
+
+
+def _stem(token: str) -> str:
+    for ending in _WORD_ENDINGS:
+        if len(token) - len(ending) >= 3 and token.endswith(ending):
+            return token[: -len(ending)]
+    return token
+
+
+def _name_is_mentioned(text: str, name: str) -> bool:
+    name_tokens = _tokens(name)
+    return bool(name_tokens) and name_tokens.issubset(_tokens(text))
+
+
+def _same_name(left: str, right: str) -> bool:
+    return _tokens(left) == _tokens(right)
 
 
 def mapping_snapshot(call: MappingCall, result: Any) -> dict[str, Any]:

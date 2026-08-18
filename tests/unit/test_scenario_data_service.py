@@ -37,6 +37,31 @@ def test_scenario_id_is_enforced_over_model_arguments():
     ) == {"scenario_id": 42}
 
 
+def test_scenario_project_ids_are_injected_into_their_own_arguments():
+    tool = UrbanMcpTool(
+        group="projects",
+        name="GetProjectTerritory",
+        title="Project territory",
+        description="",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scenario_id": {"type": "integer"},
+                "project_id": {"type": "integer"},
+            },
+            "required": ["scenario_id", "project_id"],
+        },
+        tags=(),
+    )
+
+    assert ScenarioDataService._prepare_arguments(
+        tool,
+        {"scenario_id": 999, "project_id": 888},
+        772,
+        project_id=604,
+    ) == {"scenario_id": 772, "project_id": 604}
+
+
 def test_scenario_id_is_optional_in_rest_dto():
     dto = ScenarioDataRequestDTO(request="Какие типы сервисов доступны?")
 

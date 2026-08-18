@@ -31,6 +31,9 @@ from src.agents.services.scenario_data_aggregate import (
 )
 from src.agents.services.scenario_data_mapping import (
     UrbanMappingResolver,
+    bind_mapping_arguments,
+    context_mapping_snapshots,
+    enrich_acquisition_mappings,
     mapping_snapshot,
 )
 from src.agents.services.service_entities.scenario_data_plan import (
@@ -76,6 +79,7 @@ class ScenarioDataLinearWorkflow:
         temperature: float,
         user_query: str,
         scenario_id: int | None,
+        project_id: int | None,
         chat_id: str | None,
         history: list[dict],
         context: dict[str, Any],
@@ -89,6 +93,18 @@ class ScenarioDataLinearWorkflow:
         fingerprints: set[str] = set()
         artifact_handles: dict[str, str] = {}
         bootstrap_satisfied: set[str] = set()
+        mappings = context_mapping_snapshots(context)
+        for snapshot in mappings:
+            observations.append(
+                {
+                    "context": "Подтверждённый маппинг из истории чата",
+                    "mapping": snapshot,
+                    "summary": (
+                        f"Домен {snapshot['domain']}: "
+                        f"{len(snapshot.get('matches') or [])} пар name/id"
+                    ),
+                }
+            )
 
         yield self._event(
             request_id,
@@ -99,9 +115,15 @@ class ScenarioDataLinearWorkflow:
             request_id,
             started,
             self.owner.plan_builder.build_acquisition_plan(
-                model, user_query, history, scenario_id, context
+                model,
+                user_query,
+                history,
+                scenario_id,
+                context,
+                project_id=project_id,
             ),
         )
+        acquisition = enrich_acquisition_mappings(acquisition, user_query, mappings)
         plan_payload = acquisition.model_dump(mode="json")
         yield self._event(request_id, "plan_created", plan_payload)
         parts.append(StructuredPartRequest(kind="plan", payload=plan_payload))
@@ -129,9 +151,12 @@ class ScenarioDataLinearWorkflow:
             )
             return
 
-        mappings: list[dict[str, Any]] = []
         mapping_calls = self.mapping_resolver.plan_calls(
-            acquisition, tools, scenario_id
+            acquisition,
+            tools,
+            scenario_id,
+            project_id=project_id,
+            known_mappings=mappings,
         )
         if mapping_calls:
             yield self._event(
@@ -156,6 +181,7 @@ class ScenarioDataLinearWorkflow:
                 scenario_id,
                 ledger,
                 parts,
+                project_id=project_id,
                 step_id=mapping_step_id,
             ):
                 yield event
@@ -223,6 +249,13 @@ class ScenarioDataLinearWorkflow:
             )
             bootstrap_satisfied.add(call.requirement_id)
             mappings.append(snapshot)
+            mapping_table = self.owner._table_from_result(
+                snapshot.get("matches"),
+                name=f"mapping_{snapshot['domain']}",
+                title=f"Маппинг {snapshot['domain']}: name ↔ id",
+            )
+            if mapping_table is not None:
+                parts.append(self.owner._table_part(mapping_table))
             observations.append(
                 {
                     "context": "Актуальный маппинг",
@@ -250,6 +283,7 @@ class ScenarioDataLinearWorkflow:
                     tools,
                     mappings,
                     scenario_id=scenario_id,
+                    project_id=project_id,
                     revision=revision,
                     observations=observations,
                     completed_fingerprints=sorted(fingerprints),
@@ -373,8 +407,23 @@ class ScenarioDataLinearWorkflow:
                         tool = urban_mcp_client.get_tool(
                             step.group or "", step.tool_name
                         )
+                        resolved_arguments = bind_mapping_arguments(
+                            tool,
+                            resolved_arguments,
+                            mappings,
+                            " ".join(
+                                (
+                                    user_query,
+                                    acquisition.objective,
+                                    step.purpose,
+                                )
+                            ),
+                        )
                         arguments = self.owner._prepare_arguments(
-                            tool, resolved_arguments, scenario_id
+                            tool,
+                            resolved_arguments,
+                            scenario_id,
+                            project_id=project_id,
                         )
                         result = None
                         async for event, value in self._execute_urban(
@@ -386,6 +435,7 @@ class ScenarioDataLinearWorkflow:
                             scenario_id,
                             ledger,
                             parts,
+                            project_id=project_id,
                             step_id=step.step_id,
                             plan_step=step,
                             fingerprint=fingerprint,
@@ -402,6 +452,7 @@ class ScenarioDataLinearWorkflow:
                             ledger,
                             parts,
                         )
+                        observation["arguments"] = arguments
                     for event in result_events:
                         yield event
                     observations.append(observation)
@@ -569,6 +620,7 @@ class ScenarioDataLinearWorkflow:
                         tools,
                         mappings,
                         scenario_id=scenario_id,
+                        project_id=project_id,
                         revision=revision,
                         reason="; ".join(validation_reasons) or "недостаточно данных",
                         observations=observations,
@@ -626,6 +678,7 @@ class ScenarioDataLinearWorkflow:
         ledger: ExecutionLedger,
         parts: list,
         *,
+        project_id: int | None = None,
         step_id: str,
         plan_step: PlanStep | None = None,
         fingerprint: str | None = None,
@@ -661,6 +714,11 @@ class ScenarioDataLinearWorkflow:
             )
         )
         result_box: list[Any] = []
+        meta = {}
+        if scenario_id is not None:
+            meta["scenario_id"] = scenario_id
+        if project_id is not None:
+            meta["project_id"] = project_id
         async for event in self.owner._retryable_operation(
             request_id,
             client,
@@ -669,7 +727,7 @@ class ScenarioDataLinearWorkflow:
                 tool.group,
                 tool.name,
                 arguments,
-                meta={"scenario_id": scenario_id} if scenario_id is not None else {},
+                meta=meta,
             ),
             result_box,
         ):
