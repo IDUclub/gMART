@@ -519,6 +519,17 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                 call["format"] = schema.model_json_schema()
             response = await self.llm_client.chat(**call)
             raw = (response.get("message") or {}).get("content") or ""
+            if (
+                schema is ExecutionPlanRevision
+                and not raw.strip()
+                and response.get("done_reason") == "length"
+            ):
+                error = "empty execution plan after reasoning exhausted max_tokens"
+                logger.warning(
+                    "Scenario-data execution planner exhausted max_tokens; "
+                    "using deterministic fallback without redundant retries"
+                )
+                break
             try:
                 payload = json.loads(strip_json_fence(raw))
                 if schema is ExecutionPlanRevision:

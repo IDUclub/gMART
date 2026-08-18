@@ -180,6 +180,29 @@ def test_unproven_named_type_is_resolved_against_both_urban_type_domains():
     ]
 
 
+def test_quoted_type_restores_a_mapping_need_dropped_by_the_planner():
+    acquisition = AcquisitionPlan(
+        objective="Вывести геослои всех школ",
+        requirements=[
+            DataRequirement(
+                requirement_id="schools",
+                description="Получить объекты типа «Школа» на территории сценария",
+            )
+        ],
+        required_output={"answer": True, "layers": ["schools_layer"]},
+    )
+
+    enriched = enrich_acquisition_mappings(acquisition, "Покажи школы", [])
+
+    assert enriched.requirements[0].mapping_needs == [
+        MappingNeed(
+            domain="physical_object_type",
+            direction=MappingDirection.NAME_TO_ID,
+            values=["Школа"],
+        )
+    ]
+
+
 def test_mapping_resolver_prefers_matching_dictionary_for_empty_mapping_values():
     resolver = UrbanMappingResolver()
     plan = AcquisitionPlan(
@@ -620,6 +643,63 @@ async def test_invalid_llm_execution_plan_falls_back_to_scenario_service_query()
     assert result.steps[0].tool_name == "GetScenarioServicesWithGeometry"
     assert result.steps[0].arguments == {"scenario_id": 772}
     assert result.required_output.layers == ["schools_layer"]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_execution_reasoning_falls_back_without_retries():
+    calls = 0
+
+    class ExhaustedLlm:
+        async def chat(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            return {
+                "message": {"content": ""},
+                "done_reason": "length",
+            }
+
+    acquisition = AcquisitionPlan(
+        objective="Вывести геослои всех школ",
+        requirements=[
+            DataRequirement(
+                requirement_id="schools",
+                description="Сервисы типа Школа на территории сценария",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="service_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=["Школа"],
+                    )
+                ],
+            )
+        ],
+        required_output={"answer": True, "layers": ["schools_layer"]},
+    )
+    scenario_services = UrbanMcpTool(
+        group="projects",
+        name="GetScenarioServicesWithGeometry",
+        title="Сервисы сценария с геометрией",
+        description="Сервисы в выбранном сценарии с геометрией",
+        input_schema={
+            "type": "object",
+            "properties": {"scenario_id": {"type": "integer"}},
+            "required": ["scenario_id"],
+        },
+        tags=(),
+    )
+
+    result = await ScenarioDataPlanBuilder(ExhaustedLlm()).build_execution_plan(
+        "model",
+        "Выведи мне геослои всех школ на территории сценария",
+        acquisition,
+        [scenario_services],
+        [{"domain": "service_type", "matches": [{"id": 22, "name": "Школа"}]}],
+        scenario_id=772,
+        project_id=604,
+    )
+
+    assert calls == 1
+    assert result.steps[0].tool_name == "GetScenarioServicesWithGeometry"
 
 
 def test_required_layer_cannot_validate_without_observed_geometry():

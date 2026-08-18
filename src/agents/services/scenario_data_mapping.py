@@ -302,6 +302,20 @@ def enrich_acquisition_mappings(
             (user_query, acquisition.objective, requirement.description)
         )
         needs = list(requirement.mapping_needs)
+        if not needs:
+            inferred_names = _quoted_type_names(haystack)
+            if inferred_names:
+                # The domain is deliberately provisional. _lookup_needs expands a
+                # named type across both Urban ontologies; the returned mappings then
+                # select the verified service/physical-object domain.
+                needs.append(
+                    MappingNeed(
+                        domain="physical_object_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=inferred_names,
+                    )
+                )
+                changed = True
         mentioned_by_domain: dict[str, list[str]] = {}
         for snapshot in known_mappings:
             domain = _canonical_domain(str(snapshot.get("domain") or ""))
@@ -404,6 +418,20 @@ def mapping_need_is_resolved(
     return all(
         any(str(value) == str(match.get("id")) for match in matches)
         for value in need.values
+    )
+
+
+def _quoted_type_names(text: str) -> list[str]:
+    """Extract explicit human-facing type names the planner forgot to map."""
+
+    if not any(marker in text.casefold() for marker in ("тип", "type")):
+        return []
+    return list(
+        dict.fromkeys(
+            match.strip()
+            for match in re.findall(r"[«\"]([^»\"]{2,80})[»\"]", text)
+            if match.strip()
+        )
     )
 
 
