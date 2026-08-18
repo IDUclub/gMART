@@ -1,3 +1,13 @@
+## v0.17.0 (2026-08-18)
+
+### Feat
+
+- **auth**: use service tokens for internal calls (#138)
+
+### Fix
+
+- **restrictions**: keep NormGraph out of geometry pipeline (#136)
+
 ## v0.16.0 (2026-08-17)
 
 ### Feat
