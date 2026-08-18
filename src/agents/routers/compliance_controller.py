@@ -34,7 +34,7 @@ async def check_compliance(
     """Check request-scoped spatial restrictions against current scenario layers."""
 
     async for chunk in stream_with_error_handling(
-        restriction_service.run_restriction_execution_pipline,
+        restriction_service.run_compliance_pipeline,
         request,
         restriction_service,
         user_request.model,
@@ -46,6 +46,5 @@ async def check_compliance(
         chat_id=user_request.chat_id,
         temperature=user_request.temperature,
         request_id=user_request.request_id,
-        history_agent="compliance",
     ):
         yield RestrictionsResponse(**chunk)
