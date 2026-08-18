@@ -298,8 +298,7 @@ physical_object_type.id — только как physical_object_type_id/physical
                 scenario_steps
                 and required.issubset(covered)
                 and any(
-                    step.tool_name.endswith("WithGeometry")
-                    for step in scenario_steps
+                    step.tool_name.endswith("WithGeometry") for step in scenario_steps
                 )
             ):
                 logger.info(
