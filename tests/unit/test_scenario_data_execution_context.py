@@ -196,7 +196,7 @@ async def test_recovery_does_not_upgrade_back_to_failed_geometry_tool():
         "Покажи поликлиники",
         _acquisition(),
         tools,
-        [],
+        [{"domain": "service_type", "matches": [{"id": 28, "name": "Поликлиника"}]}],
         scenario_id=772,
         project_id=604,
         revision=2,

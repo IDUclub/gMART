@@ -191,9 +191,12 @@ class ScenarioDataLinearWorkflow:
             if ledger.urban_calls >= MAX_URBAN_CALLS:
                 break
             mapping_step_id = f"mapping_{ledger.urban_calls + 1}"
-            mapping_arguments = dict(call.arguments)
-            if scenario_id is not None:
-                mapping_arguments.setdefault("scenario_id", scenario_id)
+            mapping_arguments = self.owner._prepare_arguments(
+                call.tool,
+                call.arguments,
+                scenario_id,
+                project_id=project_id,
+            )
             mapping_fingerprint = json.dumps(
                 [
                     PlanStepKind.URBAN_TOOL.value,

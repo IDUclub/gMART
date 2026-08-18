@@ -14,6 +14,10 @@ from src.agents.mcp_clients.urban_mcp_client import (
     UrbanMcpTool,
 )
 from src.agents.services.restriction_catalog import strip_json_fence
+from src.agents.services.scenario_data_mapping import (
+    bind_mapping_arguments,
+    mapping_need_is_resolved,
+)
 from src.agents.services.service_entities.scenario_data_action import (
     ScenarioDataAction,
     ScenarioDataActionKind,
@@ -21,6 +25,7 @@ from src.agents.services.service_entities.scenario_data_action import (
 from src.agents.services.service_entities.scenario_data_plan import (
     AcquisitionPlan,
     ExecutionPlanRevision,
+    MappingDirection,
     PlanStep,
     PlanStepKind,
 )
@@ -182,6 +187,14 @@ required_output перечисляет ожидаемые таблицы, сло
     ) -> ExecutionPlanRevision:
         """Bind a logical plan to exact catalogue tools and ordered arguments."""
 
+        unresolved_named_types = self._unresolved_named_type_requirements(
+            acquisition, mappings
+        )
+        if unresolved_named_types:
+            raise ValueError(
+                "named type mappings are unresolved for requirements: "
+                f"{sorted(unresolved_named_types)}"
+            )
         resolved_query = self._resolved_planning_query(user_query, acquisition)
         failed_tools = {
             (str(attempt.get("group") or ""), str(attempt.get("tool_name") or ""))
@@ -270,7 +283,7 @@ physical_object_type.id — только как physical_object_type_id/physical
             )
             if revision == 1 and scenario_scoped and urban_count == 0:
                 scenario_steps = self._scenario_seed_steps(
-                    acquisition, tools, scenario_id
+                    acquisition, tools, scenario_id, mappings
                 )
                 if not scenario_steps:
                     raise ValueError(
@@ -301,15 +314,23 @@ physical_object_type.id — только как physical_object_type_id/physical
                     "execution plan exceeds call budgets: "
                     f"urban={urban_count}, workspace={workspace_count}"
                 )
-            return self._canonicalize_plan(
+            canonical = self._canonicalize_plan(
                 plan,
                 tools,
                 workspace_enabled=workspace_enabled,
                 completed_step_ids=set(completed_step_ids or []),
             )
+            return self._bind_and_validate_named_type_filters(
+                canonical,
+                acquisition,
+                tools,
+                mappings,
+            )
 
         if revision == 1 and scenario_id is not None:
-            scenario_steps = self._scenario_seed_steps(acquisition, tools, scenario_id)
+            scenario_steps = self._scenario_seed_steps(
+                acquisition, tools, scenario_id, mappings
+            )
             covered = {
                 requirement_id
                 for step in scenario_steps
@@ -372,7 +393,9 @@ physical_object_type.id — только как physical_object_type_id/physical
                 )
             if revision != 1 or scenario_id is None:
                 raise
-            scenario_steps = self._scenario_seed_steps(acquisition, tools, scenario_id)
+            scenario_steps = self._scenario_seed_steps(
+                acquisition, tools, scenario_id, mappings
+            )
             if not scenario_steps:
                 raise
             logger.warning(
@@ -449,6 +472,7 @@ physical_object_type.id — только как physical_object_type_id/physical
         acquisition: AcquisitionPlan,
         tools: list[UrbanMcpTool],
         scenario_id: int,
+        mappings: list[dict[str, Any]],
     ) -> list[PlanStep]:
         """Repair an initial plan that mistakes a global mapping for scenario data."""
 
@@ -481,6 +505,12 @@ physical_object_type.id — только как physical_object_type_id/physical
             )
         )
         for requirement in acquisition.requirements:
+            named_type_needs = ScenarioDataPlanBuilder._named_type_needs(requirement)
+            if any(
+                not mapping_need_is_resolved(need, mappings)
+                for need in named_type_needs
+            ):
+                continue
             domain = " ".join(
                 [acquisition.objective, requirement.description]
                 + [need.domain for need in requirement.mapping_needs]
@@ -530,13 +560,41 @@ physical_object_type.id — только как physical_object_type_id/physical
             else:
                 continue
             tool = available.get(tool_name)
-            if tool is None or tool_name in used:
+            if tool is None:
                 continue
             arguments = (
                 {"scenario_id": scenario_id}
                 if "scenario_id" in ((tool.input_schema or {}).get("properties") or {})
                 else {}
             )
+            arguments = bind_mapping_arguments(
+                tool,
+                arguments,
+                mappings,
+                " ".join(
+                    (
+                        acquisition.objective,
+                        requirement.description,
+                        *(
+                            str(value)
+                            for need in named_type_needs
+                            for value in need.values
+                        ),
+                    )
+                ),
+            )
+            if named_type_needs and not ScenarioDataPlanBuilder._arguments_cover_needs(
+                tool, arguments, named_type_needs
+            ):
+                continue
+            call_fingerprint = json.dumps(
+                [tool.group, tool.name, arguments],
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            if call_fingerprint in used:
+                continue
             steps.append(
                 PlanStep(
                     step_id=f"scenario_data_{len(steps) + 1}",
@@ -548,8 +606,143 @@ physical_object_type.id — только как physical_object_type_id/physical
                     expected_output="scenario records",
                 )
             )
-            used.add(tool_name)
+            used.add(call_fingerprint)
         return steps
+
+    @staticmethod
+    def _type_mapping_domain(need) -> str | None:
+        if need.direction != MappingDirection.NAME_TO_ID or not need.values:
+            return None
+        normalized = re.sub(r"[^a-zа-яё0-9]+", "_", str(need.domain).casefold()).strip(
+            "_"
+        )
+        normalized = normalized.removesuffix("s")
+        if normalized in {"service_type", "physical_object_type"}:
+            return normalized
+        return None
+
+    @classmethod
+    def _named_type_needs(cls, requirement) -> list[Any]:
+        return [
+            need
+            for need in requirement.mapping_needs
+            if cls._type_mapping_domain(need) is not None
+        ]
+
+    @classmethod
+    def _unresolved_named_type_requirements(
+        cls,
+        acquisition: AcquisitionPlan,
+        mappings: list[dict[str, Any]],
+    ) -> set[str]:
+        return {
+            requirement.requirement_id
+            for requirement in acquisition.requirements
+            if any(
+                not mapping_need_is_resolved(need, mappings)
+                for need in cls._named_type_needs(requirement)
+            )
+        }
+
+    @classmethod
+    def _arguments_cover_needs(
+        cls,
+        tool: UrbanMcpTool,
+        arguments: dict[str, Any],
+        needs: list[Any],
+    ) -> bool:
+        properties = (tool.input_schema or {}).get("properties") or {}
+        for need in needs:
+            domain = cls._type_mapping_domain(need)
+            candidates = (f"{domain}_id", f"{domain}_ids")
+            supported = [name for name in candidates if name in properties]
+            if not supported or not any(
+                arguments.get(name) is not None for name in supported
+            ):
+                return False
+        return True
+
+    @classmethod
+    def _bind_and_validate_named_type_filters(
+        cls,
+        plan: ExecutionPlanRevision,
+        acquisition: AcquisitionPlan,
+        tools: list[UrbanMcpTool],
+        mappings: list[dict[str, Any]],
+    ) -> ExecutionPlanRevision:
+        requirements = {
+            requirement.requirement_id: requirement
+            for requirement in acquisition.requirements
+            if cls._named_type_needs(requirement)
+        }
+        if not requirements:
+            return plan
+        unresolved = cls._unresolved_named_type_requirements(acquisition, mappings)
+        if unresolved:
+            raise ValueError(
+                "named type mappings are unresolved for requirements: "
+                f"{sorted(unresolved)}"
+            )
+
+        available = {(tool.group, tool.name): tool for tool in tools}
+        grounded: set[str] = set()
+        bound_steps: list[PlanStep] = []
+        for step in plan.steps:
+            relevant = [
+                requirements[requirement_id]
+                for requirement_id in step.satisfies
+                if requirement_id in requirements
+            ]
+            if step.kind != PlanStepKind.URBAN_TOOL or not relevant:
+                bound_steps.append(step)
+                continue
+            tool = available.get((step.group, step.tool_name))
+            if tool is None:
+                bound_steps.append(step)
+                continue
+            needs = [
+                need
+                for requirement in relevant
+                for need in cls._named_type_needs(requirement)
+            ]
+            type_argument_names = {
+                "service_type_id",
+                "service_type_ids",
+                "physical_object_type_id",
+                "physical_object_type_ids",
+            }
+            trusted_arguments = {
+                key: value
+                for key, value in step.arguments.items()
+                if key not in type_argument_names
+            }
+            intent_text = " ".join(
+                (
+                    acquisition.objective,
+                    *(requirement.description for requirement in relevant),
+                    *(str(value) for need in needs for value in need.values),
+                )
+            )
+            arguments = bind_mapping_arguments(
+                tool,
+                trusted_arguments,
+                mappings,
+                intent_text,
+            )
+            step = step.model_copy(update={"arguments": arguments})
+            for requirement in relevant:
+                requirement_needs = cls._named_type_needs(requirement)
+                if cls._arguments_cover_needs(tool, arguments, requirement_needs):
+                    grounded.add(requirement.requirement_id)
+            bound_steps.append(step)
+
+        missing = set(requirements) - grounded
+        if missing:
+            raise ValueError(
+                "named type requirements have no grounded type-id filter: "
+                f"{sorted(missing)}"
+            )
+        return plan.model_copy(update={"steps": bound_steps})
 
     @staticmethod
     def _workspace_prompt(enabled: bool) -> str:

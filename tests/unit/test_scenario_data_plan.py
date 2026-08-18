@@ -330,13 +330,10 @@ async def test_residential_buildings_use_scenario_geometry_tool_with_type_filter
 
     assert len(plan.steps) == 1
     assert plan.steps[0].tool_name == "GetScenarioPhysicalObjectsWithGeometry"
-    tool = tools[1]
-    assert bind_mapping_arguments(
-        tool,
-        plan.steps[0].arguments,
-        mappings,
-        "Выведи мне все жилые дома на территории проекта.",
-    ) == {"scenario_id": 772, "physical_object_type_id": 4}
+    assert plan.steps[0].arguments == {
+        "scenario_id": 772,
+        "physical_object_type_id": 4,
+    }
 
 
 def test_quoted_type_restores_a_mapping_need_dropped_by_the_planner():
@@ -862,9 +859,137 @@ async def test_invalid_llm_execution_plan_falls_back_to_scenario_service_query()
     )
 
     assert result.steps[0].tool_name == "GetScenarioServicesWithGeometry"
-    assert result.steps[0].arguments == {"scenario_id": 772}
+    assert result.steps[0].arguments == {
+        "scenario_id": 772,
+        "service_type_id": 22,
+    }
     assert result.required_output.layers == ["schools_layer"]
     assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_named_type_fallback_refuses_to_run_without_verified_mapping():
+    class InvalidLlm:
+        async def chat(self, **kwargs):
+            return {"message": {"content": "not valid json"}}
+
+    acquisition = AcquisitionPlan(
+        objective="Показать школы на карте проекта",
+        requirements=[
+            DataRequirement(
+                requirement_id="schools",
+                description="Сервисы типа Школа",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="service_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=["Школа"],
+                    )
+                ],
+            )
+        ],
+        required_output={"answer": True, "layers": ["schools_layer"]},
+    )
+    scenario_services = UrbanMcpTool(
+        group="projects",
+        name="GetScenarioServicesWithGeometry",
+        title="Сервисы сценария с геометрией",
+        description="",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scenario_id": {"type": "integer"},
+                "service_type_id": {"type": "integer"},
+            },
+            "required": ["scenario_id"],
+        },
+        tags=(),
+    )
+
+    with pytest.raises(ValueError, match="named type mappings are unresolved"):
+        await ScenarioDataPlanBuilder(InvalidLlm()).build_execution_plan(
+            "model",
+            "Покажи школы на карте",
+            acquisition,
+            [scenario_services],
+            [],
+            scenario_id=772,
+            project_id=604,
+        )
+
+
+@pytest.mark.asyncio
+async def test_named_type_plan_rejects_tool_without_type_id_filter():
+    class UnfilteredLlm:
+        async def chat(self, **kwargs):
+            return {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "revision": 1,
+                            "reason": "initial",
+                            "objective": "show schools",
+                            "steps": [
+                                {
+                                    "step_id": "schools",
+                                    "kind": "urban_tool",
+                                    "purpose": "show schools",
+                                    "group": "projects",
+                                    "tool_name": "GetScenarioServicesWithGeometry",
+                                    "arguments": {"scenario_id": 772},
+                                    "satisfies": ["schools"],
+                                    "expected_output": "features",
+                                }
+                            ],
+                            "required_output": {
+                                "answer": True,
+                                "layers": ["schools_layer"],
+                            },
+                        }
+                    )
+                }
+            }
+
+    acquisition = AcquisitionPlan(
+        objective="Показать школы на карте проекта",
+        requirements=[
+            DataRequirement(
+                requirement_id="schools",
+                description="Сервисы типа Школа",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="service_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=["Школа"],
+                    )
+                ],
+            )
+        ],
+        required_output={"answer": True, "layers": ["schools_layer"]},
+    )
+    unfiltered_tool = UrbanMcpTool(
+        group="projects",
+        name="GetScenarioServicesWithGeometry",
+        title="Сервисы сценария с геометрией",
+        description="",
+        input_schema={
+            "type": "object",
+            "properties": {"scenario_id": {"type": "integer"}},
+            "required": ["scenario_id"],
+        },
+        tags=(),
+    )
+
+    with pytest.raises(ValueError, match="grounded type-id filter"):
+        await ScenarioDataPlanBuilder(UnfilteredLlm()).build_execution_plan(
+            "model",
+            "Покажи школы на карте",
+            acquisition,
+            [unfiltered_tool],
+            [{"domain": "service_type", "matches": [{"id": 22, "name": "Школа"}]}],
+            scenario_id=772,
+            project_id=604,
+        )
 
 
 @pytest.mark.asyncio
@@ -904,7 +1029,10 @@ async def test_exhausted_execution_reasoning_falls_back_without_retries():
         description="Сервисы в выбранном сценарии",
         input_schema={
             "type": "object",
-            "properties": {"scenario_id": {"type": "integer"}},
+            "properties": {
+                "scenario_id": {"type": "integer"},
+                "service_type_id": {"type": "integer"},
+            },
             "required": ["scenario_id"],
         },
         tags=(),
@@ -922,6 +1050,10 @@ async def test_exhausted_execution_reasoning_falls_back_without_retries():
 
     assert calls == 1
     assert result.steps[0].tool_name == "GetScenarioServices"
+    assert result.steps[0].arguments == {
+        "scenario_id": 772,
+        "service_type_id": 22,
+    }
 
 
 @pytest.mark.asyncio
@@ -953,7 +1085,10 @@ async def test_grounded_geometry_query_skips_the_execution_llm():
         description="Сервисы в выбранном сценарии с геометрией",
         input_schema={
             "type": "object",
-            "properties": {"scenario_id": {"type": "integer"}},
+            "properties": {
+                "scenario_id": {"type": "integer"},
+                "service_type_id": {"type": "integer"},
+            },
             "required": ["scenario_id"],
         },
         tags=(),
@@ -970,6 +1105,10 @@ async def test_grounded_geometry_query_skips_the_execution_llm():
     )
 
     assert result.steps[0].tool_name == "GetScenarioServicesWithGeometry"
+    assert result.steps[0].arguments == {
+        "scenario_id": 772,
+        "service_type_id": 22,
+    }
 
 
 def test_required_layer_cannot_validate_without_observed_geometry():
@@ -1060,7 +1199,10 @@ async def test_required_layer_upgrades_a_valid_plan_to_geometry_tool():
                                     "purpose": "show schools",
                                     "group": "projects",
                                     "tool_name": "GetScenarioServices",
-                                    "arguments": {"scenario_id": 772},
+                                    "arguments": {
+                                        "scenario_id": 772,
+                                        "service_type_id": 999,
+                                    },
                                     "satisfies": ["schools"],
                                     "expected_output": "school features",
                                 }
@@ -1121,6 +1263,10 @@ async def test_required_layer_upgrades_a_valid_plan_to_geometry_tool():
     )
 
     assert result.steps[0].tool_name == "GetScenarioServicesWithGeometry"
+    assert result.steps[0].arguments == {
+        "scenario_id": 772,
+        "service_type_id": 22,
+    }
 
 
 @pytest.mark.asyncio

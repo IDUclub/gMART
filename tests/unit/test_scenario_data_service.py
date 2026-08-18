@@ -37,6 +37,27 @@ def test_scenario_id_is_enforced_over_model_arguments():
     ) == {"scenario_id": 42}
 
 
+def test_global_dictionary_does_not_receive_scenario_or_project_ids():
+    tool = UrbanMcpTool(
+        group="dictionaries",
+        name="GetServiceTypes",
+        title="Service types",
+        description="",
+        input_schema={"type": "object", "properties": {}},
+        tags=(),
+    )
+
+    assert (
+        ScenarioDataService._prepare_arguments(
+            tool,
+            {"scenario_id": 999, "project_id": 888},
+            772,
+            project_id=604,
+        )
+        == {}
+    )
+
+
 def test_scenario_project_ids_are_injected_into_their_own_arguments():
     tool = UrbanMcpTool(
         group="projects",
