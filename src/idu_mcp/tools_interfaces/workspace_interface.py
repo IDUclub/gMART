@@ -12,7 +12,6 @@ from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, Field
 
-from src.idu_mcp.common.auth.token_verifier import AnyTokenVerifier
 from src.idu_mcp.dependencies.auth_dependencies import extract_workspace_owner
 from src.idu_mcp.dependencies.dependencies import get_workspace_store
 from src.idu_mcp.tools_services.workspace_store import (
@@ -20,7 +19,7 @@ from src.idu_mcp.tools_services.workspace_store import (
     frame_from_payload,
 )
 
-workspace_mcp = FastMCP("SCENARIO DATA WORKSPACE", auth=AnyTokenVerifier())
+workspace_mcp = FastMCP("SCENARIO DATA WORKSPACE")
 tags = {"workspace", "scenario_data"}
 annotations = {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False}
 

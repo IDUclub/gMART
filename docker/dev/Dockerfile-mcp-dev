@@ -19,6 +19,7 @@ RUN uv pip install --system .
 
 # code base
 COPY src/__init__.py src/__version__.py ./src/
+COPY src/common ./src/common
 COPY src/idu_mcp ./src/idu_mcp
 
 # default

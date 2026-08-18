@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from fastmcp import Client
+from idu_service_auth import KeycloakTokenClient
 from loguru import logger
 
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
@@ -48,6 +49,7 @@ from src.agents.services.service_entities.scenario_data_plan import (
     PlanStepKind,
     StepStatus,
 )
+from src.common.service_auth import ServiceTokenAuth, user_id_from_jwt
 
 if TYPE_CHECKING:
     from src.agents.services.scenario_data_service import ScenarioDataService
@@ -68,10 +70,12 @@ class ScenarioDataLinearWorkflow:
         *,
         workspace_enabled: bool = False,
         idu_mcp_url: str | None = None,
+        service_auth: KeycloakTokenClient | None = None,
     ) -> None:
         self.owner = owner
         self.workspace_enabled = workspace_enabled and bool(idu_mcp_url)
         self.idu_mcp_url = idu_mcp_url
+        self.service_auth = service_auth
         self.mapping_resolver = UrbanMappingResolver()
 
     async def run(
@@ -1141,8 +1145,13 @@ class ScenarioDataLinearWorkflow:
         return observation, events
 
     def _workspace_client(self, token: str) -> IduMcpClient:
+        if self.service_auth is None:
+            raise RuntimeError("Service auth is not configured")
         return IduMcpClient(
-            Client(self.idu_mcp_url, auth=token), self.idu_mcp_url or ""
+            Client(
+                self.idu_mcp_url,
+                auth=ServiceTokenAuth(self.service_auth, user_id_from_jwt(token)),
+            )
         )
 
     @classmethod

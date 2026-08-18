@@ -4,13 +4,12 @@ from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
 from geojson_pydantic import FeatureCollection
 
-from src.idu_mcp.common.auth.token_verifier import AnyTokenVerifier
-from src.idu_mcp.dependencies.auth_dependencies import extract_token
+from src.idu_mcp.dependencies.auth_dependencies import extract_user_id
 from src.idu_mcp.dependencies.dependencies import get_urban_api_tools
 from src.idu_mcp.tools_services.entites.object_type_enum import ObjectTypeEnum
 from src.idu_mcp.tools_services.urb_api_tools import UrbanApiTool
 
-urban_api_mcp = FastMCP("URBAN API MCP", auth=AnyTokenVerifier())
+urban_api_mcp = FastMCP("URBAN API MCP")
 tools_tags = {"data", "urban_api"}
 
 
@@ -38,7 +37,7 @@ async def get_services_by_name(
         "Название сервиса на русском языке в единственном числе и именительном падеже",
     ],
     scenario_id: Annotated[int, "ID сценария из Urban API"],
-    token: str = Depends(extract_token),
+    user_id: str = Depends(extract_user_id),
     urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
 ) -> dict[str, FeatureCollection]:
     """
@@ -53,7 +52,7 @@ async def get_services_by_name(
     """
 
     return await urban_api_tools.get_entity_by_names(
-        scenario_id, services_names, ObjectTypeEnum.SERVICE, token
+        scenario_id, services_names, ObjectTypeEnum.SERVICE, user_id
     )
 
 
@@ -80,7 +79,7 @@ async def get_physical_objects_by_name(
         list[str], "Physical object names as list from db"
     ],
     scenario_id: Annotated[int, "ID сценария из Urban API"],
-    token: str = Depends(extract_token),
+    user_id: str = Depends(extract_user_id),
     urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
 ) -> dict[str, FeatureCollection]:
     """
@@ -98,7 +97,7 @@ async def get_physical_objects_by_name(
         scenario_id,
         physical_objects_names,
         ObjectTypeEnum.PHYSICAL_OBJECT,
-        token,
+        user_id,
     )
 
 
@@ -117,7 +116,7 @@ async def get_physical_objects_by_name(
 )
 async def get_service_type_id_by_name(
     service_name: str,
-    token: str = Depends(extract_token),
+    user_id: str = Depends(extract_user_id),
     urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
 ) -> int | None:
     """
@@ -130,4 +129,4 @@ async def get_service_type_id_by_name(
         int: Retrieved service ID by name.
     """
 
-    return await urban_api_tools.get_entity_id_by_name(service_name, token)
+    return await urban_api_tools.get_entity_id_by_name(service_name, user_id)

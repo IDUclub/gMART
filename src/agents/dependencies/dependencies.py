@@ -1,5 +1,5 @@
 from fastapi import Depends
-from fastmcp import Client
+from idu_service_auth import KeycloakTokenClient
 
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.auth.auth import verify_bearer_token
@@ -27,6 +27,11 @@ from src.agents.services.scenario_data_a2a_service import ScenarioDataA2AService
 from src.agents.services.scenario_data_service import ScenarioDataService
 from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.system_service import SystemService
+from src.common.service_auth import (
+    ServiceTokenAuth,
+    service_mcp_client,
+    user_id_from_jwt,
+)
 
 app_deps: dict[str, object] = init_dependencies()
 
@@ -36,7 +41,7 @@ async def get_mcp_diagnostics_service(
 ) -> McpDiagnosticsService:
     """Return the request-scoped, allowlisted MCP console service."""
 
-    return McpDiagnosticsService(get_app_config(), token)
+    return McpDiagnosticsService(get_app_config(), token, get_service_auth())
 
 
 def get_app_config() -> AgentsAppConfig:
@@ -50,6 +55,13 @@ def get_app_config() -> AgentsAppConfig:
     if not isinstance(app_config, AgentsAppConfig):
         raise TypeError(f"Expected AgentsAppConfig, got {type(app_config)}")
     return app_config
+
+
+def get_service_auth() -> KeycloakTokenClient:
+    auth = app_deps["service_auth"]
+    if not isinstance(auth, KeycloakTokenClient):
+        raise TypeError(f"Expected KeycloakTokenClient, got {type(auth)}")
+    return auth
 
 
 def get_simple_llm_service() -> SimpleLlmService:
@@ -98,7 +110,10 @@ async def get_idu_mcp_client(
     """
 
     mcp_url: str = app_deps["app_config"].IDU_MCP_URL
-    return IduMcpClient(Client(mcp_url, auth=token), mcp_url=mcp_url)
+    client = await service_mcp_client(
+        mcp_url, get_service_auth(), user_id_from_jwt(token)
+    )
+    return IduMcpClient(client)
 
 
 async def get_effects_mcp_client(
@@ -113,14 +128,19 @@ async def get_effects_mcp_client(
     """
 
     mcp_url: str = app_deps["app_config"].EFFECTS_MCP_URL
-    return EffectsMcpClient(Client(mcp_url, auth=token), mcp_url=mcp_url)
+    client = await service_mcp_client(
+        mcp_url, get_service_auth(), user_id_from_jwt(token)
+    )
+    return EffectsMcpClient(client)
 
 
-async def get_dvd_mcp_client() -> DvdMcpClient:
+async def get_dvd_mcp_client(
+    token: str = Depends(verify_bearer_token),
+) -> DvdMcpClient:
     """
     Function returns a DvdMcpClient for the IDU_DVD document vector-DB MCP server.
 
-    The IDU_DVD MCP server is unauthenticated, so no bearer token is attached.
+    The IDU_DVD MCP server receives the process-wide service token and user id.
     Returns:
         DvdMcpClient: Client for the IDU_DVD MCP server.
     Raises:
@@ -132,7 +152,10 @@ async def get_dvd_mcp_client() -> DvdMcpClient:
         raise ValueError(
             "DVD_MCP_SERVER is not configured — set it to enable the /documents agent"
         )
-    return DvdMcpClient(Client(mcp_url), mcp_url=mcp_url)
+    client = await service_mcp_client(
+        mcp_url, get_service_auth(), user_id_from_jwt(token)
+    )
+    return DvdMcpClient(client, mcp_url=mcp_url)
 
 
 def get_dvd_rag_service() -> DvdRagService:
@@ -161,11 +184,13 @@ async def get_dvd_a2a_service() -> DocumentQaA2AService:
     return service
 
 
-async def get_normgraph_mcp_client() -> NormGraphMcpClient:
+async def get_normgraph_mcp_client(
+    token: str = Depends(verify_bearer_token),
+) -> NormGraphMcpClient:
     """
     Function returns a NormGraphMcpClient for the NormGraph restriction-graph MCP server.
 
-    The NormGraph MCP server is unauthenticated, so no bearer token is attached.
+    The NormGraph MCP server receives the process-wide service token and user id.
     Returns:
         NormGraphMcpClient: Client for the NormGraph MCP server.
     Raises:
@@ -177,10 +202,15 @@ async def get_normgraph_mcp_client() -> NormGraphMcpClient:
         raise ValueError(
             "NORM_GRAPH_MCP_SERVER is not configured — set it to enable the /norms agent"
         )
-    return NormGraphMcpClient(Client(mcp_url), mcp_url=mcp_url)
+    client = await service_mcp_client(
+        mcp_url, get_service_auth(), user_id_from_jwt(token)
+    )
+    return NormGraphMcpClient(client, mcp_url=mcp_url)
 
 
-async def get_optional_dvd_mcp_client() -> DvdMcpClient | None:
+async def get_optional_dvd_mcp_client(
+    token: str = Depends(verify_bearer_token),
+) -> DvdMcpClient | None:
     """
     Function returns a DvdMcpClient when DVD_MCP_SERVER is configured, else None.
 
@@ -193,10 +223,15 @@ async def get_optional_dvd_mcp_client() -> DvdMcpClient | None:
     mcp_url: str | None = app_deps["app_config"].DVD_MCP_URL
     if not mcp_url:
         return None
-    return DvdMcpClient(Client(mcp_url), mcp_url=mcp_url)
+    client = await service_mcp_client(
+        mcp_url, get_service_auth(), user_id_from_jwt(token)
+    )
+    return DvdMcpClient(client, mcp_url=mcp_url)
 
 
-async def get_optional_normgraph_mcp_client() -> NormGraphMcpClient | None:
+async def get_optional_normgraph_mcp_client(
+    token: str = Depends(verify_bearer_token),
+) -> NormGraphMcpClient | None:
     """
     Function returns a NormGraphMcpClient when NORM_GRAPH_MCP_SERVER is configured, else None.
 
@@ -209,7 +244,10 @@ async def get_optional_normgraph_mcp_client() -> NormGraphMcpClient | None:
     mcp_url: str | None = app_deps["app_config"].NORM_GRAPH_MCP_URL
     if not mcp_url:
         return None
-    return NormGraphMcpClient(Client(mcp_url), mcp_url=mcp_url)
+    client = await service_mcp_client(
+        mcp_url, get_service_auth(), user_id_from_jwt(token)
+    )
+    return NormGraphMcpClient(client, mcp_url=mcp_url)
 
 
 async def get_urban_mcp_client(
@@ -223,7 +261,10 @@ async def get_urban_mcp_client(
             "URBAN_MCP_SERVER is not configured — set it to enable the "
             "/scenario-data agent"
         )
-    return UrbanMcpClient(base_url, token)
+    return UrbanMcpClient(
+        base_url,
+        ServiceTokenAuth(get_service_auth(), user_id_from_jwt(token)),
+    )
 
 
 async def get_optional_urban_mcp_client(
@@ -232,7 +273,12 @@ async def get_optional_urban_mcp_client(
     """Return Urban MCP client for the orchestrator when configured."""
 
     base_url: str | None = app_deps["app_config"].URBAN_MCP_URL
-    return UrbanMcpClient(base_url, token) if base_url else None
+    if not base_url:
+        return None
+    return UrbanMcpClient(
+        base_url,
+        ServiceTokenAuth(get_service_auth(), user_id_from_jwt(token)),
+    )
 
 
 def get_orchestrator_service() -> OrchestratorService:

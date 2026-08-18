@@ -12,6 +12,9 @@ is ever opened.
 
 from __future__ import annotations
 
+import base64
+import json
+
 import pytest
 
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
@@ -86,6 +89,20 @@ def _handler(max_retries: int = 3) -> JsonApiHandler:
     return JsonApiHandler("http://urban", max_retries=max_retries, backoff_base=0)
 
 
+class FakeServiceAuth:
+    async def get_authorization_headers(self):
+        return {"Authorization": "Bearer service-token"}
+
+
+def _user_token(user_id: str) -> str:
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"sub": user_id}).encode())
+        .decode()
+        .rstrip("=")
+    )
+    return f"header.{payload}.signature"
+
+
 # --------------------------------------------------------------------------- #
 # Success
 # --------------------------------------------------------------------------- #
@@ -102,6 +119,24 @@ async def test_post_accepts_202_and_empty_204():
 
     empty = FakeSession([FakeResponse(204, json_body=None)])
     assert await _handler().post("/jobs/claim", session=empty) is None
+
+
+async def test_service_auth_owns_authorization_and_user_headers():
+    handler = JsonApiHandler("http://urban", service_auth=FakeServiceAuth())
+    headers = await handler._with_auth(
+        {"Authorization": "Bearer caller-token", "X-User-Id": "spoofed"},
+        _user_token("u1"),
+    )
+
+    assert headers["Authorization"] == "Bearer service-token"
+    assert headers["X-User-Id"] == "u1"
+
+
+async def test_service_auth_is_used_without_user_context():
+    handler = JsonApiHandler("http://urban", service_auth=FakeServiceAuth())
+    headers = await handler._with_auth(None, None)
+
+    assert headers == {"Authorization": "Bearer service-token"}
 
 
 # --------------------------------------------------------------------------- #
