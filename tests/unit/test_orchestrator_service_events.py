@@ -232,6 +232,7 @@ async def test_second_step_receives_first_step_digest(orchestrator, fake_llm):
     events = await run_pipeline(orchestrator)
 
     assert restriction.calls[0]["user_query"] == "Построй ограничения"
+    assert "normgraph_mcp_client" not in restriction.calls[0]
     second_query = provision.calls[0]["user_query"]
     assert second_query.startswith("Оцени обеспеченность")
     assert "Контекст — результаты предыдущих шагов" in second_query

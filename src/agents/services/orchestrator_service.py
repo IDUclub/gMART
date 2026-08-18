@@ -319,7 +319,6 @@ class OrchestratorService(BaseLlmService):
                 scenario_id=scenario_id,
                 request_id=step_request_id,
                 persist_history=False,
-                normgraph_mcp_client=normgraph_mcp_client,
             )
         if step.agent == OrchestratorAgent.PROVISION:
             if scenario_id is None:
