@@ -1,5 +1,6 @@
 import redis.asyncio as aioredis
 
+from src.common.service_auth import build_service_auth
 from src.idu_mcp.common.config.mcp_config_loader import load_config
 from src.idu_mcp.dependencies.tool_deps.base_tool_dep import BaseDep
 from src.idu_mcp.dependencies.tool_deps.server_deps import ServerDeps
@@ -13,6 +14,7 @@ from src.idu_mcp.tools_services.workspace_store import WorkspaceStore
 def init_dependencies() -> dict[str, BaseDep]:
 
     mcp_config = load_config()
+    service_auth = build_service_auth()
     workspace_store = None
     if mcp_config.WORKSPACE_ENABLED:
         workspace_store = WorkspaceStore(
@@ -24,7 +26,8 @@ def init_dependencies() -> dict[str, BaseDep]:
         )
     return {
         "mcp_config": mcp_config,
-        "urban_api_tools": UrbanApiToolsDeps(mcp_config.URBAN_API_URL),
+        "service_auth": service_auth,
+        "urban_api_tools": UrbanApiToolsDeps(mcp_config.URBAN_API_URL, service_auth),
         "geom_tools": GeometryTools(),
         "server_deps": ServerDeps(mcp_config.APP_WORKERS),
         "workspace_store": workspace_store,

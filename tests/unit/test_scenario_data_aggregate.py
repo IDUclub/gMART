@@ -11,7 +11,9 @@ from src.agents.services.scenario_data_aggregate import (
     aggregate_result,
     answer_records,
     bounded_observation_context,
+    bounded_public_observation_context,
     extract_records,
+    sanitize_public_answer,
     unresolved_references,
 )
 
@@ -197,6 +199,54 @@ def test_bounded_context_keeps_recent_evidence_and_valid_json():
     assert '"name": "Школа"' in context
     assert "x" * 100 not in context
     assert context.startswith('{"order": "most_recent_first"')
+
+
+def test_bounded_context_marks_a_table_already_sent_to_the_client():
+    context = bounded_observation_context(
+        [{"table_count": 1, "aggregate": {"total_records": 70}}], max_chars=1000
+    )
+
+    assert '"table_count": 1' in context
+
+
+def test_public_context_keeps_names_and_counts_but_hides_internal_ids():
+    context = bounded_public_observation_context(
+        [
+            {
+                "arguments": {"scenario_id": 772, "service_type_id": 22},
+                "summary": '{"project_id": 604, "name": "Школа"}',
+                "aggregate": {
+                    "total_records": 70,
+                    "breakdown": {
+                        "service_type_id": {"counts": {"22": 70}},
+                        "service_type.name": {"counts": {"Школа": 70}},
+                    },
+                },
+                "mapping": {
+                    "domain": "service_type",
+                    "matches": [{"id": 22, "name": "Школа"}],
+                },
+            }
+        ],
+        max_chars=2000,
+    )
+
+    assert "Школа" in context
+    assert '"total_records": 70' in context
+    assert "scenario_id" not in context
+    assert "project_id" not in context
+    assert "service_type_id" not in context
+    assert '"id": 22' not in context
+    assert "arguments" not in context
+
+
+def test_public_answer_removes_explicit_metadata_identifiers():
+    answer = sanitize_public_answer(
+        "Найдено 70 школ.\nМетаданные: scenario_id=772, project_id=604\n"
+        "ID типа сервиса: 22"
+    )
+
+    assert answer == "Найдено 70 школ."
 
 
 class TestUnresolvedReferences:

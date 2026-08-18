@@ -24,6 +24,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev
 
 COPY src/__init__.py src/__version__.py ./src/
+COPY src/common ./src/common
 COPY src/agents ./src/agents
 COPY --from=ui-builder /ui/dist ./frontend/dist
 

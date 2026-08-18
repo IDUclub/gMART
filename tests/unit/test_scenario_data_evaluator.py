@@ -40,9 +40,11 @@ class FakeLlm:
     def __init__(self, payload):
         self._payload = payload
         self.calls = 0
+        self.last_kwargs = None
 
     async def chat(self, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
         content = (
             self._payload
             if isinstance(self._payload, str)
@@ -153,6 +155,37 @@ class TestEvaluator:
         )
 
         assert verdict.sufficient is True
+
+    @pytest.mark.asyncio
+    async def test_the_judge_knows_the_full_table_is_already_visible(self):
+        llm = FakeLlm({"sufficient": True, "missing": ""})
+        evaluator = ScenarioDataEvaluator(llm)
+        observations = [
+            {
+                "table_count": 1,
+                "aggregate": {
+                    "total_records": 70,
+                    "breakdown": {
+                        "physical_object_type.name": {
+                            "distinct_values": 1,
+                            "counts": {"Жилой дом": 70},
+                        }
+                    },
+                },
+            }
+        ]
+
+        verdict = await evaluator.evaluate(
+            "m",
+            "Выведи все жилые дома",
+            observations,
+            "Всего 70 жилых домов. Полный перечень находится в таблице.",
+        )
+
+        assert verdict.sufficient is True
+        system_prompt = llm.last_kwargs["messages"][0]["content"]
+        assert "Не требуй перепечатывать её строки" in system_prompt
+        assert '"table_count": 1' in system_prompt
 
     @pytest.mark.asyncio
     async def test_a_broken_judge_never_blocks_the_answer(self):

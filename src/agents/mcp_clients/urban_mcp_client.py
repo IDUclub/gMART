@@ -87,7 +87,7 @@ class UrbanMcpClient:
     def __init__(
         self,
         base_url: str,
-        token: str,
+        token: Any,
         *,
         clients: dict[str, Any] | None = None,
         client_factory: Callable[..., Any] = McpClient,
@@ -106,7 +106,7 @@ class UrbanMcpClient:
             raise ValueError(f"Unknown Urban MCP group: {group}")
         return f"{self.base_url}/mcp/{group}/"
 
-    def _build_clients(self, token: str) -> dict[str, Any]:
+    def _build_clients(self, token: Any) -> dict[str, Any]:
         auth = {"auth": token} if token else {}
         return {
             group: self._client_factory(self.endpoint_url(group), **auth)
@@ -114,6 +114,8 @@ class UrbanMcpClient:
         }
 
     def update_token(self, new_token: str) -> None:
+        if not isinstance(self._token, str):
+            return
         self._token = new_token
         self._clients = self._build_clients(new_token)
 

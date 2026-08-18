@@ -31,6 +31,7 @@ from src.agents.routers.scenario_data_controller import scenario_data_router
 from src.agents.routers.simple_llm_controller import llm_router
 from src.agents.routers.system_controller import system_router
 from src.agents.routers.token_refresh_controller import token_refresh_router
+from src.common.service_auth import service_auth_lifespan
 
 config_logger()
 
@@ -40,7 +41,8 @@ UI_DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"loaded dependencies {app_deps}")
-    yield
+    async with service_auth_lifespan(app_deps["service_auth"]):
+        yield
 
 
 app = FastAPI(

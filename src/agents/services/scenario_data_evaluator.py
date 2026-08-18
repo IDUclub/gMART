@@ -27,7 +27,9 @@ from typing import Any
 from loguru import logger
 
 from src.agents.services.restriction_catalog import strip_json_fence
-from src.agents.services.scenario_data_aggregate import bounded_observation_context
+from src.agents.services.scenario_data_aggregate import (
+    bounded_public_observation_context,
+)
 
 #: Extra tool-loop passes allowed after a rejected answer.
 MAX_ANSWER_ATTEMPTS = 2
@@ -204,7 +206,7 @@ class ScenarioDataEvaluator:
         observations: list[dict[str, Any]],
         answer: str,
     ) -> tuple[bool, str] | None:
-        context = bounded_observation_context(observations, max_chars=12000)
+        context = bounded_public_observation_context(observations, max_chars=12000)
         prompt = (
             "Ты проверяешь ответ агента по городским данным. Верни строгий JSON "
             '{"sufficient": bool, "missing": str}.\n'
@@ -213,6 +215,10 @@ class ScenarioDataEvaluator:
             "или обещает данные, которых не привёл.\n"
             "sufficient=true, если наблюдения действительно пусты и ответ честно об этом "
             "говорит.\n"
+            "Если наблюдение содержит table_count > 0, полная таблица уже показана "
+            "пользователю отдельной частью ответа. Не требуй перепечатывать её строки "
+            "в тексте: точного количества и ссылки на полную таблицу достаточно. При "
+            "этом проверь, что таблица действительно отфильтрована по запросу.\n"
             "В missing — что именно должен сделать следующий проход: какой инструмент "
             "вызвать или какие числа привести. Пиши по-русски, одной-двумя фразами.\n\n"
             f"Наблюдения:\n{context}"

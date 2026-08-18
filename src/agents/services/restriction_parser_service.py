@@ -100,6 +100,61 @@ class RestrictionParserService(BaseLlmService):
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
+    ) -> AsyncGenerator:
+        """Run the standard geometry-only restrictions pipeline."""
+
+        async for item in self._run_pipeline_entry(
+            mcp_client=mcp_client,
+            temperature=temperature,
+            model=model,
+            user_query=user_query,
+            scenario_id=scenario_id,
+            chat_id=chat_id,
+            request_id=request_id,
+            persist_history=persist_history,
+            normgraph_mcp_client=None,
+            history_agent="restrictions",
+        ):
+            yield item
+
+    async def run_compliance_pipeline(
+        self,
+        mcp_client: IduMcpClient,
+        temperature: float,
+        model: str | None,
+        user_query: str,
+        scenario_id: int,
+        normgraph_mcp_client: NormGraphMcpClient | None,
+        chat_id: str | None = None,
+        request_id: str | None = None,
+        persist_history: bool = True,
+    ) -> AsyncGenerator:
+        """Run the compliance pipeline with optional normative grounding."""
+
+        async for item in self._run_pipeline_entry(
+            mcp_client=mcp_client,
+            temperature=temperature,
+            model=model,
+            user_query=user_query,
+            scenario_id=scenario_id,
+            chat_id=chat_id,
+            request_id=request_id,
+            persist_history=persist_history,
+            normgraph_mcp_client=normgraph_mcp_client,
+            history_agent="compliance",
+        ):
+            yield item
+
+    async def _run_pipeline_entry(
+        self,
+        mcp_client: IduMcpClient,
+        temperature: float,
+        model: str | None,
+        user_query: str,
+        scenario_id: int,
+        chat_id: str | None = None,
+        request_id: str | None = None,
+        persist_history: bool = True,
         normgraph_mcp_client: NormGraphMcpClient | None = None,
         history_agent: str = "restrictions",
     ) -> AsyncGenerator:

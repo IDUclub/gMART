@@ -38,6 +38,24 @@ GLOBAL_PHYSICAL_TYPES = _tool(
     "Получить типы физических объектов",
     scenario=False,
 )
+SERVICES = _tool(
+    "projects",
+    "GetScenarioServices",
+    "Получить сервисы сценария",
+    scenario=True,
+)
+SERVICE_TYPES = _tool(
+    "projects",
+    "GetScenarioServiceTypes",
+    "Получить типы сервисов сценария",
+    scenario=True,
+)
+GLOBAL_SERVICE_TYPES = _tool(
+    "dictionaries",
+    "GetServiceTypes",
+    "Получить типы сервисов",
+    scenario=False,
+)
 
 
 class FakeUrbanMcp:
@@ -48,7 +66,14 @@ class FakeUrbanMcp:
 
     async def load_tools(self):
         self.load_calls += 1
-        return [PHYSICAL_OBJECTS, PHYSICAL_TYPES, GLOBAL_PHYSICAL_TYPES]
+        return [
+            PHYSICAL_OBJECTS,
+            PHYSICAL_TYPES,
+            GLOBAL_PHYSICAL_TYPES,
+            SERVICES,
+            SERVICE_TYPES,
+            GLOBAL_SERVICE_TYPES,
+        ]
 
     async def execute_tool(self, group, name, arguments, *, meta):
         self.calls.append((group, name, arguments, meta))
@@ -63,6 +88,14 @@ def _type(type_id: int, name: str) -> dict:
         "physical_object_type_id": type_id,
         "name": name,
         "physical_object_function": {"id": 1, "name": "Здание"},
+    }
+
+
+def _service_type(type_id: int, name: str) -> dict:
+    return {
+        "service_type_id": type_id,
+        "name": name,
+        "urban_function": {"id": 1, "name": "Образование"},
     }
 
 
@@ -94,6 +127,59 @@ async def test_ambiguous_objects_question_finishes_with_clarification(
     )
     assert "физические объекты" in text and "сервисы" in text
     assert mcp.load_calls == 0
+    assert events[-1] == {"type": "chunk", "content": {"text": "", "done": True}}
+
+
+async def test_available_service_types_use_the_selected_scenario_by_default(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: fake_llm,
+    )
+    service = ScenarioDataService("http://llm", AsyncMock(), fake_urban, state_store)
+    school = _service_type(22, "Школа")
+    mcp = FakeUrbanMcp(
+        {
+            "GetScenarioServices": [
+                {"service_id": 1, "service_type": school},
+                {"service_id": 2, "service_type": school},
+            ],
+            "GetScenarioServiceTypes": [school],
+        }
+    )
+
+    events = [
+        event
+        async for event in service.run_scenario_data_pipeline(
+            urban_mcp_client=mcp,
+            token="token",
+            model="model",
+            temperature=0,
+            user_query="Какие типы городских сервисов доступны?",
+            scenario_id=772,
+            persist_history=False,
+        )
+    ]
+
+    text = "".join(
+        event["content"]["text"] for event in events if event.get("type") == "chunk"
+    )
+    assert "2 уникальных сервиса" in text
+    assert "сценария 772" not in text
+    assert [call[1] for call in mcp.calls] == [
+        "GetScenarioServices",
+        "GetScenarioServiceTypes",
+    ]
+    table = next(event["content"] for event in events if event["type"] == "table")
+    assert table["rows"] == [
+        {
+            "type_name": "Школа",
+            "count": 2,
+            "status": "точное соответствие",
+            "possible_types": "—",
+        }
+    ]
     assert events[-1] == {"type": "chunk", "content": {"text": "", "done": True}}
 
 
@@ -137,7 +223,6 @@ async def test_physical_type_count_bypasses_llm_and_returns_complete_table(
     table = next(event["content"] for event in events if event["type"] == "table")
     assert table["rows"] == [
         {
-            "type_id": 5,
             "type_name": "Нежилое здание",
             "count": 2,
             "status": "точное соответствие",
@@ -236,7 +321,6 @@ async def test_unknown_project_type_is_resolved_from_global_dictionary(
     table = next(event["content"] for event in events if event["type"] == "table")
     assert table["rows"] == [
         {
-            "type_id": 7,
             "type_name": "Площадка",
             "count": 1,
             "status": "точное соответствие",

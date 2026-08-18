@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  appendIterationChunk,
   appendSseExchange,
   mergeMessageWindow,
   oldestServerSequence,
@@ -68,4 +69,39 @@ test("current browser messages win when an older page is merged", () => {
 
   assert.equal(result.messages[1].parts[0].payload.text, "SSE");
   assert.equal(oldestServerSequence(result.messages), 1);
+});
+
+test("a revised SSE answer is reset once and then accumulated", () => {
+  const base = "**План работы**\n\n";
+  const first = appendIterationChunk(
+    "Черновой ответ",
+    base,
+    "Уточнённый ",
+    2,
+    1,
+  );
+  const second = appendIterationChunk(
+    first.answer,
+    base,
+    "ответ",
+    2,
+    first.iteration,
+  );
+  const terminal = appendIterationChunk(
+    second.answer,
+    base,
+    "",
+    2,
+    second.iteration,
+  );
+
+  assert.equal(terminal.answer, "**План работы**\n\nУточнённый ответ");
+  assert.equal(terminal.iteration, 2);
+});
+
+test("ordinary SSE chunks keep accumulating without an iteration marker", () => {
+  const result = appendIterationChunk("Первый ", "", "второй", undefined, 1);
+
+  assert.equal(result.answer, "Первый второй");
+  assert.equal(result.iteration, 1);
 });

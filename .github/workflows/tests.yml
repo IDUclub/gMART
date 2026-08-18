@@ -9,6 +9,12 @@ concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SERVICE_AUTH_SERVER_URL: http://localhost:9999
+  SERVICE_AUTH_REALM: test
+  SERVICE_AUTH_CLIENT_ID: test-client
+  SERVICE_AUTH_CLIENT_SECRET: test-secret
+
 jobs:
   unit-tests:
     name: Unit tests

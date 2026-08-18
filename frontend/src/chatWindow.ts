@@ -15,10 +15,37 @@ export type SseExchange = {
   tables: TableData[];
 };
 
+export type IterationChunk = {
+  answer: string;
+  iteration: number | undefined;
+};
+
 const defaultLimits: MessageWindowLimits = {
   maxMessages: MAX_CHAT_MESSAGES,
   maxBytes: MAX_CHAT_BYTES,
 };
+
+export function appendIterationChunk(
+  current: string,
+  stepBase: string,
+  text: string,
+  iteration: unknown,
+  activeIteration: number | undefined,
+): IterationChunk {
+  const nextIteration =
+    typeof iteration === "number" && Number.isFinite(iteration)
+      ? iteration
+      : activeIteration;
+  const startsRevision =
+    nextIteration !== undefined &&
+    nextIteration > 1 &&
+    nextIteration !== activeIteration;
+
+  return {
+    answer: startsRevision ? stepBase + text : current + text,
+    iteration: nextIteration,
+  };
+}
 
 export function estimateMessageBytes(message: Message): number {
   try {

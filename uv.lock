@@ -1466,6 +1466,8 @@ dependencies = [
     { name = "fastmcp-docs" },
     { name = "geojson-pydantic" },
     { name = "geopandas" },
+    { name = "httpx" },
+    { name = "idu-service-auth" },
     { name = "loguru" },
     { name = "ollama" },
     { name = "openai" },
@@ -1484,7 +1486,6 @@ dev = [
     { name = "commitizen" },
     { name = "fakeredis" },
     { name = "folium" },
-    { name = "httpx" },
     { name = "ipykernel" },
     { name = "jupyterlab" },
     { name = "mapclassify", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -1505,6 +1506,8 @@ requires-dist = [
     { name = "fastmcp-docs", specifier = ">=1.0.0" },
     { name = "geojson-pydantic", specifier = ">=2.1.1" },
     { name = "geopandas", specifier = ">=1.1.4" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "idu-service-auth", url = "https://github.com/IDUclub/idu-service-auth/archive/1b8a418d9b1ab702860eb7289a3b75244666a8d8.tar.gz" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "ollama", specifier = ">=0.6.2" },
     { name = "openai", specifier = ">=3.0.0" },
@@ -1523,7 +1526,6 @@ dev = [
     { name = "commitizen", specifier = ">=4.0.0" },
     { name = "fakeredis", specifier = ">=2.26.0" },
     { name = "folium", specifier = ">=0.12" },
-    { name = "httpx", specifier = ">=0.27.0" },
     { name = "ipykernel", specifier = ">=7.3.0" },
     { name = "jupyterlab", specifier = ">=4.6.1" },
     { name = "mapclassify", specifier = ">=2.10.0,<3.0.0" },
@@ -1643,6 +1645,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cd/63/9496c57188a2ee585e0f1db071d75089a11e98aa86eb99d9d7618fc1edce/idna-3.18.tar.gz", hash = "sha256:ffb385a7e039654cef1ab9ef32c6fafe283c0c0467bba1d9029738ce4a14a848", size = 196711, upload-time = "2026-06-02T14:34:07.794Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/5e/d4e9f1a599fb8e573b7b87160658329fbf28d19eac2718f51fc3def3aa5a/idna-3.18-py3-none-any.whl", hash = "sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2", size = 65455, upload-time = "2026-06-02T14:34:06.319Z" },
+]
+
+[[package]]
+name = "idu-service-auth"
+version = "0.1.0"
+source = { url = "https://github.com/IDUclub/idu-service-auth/archive/1b8a418d9b1ab702860eb7289a3b75244666a8d8.tar.gz" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "setuptools" },
+]
+sdist = { hash = "sha256:6b5d66263db877741090831184bb2e0e463f431bb41d72a3b178180ce379d847" }
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.14,<4.0" },
+    { name = "setuptools", specifier = ">=83.0.0,<84.0.0" },
 ]
 
 [[package]]
@@ -4761,6 +4779,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c5/f0/184b4b5f8d00f2a92cf96eec8967a3d550b52cf94362dad1100df9e48d57/send2trash-2.1.0.tar.gz", hash = "sha256:1c72b39f09457db3c05ce1d19158c2cbef4c32b8bedd02c155e49282b7ea7459", size = 17255, upload-time = "2026-01-14T06:27:36.056Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1c/78/504fdd027da3b84ff1aecd9f6957e65f35134534ccc6da8628eb71e76d3f/send2trash-2.1.0-py3-none-any.whl", hash = "sha256:0da2f112e6d6bb22de6aa6daa7e144831a4febf2a87261451c4ad849fe9a873c", size = 17610, upload-time = "2026-01-14T06:27:35.218Z" },
+]
+
+[[package]]
+name = "setuptools"
+version = "83.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/34/26/f5d29e25ffdb535afef2d35cdb55b325298f96debd670da4c325e08d70f4/setuptools-83.0.0.tar.gz", hash = "sha256:025bccbbf0fa05b6192bc64ae1e7b16e001fd6d6d4d5de03c97b1c1ade523bef", size = 1154254, upload-time = "2026-07-04T15:31:22.699Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/40/e1e72872c6354b306daef1703549e8e83b4d43cfea356311bf722a043752/setuptools-83.0.0-py3-none-any.whl", hash = "sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3", size = 1008090, upload-time = "2026-07-04T15:31:20.885Z" },
 ]
 
 [[package]]

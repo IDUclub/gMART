@@ -37,6 +37,52 @@ def test_scenario_id_is_enforced_over_model_arguments():
     ) == {"scenario_id": 42}
 
 
+def test_global_dictionary_does_not_receive_scenario_or_project_ids():
+    tool = UrbanMcpTool(
+        group="dictionaries",
+        name="GetServiceTypes",
+        title="Service types",
+        description="",
+        input_schema={"type": "object", "properties": {}},
+        tags=(),
+    )
+
+    assert (
+        ScenarioDataService._prepare_arguments(
+            tool,
+            {"scenario_id": 999, "project_id": 888},
+            772,
+            project_id=604,
+        )
+        == {}
+    )
+
+
+def test_scenario_project_ids_are_injected_into_their_own_arguments():
+    tool = UrbanMcpTool(
+        group="projects",
+        name="GetProjectTerritory",
+        title="Project territory",
+        description="",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scenario_id": {"type": "integer"},
+                "project_id": {"type": "integer"},
+            },
+            "required": ["scenario_id", "project_id"],
+        },
+        tags=(),
+    )
+
+    assert ScenarioDataService._prepare_arguments(
+        tool,
+        {"scenario_id": 999, "project_id": 888},
+        772,
+        project_id=604,
+    ) == {"scenario_id": 772, "project_id": 604}
+
+
 def test_scenario_id_is_optional_in_rest_dto():
     dto = ScenarioDataRequestDTO(request="Какие типы сервисов доступны?")
 
@@ -246,6 +292,96 @@ def test_table_unwraps_geojson_feature_properties():
 
     assert table is not None
     assert table["rows"] == [{"id": 1, "name": "Школа"}]
+
+
+async def test_draft_answer_retries_a_nonempty_length_completion(
+    monkeypatch, fake_urban, state_store
+):
+    calls: list[dict] = []
+
+    class TruncatedLlm:
+        async def chat(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return {
+                    "message": {"content": "Первые 50 строк…"},
+                    "done_reason": "length",
+                }
+            return {
+                "message": {"content": "Всего 70 объектов. Полный перечень в таблице."},
+                "done_reason": "stop",
+            }
+
+    llm = TruncatedLlm()
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: llm,
+    )
+    service = ScenarioDataService("http://llm", AsyncMock(), fake_urban, state_store)
+
+    answer = await service._draft_answer(
+        "model",
+        "Выведи все дома",
+        [{"table_count": 1, "aggregate": {"total_records": 70}}],
+        0,
+        [],
+    )
+
+    assert answer == "Всего 70 объектов. Полный перечень в таблице."
+    assert len(calls) == 2
+    assert calls[1]["options"]["num_predict"] > calls[0]["options"]["num_predict"]
+
+
+def test_answer_prompt_treats_an_emitted_table_as_the_complete_catalogue():
+    records = [
+        {"physical_object_id": index, "name": f"Дом {index}"} for index in range(1, 71)
+    ]
+
+    messages = ScenarioDataService._answer_messages(
+        None,
+        "Выведи все дома",
+        [
+            {
+                "table_count": 1,
+                "aggregate": {"total_records": 70},
+                "answer_records": records,
+            }
+        ],
+        [],
+    )
+
+    system_prompt = messages[0]["content"]
+    assert '"table_count": 1' in system_prompt
+    assert "physical_object_id" not in system_prompt
+    assert "проект — контейнер сценариев" in system_prompt
+    assert "принадлежат сценарию, а не проекту" in system_prompt
+    assert "Не перепечатывай все её строки" in system_prompt
+
+
+async def test_draft_answer_strips_technical_metadata_ids(
+    monkeypatch, fake_urban, state_store
+):
+    class MetadataLlm:
+        async def chat(self, **kwargs):
+            return {
+                "message": {
+                    "content": (
+                        "Найдено 70 школ.\n"
+                        "Метаданные: scenario_id=772, project_id=604"
+                    )
+                },
+                "done_reason": "stop",
+            }
+
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: MetadataLlm(),
+    )
+    service = ScenarioDataService("http://llm", AsyncMock(), fake_urban, state_store)
+
+    answer = await service._draft_answer("model", "Покажи школы в проекте", [], 0, [])
+
+    assert answer == "Найдено 70 школ."
 
 
 async def test_pipeline_replay_buffer_serializes_geojson_datetimes():
