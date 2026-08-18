@@ -677,7 +677,7 @@ async def test_invalid_llm_execution_plan_falls_back_to_scenario_service_query()
     assert result.steps[0].tool_name == "GetScenarioServicesWithGeometry"
     assert result.steps[0].arguments == {"scenario_id": 772}
     assert result.required_output.layers == ["schools_layer"]
-    assert calls == 1
+    assert calls == 0
 
 
 @pytest.mark.asyncio
@@ -694,7 +694,7 @@ async def test_exhausted_execution_reasoning_falls_back_without_retries():
             }
 
     acquisition = AcquisitionPlan(
-        objective="Вывести геослои всех школ",
+        objective="Вывести все сервисы типа Школа",
         requirements=[
             DataRequirement(
                 requirement_id="schools",
@@ -708,7 +708,56 @@ async def test_exhausted_execution_reasoning_falls_back_without_retries():
                 ],
             )
         ],
-        required_output={"answer": True, "layers": ["schools_layer"]},
+        required_output={"answer": True},
+    )
+    scenario_services = UrbanMcpTool(
+        group="projects",
+        name="GetScenarioServices",
+        title="Сервисы сценария",
+        description="Сервисы в выбранном сценарии",
+        input_schema={
+            "type": "object",
+            "properties": {"scenario_id": {"type": "integer"}},
+            "required": ["scenario_id"],
+        },
+        tags=(),
+    )
+
+    result = await ScenarioDataPlanBuilder(ExhaustedLlm()).build_execution_plan(
+        "model",
+        "Выведи все школы сценария",
+        acquisition,
+        [scenario_services],
+        [{"domain": "service_type", "matches": [{"id": 22, "name": "Школа"}]}],
+        scenario_id=772,
+        project_id=604,
+    )
+
+    assert calls == 1
+    assert result.steps[0].tool_name == "GetScenarioServices"
+
+
+@pytest.mark.asyncio
+async def test_grounded_geometry_query_skips_the_execution_llm():
+    class UnexpectedLlm:
+        async def chat(self, **kwargs):
+            raise AssertionError("a directly grounded geometry query needs no LLM plan")
+
+    acquisition = AcquisitionPlan(
+        objective="Вывести геослои всех школ сценария",
+        requirements=[
+            DataRequirement(
+                requirement_id="schools",
+                description="Сервисы типа Школа",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="service_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=["Школа"],
+                    )
+                ],
+            )
+        ],
     )
     scenario_services = UrbanMcpTool(
         group="projects",
@@ -723,9 +772,9 @@ async def test_exhausted_execution_reasoning_falls_back_without_retries():
         tags=(),
     )
 
-    result = await ScenarioDataPlanBuilder(ExhaustedLlm()).build_execution_plan(
+    result = await ScenarioDataPlanBuilder(UnexpectedLlm()).build_execution_plan(
         "model",
-        "Выведи мне геослои всех школ на территории сценария",
+        "Покажи школы на карте",
         acquisition,
         [scenario_services],
         [{"domain": "service_type", "matches": [{"id": 22, "name": "Школа"}]}],
@@ -733,7 +782,6 @@ async def test_exhausted_execution_reasoning_falls_back_without_retries():
         project_id=604,
     )
 
-    assert calls == 1
     assert result.steps[0].tool_name == "GetScenarioServicesWithGeometry"
 
 

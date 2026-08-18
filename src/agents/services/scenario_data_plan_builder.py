@@ -284,6 +284,38 @@ physical_object_type.id — только как physical_object_type_id/physical
                 completed_step_ids=set(completed_step_ids or []),
             )
 
+        if revision == 1 and scenario_id is not None:
+            scenario_steps = self._scenario_seed_steps(acquisition, tools, scenario_id)
+            covered = {
+                requirement_id
+                for step in scenario_steps
+                for requirement_id in step.satisfies
+            }
+            required = {
+                requirement.requirement_id for requirement in acquisition.requirements
+            }
+            if (
+                scenario_steps
+                and required.issubset(covered)
+                and any(
+                    step.tool_name.endswith("WithGeometry")
+                    for step in scenario_steps
+                )
+            ):
+                logger.info(
+                    "Using deterministic scenario-data geometry plan; "
+                    "all requirements are covered by scoped Urban tools"
+                )
+                return validate_plan(
+                    ExecutionPlanRevision(
+                        revision=revision,
+                        reason=reason,
+                        objective=acquisition.objective,
+                        steps=scenario_steps,
+                        required_output=acquisition.required_output,
+                    )
+                )
+
         try:
             return await self._structured_plan_call(
                 model,
@@ -386,6 +418,7 @@ physical_object_type.id — только как physical_object_type_id/physical
                 "территор",
                 "объект",
                 "сервис",
+                "геосло",
                 "location",
                 "within",
             )
@@ -395,6 +428,7 @@ physical_object_type.id — только как physical_object_type_id/physical
             for marker in (
                 "располож",
                 "геометр",
+                "геосло",
                 "карт",
                 "где",
                 "location",
