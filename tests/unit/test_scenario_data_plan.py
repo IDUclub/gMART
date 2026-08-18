@@ -136,6 +136,50 @@ def test_mapping_resolver_injects_project_id_without_using_scenario_id():
     assert calls[0].arguments == {"project_id": 604}
 
 
+def test_unproven_named_type_is_resolved_against_both_urban_type_domains():
+    plan = AcquisitionPlan(
+        objective="Вывести школы на территории проекта",
+        requirements=[
+            DataRequirement(
+                requirement_id="schools",
+                description="Получить школы",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="physical_object_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=["school"],
+                    )
+                ],
+            )
+        ],
+    )
+    physical_types = UrbanMcpTool(
+        group="dictionaries",
+        name="GetPhysicalObjectTypes",
+        title="Physical object types",
+        description="Physical object type dictionary",
+        input_schema={"type": "object", "properties": {}},
+        tags=(),
+    )
+    service_types = UrbanMcpTool(
+        group="dictionaries",
+        name="GetServiceTypes",
+        title="Service types",
+        description="Service type dictionary",
+        input_schema={"type": "object", "properties": {}},
+        tags=(),
+    )
+
+    calls = UrbanMappingResolver().plan_calls(
+        plan, [physical_types, service_types], 772, project_id=604
+    )
+
+    assert [(call.need.domain, call.tool.name, call.arguments) for call in calls] == [
+        ("physical_object_type", "GetPhysicalObjectTypes", {}),
+        ("service_type", "GetServiceTypes", {}),
+    ]
+
+
 def test_mapping_resolver_prefers_matching_dictionary_for_empty_mapping_values():
     resolver = UrbanMappingResolver()
     plan = AcquisitionPlan(
@@ -277,6 +321,47 @@ def test_known_school_mapping_restores_domain_need_and_avoids_dictionary_call():
         )
         == []
     )
+
+
+def test_verified_school_mapping_corrects_an_unproven_physical_type_domain():
+    plan = AcquisitionPlan(
+        objective="Вывести школы на территории проекта",
+        requirements=[
+            DataRequirement(
+                requirement_id="schools",
+                description="Получить школы",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="physical_object_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=["school"],
+                    )
+                ],
+            )
+        ],
+    )
+    mappings = [
+        {
+            "domain": "physical_object_type",
+            "matches": [{"id": 5, "name": "Нежилое здание"}],
+        },
+        {
+            "domain": "service_type",
+            "matches": [{"id": 22, "name": "Школа"}],
+        },
+    ]
+
+    enriched = enrich_acquisition_mappings(
+        plan, "Выведи все школы на территории проекта", mappings
+    )
+
+    assert enriched.requirements[0].mapping_needs == [
+        MappingNeed(
+            domain="service_type",
+            direction=MappingDirection.NAME_TO_ID,
+            values=["Школа"],
+        )
+    ]
 
 
 def test_verified_mapping_binds_only_its_domain_specific_id_argument():
@@ -478,6 +563,7 @@ async def test_invalid_llm_execution_plan_falls_back_to_scenario_service_query()
                 ],
             )
         ],
+        required_output={"answer": True, "layers": ["schools_layer"]},
     )
     scenario_services = UrbanMcpTool(
         group="projects",
@@ -507,6 +593,7 @@ async def test_invalid_llm_execution_plan_falls_back_to_scenario_service_query()
 
     assert result.steps[0].tool_name == "GetScenarioServices"
     assert result.steps[0].arguments == {"scenario_id": 772}
+    assert result.required_output.layers == ["schools_layer"]
 
 
 @pytest.mark.asyncio

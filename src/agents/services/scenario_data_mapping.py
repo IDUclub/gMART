@@ -47,23 +47,28 @@ class UrbanMappingResolver:
         for requirement_id, need in needs:
             if mapping_need_is_resolved(need, known_mappings or []):
                 continue
-            for tool in self._rank(need, tools):
-                arguments = self._arguments(need, tool, scenario_id, project_id)
-                if arguments is None:
-                    continue
-                key = (tool.group, tool.name, repr(sorted(arguments.items())))
-                if key in seen:
-                    break
-                calls.append(
-                    MappingCall(
-                        requirement_id=requirement_id,
-                        need=need,
-                        tool=tool,
-                        arguments=arguments,
+            for lookup_need in _lookup_needs(need):
+                for tool in self._rank(lookup_need, tools):
+                    arguments = self._arguments(
+                        lookup_need, tool, scenario_id, project_id
                     )
-                )
-                seen.add(key)
-                break
+                    if arguments is None:
+                        continue
+                    key = (tool.group, tool.name, repr(sorted(arguments.items())))
+                    if key in seen:
+                        break
+                    calls.append(
+                        MappingCall(
+                            requirement_id=requirement_id,
+                            need=lookup_need,
+                            tool=tool,
+                            arguments=arguments,
+                        )
+                    )
+                    seen.add(key)
+                    break
+                if len(calls) >= self.MAX_BOOTSTRAP_CALLS:
+                    break
             if len(calls) >= self.MAX_BOOTSTRAP_CALLS:
                 break
         return calls
@@ -188,6 +193,7 @@ _DOMAIN_ALIASES = {
     "physical_object_types": "physical_object_type",
     "physical_object_type": "physical_object_type",
 }
+_TYPE_DOMAINS = ("physical_object_type", "service_type")
 
 _WORD_ENDINGS = (
     "иями",
@@ -285,6 +291,37 @@ def enrich_acquisition_mappings(
             (user_query, acquisition.objective, requirement.description)
         )
         needs = list(requirement.mapping_needs)
+        mentioned_by_domain: dict[str, list[str]] = {}
+        for snapshot in known_mappings:
+            domain = _canonical_domain(str(snapshot.get("domain") or ""))
+            mentioned = [
+                str(match.get("name"))
+                for match in snapshot.get("matches") or []
+                if isinstance(match, dict)
+                and match.get("name")
+                and _name_is_mentioned(haystack, str(match["name"]))
+            ]
+            if mentioned:
+                mentioned_by_domain.setdefault(domain, []).extend(mentioned)
+        mentioned_by_domain = {
+            domain: names
+            for domain, names in mentioned_by_domain.items()
+            if domain in _TYPE_DOMAINS and names
+        }
+        explicit_domain = _explicit_type_domain(haystack)
+        preferred_domain = explicit_domain
+        if preferred_domain is None and len(mentioned_by_domain) == 1:
+            preferred_domain = next(iter(mentioned_by_domain))
+        if preferred_domain is not None:
+            filtered = [
+                need
+                for need in needs
+                if _canonical_domain(need.domain) not in _TYPE_DOMAINS
+                or _canonical_domain(need.domain) == preferred_domain
+            ]
+            if filtered != needs:
+                needs = filtered
+                changed = True
         for snapshot in known_mappings:
             domain = _canonical_domain(str(snapshot.get("domain") or ""))
             mentioned = [
@@ -359,6 +396,18 @@ def mapping_need_is_resolved(
     )
 
 
+def _lookup_needs(need: MappingNeed) -> list[MappingNeed]:
+    """Resolve a named urban type against both ontologies when its domain is unproven."""
+
+    domain = _canonical_domain(need.domain)
+    if need.direction != MappingDirection.NAME_TO_ID or domain not in _TYPE_DOMAINS:
+        return [need]
+    return [
+        need.model_copy(update={"domain": candidate, "values": []})
+        for candidate in _TYPE_DOMAINS
+    ]
+
+
 def bind_mapping_arguments(
     tool: UrbanMcpTool,
     arguments: dict[str, Any],
@@ -408,6 +457,23 @@ def _domain_for_argument(name: str) -> str | None:
     if lowered.endswith("_id"):
         return _canonical_domain(lowered[:-3])
     return None
+
+
+def _explicit_type_domain(text: str) -> str | None:
+    normalized = text.casefold()
+    service_markers = ("сервис", "услуг", "обеспеч", "service")
+    physical_markers = (
+        "физическ",
+        "здани",
+        "сооруж",
+        "physical object",
+        "physical_object",
+    )
+    service = any(marker in normalized for marker in service_markers)
+    physical = any(marker in normalized for marker in physical_markers)
+    if service == physical:
+        return None
+    return "service_type" if service else "physical_object_type"
 
 
 def _looks_like_id(value: Any) -> bool:

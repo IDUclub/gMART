@@ -270,6 +270,7 @@ class ScenarioDataLinearWorkflow:
                 "mapping_completed",
                 {"count": len(mappings), "text": "Актуальные справочники получены"},
             )
+            acquisition = enrich_acquisition_mappings(acquisition, user_query, mappings)
 
         revision = 1
         try:

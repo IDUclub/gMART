@@ -293,6 +293,7 @@ physical_object_type.id — только как physical_object_type_id/physical
                     reason=reason,
                     objective=acquisition.objective,
                     steps=scenario_steps,
+                    required_output=acquisition.required_output,
                 )
             )
 
