@@ -34,8 +34,10 @@ import { createPortal } from "react-dom";
 import remarkGfm from "remark-gfm";
 import MapPanel from "./MapPanel";
 import McpConsole from "./McpConsole";
+import { reusableChatId } from "./agentSession";
 import { appendLatestVisibleLayer } from "./layerState";
 import {
+  appendIterationChunk,
   appendSseExchange,
   CHAT_PAGE_SIZE,
   mergeMessageWindow,
@@ -253,6 +255,7 @@ export default function App() {
     reloginTimer = useRef<number | null>(null),
     resultAutoOpened = useRef(false),
     stepBase = useRef(""),
+    answerIteration = useRef<number | undefined>(undefined),
     chatIdRef = useRef<string | undefined>(undefined),
     activeRequestIdRef = useRef<string | undefined>(undefined),
     activeExchangeRef = useRef<ActiveExchange | null>(null),
@@ -443,6 +446,27 @@ export default function App() {
     } catch (e) {
       setStatus(err(e));
     }
+  }
+  function selectAgent(nextAgentId: AgentId) {
+    setMode("workspace");
+    if (nextAgentId === agentId || busy) return;
+    if (chat) rememberChatWindow(chat, historyWindow);
+    setAgentId(nextAgentId);
+    setChat(null);
+    chatIdRef.current = undefined;
+    activeRequestIdRef.current = undefined;
+    activeExchangeRef.current = null;
+    answerIteration.current = undefined;
+    stepBase.current = "";
+    setHistoryWindow(emptyHistoryWindow);
+    setAnswer("");
+    setPendingQuestion("");
+    setStatusEntries([]);
+    setLayers([]);
+    setTables([]);
+    setEvents([]);
+    setStatus("Готов к работе");
+    resultAutoOpened.current = false;
   }
   async function loadOlderMessages() {
     const current = chat;
@@ -643,11 +667,15 @@ export default function App() {
         typeof event.content === "string"
           ? event.content
           : event.content?.text || "";
-      updateSseAnswer((current) =>
-        event.content?.iteration && event.content.iteration > 1
-          ? stepBase.current + text
-          : current + text,
+      const next = appendIterationChunk(
+        activeExchangeRef.current?.answer || "",
+        stepBase.current,
+        text,
+        event.content?.iteration,
+        answerIteration.current,
       );
+      answerIteration.current = next.iteration;
+      updateSseAnswer(next.answer);
       if (event.content?.done && !nested) {
         activeRequestIdRef.current = undefined;
         setBusy(false);
@@ -657,12 +685,16 @@ export default function App() {
     }
     if (event.type === "plan_created") {
       const steps = event.content?.steps || [];
-      updateStatus(`План составлен: ${steps.length} ${pluralize(steps.length, "шаг", "шага", "шагов")}`);
+      updateStatus(
+        `План составлен: ${steps.length} ${pluralize(steps.length, "шаг", "шага", "шагов")}`,
+      );
     }
     if (event.type === "plan_revision_created") {
       const revision = event.content?.revision || 1;
       const steps = event.content?.steps || [];
-      updateStatus(`План №${revision}: ${steps.length} ${pluralize(steps.length, "шаг", "шага", "шагов")}`);
+      updateStatus(
+        `План №${revision}: ${steps.length} ${pluralize(steps.length, "шаг", "шага", "шагов")}`,
+      );
     }
     if (event.type === "plan") {
       const steps = event.content?.steps || [];
@@ -682,8 +714,11 @@ export default function App() {
         );
     }
     if (event.type === "step_started") {
+      answerIteration.current = undefined;
       if (event.content?.step_id) {
-        updateStatus(event.content?.purpose || `Выполняю ${event.content.step_id}`);
+        updateStatus(
+          event.content?.purpose || `Выполняю ${event.content.step_id}`,
+        );
         return;
       }
       const step = event.content?.step,
@@ -701,7 +736,9 @@ export default function App() {
     if (event.type === "mapping_completed")
       updateStatus(event.content?.text || "Актуальные справочники получены");
     if (event.type === "artifact_created")
-      updateStatus(`Набор данных подготовлен: ${event.content?.rows ?? 0} строк`);
+      updateStatus(
+        `Набор данных подготовлен: ${event.content?.rows ?? 0} строк`,
+      );
     if (event.type === "validation_started")
       updateStatus(event.content?.text || "Проверяю полноту результата…");
     if (event.type === "validation_completed")
@@ -906,6 +943,7 @@ export default function App() {
     setEvents([]);
     setStatusEntries([]);
     stepBase.current = "";
+    answerIteration.current = undefined;
     updateStatus("Подключение к агенту…");
     const url = new URL(agent.path, settings.agentsUrl);
     url.searchParams.set("request", submittedQuery);
@@ -913,7 +951,8 @@ export default function App() {
     if (settings.model) url.searchParams.set("model", settings.model);
     url.searchParams.set("temperature", String(settings.temperature));
     if (scenario) url.searchParams.set("scenario_id", scenario);
-    if (chatIdRef.current) url.searchParams.set("chat_id", chatIdRef.current);
+    const currentChatId = reusableChatId(chat, agentId);
+    if (currentChatId) url.searchParams.set("chat_id", currentChatId);
     abort.current = new AbortController();
     try {
       await readSse(url, await freshToken(), abort.current.signal, handle);
@@ -974,8 +1013,7 @@ export default function App() {
                 mode === "workspace" && agentId === a.id ? "active sub" : "sub"
               }
               onClick={() => {
-                setMode("workspace");
-                setAgentId(a.id);
+                selectAgent(a.id);
               }}
               key={a.id}
             >
@@ -1056,9 +1094,8 @@ export default function App() {
                         className={item.id === agent.id ? "active" : ""}
                         key={item.id}
                         onClick={() => {
-                          setAgentId(item.id);
+                          selectAgent(item.id);
                           setAgentMenuOpen(false);
-                          resultAutoOpened.current = false;
                         }}
                       >
                         <AgentGlyph id={item.id} />
@@ -1110,10 +1147,7 @@ export default function App() {
             </header>
             <div className={`work-grid ${resultOpen ? "result-open" : ""}`}>
               <section className="conversation">
-                <div
-                  className="messages"
-                  ref={messagesScroller}
-                >
+                <div className="messages" ref={messagesScroller}>
                   {!history.length && !answer && !pendingQuestion ? (
                     <Welcome agent={agent} onExample={setQuery} />
                   ) : (
