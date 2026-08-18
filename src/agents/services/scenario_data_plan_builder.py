@@ -214,6 +214,20 @@ physical_object_type.id — только как physical_object_type_id/physical
 
         def validate_plan(plan: ExecutionPlanRevision) -> ExecutionPlanRevision:
             plan = plan.model_copy(update={"revision": revision, "reason": reason})
+            if acquisition.required_output.layers:
+                available_tools = {(tool.group, tool.name) for tool in tools}
+                upgraded_steps = []
+                for step in plan.steps:
+                    geometry_name = f"{step.tool_name}WithGeometry"
+                    if (
+                        step.kind == PlanStepKind.URBAN_TOOL
+                        and step.group is not None
+                        and not step.tool_name.endswith("WithGeometry")
+                        and (step.group, geometry_name) in available_tools
+                    ):
+                        step = step.model_copy(update={"tool_name": geometry_name})
+                    upgraded_steps.append(step)
+                plan = plan.model_copy(update={"steps": upgraded_steps})
             if acquisition.requirements and not plan.steps:
                 raise ValueError("execution plan has requirements but no steps")
             urban_count = sum(
@@ -375,6 +389,18 @@ physical_object_type.id — только как physical_object_type_id/physical
                 "within",
             )
         )
+        requires_geometry = bool(acquisition.required_output.layers) or any(
+            marker in acquisition.objective.lower()
+            for marker in (
+                "располож",
+                "геометр",
+                "карт",
+                "где",
+                "location",
+                "geometry",
+                "map",
+            )
+        )
         for requirement in acquisition.requirements:
             domain = " ".join(
                 [acquisition.objective, requirement.description]
@@ -384,12 +410,22 @@ physical_object_type.id — только как physical_object_type_id/physical
                 "physical_object_type" in domain
                 or {"physical", "object", "type"}.issubset(set(domain.split()))
             ):
-                tool_name = "GetScenarioPhysicalObjects"
+                tool_name = (
+                    "GetScenarioPhysicalObjectsWithGeometry"
+                    if requires_geometry
+                    and "GetScenarioPhysicalObjectsWithGeometry" in available
+                    else "GetScenarioPhysicalObjects"
+                )
             elif requires_entities and (
                 "service_type" in domain
                 or {"service", "type"}.issubset(set(domain.split()))
             ):
-                tool_name = "GetScenarioServices"
+                tool_name = (
+                    "GetScenarioServicesWithGeometry"
+                    if requires_geometry
+                    and "GetScenarioServicesWithGeometry" in available
+                    else "GetScenarioServices"
+                )
             elif "physical_object_type" in domain or (
                 "physical" in domain and "object" in domain and "type" in domain
             ):
@@ -399,9 +435,19 @@ physical_object_type.id — только как physical_object_type_id/physical
             elif "physical_object" in domain or (
                 "physical" in domain and "object" in domain
             ):
-                tool_name = "GetScenarioPhysicalObjects"
+                tool_name = (
+                    "GetScenarioPhysicalObjectsWithGeometry"
+                    if requires_geometry
+                    and "GetScenarioPhysicalObjectsWithGeometry" in available
+                    else "GetScenarioPhysicalObjects"
+                )
             elif "service" in domain or "сервис" in domain:
-                tool_name = "GetScenarioServices"
+                tool_name = (
+                    "GetScenarioServicesWithGeometry"
+                    if requires_geometry
+                    and "GetScenarioServicesWithGeometry" in available
+                    else "GetScenarioServices"
+                )
             else:
                 continue
             tool = available.get(tool_name)

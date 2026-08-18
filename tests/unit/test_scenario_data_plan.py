@@ -567,9 +567,9 @@ async def test_invalid_llm_execution_plan_falls_back_to_scenario_service_query()
     )
     scenario_services = UrbanMcpTool(
         group="projects",
-        name="GetScenarioServices",
-        title="Сервисы сценария",
-        description="Сервисы в выбранном сценарии",
+        name="GetScenarioServicesWithGeometry",
+        title="Сервисы сценария с геометрией",
+        description="Сервисы в выбранном сценарии с геометрией",
         input_schema={
             "type": "object",
             "properties": {
@@ -591,9 +591,110 @@ async def test_invalid_llm_execution_plan_falls_back_to_scenario_service_query()
         project_id=604,
     )
 
-    assert result.steps[0].tool_name == "GetScenarioServices"
+    assert result.steps[0].tool_name == "GetScenarioServicesWithGeometry"
     assert result.steps[0].arguments == {"scenario_id": 772}
     assert result.required_output.layers == ["schools_layer"]
+
+
+def test_required_layer_cannot_validate_without_observed_geometry():
+    plan = ExecutionPlanRevision(
+        revision=1,
+        reason="test",
+        objective="show schools",
+        steps=[],
+        required_output={"answer": True, "layers": ["schools_layer"]},
+    )
+
+    assert ScenarioDataLinearWorkflow._required_output_reasons(
+        plan, [{"layer_count": 0}]
+    ) == [
+        "требуется географический слой, но ни один выполненный шаг не вернул геометрию"
+    ]
+    assert (
+        ScenarioDataLinearWorkflow._required_output_reasons(plan, [{"layer_count": 1}])
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_required_layer_upgrades_a_valid_plan_to_geometry_tool():
+    class NonGeometryLlm:
+        async def chat(self, **kwargs):
+            return {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "revision": 1,
+                            "reason": "initial",
+                            "objective": "show schools",
+                            "steps": [
+                                {
+                                    "step_id": "schools",
+                                    "kind": "urban_tool",
+                                    "purpose": "show schools",
+                                    "group": "projects",
+                                    "tool_name": "GetScenarioServices",
+                                    "arguments": {"scenario_id": 772},
+                                    "satisfies": ["schools"],
+                                    "expected_output": "school features",
+                                }
+                            ],
+                            "required_output": {
+                                "answer": True,
+                                "layers": ["schools_layer"],
+                            },
+                        }
+                    )
+                }
+            }
+
+    def scenario_services(name: str) -> UrbanMcpTool:
+        return UrbanMcpTool(
+            group="projects",
+            name=name,
+            title=name,
+            description=name,
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "scenario_id": {"type": "integer"},
+                    "service_type_id": {"type": "integer"},
+                },
+                "required": ["scenario_id"],
+            },
+            tags=(),
+        )
+
+    result = await ScenarioDataPlanBuilder(NonGeometryLlm()).build_execution_plan(
+        "model",
+        "Покажи школы на карте",
+        AcquisitionPlan(
+            objective="Показать школы на карте проекта",
+            requirements=[
+                DataRequirement(
+                    requirement_id="schools",
+                    description="Школы проекта",
+                    mapping_needs=[
+                        MappingNeed(
+                            domain="service_type",
+                            direction=MappingDirection.NAME_TO_ID,
+                            values=["Школа"],
+                        )
+                    ],
+                )
+            ],
+            required_output={"answer": True, "layers": ["schools_layer"]},
+        ),
+        [
+            scenario_services("GetScenarioServices"),
+            scenario_services("GetScenarioServicesWithGeometry"),
+        ],
+        [{"domain": "service_type", "matches": [{"id": 22, "name": "Школа"}]}],
+        scenario_id=772,
+        project_id=604,
+    )
+
+    assert result.steps[0].tool_name == "GetScenarioServicesWithGeometry"
 
 
 @pytest.mark.asyncio

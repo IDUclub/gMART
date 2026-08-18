@@ -529,11 +529,14 @@ class ScenarioDataLinearWorkflow:
                 {"revision": plan.revision, "text": "Проверяю полноту результата…"},
             )
             if not plan_failed:
-                missing_requirements = self._plan_completion_reasons(
-                    acquisition, plan, ledger, bootstrap_satisfied
-                )
-                if missing_requirements:
-                    validation_reasons = missing_requirements
+                deterministic_reasons = [
+                    *self._plan_completion_reasons(
+                        acquisition, plan, ledger, bootstrap_satisfied
+                    ),
+                    *self._required_output_reasons(plan, observations),
+                ]
+                if deterministic_reasons:
+                    validation_reasons = deterministic_reasons
                     plan_failed = True
             if not plan_failed:
                 answer = await self._bounded_llm(
@@ -778,6 +781,7 @@ class ScenarioDataLinearWorkflow:
             "tool": f"{step.group}.{step.tool_name}",
             "arguments": step.arguments,
             "layer_count": layer_count,
+            "table_count": int(table is not None),
             "summary": self.owner._result_summary(result),
             "satisfies": step.satisfies,
         }
@@ -921,9 +925,11 @@ class ScenarioDataLinearWorkflow:
         parts: list,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         events: list[dict[str, Any]] = []
+        layer_count = 0
         if isinstance(result, dict):
             collection = result.get("feature_collection")
             if isinstance(collection, dict):
+                layer_count = 1
                 events.append(
                     self._event(
                         request_id,
@@ -945,6 +951,8 @@ class ScenarioDataLinearWorkflow:
             "arguments": step.arguments,
             "summary": self.owner._result_summary(result),
             "satisfies": step.satisfies,
+            "layer_count": layer_count,
+            "table_count": int(table is not None),
         }
         if isinstance(result, dict) and isinstance(result.get("handle"), str):
             artifact = {
@@ -1024,6 +1032,17 @@ class ScenarioDataLinearWorkflow:
         if missing_requirements:
             reasons.append("не закрыты требования: " + ", ".join(missing_requirements))
         return reasons
+
+    @staticmethod
+    def _required_output_reasons(plan, observations: list[dict[str, Any]]) -> list[str]:
+        if plan.required_output.layers and not any(
+            int(item.get("layer_count") or 0) > 0 for item in observations
+        ):
+            return [
+                "требуется географический слой, но ни один выполненный шаг не "
+                "вернул геометрию"
+            ]
+        return []
 
     async def _bounded_llm(self, request_id: str, started: float, awaitable):
         """Bound LLM calls while still reacting promptly to an explicit cancel."""
