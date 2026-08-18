@@ -194,6 +194,16 @@ _DOMAIN_ALIASES = {
     "physical_object_type": "physical_object_type",
 }
 _TYPE_DOMAINS = ("physical_object_type", "service_type")
+_NON_TYPE_MAPPING_DOMAINS = {
+    "functional_zone",
+    "functional_zone_type",
+    "indicator",
+    "project",
+    "scenario",
+    "soc_group",
+    "social_group",
+    "territory",
+}
 
 _WORD_ENDINGS = (
     "иями",
@@ -310,6 +320,30 @@ def enrich_acquisition_mappings(
             # These ids are selected by the UI and bound by the service. Treating
             # them as name/id dictionaries sends the resolver to unrelated tools.
             changed = True
+        normalized_needs: list[MappingNeed] = []
+        for need in needs:
+            domain = _canonical_domain(need.domain)
+            if (
+                need.direction == MappingDirection.NAME_TO_ID
+                and domain not in _TYPE_DOMAINS
+                and domain not in _NON_TYPE_MAPPING_DOMAINS
+                and not need.values
+            ):
+                # Some models put the requested class itself into domain
+                # (domain="school") and omit values. Treat it as an unproven type;
+                # _lookup_needs will verify it against both Urban type ontologies.
+                normalized_needs.append(
+                    need.model_copy(
+                        update={
+                            "domain": "physical_object_type",
+                            "values": [need.domain],
+                        }
+                    )
+                )
+                changed = True
+            else:
+                normalized_needs.append(need)
+        needs = normalized_needs
         if not needs:
             inferred_names = _quoted_type_names(haystack)
             if inferred_names:

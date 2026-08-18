@@ -233,6 +233,34 @@ def test_selected_scenario_is_not_treated_as_a_dictionary_mapping():
     ]
 
 
+def test_entity_name_used_as_domain_becomes_an_unproven_type_mapping():
+    acquisition = AcquisitionPlan(
+        objective="Получить геослои всех школ",
+        requirements=[
+            DataRequirement(
+                requirement_id="schools",
+                description="Сформировать слой школ внутри сценария",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="school",
+                        direction=MappingDirection.NAME_TO_ID,
+                    )
+                ],
+            )
+        ],
+    )
+
+    enriched = enrich_acquisition_mappings(acquisition, "Покажи школы", [])
+
+    assert enriched.requirements[0].mapping_needs == [
+        MappingNeed(
+            domain="physical_object_type",
+            direction=MappingDirection.NAME_TO_ID,
+            values=["school"],
+        )
+    ]
+
+
 def test_mapping_resolver_prefers_matching_dictionary_for_empty_mapping_values():
     resolver = UrbanMappingResolver()
     plan = AcquisitionPlan(
