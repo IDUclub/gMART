@@ -286,6 +286,32 @@ def test_chat_context_mapping_keeps_domain_name_and_id():
     ]
 
 
+def test_chat_context_mapping_reads_fresh_mapping_table_from_tail():
+    snapshots = context_mapping_snapshots(
+        {
+            "content": {"structured": {"mappings": []}},
+            "tail": [
+                {
+                    "role": "assistant",
+                    "parts": [
+                        {
+                            "kind": "table",
+                            "payload": {
+                                "name": "mapping_service_type",
+                                "title": "Маппинг service_type: name ↔ id",
+                                "rows": [{"id": 22, "name": "Школа"}],
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert snapshots[0]["domain"] == "service_type"
+    assert snapshots[0]["matches"] == [{"id": 22, "name": "Школа"}]
+
+
 def test_known_school_mapping_restores_domain_need_and_avoids_dictionary_call():
     snapshots = [
         {

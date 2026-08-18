@@ -264,6 +264,17 @@ def context_mapping_snapshots(context: dict[str, Any] | None) -> list[dict[str, 
                 elif _looks_like_id(right):
                     _append_mapping(by_domain, domain, right, left)
 
+    for message in (context or {}).get("tail") or []:
+        if not isinstance(message, dict):
+            continue
+        for part in message.get("parts") or []:
+            if not isinstance(part, dict) or part.get("kind") != "table":
+                continue
+            payload = part.get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+            _append_table_mappings(by_domain, payload)
+
     return [
         {
             "domain": domain,
@@ -490,6 +501,42 @@ def _append_mapping(
     bucket = target.setdefault(domain, [])
     if candidate not in bucket:
         bucket.append(candidate)
+
+
+def _append_table_mappings(
+    target: dict[str, list[dict[str, Any]]], payload: dict[str, Any]
+) -> None:
+    rows = payload.get("rows") or []
+    if not isinstance(rows, list):
+        return
+    raw_name = str(payload.get("name") or "")
+    domain = (
+        _canonical_domain(raw_name.removeprefix("mapping_"))
+        if raw_name.startswith("mapping_")
+        else ""
+    )
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        id_key = (
+            "id"
+            if domain and "id" in row
+            else next(
+                (
+                    str(key)
+                    for key in row
+                    if str(key).endswith("_type_id") and _looks_like_id(row.get(key))
+                ),
+                "",
+            )
+        )
+        if not domain and id_key:
+            domain = _canonical_domain(id_key.removesuffix("_id"))
+        name_key = next(
+            (key for key in ("name", "title") if row.get(key) is not None), None
+        )
+        if domain and id_key and name_key:
+            _append_mapping(target, domain, row.get(id_key), row.get(name_key))
 
 
 def _tokens(value: str) -> set[str]:
