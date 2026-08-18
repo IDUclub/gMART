@@ -33,6 +33,7 @@ from src.agents.services.scenario_data_mapping import (
     UrbanMappingResolver,
     bind_mapping_arguments,
     context_mapping_snapshots,
+    ensure_entity_retrieval_outputs,
     enrich_acquisition_mappings,
     mapping_snapshot,
 )
@@ -124,6 +125,7 @@ class ScenarioDataLinearWorkflow:
             ),
         )
         acquisition = enrich_acquisition_mappings(acquisition, user_query, mappings)
+        acquisition = ensure_entity_retrieval_outputs(acquisition, user_query)
         plan_payload = acquisition.model_dump(mode="json")
         yield self._event(request_id, "plan_created", plan_payload)
         parts.append(StructuredPartRequest(kind="plan", payload=plan_payload))
@@ -158,6 +160,14 @@ class ScenarioDataLinearWorkflow:
             project_id=project_id,
             known_mappings=mappings,
         )
+        if not mapping_calls:
+            mapping_calls = self.mapping_resolver.plan_entity_discovery_calls(
+                acquisition,
+                user_query,
+                tools,
+                scenario_id,
+                project_id=project_id,
+            )
         if mapping_calls:
             yield self._event(
                 request_id,
@@ -271,6 +281,7 @@ class ScenarioDataLinearWorkflow:
                 {"count": len(mappings), "text": "Актуальные справочники получены"},
             )
             acquisition = enrich_acquisition_mappings(acquisition, user_query, mappings)
+            acquisition = ensure_entity_retrieval_outputs(acquisition, user_query)
 
         revision = 1
         try:

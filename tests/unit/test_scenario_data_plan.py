@@ -10,6 +10,7 @@ from src.agents.services.scenario_data_mapping import (
     UrbanMappingResolver,
     bind_mapping_arguments,
     context_mapping_snapshots,
+    ensure_entity_retrieval_outputs,
     enrich_acquisition_mappings,
     mapping_snapshot,
 )
@@ -180,6 +181,162 @@ def test_unproven_named_type_is_resolved_against_both_urban_type_domains():
         ("physical_object_type", "GetPhysicalObjectTypes", {}),
         ("service_type", "GetServiceTypes", {}),
     ]
+
+
+def test_residential_buildings_recover_when_planner_drops_mapping_needs():
+    acquisition = AcquisitionPlan(
+        objective="Вывести все жилые дома на территории проекта",
+        requirements=[
+            DataRequirement(
+                requirement_id="residential_buildings",
+                description=(
+                    "Получить все объекты недвижимости, классифицированные как жилые"
+                ),
+            )
+        ],
+        required_output={"answer": True, "tables": ["residential_buildings"]},
+    )
+    physical_types = UrbanMcpTool(
+        group="dictionaries",
+        name="GetPhysicalObjectTypes",
+        title="Physical object types",
+        description="Physical object type dictionary",
+        input_schema={"type": "object", "properties": {}},
+        tags=(),
+    )
+    service_types = UrbanMcpTool(
+        group="dictionaries",
+        name="GetServiceTypes",
+        title="Service types",
+        description="Service type dictionary",
+        input_schema={"type": "object", "properties": {}},
+        tags=(),
+    )
+
+    calls = UrbanMappingResolver().plan_entity_discovery_calls(
+        acquisition,
+        "Выведи мне все жилые дома на территории проекта.",
+        [physical_types, service_types],
+        772,
+        project_id=604,
+    )
+
+    assert [(call.need.domain, call.tool.name) for call in calls] == [
+        ("physical_object_type", "GetPhysicalObjectTypes"),
+        ("service_type", "GetServiceTypes"),
+    ]
+
+    mappings = [
+        mapping_snapshot(
+            calls[0],
+            [
+                {"physical_object_type_id": 4, "name": "Жилой дом"},
+                {"physical_object_type_id": 5, "name": "Нежилое здание"},
+            ],
+        ),
+        mapping_snapshot(
+            calls[1],
+            [{"service_type_id": 22, "name": "Школа"}],
+        ),
+    ]
+    resolved = enrich_acquisition_mappings(
+        acquisition,
+        "Выведи мне все жилые дома на территории проекта.",
+        mappings,
+    )
+    resolved = ensure_entity_retrieval_outputs(
+        resolved, "Выведи мне все жилые дома на территории проекта."
+    )
+
+    assert resolved.requirements[0].mapping_needs == [
+        MappingNeed(
+            domain="physical_object_type",
+            direction=MappingDirection.NAME_TO_ID,
+            values=["Жилой дом"],
+        )
+    ]
+    assert resolved.required_output.tables == ["residential_buildings"]
+    assert resolved.required_output.layers == ["residential_buildings_layer"]
+
+
+@pytest.mark.asyncio
+async def test_residential_buildings_use_scenario_geometry_tool_with_type_filter():
+    class UnexpectedLlm:
+        async def chat(self, **kwargs):
+            raise AssertionError(
+                "resolved basic retrieval must not need an LLM tool plan"
+            )
+
+    def scenario_objects(name: str) -> UrbanMcpTool:
+        return UrbanMcpTool(
+            group="projects",
+            name=name,
+            title=name,
+            description=name,
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "scenario_id": {"type": "integer"},
+                    "physical_object_type_id": {
+                        "anyOf": [{"type": "integer"}, {"type": "null"}]
+                    },
+                },
+                "required": ["scenario_id"],
+            },
+            tags=(),
+        )
+
+    acquisition = AcquisitionPlan(
+        objective="Вывести все жилые дома на территории проекта",
+        requirements=[
+            DataRequirement(
+                requirement_id="residential_buildings",
+                description="Получить все жилые дома сценария",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="physical_object_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=["Жилой дом"],
+                    )
+                ],
+            )
+        ],
+        required_output={
+            "answer": True,
+            "tables": ["residential_buildings"],
+            "layers": ["residential_buildings_layer"],
+        },
+    )
+    tools = [
+        scenario_objects("GetScenarioPhysicalObjects"),
+        scenario_objects("GetScenarioPhysicalObjectsWithGeometry"),
+    ]
+    mappings = [
+        {
+            "domain": "physical_object_type",
+            "matches": [{"id": 4, "name": "Жилой дом"}],
+        }
+    ]
+
+    plan = await ScenarioDataPlanBuilder(UnexpectedLlm()).build_execution_plan(
+        "model",
+        "Выведи мне все жилые дома на территории проекта.",
+        acquisition,
+        tools,
+        mappings,
+        scenario_id=772,
+        project_id=604,
+    )
+
+    assert len(plan.steps) == 1
+    assert plan.steps[0].tool_name == "GetScenarioPhysicalObjectsWithGeometry"
+    tool = tools[1]
+    assert bind_mapping_arguments(
+        tool,
+        plan.steps[0].arguments,
+        mappings,
+        "Выведи мне все жилые дома на территории проекта.",
+    ) == {"scenario_id": 772, "physical_object_type_id": 4}
 
 
 def test_quoted_type_restores_a_mapping_need_dropped_by_the_planner():
