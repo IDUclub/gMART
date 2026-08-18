@@ -3,6 +3,7 @@ import { useGSAP } from "@gsap/react";
 import {
   ArrowUp,
   ArrowCounterClockwise,
+  ArrowsOut,
   Buildings,
   CaretDown,
   ChartDonut,
@@ -29,9 +30,11 @@ import {
 import gsap from "gsap";
 import Keycloak from "keycloak-js";
 import ReactMarkdown from "react-markdown";
+import { createPortal } from "react-dom";
 import remarkGfm from "remark-gfm";
 import MapPanel from "./MapPanel";
 import McpConsole from "./McpConsole";
+import { appendLatestVisibleLayer } from "./layerState";
 import {
   appendSseExchange,
   CHAT_PAGE_SIZE,
@@ -739,17 +742,16 @@ export default function App() {
         event.content?.feature_collection ||
         event.content?.data ||
         event.content;
-      setLayers((v) => [
-        ...v,
-        {
+      setLayers((v) =>
+        appendLatestVisibleLayer(v, {
           id: crypto.randomUUID(),
           name: event.content?.name || `Слой ${v.length + 1}`,
           color: colors[v.length % colors.length],
           visible: true,
           geojson: fc,
           count: fc?.features?.length || 0,
-        },
-      ]);
+        }),
+      );
       setRightTab("map");
       if (!resultAutoOpened.current) {
         resultAutoOpened.current = true;
@@ -1889,39 +1891,172 @@ function findFeatureCollections(value: unknown): GeoJSON.FeatureCollection[] {
   walkValue(value);
   return found;
 }
-function Tables({ tables }: { tables: TableData[] }) {
+function ResultTable({
+  table,
+  fullscreen = false,
+}: {
+  table: TableData;
+  fullscreen?: boolean;
+}) {
+  const topScroll = useRef<HTMLDivElement>(null);
+  const viewport = useRef<HTMLDivElement>(null);
+  const track = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const top = topScroll.current;
+    const body = viewport.current;
+    const spacer = track.current;
+    if (!top || !body || !spacer) return;
+    const measure = () => {
+      spacer.style.width = `${body.scrollWidth}px`;
+      top.hidden = body.scrollWidth <= body.clientWidth + 1;
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(body);
+    const renderedTable = body.querySelector("table");
+    if (renderedTable) observer.observe(renderedTable);
+    return () => observer.disconnect();
+  }, [table, fullscreen]);
+
   return (
-    <div className="data-panel">
-      {tables.length ? (
-        tables.map((t, i) => (
-          <div className="table-card" key={i}>
-            <h3>{t.title || t.name || "Результаты"}</h3>
-            <div>
-              <table>
-                <thead>
-                  <tr>
-                    {t.columns?.map((c) => (
-                      <th key={c.key}>{c.label}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {t.rows?.map((r, n) => (
-                    <tr key={n}>
-                      {t.columns.map((c) => (
-                        <td key={c.key}>{String(r[c.key] ?? "—")}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ))
-      ) : (
-        <div className="empty">Таблицы и показатели появятся здесь</div>
-      )}
+    <div className={`result-table-shell ${fullscreen ? "fullscreen" : ""}`}>
+      <div
+        className="table-scroll-proxy"
+        ref={topScroll}
+        onScroll={(event) => {
+          if (viewport.current)
+            viewport.current.scrollLeft = event.currentTarget.scrollLeft;
+        }}
+        aria-label="Горизонтальная прокрутка таблицы"
+      >
+        <div ref={track} />
+      </div>
+      <div
+        className="table-scroll-viewport"
+        ref={viewport}
+        onScroll={(event) => {
+          if (topScroll.current)
+            topScroll.current.scrollLeft = event.currentTarget.scrollLeft;
+        }}
+      >
+        <table className="result-table">
+          <thead>
+            <tr>
+              {table.columns?.map((column) => (
+                <th key={column.key}>{column.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {table.rows?.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {table.columns.map((column) => (
+                  <td key={column.key}>{String(row[column.key] ?? "—")}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
+  );
+}
+
+function Tables({ tables }: { tables: TableData[] }) {
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  const expanded = expandedIndex == null ? null : tables[expandedIndex];
+
+  useEffect(() => {
+    if (!expanded) return;
+    const previousOverflow = document.body.style.overflow;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpandedIndex(null);
+    };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", close);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", close);
+    };
+  }, [expanded]);
+
+  return (
+    <>
+      <div className="data-panel">
+        {tables.length ? (
+          tables.map((table, index) => {
+            const title = table.title || table.name || "Результаты";
+            return (
+              <div
+                className="table-card"
+                key={`${table.name || title}-${index}`}
+              >
+                <div className="table-card-header">
+                  <div>
+                    <h3>{title}</h3>
+                    <small>
+                      {table.rows?.length || 0} строк ·{" "}
+                      {table.columns?.length || 0} столбцов
+                    </small>
+                  </div>
+                  <button
+                    className="table-expand"
+                    onClick={() => setExpandedIndex(index)}
+                    aria-label={`Открыть таблицу «${title}» на весь экран`}
+                    title="Открыть на весь экран"
+                  >
+                    <ArrowsOut />
+                  </button>
+                </div>
+                <ResultTable table={table} />
+              </div>
+            );
+          })
+        ) : (
+          <div className="empty">Таблицы и показатели появятся здесь</div>
+        )}
+      </div>
+      {expanded &&
+        createPortal(
+          <div
+            className="table-fullscreen-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setExpandedIndex(null);
+            }}
+          >
+            <section
+              className="table-fullscreen-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-label={
+                expanded.title || expanded.name || "Таблица результатов"
+              }
+            >
+              <header>
+                <div>
+                  <span className="context-title">Таблица результатов</span>
+                  <h2>{expanded.title || expanded.name || "Результаты"}</h2>
+                  <small>
+                    {expanded.rows?.length || 0} строк ·{" "}
+                    {expanded.columns?.length || 0} столбцов
+                  </small>
+                </div>
+                <button
+                  className="table-fullscreen-close"
+                  onClick={() => setExpandedIndex(null)}
+                  aria-label="Закрыть полноэкранную таблицу"
+                >
+                  <X />
+                </button>
+              </header>
+              <ResultTable table={expanded} fullscreen />
+            </section>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 function Process({

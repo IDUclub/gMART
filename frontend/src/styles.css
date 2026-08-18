@@ -1321,12 +1321,69 @@ p {
 .table-card {
   margin-bottom: 12px;
 }
-.table-card h3 {
-  margin: 0;
-  padding: 15px;
+.table-card-header {
+  padding: 13px 15px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
-.table-card > div {
+.table-card-header h3 {
+  margin: 0;
+}
+.table-card-header small,
+.table-fullscreen-dialog header small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.table-expand,
+.table-fullscreen-close {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface2);
+}
+.table-expand:hover,
+.table-fullscreen-close:hover {
+  border-color: var(--line-strong);
+  background: var(--surface3);
+}
+.result-table-shell {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+}
+.table-scroll-proxy {
+  height: 13px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--surface2);
+  scrollbar-width: thin;
+}
+.table-scroll-proxy > div {
+  height: 1px;
+}
+.table-scroll-viewport {
+  max-height: min(58vh, 560px);
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.result-table-shell.fullscreen {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.result-table-shell.fullscreen .table-scroll-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
 }
 table {
   width: 100%;
@@ -1343,6 +1400,51 @@ th {
   background: var(--surface2);
   color: var(--muted);
   font-size: 10px;
+}
+.result-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.result-table th,
+.result-table td {
+  min-width: max-content;
+  white-space: nowrap;
+}
+.table-fullscreen-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  padding: clamp(10px, 2vw, 28px);
+  display: grid;
+  place-items: center;
+  background: rgba(3, 5, 4, 0.72);
+  backdrop-filter: blur(10px);
+}
+.table-fullscreen-dialog {
+  width: min(1600px, 100%);
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.table-fullscreen-dialog > header {
+  flex: 0 0 auto;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.table-fullscreen-dialog h2 {
+  margin: 2px 0 0;
+  font-size: clamp(18px, 2vw, 27px);
+  letter-spacing: -0.035em;
 }
 .process details {
   margin-bottom: 7px;
