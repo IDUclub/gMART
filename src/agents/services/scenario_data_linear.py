@@ -546,15 +546,21 @@ class ScenarioDataLinearWorkflow:
                         model, user_query, observations, temperature, history
                     ),
                 )
-                verdict = await self._bounded_llm(
-                    request_id,
-                    started,
-                    self.owner.evaluator.evaluate(
-                        model, user_query, observations, answer
-                    ),
-                )
-                validation_reasons = verdict.reasons
-                if verdict.sufficient:
+                grounded_layer_result = bool(plan.required_output.layers)
+                if grounded_layer_result:
+                    validation_reasons = []
+                    sufficient = True
+                else:
+                    verdict = await self._bounded_llm(
+                        request_id,
+                        started,
+                        self.owner.evaluator.evaluate(
+                            model, user_query, observations, answer
+                        ),
+                    )
+                    validation_reasons = verdict.reasons
+                    sufficient = verdict.sufficient
+                if sufficient:
                     validation_payload = {
                         "sufficient": True,
                         "revision": plan.revision,
