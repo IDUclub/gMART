@@ -18,6 +18,8 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
 from src.__version__ import __VERSION__ as MCP_VERSION
+from src.common.service_auth import service_auth_lifespan
+from src.idu_mcp.common.auth.token_verifier import ServiceTokenVerifier
 from src.idu_mcp.common.logging.log_config import config_logger
 from src.idu_mcp.common.middlewares.logging_middleware import RequestLoggingMiddleware
 from src.idu_mcp.dependencies.dependencies import mcp_deps
@@ -40,13 +42,18 @@ log_path = config_logger()
 @lifespan
 async def main_app_lifespan(server: FastMCP):
     logger.info(f"Loaded dependencies {mcp_deps}")
-    try:
-        yield {"started_at": "2024-01-01"}
-    finally:
-        logger.info("Shutting down...")
+    async with service_auth_lifespan(mcp_deps["service_auth"]):
+        try:
+            yield {"started_at": "2024-01-01"}
+        finally:
+            logger.info("Shutting down...")
 
 
-main_mcp = FastMCP("IDU Fast MCP Server", lifespan=main_app_lifespan)
+main_mcp = FastMCP(
+    "IDU Fast MCP Server",
+    lifespan=main_app_lifespan,
+    auth=ServiceTokenVerifier(),
+)
 main_mcp.mount(urban_api_mcp)
 main_mcp.mount(geometry_mcp)
 main_mcp.mount(restrictions_prompts_mcp)

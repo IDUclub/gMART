@@ -4,11 +4,13 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from fastmcp import Client
+from idu_service_auth import KeycloakTokenClient
 from pydantic import BaseModel
 
 from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.common.exceptions.base_exceptions import AgentsInputException
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
+from src.common.service_auth import ServiceTokenAuth, user_id_from_jwt
 
 _SAFE_NAME_PREFIXES = (
     "get",
@@ -63,9 +65,15 @@ def _is_safe_tool(tool: Any) -> bool:
 class McpDiagnosticsService:
     """Allowlisted, read-only access to MCP servers configured for gMART."""
 
-    def __init__(self, config: AgentsAppConfig, token: str) -> None:
+    def __init__(
+        self,
+        config: AgentsAppConfig,
+        token: str,
+        service_auth: KeycloakTokenClient,
+    ) -> None:
         self.config = config
         self.token = token
+        self.transport_auth = ServiceTokenAuth(service_auth, user_id_from_jwt(token))
 
     def sources(self) -> list[dict[str, Any]]:
         definitions = (
@@ -121,15 +129,13 @@ class McpDiagnosticsService:
 
     def _client(self, source: str) -> Client:
         url = self._url(source)
-        if source in {"idu", "effects"}:
-            return Client(url, auth=self.token)
-        return Client(url)
+        return Client(url, auth=self.transport_auth)
 
     async def list_tools(self, source: str) -> list[dict[str, Any]]:
         if source == "urban":
             if not self.config.URBAN_MCP_URL:
                 raise AgentsInputException("MCP-источник не настроен", source)
-            urban = UrbanMcpClient(self.config.URBAN_MCP_URL, self.token)
+            urban = UrbanMcpClient(self.config.URBAN_MCP_URL, self.transport_auth)
             return [
                 {
                     "type": "function",
@@ -191,7 +197,7 @@ class McpDiagnosticsService:
             )
 
         if source == "urban":
-            urban = UrbanMcpClient(self.config.URBAN_MCP_URL or "", self.token)
+            urban = UrbanMcpClient(self.config.URBAN_MCP_URL or "", self.transport_auth)
             await urban.load_tools()
             return await urban.execute_tool(group or "", name, arguments, meta=meta)
 

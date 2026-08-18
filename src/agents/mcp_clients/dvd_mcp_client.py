@@ -18,9 +18,9 @@ class DvdMcpClient(BaseMcpClient):
     """
     Client for the IDU_DVD document vector-DB MCP server (regulatory documents search).
 
-    Unlike IduMcpClient / EffectsMcpClient, the IDU_DVD MCP server is **unauthenticated**
-    (it mounts the MCP app without JWT verification — see IDU_DVD/src/main.py), so this
-    client carries no bearer token and does not implement ``update_token``.
+    The transport is created with the process-wide gMART service-token client and the
+    programmatically resolved ``X-User-Id`` header. Token refresh remains a transport concern,
+    so this wrapper does not implement ``update_token``.
 
     Exposed IDU_DVD MCP tools (see IDU_DVD/src/mcp_server/server.py):
     ``search_texts`` / ``search_tables`` / ``search_all`` (vector search), ``list_documents``,

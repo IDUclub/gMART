@@ -50,9 +50,11 @@ class FakeSession:
     def __init__(self, outcomes: list) -> None:
         self._outcomes = list(outcomes)
         self.calls = 0
+        self.headers = None
 
     def get(self, url=None, headers=None, params=None):
         self.calls += 1
+        self.headers = headers
         return FakeReqCtx(self._outcomes.pop(0))
 
 
@@ -60,11 +62,33 @@ def _handler(max_retries: int = 3) -> JsonApiHandler:
     return JsonApiHandler("http://urban", max_retries=max_retries, backoff_base=0)
 
 
+class FakeServiceAuth:
+    async def get_authorization_headers(self):
+        return {"Authorization": "Bearer service-token"}
+
+
 async def test_get_success_returns_json():
     session = FakeSession([FakeResponse(200, json_body=[{"name": "ok"}])])
     result = await _handler().get("v1/service_types", session=session)
     assert result == [{"name": "ok"}]
     assert session.calls == 1
+
+
+async def test_service_auth_owns_authorization_and_forwards_user_id():
+    session = FakeSession([FakeResponse(200, json_body={"ok": True})])
+    handler = JsonApiHandler(
+        "http://urban", service_auth=FakeServiceAuth(), backoff_base=0
+    )
+
+    await handler.get(
+        "v1/x",
+        auth_token="u1",
+        headers={"Authorization": "Bearer caller-token", "X-User-Id": "spoofed"},
+        session=session,
+    )
+
+    assert session.headers["Authorization"] == "Bearer service-token"
+    assert session.headers["X-User-Id"] == "u1"
 
 
 async def test_get_404_raises_tool_error_without_retry():

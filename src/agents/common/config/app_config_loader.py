@@ -55,7 +55,6 @@ def load_config() -> AgentsAppConfig:
                     "SCENARIO_DATA_WORKSPACE_ENABLED", "false"
                 ).lower()
                 in {"1", "true", "yes", "on"},
-                context_internal_api_key=os.getenv("CONTEXT_INTERNAL_API_KEY"),
             )
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
     try:
@@ -82,7 +81,6 @@ def load_config() -> AgentsAppConfig:
                 "SCENARIO_DATA_WORKSPACE_ENABLED", "false"
             ).lower()
             in {"1", "true", "yes", "on"},
-            context_internal_api_key=os.getenv("CONTEXT_INTERNAL_API_KEY"),
         )
     except ValueError:
         raise

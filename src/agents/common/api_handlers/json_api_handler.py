@@ -1,6 +1,7 @@
 import asyncio
 
 import aiohttp
+from idu_service_auth import KeycloakTokenClient
 from loguru import logger
 
 from src.agents.common.exceptions.api_exceptions import DownstreamServiceError
@@ -10,6 +11,7 @@ from src.agents.common.exceptions.base_exceptions import (
     AgentsUnauthorizedException,
 )
 from src.agents.common.exceptions.token_exceptions import TokenExpiredError
+from src.common.service_auth import service_headers, user_id_from_jwt
 
 # Sentinel returned by _check_response_status to signal a transient failure that
 # should be retried rather than returned or raised.
@@ -31,6 +33,7 @@ class JsonApiHandler:
         base_url: str,
         max_retries: int = 3,
         backoff_base: float = 0.5,
+        service_auth: KeycloakTokenClient | None = None,
     ) -> None:
         """Initialisation function
 
@@ -48,6 +51,7 @@ class JsonApiHandler:
         self.__name__ = f"{self.base_url}_JSON_API_HANDLER"
         self.max_retries = max_retries
         self.backoff_base = backoff_base
+        self.service_auth = service_auth
 
     async def _check_response_status(
         self,
@@ -130,8 +134,9 @@ class JsonApiHandler:
                     params[key] = str(param).lower()
         return params
 
-    @staticmethod
-    def _with_auth(headers: dict | None, auth_token: str | None) -> dict | None:
+    async def _with_auth(
+        self, headers: dict | None, auth_token: str | None
+    ) -> dict | None:
         """
         Attach the authorization header when a token is supplied.
         Args:
@@ -141,12 +146,20 @@ class JsonApiHandler:
             dict | None: Headers with the authorization entry, or the originals.
         """
 
+        if self.service_auth is not None:
+            outgoing = dict(headers or {})
+            outgoing.update(
+                await service_headers(
+                    self.service_auth,
+                    user_id_from_jwt(auth_token) if auth_token else None,
+                )
+            )
+            return outgoing
         if not auth_token:
             return headers
-        if headers is None:
-            return {"Authorization": f"Bearer {auth_token}"}
-        headers.update({"Authorization": auth_token})
-        return headers
+        outgoing = dict(headers or {})
+        outgoing["Authorization"] = f"Bearer {auth_token}"
+        return outgoing
 
     async def _request(
         self,
@@ -232,7 +245,7 @@ class JsonApiHandler:
             dict | list | None: Response data as python object
         """
 
-        headers = self._with_auth(headers, auth_token)
+        headers = await self._with_auth(headers, auth_token)
         if not session:
             async with aiohttp.ClientSession() as session:
                 return await self._request("get", endpoint, headers, params, session)
@@ -259,7 +272,7 @@ class JsonApiHandler:
             dict | list | None: Response data as python object.
         """
 
-        headers = self._with_auth(headers, auth_token)
+        headers = await self._with_auth(headers, auth_token)
         if not session:
             async with aiohttp.ClientSession() as session:
                 return await self._request(

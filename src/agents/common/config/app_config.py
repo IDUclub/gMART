@@ -54,7 +54,6 @@ class AgentsAppConfig:
         openai_base_url: str | None = None,
         scenario_data_linear_workflow_enabled: bool = False,
         scenario_data_workspace_enabled: bool = False,
-        context_internal_api_key: str | None = None,
     ) -> None:
 
         if not ollama_api_url:
@@ -101,7 +100,6 @@ class AgentsAppConfig:
             scenario_data_linear_workflow_enabled
         )
         self.SCENARIO_DATA_WORKSPACE_ENABLED = scenario_data_workspace_enabled
-        self.CONTEXT_INTERNAL_API_KEY = context_internal_api_key or None
         if self.LLM_BACKEND == "openai" and not (
             self.OPENAI_BASE_URL or self.OLLAMA_URL
         ):
@@ -130,9 +128,6 @@ class AgentsAppConfig:
             ),
             "SCENARIO_DATA_WORKSPACE_ENABLED": str(
                 self.SCENARIO_DATA_WORKSPACE_ENABLED
-            ),
-            "CONTEXT_INTERNAL_API_KEY_CONFIGURED": str(
-                bool(self.CONTEXT_INTERNAL_API_KEY)
             ),
         }
 

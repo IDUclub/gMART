@@ -11,9 +11,9 @@ class NormGraphMcpClient(BaseMcpClient):
     """
     Client for the NormGraph MCP server (graph-RAG of normative restrictions, СП/СНиП/ГОСТ/СанПиН).
 
-    Like DvdMcpClient, the NormGraph MCP server is **unauthenticated** (no JWT verification —
-    see NormGraph/src/main.py), so this client carries no bearer token and does not implement
-    ``update_token``.
+    The transport is created with the process-wide gMART service-token client and the
+    programmatically resolved ``X-User-Id`` header. Token refresh remains a transport concern,
+    so this wrapper does not implement ``update_token``.
 
     Exposed NormGraph MCP tools (see NormGraph/src/mcp_server/server.py): ``search_restrictions``,
     ``restrictions_applicable``, ``get_restriction``, ``traverse_restrictions``, ``list_entities``,
@@ -156,8 +156,6 @@ class NormGraphMcpClient(BaseMcpClient):
         """
 
         arguments: dict[str, Any] = {"limit": int(limit)}
-        if user_id:
-            arguments["user_id"] = user_id
         if scenario_id:
             arguments["scenario_id"] = scenario_id
         if restriction_id:

@@ -8,12 +8,14 @@ import os
 import socket
 from typing import Any
 
+from idu_service_auth import KeycloakTokenClient
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
 
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
 from src.agents.model_clients.factory import build_llm_adapter
 from src.agents.services.restriction_catalog import strip_json_fence
+from src.common.service_auth import build_service_auth, service_auth_lifespan
 
 
 class ContextContent(BaseModel):
@@ -25,13 +27,16 @@ class ContextWorker:
     def __init__(
         self,
         chat_storage_url: str,
-        internal_api_key: str,
         llm_host: str,
+        service_auth: KeycloakTokenClient,
         *,
         worker_id: str | None = None,
     ) -> None:
-        self.api = JsonApiHandler(chat_storage_url, max_retries=3)
-        self.headers = {"X-Internal-API-Key": internal_api_key}
+        self.api = JsonApiHandler(
+            chat_storage_url,
+            max_retries=3,
+            service_auth=service_auth,
+        )
         self.llm = build_llm_adapter(llm_host)
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}"
 
@@ -49,7 +54,6 @@ class ContextWorker:
     async def run_once(self) -> bool:
         job = await self.api.post(
             "/api/v1/internal/chat_context/jobs/claim",
-            headers=self.headers,
             data={"worker_id": self.worker_id, "lease_seconds": 600},
         )
         if not job:
@@ -59,14 +63,12 @@ class ContextWorker:
             content = await self._summarize_job(job)
             await self.api.post(
                 f"/api/v1/internal/chat_context/jobs/{job_id}/complete",
-                headers=self.headers,
                 data={"worker_id": self.worker_id, "content": content.model_dump()},
             )
         except Exception as exc:
             logger.warning(f"Context job {job_id} failed: {exc}")
             await self.api.post(
                 f"/api/v1/internal/chat_context/jobs/{job_id}/fail",
-                headers=self.headers,
                 data={"worker_id": self.worker_id, "error": str(exc)[:2000]},
             )
         return True
@@ -86,7 +88,6 @@ class ContextWorker:
             source = (
                 await self.api.get(
                     f"/api/v1/internal/chat_context/jobs/{job['job_id']}/source",
-                    headers=self.headers,
                     params=params,
                 )
                 or {}
@@ -173,15 +174,18 @@ failed_attempts. Общий ответ не должен превышать пр
         return compact
 
 
+async def _run_worker(url: str, llm_host: str) -> None:
+    service_auth = build_service_auth()
+    async with service_auth_lifespan(service_auth):
+        await ContextWorker(url, llm_host, service_auth).run_forever()
+
+
 def main() -> None:
     url = os.getenv("CHAT_STORAGE")
-    key = os.getenv("CONTEXT_INTERNAL_API_KEY")
     llm_host = os.getenv("OLLAMA_API_URL")
-    if not url or not key or not llm_host:
-        raise RuntimeError(
-            "CHAT_STORAGE, CONTEXT_INTERNAL_API_KEY and OLLAMA_API_URL are required"
-        )
-    asyncio.run(ContextWorker(url, key, llm_host).run_forever())
+    if not url or not llm_host:
+        raise RuntimeError("CHAT_STORAGE and OLLAMA_API_URL are required")
+    asyncio.run(_run_worker(url, llm_host))
 
 
 if __name__ == "__main__":

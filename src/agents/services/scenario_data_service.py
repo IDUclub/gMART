@@ -7,6 +7,7 @@ import time
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
+from idu_service_auth import KeycloakTokenClient
 from loguru import logger
 
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
@@ -110,6 +111,7 @@ class ScenarioDataService(BaseLlmService):
         linear_workflow_enabled: bool = False,
         workspace_enabled: bool = False,
         idu_mcp_url: str | None = None,
+        service_auth: KeycloakTokenClient | None = None,
     ) -> None:
         super().__init__(llm_host, chat_storage_client, urban_api_client)
         self.state_store = state_store
@@ -120,6 +122,7 @@ class ScenarioDataService(BaseLlmService):
             self,
             workspace_enabled=workspace_enabled,
             idu_mcp_url=idu_mcp_url,
+            service_auth=service_auth,
         )
 
     async def run_scenario_data_pipeline(

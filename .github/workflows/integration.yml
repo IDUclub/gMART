@@ -20,6 +20,12 @@ on:
   schedule:
     - cron: "17 3 * * *"
 
+env:
+  SERVICE_AUTH_SERVER_URL: http://localhost:9999
+  SERVICE_AUTH_REALM: test
+  SERVICE_AUTH_CLIENT_ID: test-client
+  SERVICE_AUTH_CLIENT_SECRET: test-secret
+
 jobs:
   integration:
     name: Integration (Redis + Ollama CPU)
