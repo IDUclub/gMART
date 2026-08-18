@@ -113,6 +113,7 @@ class ScenarioDataPlanBuilder:
         history: list[dict] | None,
         scenario_id: int | None,
         context: dict[str, Any] | None = None,
+        project_id: int | None = None,
     ) -> AcquisitionPlan:
         """Decide what must be known before selecting concrete tools."""
 
@@ -124,8 +125,16 @@ class ScenarioDataPlanBuilder:
 «да», «оба», «эти», «первый вариант» разрешай по последнему вопросу и предмету диалога.
 Не меняй предметную область на нормативы, ограничения, показатели или другую тему, если
 пользователь явно не переключил её в текущей реплике либо в недавней истории.
+Пользователь оперирует названиями и не обязан знать внутренние ID. Для каждого названного
+типа или объекта сохраняй домен mapping (например service_type или physical_object_type),
+направление name_to_id и исходное название. Никогда не превращай service_type_id в
+бездоменный type_id и не проси пользователя самостоятельно искать идентификатор.
 
 Сценарий: {scenario_id if scenario_id is not None else "не выбран"}.
+Проект выбранного сценария: {project_id if project_id is not None else "не определён"}.
+Сценарий является конкретным вариантом проекта. В вопросах о территории, расположении и
+параметрах «проекта» используй проект выбранного сценария. При этом ID различны:
+scenario_id передавай только в scenario-параметры, project_id — только в project-параметры.
 Сжатый подтверждённый контекст чата:
 {json.dumps(context or {}, ensure_ascii=False)[:12000]}
 
@@ -156,6 +165,7 @@ required_output перечисляет ожидаемые таблицы, сло
         mappings: list[dict[str, Any]],
         *,
         scenario_id: int | None,
+        project_id: int | None = None,
         revision: int = 1,
         reason: str = "initial plan",
         observations: list[dict[str, Any]] | None = None,
@@ -173,7 +183,14 @@ required_output перечисляет ожидаемые таблицы, сло
 последовательно; depends_on может ссылаться только на предыдущие step_id. parallel_group
 можно заполнить для независимых шагов на будущее, но порядок списка остаётся безопасным.
 Не повторяй уже выполненные fingerprints и ранее завершённые step_id. scenario_id
-подставляется системой, не меняй его.
+и project_id подставляются системой, не меняй и не смешивай их. Пользователь не знает
+внутренние ID: бери их только из актуальных маппингов ниже. Сохраняй домен пары name/id:
+service_type.id можно передавать только как service_type_id/service_type_ids, а
+physical_object_type.id — только как physical_object_type_id/physical_object_type_ids.
+Если пользователь говорит «проект» при выбранном сценарии, это проект данного сценария;
+для scenario-инструмента всё равно используй scenario_id, для project-инструмента project_id.
+Для запроса о расположении именованного типа сначала получи записи сценария этого домена,
+затем отфильтруй их по подтверждённому ID. Один справочник типов не доказывает расположение.
 {self._workspace_prompt(workspace_enabled)}
 
 Текущая реплика: {user_query}
@@ -186,6 +203,7 @@ required_output перечисляет ожидаемые таблицы, сло
 {json.dumps(completed_step_ids or [], ensure_ascii=False)}
 Каталог: {json.dumps(catalog, ensure_ascii=False)}
 Сценарий: {scenario_id if scenario_id is not None else "не выбран"}
+Проект сценария: {project_id if project_id is not None else "не определён"}
 Требуемая revision: {revision}; reason: {reason}.
 
 Верни JSON по схеме ExecutionPlanRevision. Не завершай план до получения всех данных и
@@ -196,6 +214,20 @@ required_output перечисляет ожидаемые таблицы, сло
 
         def validate_plan(plan: ExecutionPlanRevision) -> ExecutionPlanRevision:
             plan = plan.model_copy(update={"revision": revision, "reason": reason})
+            if acquisition.required_output.layers:
+                available_tools = {(tool.group, tool.name) for tool in tools}
+                upgraded_steps = []
+                for step in plan.steps:
+                    geometry_name = f"{step.tool_name}WithGeometry"
+                    if (
+                        step.kind == PlanStepKind.URBAN_TOOL
+                        and step.group is not None
+                        and not step.tool_name.endswith("WithGeometry")
+                        and (step.group, geometry_name) in available_tools
+                    ):
+                        step = step.model_copy(update={"tool_name": geometry_name})
+                    upgraded_steps.append(step)
+                plan = plan.model_copy(update={"steps": upgraded_steps})
             if acquisition.requirements and not plan.steps:
                 raise ValueError("execution plan has requirements but no steps")
             urban_count = sum(
@@ -207,7 +239,10 @@ required_output перечисляет ожидаемые таблицы, сло
             scenario_scoped = scenario_id is not None and (
                 "scenario" in acquisition.objective.lower()
                 or "сценар" in acquisition.objective.lower()
+                or "project" in acquisition.objective.lower()
+                or "проект" in acquisition.objective.lower()
                 or "сценар" in user_query.lower()
+                or "проект" in user_query.lower()
             )
             if revision == 1 and scenario_scoped and urban_count == 0:
                 scenario_steps = self._scenario_seed_steps(
@@ -249,13 +284,64 @@ required_output перечисляет ожидаемые таблицы, сло
                 completed_step_ids=set(completed_step_ids or []),
             )
 
-        return await self._structured_plan_call(
-            model,
-            [{"role": "system", "content": prompt}],
-            ExecutionPlanRevision,
-            "execution plan",
-            post_validate=validate_plan,
-        )
+        if revision == 1 and scenario_id is not None:
+            scenario_steps = self._scenario_seed_steps(acquisition, tools, scenario_id)
+            covered = {
+                requirement_id
+                for step in scenario_steps
+                for requirement_id in step.satisfies
+            }
+            required = {
+                requirement.requirement_id for requirement in acquisition.requirements
+            }
+            if (
+                scenario_steps
+                and required.issubset(covered)
+                and any(
+                    step.tool_name.endswith("WithGeometry") for step in scenario_steps
+                )
+            ):
+                logger.info(
+                    "Using deterministic scenario-data geometry plan; "
+                    "all requirements are covered by scoped Urban tools"
+                )
+                return validate_plan(
+                    ExecutionPlanRevision(
+                        revision=revision,
+                        reason=reason,
+                        objective=acquisition.objective,
+                        steps=scenario_steps,
+                        required_output=acquisition.required_output,
+                    )
+                )
+
+        try:
+            return await self._structured_plan_call(
+                model,
+                [{"role": "system", "content": prompt}],
+                ExecutionPlanRevision,
+                "execution plan",
+                post_validate=validate_plan,
+                stop_after_first_error=revision == 1,
+            )
+        except ValueError:
+            if revision != 1 or scenario_id is None:
+                raise
+            scenario_steps = self._scenario_seed_steps(acquisition, tools, scenario_id)
+            if not scenario_steps:
+                raise
+            logger.warning(
+                "Using deterministic scenario-data seed plan after invalid LLM plan"
+            )
+            return validate_plan(
+                ExecutionPlanRevision(
+                    revision=revision,
+                    reason=reason,
+                    objective=acquisition.objective,
+                    steps=scenario_steps,
+                    required_output=acquisition.required_output,
+                )
+            )
 
     @staticmethod
     def _resolved_planning_query(user_query: str, acquisition: AcquisitionPlan) -> str:
@@ -324,12 +410,57 @@ required_output перечисляет ожидаемые таблицы, сло
         available = {tool.name: tool for tool in tools}
         steps: list[PlanStep] = []
         used: set[str] = set()
+        requires_entities = bool(acquisition.required_output.layers) or any(
+            marker in acquisition.objective.lower()
+            for marker in (
+                "располож",
+                "территор",
+                "объект",
+                "сервис",
+                "геосло",
+                "location",
+                "within",
+            )
+        )
+        requires_geometry = bool(acquisition.required_output.layers) or any(
+            marker in acquisition.objective.lower()
+            for marker in (
+                "располож",
+                "геометр",
+                "геосло",
+                "карт",
+                "где",
+                "location",
+                "geometry",
+                "map",
+            )
+        )
         for requirement in acquisition.requirements:
             domain = " ".join(
                 [acquisition.objective, requirement.description]
                 + [need.domain for need in requirement.mapping_needs]
             ).lower()
-            if "physical_object_type" in domain or (
+            if requires_entities and (
+                "physical_object_type" in domain
+                or {"physical", "object", "type"}.issubset(set(domain.split()))
+            ):
+                tool_name = (
+                    "GetScenarioPhysicalObjectsWithGeometry"
+                    if requires_geometry
+                    and "GetScenarioPhysicalObjectsWithGeometry" in available
+                    else "GetScenarioPhysicalObjects"
+                )
+            elif requires_entities and (
+                "service_type" in domain
+                or {"service", "type"}.issubset(set(domain.split()))
+            ):
+                tool_name = (
+                    "GetScenarioServicesWithGeometry"
+                    if requires_geometry
+                    and "GetScenarioServicesWithGeometry" in available
+                    else "GetScenarioServices"
+                )
+            elif "physical_object_type" in domain or (
                 "physical" in domain and "object" in domain and "type" in domain
             ):
                 tool_name = "GetScenarioPhysicalObjectTypes"
@@ -338,9 +469,19 @@ required_output перечисляет ожидаемые таблицы, сло
             elif "physical_object" in domain or (
                 "physical" in domain and "object" in domain
             ):
-                tool_name = "GetScenarioPhysicalObjects"
+                tool_name = (
+                    "GetScenarioPhysicalObjectsWithGeometry"
+                    if requires_geometry
+                    and "GetScenarioPhysicalObjectsWithGeometry" in available
+                    else "GetScenarioPhysicalObjects"
+                )
             elif "service" in domain or "сервис" in domain:
-                tool_name = "GetScenarioServices"
+                tool_name = (
+                    "GetScenarioServicesWithGeometry"
+                    if requires_geometry
+                    and "GetScenarioServicesWithGeometry" in available
+                    else "GetScenarioServices"
+                )
             else:
                 continue
             tool = available.get(tool_name)
@@ -384,6 +525,7 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
         schema,
         label: str,
         post_validate: Callable[[Any], Any] | None = None,
+        stop_after_first_error: bool = False,
     ):
         error = ""
         for attempt in range(MAX_PLANNER_RETRIES + 1):
@@ -412,6 +554,17 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                 call["format"] = schema.model_json_schema()
             response = await self.llm_client.chat(**call)
             raw = (response.get("message") or {}).get("content") or ""
+            if (
+                schema is ExecutionPlanRevision
+                and not raw.strip()
+                and response.get("done_reason") == "length"
+            ):
+                error = "empty execution plan after reasoning exhausted max_tokens"
+                logger.warning(
+                    "Scenario-data execution planner exhausted max_tokens; "
+                    "using deterministic fallback without redundant retries"
+                )
+                break
             try:
                 payload = json.loads(strip_json_fence(raw))
                 if schema is ExecutionPlanRevision:
@@ -423,6 +576,8 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                 logger.warning(
                     f"Invalid scenario-data {label}, attempt {attempt + 1}: {error}"
                 )
+                if stop_after_first_error:
+                    break
         raise ValueError(f"invalid scenario-data {label} after retries: {error}")
 
     @staticmethod

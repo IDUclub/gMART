@@ -199,6 +199,14 @@ def test_bounded_context_keeps_recent_evidence_and_valid_json():
     assert context.startswith('{"order": "most_recent_first"')
 
 
+def test_bounded_context_marks_a_table_already_sent_to_the_client():
+    context = bounded_observation_context(
+        [{"table_count": 1, "aggregate": {"total_records": 70}}], max_chars=1000
+    )
+
+    assert '"table_count": 1' in context
+
+
 class TestUnresolvedReferences:
     def test_a_bare_foreign_key_needs_a_lookup(self):
         rows = [{"service_id": i, "service_type_id": i % 12} for i in range(900)]

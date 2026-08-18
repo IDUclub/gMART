@@ -170,7 +170,9 @@ class ChatStorageApiClient:
             auth_token=token,
             data={
                 "role": RoleEnum.parse(role).value,
-                "parts": [part.model_dump(exclude_none=True) for part in parts],
+                "parts": [
+                    part.model_dump(mode="json", exclude_none=True) for part in parts
+                ],
                 "metadata": kwargs,
             },
         )
