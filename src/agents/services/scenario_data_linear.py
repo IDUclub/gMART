@@ -33,8 +33,8 @@ from src.agents.services.scenario_data_mapping import (
     UrbanMappingResolver,
     bind_mapping_arguments,
     context_mapping_snapshots,
-    ensure_entity_retrieval_outputs,
     enrich_acquisition_mappings,
+    ensure_entity_retrieval_outputs,
     mapping_snapshot,
 )
 from src.agents.services.service_entities.scenario_data_plan import (
