@@ -59,6 +59,42 @@ from src.agents.services.service_entities.scenario_data_action import (
     ScenarioDataActionKind,
 )
 
+_TRANSIENT_TOOL_ERROR_MARKERS = (
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "temporary failure",
+    "connection reset",
+    "connection refused",
+    "connection closed",
+    "rate limit",
+    "too many requests",
+    "http 429",
+    "http 502",
+    "http 503",
+    "http 504",
+    "status 429",
+    "status 502",
+    "status 503",
+    "status 504",
+)
+
+
+def _is_transient_tool_error(error: Exception) -> bool:
+    """Classify only failures that are safe to retry for read-only Urban calls."""
+
+    if isinstance(error, (TimeoutError, asyncio.TimeoutError, ConnectionError)):
+        return True
+    seen: set[int] = set()
+    current: BaseException | None = error
+    messages: list[str] = []
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        messages.append(f"{type(current).__name__} {current}".casefold())
+        current = current.__cause__ or current.__context__
+    text = " ".join(messages)
+    return any(marker in text for marker in _TRANSIENT_TOOL_ERROR_MARKERS)
+
 
 class ScenarioDataService(BaseLlmService):
     """Answer grounded questions using every read-only Urban MCP group."""
@@ -312,6 +348,7 @@ class ScenarioDataService(BaseLlmService):
             token_ref,
             urban_mcp_client.load_tools,
             tools_box,
+            retry_transient=True,
         ):
             yield self._buf(request_id, event)
         loaded_tools: list[UrbanMcpTool] = tools_box[0]
@@ -524,6 +561,7 @@ class ScenarioDataService(BaseLlmService):
                         ),
                     ),
                     result_box,
+                    retry_transient=True,
                 ):
                     yield self._buf(request_id, event)
                 result = self._unwrap_result(result_box[0])
@@ -886,6 +924,7 @@ class ScenarioDataService(BaseLlmService):
                         meta={"scenario_id": scenario_id},
                     ),
                     result_box,
+                    retry_transient=True,
                 ):
                     yield self._buf(request_id, event)
                 results.append(self._unwrap_result(result_box[0]))
@@ -966,6 +1005,7 @@ class ScenarioDataService(BaseLlmService):
                         meta={"scenario_id": scenario_id},
                     ),
                     fallback_box,
+                    retry_transient=True,
                 ):
                     yield self._buf(request_id, event)
                 distribution = build_type_distribution(
@@ -1080,7 +1120,10 @@ class ScenarioDataService(BaseLlmService):
         token_ref: list[str],
         operation: Callable,
         result: list[Any],
+        *,
+        retry_transient: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        transient_retries = 0
         while True:
             if await self.state_store.is_cancelled(request_id):
                 raise asyncio.CancelledError
@@ -1111,6 +1154,27 @@ class ScenarioDataService(BaseLlmService):
                 client.update_token(token)
                 token_ref[0] = token
                 await self.state_store.set_status(request_id, PipelineStatus.RUNNING)
+            except Exception as exc:
+                if (
+                    not retry_transient
+                    or not _is_transient_tool_error(exc)
+                    or transient_retries >= 2
+                ):
+                    raise
+                transient_retries += 1
+                delay = 0.5 * (2 ** (transient_retries - 1))
+                logger.warning(
+                    "Scenario-data read-only tool call failed transiently; "
+                    f"retry {transient_retries}/2 in {delay:.1f}s: {exc}"
+                )
+                yield self._status(
+                    "tool_retry",
+                    (
+                        "Временная ошибка Urban MCP. "
+                        f"Повторяю запрос ({transient_retries}/2)…"
+                    ),
+                )
+                await asyncio.sleep(delay)
 
     @staticmethod
     def _append_shortfall_note(answer: str, reasons: list[str]) -> str:

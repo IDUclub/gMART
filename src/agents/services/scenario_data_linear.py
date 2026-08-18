@@ -29,6 +29,9 @@ from src.agents.services.scenario_data_aggregate import (
     extract_records,
     unresolved_references,
 )
+from src.agents.services.scenario_data_execution_context import (
+    ScenarioExecutionContext,
+)
 from src.agents.services.scenario_data_mapping import (
     UrbanMappingResolver,
     bind_mapping_arguments,
@@ -126,6 +129,13 @@ class ScenarioDataLinearWorkflow:
         )
         acquisition = enrich_acquisition_mappings(acquisition, user_query, mappings)
         acquisition = ensure_entity_retrieval_outputs(acquisition, user_query)
+        execution_context = ScenarioExecutionContext.from_acquisition(
+            acquisition,
+            user_query=user_query,
+            scenario_id=scenario_id,
+            project_id=project_id,
+        )
+        execution_context.update_mappings(mappings)
         plan_payload = acquisition.model_dump(mode="json")
         yield self._event(request_id, "plan_created", plan_payload)
         parts.append(StructuredPartRequest(kind="plan", payload=plan_payload))
@@ -181,23 +191,6 @@ class ScenarioDataLinearWorkflow:
             if ledger.urban_calls >= MAX_URBAN_CALLS:
                 break
             mapping_step_id = f"mapping_{ledger.urban_calls + 1}"
-            result = None
-            async for event, value in self._execute_urban(
-                request_id,
-                urban_mcp_client,
-                token_ref,
-                call.tool,
-                call.arguments,
-                scenario_id,
-                ledger,
-                parts,
-                project_id=project_id,
-                step_id=mapping_step_id,
-            ):
-                yield event
-                if value is not None:
-                    result = value
-            snapshot = mapping_snapshot(call, result)
             mapping_arguments = dict(call.arguments)
             if scenario_id is not None:
                 mapping_arguments.setdefault("scenario_id", scenario_id)
@@ -213,6 +206,64 @@ class ScenarioDataLinearWorkflow:
                 default=str,
             )
             fingerprints.add(mapping_fingerprint)
+            mapping_attempt = execution_context.start_attempt(
+                revision=0,
+                step_id=mapping_step_id,
+                purpose=f"Разрешить {call.need.domain}: {call.need.values}",
+                kind=PlanStepKind.URBAN_TOOL.value,
+                group=call.tool.group,
+                tool_name=call.tool.name,
+                arguments=mapping_arguments,
+                satisfies=[],
+            )
+            yield self._event(
+                request_id,
+                "step_context",
+                mapping_attempt.model_dump(mode="json"),
+            )
+            result = None
+            try:
+                async for event, value in self._execute_urban(
+                    request_id,
+                    urban_mcp_client,
+                    token_ref,
+                    call.tool,
+                    mapping_arguments,
+                    scenario_id,
+                    ledger,
+                    parts,
+                    project_id=project_id,
+                    step_id=mapping_step_id,
+                ):
+                    yield event
+                    if value is not None:
+                        result = value
+            except PipelineSuspendedError:
+                raise
+            except Exception as exc:
+                logger.warning(f"Scenario-data mapping {mapping_step_id} failed: {exc}")
+                execution_context.fail_attempt(mapping_attempt, exc)
+                failure_observation = execution_context.attempt_observation(
+                    mapping_attempt
+                )
+                observations.append(failure_observation)
+                ledger.records.append(
+                    ExecutionRecord(
+                        step_id=mapping_step_id,
+                        revision=0,
+                        status=StepStatus.FAILED,
+                        call_fingerprint=mapping_fingerprint,
+                        observation_index=len(observations) - 1,
+                        error=str(exc),
+                    )
+                )
+                yield self._event(
+                    request_id,
+                    "step_failed",
+                    mapping_attempt.model_dump(mode="json"),
+                )
+                continue
+            snapshot = mapping_snapshot(call, result)
             if (
                 self.workspace_enabled
                 and chat_id
@@ -266,14 +317,17 @@ class ScenarioDataLinearWorkflow:
             )
             if mapping_table is not None:
                 parts.append(self.owner._table_part(mapping_table))
-            observations.append(
-                {
-                    "context": "Актуальный маппинг",
-                    "mapping": snapshot,
-                    "summary": f"Маппинг получен из {snapshot['source_tool']}",
-                    "resolved_reference_domain": call.need.domain,
-                }
+            mapping_observation = {
+                "context": "Актуальный маппинг",
+                "mapping": snapshot,
+                "summary": f"Маппинг получен из {snapshot['source_tool']}",
+                "resolved_reference_domain": call.need.domain,
+            }
+            execution_context.complete_attempt(mapping_attempt, mapping_observation)
+            mapping_observation["step_context"] = mapping_attempt.model_dump(
+                mode="json"
             )
+            observations.append(mapping_observation)
         if mapping_calls:
             yield self._event(
                 request_id,
@@ -282,6 +336,8 @@ class ScenarioDataLinearWorkflow:
             )
             acquisition = enrich_acquisition_mappings(acquisition, user_query, mappings)
             acquisition = ensure_entity_retrieval_outputs(acquisition, user_query)
+            execution_context.update_acquisition(acquisition)
+            execution_context.update_mappings(mappings)
 
         revision = 1
         try:
@@ -301,21 +357,29 @@ class ScenarioDataLinearWorkflow:
                     completed_fingerprints=sorted(fingerprints),
                     completed_step_ids=sorted(ledger.completed_step_ids),
                     workspace_enabled=self.workspace_enabled,
+                    execution_context=execution_context.planner_snapshot(
+                        urban_calls=ledger.urban_calls,
+                        workspace_calls=ledger.workspace_calls,
+                        replans=ledger.replans,
+                    ),
                 ),
             )
         except ValueError as exc:
             logger.warning(f"Could not build initial scenario-data plan: {exc}")
-            answer = (
-                "Не удалось сопоставить задачу с доступными инструментами Urban MCP "
-                "после нескольких попыток. Повторите запрос; если проблема сохранится, "
-                "уточните, какие именно данные или результат нужны."
+            reasons = [f"не удалось составить исполнимый план: {exc}"]
+            answer = execution_context.failure_note(reasons)
+            execution_snapshot = execution_context.planner_snapshot(
+                urban_calls=ledger.urban_calls,
+                workspace_calls=ledger.workspace_calls,
+                replans=ledger.replans,
             )
             failure = {
                 "code": "scenario_data_plan_invalid",
-                "reasons": ["не удалось составить исполнимый план"],
+                "reasons": reasons,
                 "urban_calls": ledger.urban_calls,
                 "workspace_calls": ledger.workspace_calls,
                 "replans": ledger.replans,
+                "execution_context": execution_snapshot,
             }
             yield self._event(request_id, "pipeline_failed", failure)
             parts.append(StructuredPartRequest(kind="failure", payload=failure))
@@ -336,7 +400,14 @@ class ScenarioDataLinearWorkflow:
         answer = ""
         validation_reasons: list[str] = []
         while True:
-            revision_payload = plan.model_dump(mode="json")
+            revision_payload = {
+                **plan.model_dump(mode="json"),
+                "execution_context": execution_context.planner_snapshot(
+                    urban_calls=ledger.urban_calls,
+                    workspace_calls=ledger.workspace_calls,
+                    replans=ledger.replans,
+                ),
+            }
             yield self._event(request_id, "plan_revision_created", revision_payload)
             parts.append(
                 StructuredPartRequest(kind="plan_revision", payload=revision_payload)
@@ -370,6 +441,14 @@ class ScenarioDataLinearWorkflow:
                     ]
                     plan_failed = True
                     break
+                attempt = execution_context.start_step(
+                    plan.revision, step, dict(step.arguments)
+                )
+                yield self._event(
+                    request_id,
+                    "step_context",
+                    attempt.model_dump(mode="json"),
+                )
                 try:
                     resolved_arguments = (
                         self._resolve_workspace_arguments(
@@ -380,19 +459,50 @@ class ScenarioDataLinearWorkflow:
                     )
                 except ValueError as exc:
                     validation_reasons = [str(exc)]
-                    observations.append(
-                        {
-                            "context": f"Невыполнимая зависимость {step.step_id}",
-                            "summary": str(exc),
-                        }
+                    execution_context.fail_attempt(attempt, exc)
+                    failed_observation = execution_context.attempt_observation(attempt)
+                    observations.append(failed_observation)
+                    ledger.records.append(
+                        ExecutionRecord(
+                            step_id=step.step_id,
+                            revision=plan.revision,
+                            status=StepStatus.FAILED,
+                            observation_index=len(observations) - 1,
+                            error=str(exc),
+                        )
+                    )
+                    yield self._event(
+                        request_id,
+                        "step_failed",
+                        attempt.model_dump(mode="json"),
                     )
                     plan_failed = True
                     break
                 fingerprint = self._fingerprint(step, scenario_id, resolved_arguments)
                 if fingerprint in fingerprints:
-                    validation_reasons = [
-                        f"план повторяет уже выполненный вызов {step.tool_name}"
-                    ]
+                    error = ValueError(
+                        f"план повторяет уже проверенный вызов {step.tool_name} "
+                        "с теми же аргументами"
+                    )
+                    validation_reasons = [str(error)]
+                    execution_context.fail_attempt(attempt, error)
+                    failed_observation = execution_context.attempt_observation(attempt)
+                    observations.append(failed_observation)
+                    ledger.records.append(
+                        ExecutionRecord(
+                            step_id=step.step_id,
+                            revision=plan.revision,
+                            status=StepStatus.FAILED,
+                            call_fingerprint=fingerprint,
+                            observation_index=len(observations) - 1,
+                            error=str(error),
+                        )
+                    )
+                    yield self._event(
+                        request_id,
+                        "step_failed",
+                        attempt.model_dump(mode="json"),
+                    )
                     plan_failed = True
                     break
                 fingerprints.add(fingerprint)
@@ -437,6 +547,24 @@ class ScenarioDataLinearWorkflow:
                             scenario_id,
                             project_id=project_id,
                         )
+                        attempt.arguments = dict(arguments)
+                        effective_fingerprint = self._fingerprint(
+                            step, scenario_id, arguments
+                        )
+                        if effective_fingerprint != fingerprint:
+                            fingerprints.discard(fingerprint)
+                            if effective_fingerprint in fingerprints:
+                                raise ValueError(
+                                    f"вызов {step.tool_name} с подготовленными "
+                                    "аргументами уже был проверен"
+                                )
+                            fingerprints.add(effective_fingerprint)
+                            fingerprint = effective_fingerprint
+                        yield self._event(
+                            request_id,
+                            "step_context",
+                            attempt.model_dump(mode="json"),
+                        )
                         result = None
                         async for event, value in self._execute_urban(
                             request_id,
@@ -467,6 +595,8 @@ class ScenarioDataLinearWorkflow:
                         observation["arguments"] = arguments
                     for event in result_events:
                         yield event
+                    execution_context.complete_attempt(attempt, observation)
+                    observation["step_context"] = attempt.model_dump(mode="json")
                     observations.append(observation)
                     artifact = observation.get("artifact") or {}
                     if isinstance(artifact.get("handle"), str):
@@ -490,21 +620,21 @@ class ScenarioDataLinearWorkflow:
                 except Exception as exc:
                     logger.warning(f"Scenario-data step {step.step_id} failed: {exc}")
                     if step.kind == PlanStepKind.WORKSPACE and not step.satisfies:
+                        execution_context.skip_attempt(attempt, exc)
+                        skipped_observation = execution_context.attempt_observation(
+                            attempt
+                        )
                         ledger.records.append(
                             ExecutionRecord(
                                 step_id=step.step_id,
                                 revision=plan.revision,
                                 status=StepStatus.SKIPPED,
                                 call_fingerprint=fingerprint,
+                                observation_index=len(observations),
                                 error=str(exc),
                             )
                         )
-                        observations.append(
-                            {
-                                "context": f"Необязательный шаг {step.step_id} пропущен",
-                                "summary": str(exc),
-                            }
-                        )
+                        observations.append(skipped_observation)
                         yield self._event(
                             request_id,
                             "step_completed",
@@ -515,20 +645,23 @@ class ScenarioDataLinearWorkflow:
                             },
                         )
                         continue
+                    execution_context.fail_attempt(attempt, exc)
+                    failed_observation = execution_context.attempt_observation(attempt)
                     ledger.records.append(
                         ExecutionRecord(
                             step_id=step.step_id,
                             revision=plan.revision,
                             status=StepStatus.FAILED,
                             call_fingerprint=fingerprint,
+                            observation_index=len(observations),
                             error=str(exc),
                         )
                     )
-                    observations.append(
-                        {
-                            "context": f"Ошибка шага {step.step_id}",
-                            "summary": str(exc),
-                        }
+                    observations.append(failed_observation)
+                    yield self._event(
+                        request_id,
+                        "step_failed",
+                        attempt.model_dump(mode="json"),
                     )
                     validation_reasons = [f"шаг {step.step_id} завершился ошибкой"]
                     plan_failed = True
@@ -576,6 +709,11 @@ class ScenarioDataLinearWorkflow:
                         "sufficient": True,
                         "revision": plan.revision,
                         "criteria": plan.required_output.model_dump(mode="json"),
+                        "execution_context": execution_context.planner_snapshot(
+                            urban_calls=ledger.urban_calls,
+                            workspace_calls=ledger.workspace_calls,
+                            replans=ledger.replans,
+                        ),
                     }
                     yield self._event(
                         request_id, "validation_completed", validation_payload
@@ -611,13 +749,24 @@ class ScenarioDataLinearWorkflow:
                                 history,
                             ),
                         )
-                answer = self.owner._append_shortfall_note(answer, validation_reasons)
+                failure_note = execution_context.failure_note(validation_reasons)
+                answer = (
+                    f"{answer.rstrip()}\n\n{failure_note}"
+                    if answer.strip()
+                    else failure_note
+                )
+                execution_snapshot = execution_context.planner_snapshot(
+                    urban_calls=ledger.urban_calls,
+                    workspace_calls=ledger.workspace_calls,
+                    replans=ledger.replans,
+                )
                 failure = {
                     "code": "scenario_data_budget_exhausted",
                     "reasons": validation_reasons,
                     "urban_calls": ledger.urban_calls,
                     "workspace_calls": ledger.workspace_calls,
                     "replans": ledger.replans,
+                    "execution_context": execution_snapshot,
                 }
                 yield self._event(request_id, "pipeline_failed", failure)
                 parts.append(StructuredPartRequest(kind="failure", payload=failure))
@@ -648,25 +797,36 @@ class ScenarioDataLinearWorkflow:
                         completed_fingerprints=sorted(fingerprints),
                         completed_step_ids=sorted(ledger.completed_step_ids),
                         workspace_enabled=self.workspace_enabled,
+                        execution_context=execution_context.planner_snapshot(
+                            urban_calls=ledger.urban_calls,
+                            workspace_calls=ledger.workspace_calls,
+                            replans=ledger.replans,
+                        ),
                     ),
                 )
             except ValueError as exc:
                 logger.warning(f"Could not build scenario-data replan: {exc}")
-                answer = self.owner._append_shortfall_note(
-                    answer
-                    or (
-                        "Не удалось построить следующую исполнимую ревизию плана. "
-                        "Уточните требуемый набор данных или ожидаемый результат."
-                    ),
-                    validation_reasons,
+                reasons = validation_reasons or [
+                    f"не удалось составить новую ревизию плана: {exc}"
+                ]
+                failure_note = execution_context.failure_note(reasons)
+                answer = (
+                    f"{answer.rstrip()}\n\n{failure_note}"
+                    if answer.strip()
+                    else failure_note
+                )
+                execution_snapshot = execution_context.planner_snapshot(
+                    urban_calls=ledger.urban_calls,
+                    workspace_calls=ledger.workspace_calls,
+                    replans=ledger.replans,
                 )
                 failure = {
                     "code": "scenario_data_replan_invalid",
-                    "reasons": validation_reasons
-                    or ["не удалось составить новую ревизию плана"],
+                    "reasons": reasons,
                     "urban_calls": ledger.urban_calls,
                     "workspace_calls": ledger.workspace_calls,
                     "replans": ledger.replans,
+                    "execution_context": execution_snapshot,
                 }
                 yield self._event(request_id, "pipeline_failed", failure)
                 parts.append(StructuredPartRequest(kind="failure", payload=failure))
@@ -740,20 +900,24 @@ class ScenarioDataLinearWorkflow:
             meta["scenario_id"] = scenario_id
         if project_id is not None:
             meta["project_id"] = project_id
-        async for event in self.owner._retryable_operation(
-            request_id,
-            client,
-            token_ref,
-            lambda: client.execute_tool(
-                tool.group,
-                tool.name,
-                arguments,
-                meta=meta,
-            ),
-            result_box,
-        ):
-            yield self.owner._buf(request_id, event), None
-        ledger.urban_calls += 1
+        try:
+            async for event in self.owner._retryable_operation(
+                request_id,
+                client,
+                token_ref,
+                lambda: client.execute_tool(
+                    tool.group,
+                    tool.name,
+                    arguments,
+                    meta=meta,
+                ),
+                result_box,
+                retry_transient=True,
+            ):
+                yield self.owner._buf(request_id, event), None
+        finally:
+            # Failed read-only calls are attempts too and must consume the bounded budget.
+            ledger.urban_calls += 1
         yield self._event(
             request_id,
             "status",

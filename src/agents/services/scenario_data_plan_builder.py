@@ -178,11 +178,22 @@ required_output перечисляет ожидаемые таблицы, сло
         completed_fingerprints: list[str] | None = None,
         completed_step_ids: list[str] | None = None,
         workspace_enabled: bool = False,
+        execution_context: dict[str, Any] | None = None,
     ) -> ExecutionPlanRevision:
         """Bind a logical plan to exact catalogue tools and ordered arguments."""
 
         resolved_query = self._resolved_planning_query(user_query, acquisition)
-        shortlist = self._shortlist(tools, resolved_query, observations or [])
+        failed_tools = {
+            (str(attempt.get("group") or ""), str(attempt.get("tool_name") or ""))
+            for attempt in (execution_context or {}).get("attempts") or []
+            if isinstance(attempt, dict) and attempt.get("status") == "failed"
+        }
+        shortlist = self._shortlist(
+            tools,
+            resolved_query,
+            observations or [],
+            execution_context=execution_context,
+        )
         catalog = [tool.compact_prompt_entry() for tool in shortlist]
         prompt = f"""Построй целиком исполнимый план read-only Urban MCP до начала выполнения.
 Используй только точные group/tool_name и параметры из каталога. Шаги идут строго
@@ -204,6 +215,8 @@ physical_object_type.id — только как physical_object_type_id/physical
 Логический план: {acquisition.model_dump_json()}
 Актуальные маппинги: {json.dumps(mappings, ensure_ascii=False)[:10000]}
 Наблюдения: {json.dumps(observations or [], ensure_ascii=False)[:12000]}
+Контекст выполнения задачи и предыдущих попыток:
+{json.dumps(execution_context or {}, ensure_ascii=False)[:12000]}
 Выполненные fingerprints: {json.dumps(completed_fingerprints or [], ensure_ascii=False)}
 Ранее завершённые step_id, на чьи artifact можно ссылаться:
 {json.dumps(completed_step_ids or [], ensure_ascii=False)}
@@ -216,7 +229,11 @@ physical_object_type.id — только как physical_object_type_id/physical
 справочников, необходимых для required_output. Каждый requirement_id логического плана
 должен встречаться в satisfies хотя бы одного шага, который реально его закрывает.
 Не переопределяй предмет задачи по короткой текущей реплике: логический план выше уже
-учёл историю диалога и является источником истины для выбора инструментов."""
+учёл историю диалога и является источником истины для выбора инструментов.
+Если предыдущий шаг завершился ошибкой, сначала проверь его аргументы и подтверждённые
+маппинги, затем выбери семантически эквивалентный инструмент из каталога. Не повторяй
+тот же tool+arguments. Не отказывайся от всей задачи, если можно получить частичный
+проверяемый результат другим read-only путём."""
 
         def validate_plan(plan: ExecutionPlanRevision) -> ExecutionPlanRevision:
             plan = plan.model_copy(update={"revision": revision, "reason": reason})
@@ -230,6 +247,7 @@ physical_object_type.id — только как physical_object_type_id/physical
                         and step.group is not None
                         and not step.tool_name.endswith("WithGeometry")
                         and (step.group, geometry_name) in available_tools
+                        and (step.group, geometry_name) not in failed_tools
                     ):
                         step = step.model_copy(update={"tool_name": geometry_name})
                     upgraded_steps.append(step)
@@ -331,6 +349,27 @@ physical_object_type.id — только как physical_object_type_id/physical
                 stop_after_first_error=revision == 1,
             )
         except ValueError:
+            recovery_steps = self._recovery_seed_steps(
+                acquisition,
+                tools,
+                scenario_id=scenario_id,
+                project_id=project_id,
+                execution_context=execution_context or {},
+            )
+            if recovery_steps:
+                logger.warning(
+                    "Using deterministic scenario-data recovery plan after invalid "
+                    "LLM replan"
+                )
+                return validate_plan(
+                    ExecutionPlanRevision(
+                        revision=revision,
+                        reason=reason,
+                        objective=acquisition.objective,
+                        steps=recovery_steps,
+                        required_output=acquisition.required_output,
+                    )
+                )
             if revision != 1 or scenario_id is None:
                 raise
             scenario_steps = self._scenario_seed_steps(acquisition, tools, scenario_id)
@@ -896,6 +935,8 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
         tools: list[UrbanMcpTool],
         user_query: str,
         observations: list[dict[str, Any]],
+        *,
+        execution_context: dict[str, Any] | None = None,
     ) -> list[UrbanMcpTool]:
         context = (
             user_query
@@ -923,9 +964,13 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
 
         ranked = sorted(tools, key=lambda item: (-score(item), item.name))
         chosen: dict[tuple[str, str], UrbanMcpTool] = {}
+        for tool in cls._recovery_candidates(tools, execution_context or {})[:3]:
+            chosen[(tool.group, tool.name)] = tool
         # Best matches first, regardless of group. Reserving slots per group is what pushed
         # the catalogue to 41 entries and 10.3k prompt tokens — see SHORTLIST_SIZE.
-        for tool in ranked[:SHORTLIST_SIZE]:
+        for tool in ranked:
+            if len(chosen) >= SHORTLIST_SIZE:
+                break
             chosen[(tool.group, tool.name)] = tool
         # One dictionary tool is kept even when it did not score: resolving an id to a name is
         # the second half of nearly every question, and the planner cannot call what it
@@ -936,6 +981,123 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                     chosen[(tool.group, tool.name)] = tool
                     break
         return list(chosen.values())
+
+    @classmethod
+    def _recovery_candidates(
+        cls,
+        tools: list[UrbanMcpTool],
+        execution_context: dict[str, Any],
+    ) -> list[UrbanMcpTool]:
+        attempts = [
+            attempt
+            for attempt in execution_context.get("attempts") or []
+            if isinstance(attempt, dict)
+        ]
+        failed = next(
+            (
+                attempt
+                for attempt in reversed(attempts)
+                if attempt.get("status") == "failed" and attempt.get("tool_name")
+            ),
+            None,
+        )
+        if failed is None:
+            return []
+        failed_tool = next(
+            (
+                tool
+                for tool in tools
+                if tool.group == failed.get("group")
+                and tool.name == failed.get("tool_name")
+            ),
+            None,
+        )
+        if failed_tool is None:
+            return []
+        attempted = {
+            (str(attempt.get("group") or ""), str(attempt.get("tool_name") or ""))
+            for attempt in attempts
+            if attempt.get("status") in {"failed", "completed"}
+        }
+        failed_tokens = cls._tool_family_tokens(failed_tool.name)
+        failed_properties = set(
+            ((failed_tool.input_schema or {}).get("properties") or {}).keys()
+        )
+        failed_tags = set(failed_tool.tags)
+
+        def score(tool: UrbanMcpTool) -> tuple[int, str]:
+            tokens = cls._tool_family_tokens(tool.name)
+            properties = set(((tool.input_schema or {}).get("properties") or {}).keys())
+            value = 8 * len(tokens & failed_tokens)
+            value += 5 * len(set(tool.tags) & failed_tags)
+            value += 3 if tool.group == failed_tool.group else 0
+            value += 2 * len(properties & failed_properties)
+            return (-value, tool.name)
+
+        candidates = [
+            tool
+            for tool in tools
+            if (tool.group, tool.name) not in attempted
+            and (
+                cls._tool_family_tokens(tool.name) & failed_tokens
+                or set(tool.tags) & failed_tags
+            )
+        ]
+        return sorted(candidates, key=score)
+
+    @staticmethod
+    def _tool_family_tokens(name: str) -> set[str]:
+        normalized = re.sub(r"(?<!^)(?=[A-Z])", " ", name).casefold()
+        return {
+            token
+            for token in re.findall(r"[a-z0-9]+", normalized)
+            if token not in {"get", "scenario", "with", "geometry", "by", "id"}
+        }
+
+    @classmethod
+    def _recovery_seed_steps(
+        cls,
+        acquisition: AcquisitionPlan,
+        tools: list[UrbanMcpTool],
+        *,
+        scenario_id: int | None,
+        project_id: int | None,
+        execution_context: dict[str, Any],
+    ) -> list[PlanStep]:
+        attempts = [
+            attempt
+            for attempt in execution_context.get("attempts") or []
+            if isinstance(attempt, dict) and attempt.get("status") == "failed"
+        ]
+        if not attempts:
+            return []
+        failed = attempts[-1]
+        for tool in cls._recovery_candidates(tools, execution_context):
+            properties = (tool.input_schema or {}).get("properties") or {}
+            arguments = {
+                key: value
+                for key, value in (failed.get("arguments") or {}).items()
+                if key in properties
+            }
+            if scenario_id is not None and "scenario_id" in properties:
+                arguments["scenario_id"] = scenario_id
+            if project_id is not None and "project_id" in properties:
+                arguments["project_id"] = project_id
+            required = set((tool.input_schema or {}).get("required") or [])
+            if required - set(arguments):
+                continue
+            return [
+                PlanStep(
+                    step_id=f"recovery_{len(attempts)}",
+                    purpose=str(failed.get("purpose") or acquisition.objective),
+                    group=tool.group,
+                    tool_name=tool.name,
+                    arguments=arguments,
+                    satisfies=list(failed.get("satisfies") or []),
+                    expected_output="alternative grounded result",
+                )
+            ]
+        return []
 
     @staticmethod
     def _tokens(text: str) -> set[str]:
