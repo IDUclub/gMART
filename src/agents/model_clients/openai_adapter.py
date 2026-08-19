@@ -17,7 +17,10 @@ Ollama's own ``/v1`` — so it is the default and needs no configuration.
 
 ``OPENAI_THINK_MODE`` selects another spelling for servers that need one:
 
-  ``reasoning_effort`` (default) — ``reasoning_effort="none"``
+  ``reasoning_effort`` (default) — ``reasoning_effort=OPENAI_THINK_EFFORT`` (``"none"`` unless
+                                  overridden; a Harmony-served gpt-oss rejects ``"none"`` *and*
+                                  ``"minimal"`` with a 400 and accepts only high/medium/low, so
+                                  set ``"low"`` there)
   ``chat_template``             — ``chat_template_kwargs={"enable_thinking": False}``,
                                   which vLLM honours but Ollama ignores; the variable
                                   name comes from OPENAI_THINK_CHAT_TEMPLATE_KWARG
@@ -48,6 +51,9 @@ THINK_REASONING_EFFORT = "reasoning_effort"
 THINK_CHAT_TEMPLATE = "chat_template"
 THINK_OFF = "off"
 
+THINK_EFFORT_ENV = "OPENAI_THINK_EFFORT"
+THINK_EFFORT_DEFAULT = "none"
+
 _warned: set[str] = set()
 
 
@@ -67,6 +73,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         timeout: float | None = None,
         think_mode: str | None = None,
         think_chat_template_kwarg: str | None = None,
+        think_effort: str | None = None,
     ):
         self.base_url = base_url
         # How think= is spelled for this server; see the module docstring.
@@ -75,6 +82,20 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             if think_mode is not None
             else os.getenv("OPENAI_THINK_MODE", THINK_REASONING_EFFORT)
         ).strip().lower() or THINK_OFF
+        # The reasoning_effort value that stands for "reason as little as possible".
+        # Configurable because servers disagree on it, and on vLLM the disagreement is in two
+        # layers: the request schema accepts none|minimal|low|medium|high|xhigh|max, but the
+        # Harmony path that serves gpt-oss then rejects all but high|medium|low —
+        #   reasoning_effort='none'    -> 400 "Harmony does not support reasoning_effort='none'"
+        #   reasoning_effort='minimal' -> 400 "not supported by Harmony. Supported values are:
+        #                                      high, medium, low"
+        # So "low" is the floor there, and reading the schema's literal list is not enough to
+        # know what a given server will accept. Measured on vLLM serving gpt-oss-20b.
+        self.think_effort = (
+            think_effort
+            if think_effort is not None
+            else os.getenv(THINK_EFFORT_ENV, THINK_EFFORT_DEFAULT)
+        ).strip()
         # Chat-template variable carrying think= when think_mode is chat_template.
         self.think_kwarg = (
             think_chat_template_kwarg
@@ -145,7 +166,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             # Reasoning is on by default everywhere, so only switching it off says
             # anything; setdefault keeps an explicit caller value.
             if think is False:
-                call.setdefault("reasoning_effort", "none")
+                call.setdefault("reasoning_effort", self.think_effort)
         elif self.think_mode == THINK_CHAT_TEMPLATE:
             # Merge rather than overwrite: a caller may pass its own extra_body.
             extra_body = dict(call.get("extra_body") or {})

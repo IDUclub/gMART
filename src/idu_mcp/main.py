@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from datetime import datetime
 
 import anyio
@@ -17,12 +18,15 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
 from src.__version__ import __VERSION__ as MCP_VERSION
+from src.common.service_auth import service_auth_lifespan
+from src.idu_mcp.common.auth.token_verifier import ServiceTokenVerifier
 from src.idu_mcp.common.logging.log_config import config_logger
 from src.idu_mcp.common.middlewares.logging_middleware import RequestLoggingMiddleware
 from src.idu_mcp.dependencies.dependencies import mcp_deps
 from src.idu_mcp.prompts.restriction_prompts import mcp as restrictions_prompts_mcp
 from src.idu_mcp.tools_interfaces.geom_interface import geometry_mcp
 from src.idu_mcp.tools_interfaces.urb_api_interface import urban_api_mcp
+from src.idu_mcp.tools_interfaces.workspace_interface import workspace_mcp
 
 # FastMCPDocs.setup() prints a "✓" via print(); make stdout/stderr UTF-8 so it
 # does not raise UnicodeEncodeError on a Windows (cp1252) console.
@@ -38,16 +42,23 @@ log_path = config_logger()
 @lifespan
 async def main_app_lifespan(server: FastMCP):
     logger.info(f"Loaded dependencies {mcp_deps}")
-    try:
-        yield {"started_at": "2024-01-01"}
-    finally:
-        logger.info("Shutting down...")
+    async with service_auth_lifespan(mcp_deps["service_auth"]):
+        try:
+            yield {"started_at": "2024-01-01"}
+        finally:
+            logger.info("Shutting down...")
 
 
-main_mcp = FastMCP("IDU Fast MCP Server", lifespan=main_app_lifespan)
+main_mcp = FastMCP(
+    "IDU Fast MCP Server",
+    lifespan=main_app_lifespan,
+    auth=ServiceTokenVerifier(),
+)
 main_mcp.mount(urban_api_mcp)
 main_mcp.mount(geometry_mcp)
 main_mcp.mount(restrictions_prompts_mcp)
+if mcp_deps["mcp_config"].WORKSPACE_ENABLED:
+    main_mcp.mount(workspace_mcp)
 
 docs = FastMCPDocs(
     mcp=main_mcp,
@@ -57,9 +68,38 @@ docs = FastMCPDocs(
     base_url="http://localhost:8000",
 )
 
-asyncio.run(docs.setup())
 
-mcp_app = main_mcp.http_app(host_origin_protection=False)
+def _setup_docs_before_app() -> None:
+    """Register docs before creating ASGI routes, even under uvicorn workers.
+
+    Uvicorn's multi-process child imports the application from an already running
+    event loop, where a module-level ``asyncio.run`` is illegal. A short-lived
+    dedicated thread owns its own loop and keeps the required setup synchronous
+    relative to ``main_mcp.http_app()``.
+    """
+
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            asyncio.run(docs.setup())
+        except BaseException as exc:  # propagate setup failures to uvicorn startup
+            errors.append(exc)
+
+    worker = threading.Thread(target=run, name="fastmcp-docs-setup")
+    worker.start()
+    worker.join()
+    if errors:
+        raise errors[0]
+
+
+_setup_docs_before_app()
+
+# Every HTTP request may be handled by a different uvicorn worker. FastMCP's
+# process-local session registry is therefore unsafe here; stateless transport keeps
+# the two-worker deployment horizontally consistent while ownership/state lives in
+# Redis and the shared workspace volume.
+mcp_app = main_mcp.http_app(host_origin_protection=False, stateless_http=True)
 mcp_app.add_middleware(RequestLoggingMiddleware)
 
 

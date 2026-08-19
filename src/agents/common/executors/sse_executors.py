@@ -63,6 +63,7 @@ async def stream_with_error_handling(
     llm_client: BaseLlmClient,
     model: str,
     rerun: bool = True,
+    continue_on_disconnect: bool = False,
     *args: Any,
     **kwargs: Any,
 ) -> AsyncIterator[dict[str, Any]]:
@@ -85,9 +86,12 @@ async def stream_with_error_handling(
     _log_stream_request(request, model, rerun, kwargs)
 
     try:
-        async for item in generator(model=model, *args, **kwargs):
+        stream = generator(model=model, *args, **kwargs)
+        async for item in stream:
             if await request.is_disconnected():
                 logger.info("Client disconnected during stream")
+                if continue_on_disconnect:
+                    asyncio.create_task(_drain_disconnected_stream(stream))
                 return
 
             yield item
@@ -137,6 +141,9 @@ async def stream_with_error_handling(
         ]
         try:
             async for chunk in llm_client.execute_request(model, messages):
+                content = chunk.get("content") or {}
+                if not content.get("text") and not content.get("done"):
+                    continue
                 if chunk["content"]["done"]:
                     chunk["content"]["done"] = False
                 yield chunk
@@ -163,3 +170,18 @@ async def stream_with_error_handling(
             },
         }
         return
+
+
+async def _drain_disconnected_stream(stream: AsyncIterator[dict[str, Any]]) -> None:
+    """Keep an SSE-authoritative pipeline advancing after a network disconnect."""
+
+    try:
+        async for _ in stream:
+            pass
+    except asyncio.CancelledError:
+        logger.info("Disconnected background pipeline was explicitly cancelled")
+        return
+    except Exception as exc:
+        logger.opt(exception=exc).error(
+            "Disconnected background pipeline failed while draining"
+        )

@@ -11,12 +11,15 @@ services:
       OBJECTS_EFFECTS_MCP_SERVER: ${OBJECTS_EFFECTS_MCP_SERVER}
       DVD_MCP_SERVER: ${DVD_MCP_SERVER}
       NORM_GRAPH_MCP_SERVER: ${NORM_GRAPH_MCP_SERVER}
+      URBAN_MCP_SERVER: ${URBAN_MCP_SERVER}
+      LLM_BACKEND: ${LLM_BACKEND:-openai}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_THINK_MODE: ${OPENAI_THINK_MODE:-reasoning_effort}
       CHAT_STORAGE: ${CHAT_STORAGE}
       URBAN_API_URL: ${URBAN_API_URL}
       REDIS_URL: ${REDIS_URL}
       SYSTEM_PASSWORD: ${SYSTEM_PASSWORD}
-<<<<<<< Updated upstream
-=======
       # Both must be set for the UI login form (/auth/available -> enabled);
       # without them the UI falls back to the auth-helper redirect.
       AUTH_HELPER_URL: ${AUTH_HELPER_URL:-}
@@ -25,7 +28,6 @@ services:
       SERVICE_AUTH_REALM: ${SERVICE_AUTH_REALM:?SERVICE_AUTH_REALM is required}
       SERVICE_AUTH_CLIENT_ID: ${SERVICE_AUTH_CLIENT_ID:?SERVICE_AUTH_CLIENT_ID is required}
       SERVICE_AUTH_CLIENT_SECRET: ${SERVICE_AUTH_CLIENT_SECRET:?SERVICE_AUTH_CLIENT_SECRET is required}
->>>>>>> Stashed changes
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:80/ping')\""]
       interval: 10s
@@ -41,6 +43,10 @@ services:
       - "8000:8000"
     environment:
       URBAN_API_URL: ${URBAN_API_URL}
+      SERVICE_AUTH_SERVER_URL: ${SERVICE_AUTH_SERVER_URL:?SERVICE_AUTH_SERVER_URL is required}
+      SERVICE_AUTH_REALM: ${SERVICE_AUTH_REALM:?SERVICE_AUTH_REALM is required}
+      SERVICE_AUTH_CLIENT_ID: ${SERVICE_AUTH_CLIENT_ID:?SERVICE_AUTH_CLIENT_ID is required}
+      SERVICE_AUTH_CLIENT_SECRET: ${SERVICE_AUTH_CLIENT_SECRET:?SERVICE_AUTH_CLIENT_SECRET is required}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 10s

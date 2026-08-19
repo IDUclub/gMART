@@ -1,7 +1,49 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useGSAP } from "@gsap/react";
+import {
+  ArrowUp,
+  ArrowCounterClockwise,
+  ArrowsOut,
+  Buildings,
+  CaretDown,
+  ChartDonut,
+  CheckCircle,
+  CirclesFour,
+  ClockCounterClockwise,
+  Command,
+  Database,
+  FileText,
+  GearSix,
+  List,
+  MapTrifold,
+  Moon,
+  Plus,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkle,
+  SquaresFour,
+  Sun,
+  TerminalWindow,
+  Trash,
+  X,
+} from "@phosphor-icons/react";
+import gsap from "gsap";
 import Keycloak from "keycloak-js";
 import ReactMarkdown from "react-markdown";
+import { createPortal } from "react-dom";
+import remarkGfm from "remark-gfm";
 import MapPanel from "./MapPanel";
+import McpConsole from "./McpConsole";
+import { reusableChatId } from "./agentSession";
+import { appendLatestVisibleLayer } from "./layerState";
+import {
+  appendIterationChunk,
+  appendSseExchange,
+  CHAT_PAGE_SIZE,
+  mergeMessageWindow,
+  oldestServerSequence,
+} from "./chatWindow";
+import { buildMessageBlocks, normalizeMessages } from "./messageHistory";
 import {
   authAvailable,
   authLogin,
@@ -10,6 +52,7 @@ import {
   getChats,
   getModels,
   readSse,
+  replayToolCall,
   request,
 } from "./api";
 import type {
@@ -19,14 +62,16 @@ import type {
   ChatSummary,
   LayerData,
   Message,
+  MessagePart,
   Settings,
+  StatusEntry,
   StreamEvent,
   TableData,
 } from "./types";
+gsap.registerPlugin(useGSAP);
 const AGENTS: Agent[] = [
   {
     id: "orchestrator",
-    icon: "⌬",
     label: "Оркестратор",
     caption: "Единая точка входа",
     path: "/orchestrator/route/stream",
@@ -38,7 +83,6 @@ const AGENTS: Agent[] = [
   },
   {
     id: "restrictions",
-    icon: "◈",
     label: "Ограничения",
     caption: "Геозоны и буферы",
     path: "/restrictions/generate_restrictions/stream",
@@ -50,7 +94,6 @@ const AGENTS: Agent[] = [
   },
   {
     id: "compliance",
-    icon: "☑",
     label: "Соответствие",
     caption: "Проверка по нормам",
     path: "/compliance/check/stream",
@@ -62,7 +105,6 @@ const AGENTS: Agent[] = [
   },
   {
     id: "provision",
-    icon: "◎",
     label: "Обеспеченность",
     caption: "Сервисы и эффекты",
     path: "/provision/calculate_effects/stream",
@@ -73,8 +115,19 @@ const AGENTS: Agent[] = [
     ],
   },
   {
+    id: "scenario_data",
+    label: "Городские данные",
+    caption: "Справочники, объекты и слои",
+    path: "/scenario-data/qa/stream",
+    needsScenario: false,
+    examples: [
+      "Какие типы городских сервисов доступны?",
+      "Какие объекты есть в сценарии и сколько их по типам?",
+      "Покажи на карте физические объекты сценария",
+    ],
+  },
+  {
     id: "documents",
-    icon: "▤",
     label: "Документы",
     caption: "Поиск по IDU_DVD",
     path: "/documents/qa/stream",
@@ -86,7 +139,6 @@ const AGENTS: Agent[] = [
   },
   {
     id: "norms",
-    icon: "⌘",
     label: "Нормы",
     caption: "Граф NormGraph",
     path: "/norms/qa/stream",
@@ -98,7 +150,6 @@ const AGENTS: Agent[] = [
   },
   {
     id: "llm",
-    icon: "✦",
     label: "Ассистент",
     caption: "Свободный диалог",
     path: "/llm/message/stream",
@@ -117,7 +168,9 @@ const defaults: Settings = {
   keycloakUrl: "",
   keycloakRealm: "",
   keycloakClientId: "",
-  model: "gpt-oss:20b",
+  // Empty on purpose: the agents resolve the model from the provider's own list, so the
+  // UI must not ship a backend-specific id (an Ollama-style "gpt-oss:20b" 404s on vLLM).
+  model: "",
   temperature: 1,
 };
 const colors = [
@@ -128,6 +181,24 @@ const colors = [
   "#ff6b7a",
   "#35c9ce",
 ];
+type ActiveExchange = {
+  question: string;
+  answer: string;
+  tables: TableData[];
+  finalized: boolean;
+};
+type HistoryWindow = {
+  hasMore: boolean;
+  nextBeforeSeq: number | null;
+  loading: boolean;
+};
+type CachedChatWindow = { chat: Chat; history: HistoryWindow };
+const emptyHistoryWindow: HistoryWindow = {
+  hasMore: false,
+  nextBeforeSeq: null,
+  loading: false,
+};
+const MAX_CACHED_CHAT_WINDOWS = 6;
 function load() {
   try {
     return {
@@ -139,15 +210,18 @@ function load() {
   }
 }
 export default function App() {
+  const appRoot = useRef<HTMLDivElement>(null);
   const [settings, setSettings] = useState<Settings>(load),
     [agentId, setAgentId] = useState<AgentId>("restrictions"),
-    [mode, setMode] = useState<"workspace" | "admin">("workspace"),
+    [mode, setMode] = useState<"workspace" | "mcp" | "admin">("workspace"),
     [scenario, setScenario] = useState("772"),
     [project, setProject] = useState(""),
     [token, setToken] = useState(""),
     [auth, setAuth] = useState("loading"),
     [chats, setChats] = useState<ChatSummary[]>([]),
     [chat, setChat] = useState<Chat | null>(null),
+    [historyWindow, setHistoryWindow] =
+      useState<HistoryWindow>(emptyHistoryWindow),
     [query, setQuery] = useState(""),
     [answer, setAnswer] = useState(""),
     [layers, setLayers] = useState<LayerData[]>([]),
@@ -156,8 +230,15 @@ export default function App() {
       [],
     ),
     [status, setStatus] = useState("Готов к работе"),
+    [statusEntries, setStatusEntries] = useState<StatusEntry[]>([]),
+    [pendingQuestion, setPendingQuestion] = useState(""),
+    [restoreState, setRestoreState] = useState<Record<string, string>>({}),
+    [undoLayers, setUndoLayers] = useState<LayerData[] | null>(null),
     [busy, setBusy] = useState(false),
     [rightTab, setRightTab] = useState<"map" | "data" | "process">("map"),
+    [historyOpen, setHistoryOpen] = useState(false),
+    [agentMenuOpen, setAgentMenuOpen] = useState(false),
+    [resultOpen, setResultOpen] = useState(false),
     [models, setModels] = useState<string[]>([]),
     [settingsOpen, setSettingsOpen] = useState(false),
     [loginOpen, setLoginOpen] = useState(false),
@@ -172,8 +253,56 @@ export default function App() {
     // persisted) so the short-lived token can be re-requested before expiry.
     helperCreds = useRef<{ username: string; password: string } | null>(null),
     reloginTimer = useRef<number | null>(null),
-    stepBase = useRef("");
+    resultAutoOpened = useRef(false),
+    stepBase = useRef(""),
+    answerIteration = useRef<number | undefined>(undefined),
+    chatIdRef = useRef<string | undefined>(undefined),
+    activeRequestIdRef = useRef<string | undefined>(undefined),
+    activeExchangeRef = useRef<ActiveExchange | null>(null),
+    chatWindowsRef = useRef<Map<string, CachedChatWindow>>(new Map()),
+    messagesScroller = useRef<HTMLDivElement>(null),
+    messagesEnd = useRef<HTMLDivElement>(null),
+    undoTimer = useRef<number | null>(null);
   const agent = AGENTS.find((a) => a.id === agentId)!;
+  useGSAP(
+    () => {
+      gsap.fromTo(
+        ".sidebar",
+        { y: -24, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.7, ease: "power3.out" },
+      );
+      gsap.fromTo(
+        ".conversation, .inspector",
+        { y: 22, opacity: 0, scale: 0.985 },
+        {
+          y: 0,
+          opacity: 1,
+          scale: 1,
+          duration: 0.7,
+          stagger: 0.08,
+          ease: "power3.out",
+        },
+      );
+      gsap.fromTo(
+        ".terrain-orbit",
+        { scale: 0.8, opacity: 0.2 },
+        { scale: 1, opacity: 1, duration: 1.1, ease: "power2.out" },
+      );
+      gsap.fromTo(
+        ".prompt-grid button",
+        { y: 38, opacity: 0, scale: 0.96 },
+        {
+          y: 0,
+          opacity: 1,
+          scale: 1,
+          duration: 0.7,
+          stagger: 0.09,
+          ease: "power3.out",
+        },
+      );
+    },
+    { scope: appRoot },
+  );
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
     localStorage.setItem("gmart-ui", JSON.stringify(settings));
@@ -219,32 +348,180 @@ export default function App() {
   useEffect(() => {
     if (!token) return;
     loadChats();
+  }, [token]);
+  useEffect(() => {
+    messagesEnd.current?.scrollIntoView({ behavior: busy ? "smooth" : "auto" });
+  }, [answer, busy, pendingQuestion, statusEntries]);
+  useEffect(() => {
+    if (!chat) return;
+    rememberChatWindow(chat, historyWindow);
+  }, [chat, historyWindow]);
+  // Unauthenticated on purpose: /llm/available_models carries no token requirement, and the
+  // list must be known before the first request so a stale saved model cannot be sent.
+  useEffect(() => {
     getModels(settings, token)
-      .then(setModels)
+      .then((list) => {
+        setModels(list);
+        setSettings((prev) =>
+          list.length && !list.includes(prev.model)
+            ? { ...prev, model: list[0] }
+            : prev,
+        );
+      })
       .catch(() => {});
-  }, [token, scenario]);
+  }, [token, settings.agentsUrl]);
   useEffect(() => setQuery(agent.examples[0]), [agentId]);
   async function loadChats() {
     try {
-      setChats((await getChats(settings, token, scenario)).items);
+      setChats((await getChats(settings, token)).items);
     } catch (e) {
       setStatus(err(e));
     }
   }
+  function rememberChatWindow(value: Chat, history: HistoryWindow) {
+    const windows = chatWindowsRef.current;
+    windows.delete(value.chat_id);
+    windows.set(value.chat_id, {
+      chat: value,
+      history: { ...history, loading: false },
+    });
+    while (windows.size > MAX_CACHED_CHAT_WINDOWS) {
+      const oldestId = windows.keys().next().value;
+      if (!oldestId) break;
+      windows.delete(oldestId);
+    }
+  }
+  function scrollChatToBottom() {
+    window.requestAnimationFrame(() => {
+      messagesEnd.current?.scrollIntoView({ behavior: "auto" });
+    });
+  }
   async function openChat(id: string) {
-    try {
-      setChat(await getChat(settings, token, id));
+    if (busy || chat?.chat_id === id) return;
+    if (chat) rememberChatWindow(chat, historyWindow);
+    const cached = chatWindowsRef.current.get(id);
+    if (cached) {
+      setChat(cached.chat);
+      setHistoryWindow(cached.history);
+      chatIdRef.current = cached.chat.chat_id;
+      activeExchangeRef.current = null;
+      if (cached.chat.scenario_id != null)
+        setScenario(String(cached.chat.scenario_id));
+      if (cached.chat.project_id != null)
+        setProject(String(cached.chat.project_id));
+      const cachedAgent = String(cached.chat.metadata?.agent_id || "");
+      if (AGENTS.some((item) => item.id === cachedAgent))
+        setAgentId(cachedAgent as AgentId);
       setAnswer("");
+      setPendingQuestion("");
+      setStatusEntries([]);
       setLayers([]);
-      setTables([]);
+      setTables(extractStoredTables(cached.chat.messages));
+      scrollChatToBottom();
+      return;
+    }
+    try {
+      const stored = await getChat(settings, token, id, {
+        limit: CHAT_PAGE_SIZE,
+      });
+      setChat(stored);
+      setHistoryWindow({
+        hasMore: Boolean(stored.has_more),
+        nextBeforeSeq: stored.next_before_seq ?? null,
+        loading: false,
+      });
+      chatIdRef.current = stored.chat_id;
+      activeExchangeRef.current = null;
+      if (stored.scenario_id != null) setScenario(String(stored.scenario_id));
+      if (stored.project_id != null) setProject(String(stored.project_id));
+      const storedAgent = String(stored.metadata?.agent_id || "");
+      if (AGENTS.some((item) => item.id === storedAgent))
+        setAgentId(storedAgent as AgentId);
+      setAnswer("");
+      setPendingQuestion("");
+      setStatusEntries([]);
+      setLayers([]);
+      setTables(extractStoredTables(stored.messages));
+      scrollChatToBottom();
     } catch (e) {
       setStatus(err(e));
+    }
+  }
+  function selectAgent(nextAgentId: AgentId) {
+    setMode("workspace");
+    if (nextAgentId === agentId || busy) return;
+    if (chat) rememberChatWindow(chat, historyWindow);
+    setAgentId(nextAgentId);
+    setChat(null);
+    chatIdRef.current = undefined;
+    activeRequestIdRef.current = undefined;
+    activeExchangeRef.current = null;
+    answerIteration.current = undefined;
+    stepBase.current = "";
+    setHistoryWindow(emptyHistoryWindow);
+    setAnswer("");
+    setPendingQuestion("");
+    setStatusEntries([]);
+    setLayers([]);
+    setTables([]);
+    setEvents([]);
+    setStatus("Готов к работе");
+    resultAutoOpened.current = false;
+  }
+  async function loadOlderMessages() {
+    const current = chat;
+    const beforeSeq = historyWindow.nextBeforeSeq;
+    if (
+      !current ||
+      busy ||
+      !historyWindow.hasMore ||
+      !beforeSeq ||
+      historyWindow.loading
+    )
+      return;
+
+    const scroller = messagesScroller.current;
+    const previousHeight = scroller?.scrollHeight || 0;
+    const previousTop = scroller?.scrollTop || 0;
+    setHistoryWindow((value) => ({ ...value, loading: true }));
+    try {
+      const page = await getChat(settings, token, current.chat_id, {
+        limit: CHAT_PAGE_SIZE,
+        beforeSeq,
+      });
+      const merged = mergeMessageWindow(page.messages, current.messages);
+      setChat((value) => {
+        if (!value || value.chat_id !== current.chat_id) return value;
+        return {
+          ...value,
+          messages: mergeMessageWindow(page.messages, value.messages).messages,
+        };
+      });
+      setTables(extractStoredTables(merged.messages));
+      setHistoryWindow({
+        hasMore: Boolean(page.has_more),
+        nextBeforeSeq: page.next_before_seq ?? null,
+        loading: false,
+      });
+      window.requestAnimationFrame(() => {
+        if (!scroller) return;
+        scroller.scrollTop =
+          scroller.scrollHeight - previousHeight + previousTop;
+      });
+    } catch (error) {
+      setHistoryWindow((value) => ({ ...value, loading: false }));
+      setStatus(err(error));
     }
   }
   async function removeChat(id: string) {
     if (!confirm("Удалить этот диалог?")) return;
     await deleteChat(settings, token, id);
-    if (chat?.chat_id === id) setChat(null);
+    if (chat?.chat_id === id) {
+      setChat(null);
+      chatIdRef.current = undefined;
+      setHistoryWindow(emptyHistoryWindow);
+    }
+    chatWindowsRef.current.delete(id);
     loadChats();
   }
   function login() {
@@ -300,33 +577,132 @@ export default function App() {
     );
     route(event);
   }
+  function updateStatus(text: string, state: StatusEntry["state"] = "active") {
+    if (!text) return;
+    setStatus(text);
+    setStatusEntries((previous) => {
+      const completed = previous.map((entry) =>
+        entry.state === "active" ? { ...entry, state: "done" as const } : entry,
+      );
+      const last = completed.at(-1);
+      if (last?.text === text)
+        return [...completed.slice(0, -1), { ...last, state }];
+      return [
+        ...completed,
+        {
+          id: crypto.randomUUID(),
+          text,
+          time: new Date().toLocaleTimeString("ru", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          }),
+          state,
+        },
+      ].slice(-30);
+    });
+  }
+  function updateSseAnswer(
+    update: string | ((current: string) => string),
+  ): string {
+    const exchange = activeExchangeRef.current;
+    const current = exchange?.answer || "";
+    const next = typeof update === "function" ? update(current) : update;
+    if (exchange) exchange.answer = next;
+    setAnswer(next);
+    return next;
+  }
+  function finalizeActiveExchange(fallbackAnswer?: string) {
+    const exchange = activeExchangeRef.current;
+    if (!exchange || exchange.finalized) return;
+    if (!exchange.answer.trim() && fallbackAnswer)
+      exchange.answer = fallbackAnswer;
+    exchange.finalized = true;
+
+    const id = chatIdRef.current;
+    if (!id) return;
+    setChat((current) => {
+      const base: Chat = current || {
+        chat_id: id,
+        title: exchange.question || null,
+        scenario_id: scenario || null,
+        project_id: project || null,
+        updated_at: new Date().toISOString(),
+        metadata: { agent_id: agentId },
+        messages: [],
+      };
+      const result = appendSseExchange(id, base.messages, exchange);
+      if (
+        result.removed.some(
+          (message) => !message.message_id.startsWith("browser:"),
+        )
+      ) {
+        const nextBeforeSeq = oldestServerSequence(result.messages);
+        if (nextBeforeSeq != null)
+          setHistoryWindow((value) => ({
+            ...value,
+            hasMore: true,
+            nextBeforeSeq,
+          }));
+      }
+      return {
+        ...base,
+        updated_at: new Date().toISOString(),
+        messages: result.messages,
+      };
+    });
+    setPendingQuestion("");
+    setAnswer("");
+    void loadChats();
+  }
   function route(event: StreamEvent, nested = false) {
-    if (event.type === "pipeline_started") setStatus("Агент начал работу");
+    if (event.type === "pipeline_started") {
+      activeRequestIdRef.current = event.content?.request_id;
+      updateStatus("Агент начал работу");
+    }
     if (event.type === "status")
-      setStatus(event.content?.text || labelStatus(event.content?.status));
+      updateStatus(event.content?.text || labelStatus(event.content?.status));
     if (event.type === "chunk" || event.type === "Text") {
       const text =
         typeof event.content === "string"
           ? event.content
           : event.content?.text || "";
-      setAnswer((v) =>
-        event.content?.iteration && event.content.iteration > 1
-          ? stepBase.current + text
-          : v + text,
+      const next = appendIterationChunk(
+        activeExchangeRef.current?.answer || "",
+        stepBase.current,
+        text,
+        event.content?.iteration,
+        answerIteration.current,
       );
+      answerIteration.current = next.iteration;
+      updateSseAnswer(next.answer);
       if (event.content?.done && !nested) {
+        activeRequestIdRef.current = undefined;
         setBusy(false);
-        setStatus("Ответ готов");
-        loadChats();
+        updateStatus("Ответ готов", "done");
+        finalizeActiveExchange();
       }
+    }
+    if (event.type === "plan_created") {
+      const steps = event.content?.steps || [];
+      updateStatus(
+        `План составлен: ${steps.length} ${pluralize(steps.length, "шаг", "шага", "шагов")}`,
+      );
+    }
+    if (event.type === "plan_revision_created") {
+      const revision = event.content?.revision || 1;
+      const steps = event.content?.steps || [];
+      updateStatus(
+        `План №${revision}: ${steps.length} ${pluralize(steps.length, "шаг", "шага", "шагов")}`,
+      );
     }
     if (event.type === "plan") {
       const steps = event.content?.steps || [];
-      setStatus(`План готов: шагов — ${steps.length}`);
+      updateStatus(`План готов: шагов — ${steps.length}`);
       if (steps.length)
-        setAnswer(
-          (v) =>
-            v +
+        updateSseAnswer(
+          (current) =>
+            current +
             "**План работы**\n\n" +
             steps
               .map(
@@ -338,67 +714,213 @@ export default function App() {
         );
     }
     if (event.type === "step_started") {
+      answerIteration.current = undefined;
+      if (event.content?.step_id) {
+        updateStatus(
+          event.content?.purpose || `Выполняю ${event.content.step_id}`,
+        );
+        return;
+      }
       const step = event.content?.step,
         agent = labelAgent(event.content?.agent);
-      setStatus(`Шаг ${step}: ${agent}`);
-      setAnswer(
-        (v) => (stepBase.current = `${v}---\n\n**Шаг ${step} · ${agent}**\n\n`),
+      updateStatus(`Шаг ${step}: ${agent}`);
+      updateSseAnswer(
+        (current) =>
+          (stepBase.current = `${current}---\n\n**Шаг ${step} · ${agent}**\n\n`),
       );
     }
+    if (event.type === "step_completed")
+      updateStatus(`Шаг ${event.content?.step_id || "плана"} завершён`);
+    if (event.type === "mapping_started")
+      updateStatus(event.content?.text || "Получаю актуальные справочники…");
+    if (event.type === "mapping_completed")
+      updateStatus(event.content?.text || "Актуальные справочники получены");
+    if (event.type === "artifact_created")
+      updateStatus(
+        `Набор данных подготовлен: ${event.content?.rows ?? 0} строк`,
+      );
+    if (event.type === "validation_started")
+      updateStatus(event.content?.text || "Проверяю полноту результата…");
+    if (event.type === "validation_completed")
+      updateStatus("Результат проверен");
+    if (event.type === "replanning")
+      updateStatus(`Уточняю план: редакция ${event.content?.revision || ""}`);
+    if (event.type === "clarification_required") {
+      updateStatus("Нужно уточнение", "warning");
+    }
+    if (event.type === "pipeline_failed")
+      updateStatus(
+        Array.isArray(event.content?.reasons)
+          ? event.content.reasons.join("; ")
+          : "Получен частичный результат",
+        "warning",
+      );
     if (event.type === "step_event" && event.content?.event)
       route(event.content.event, true);
     if (event.type === "step_finished") {
       if (event.content?.status === "failed")
-        setAnswer(
-          (v) =>
-            v +
-            `\n\n> ⚠ Шаг ${event.content.step} не выполнен: ${event.content.summary || "ошибка агента"}\n\n`,
+        updateSseAnswer(
+          (current) =>
+            current +
+            `\n\n> Шаг ${event.content.step} не выполнен: ${event.content.summary || "ошибка агента"}\n\n`,
         );
-      setStatus(`Шаг ${event.content?.step} завершён`);
+      updateStatus(`Шаг ${event.content?.step} завершён`);
     }
     if (event.type === "clarification") {
-      setAnswer((v) => v + (event.content?.question || ""));
-      setStatus("Нужно уточнение");
+      updateSseAnswer((current) => current + (event.content?.question || ""));
+      updateStatus("Нужно уточнение", "warning");
     }
     if (event.type === "orchestrator_final") {
-      setStatus("Ответ готов");
-      loadChats();
+      updateStatus("Ответ готов", "done");
+      finalizeActiveExchange();
     }
     if (event.type === "feature_collection") {
       const fc =
         event.content?.feature_collection ||
         event.content?.data ||
         event.content;
-      setLayers((v) => [
-        ...v,
-        {
+      setLayers((v) =>
+        appendLatestVisibleLayer(v, {
           id: crypto.randomUUID(),
           name: event.content?.name || `Слой ${v.length + 1}`,
           color: colors[v.length % colors.length],
           visible: true,
           geojson: fc,
           count: fc?.features?.length || 0,
-        },
-      ]);
+        }),
+      );
       setRightTab("map");
+      if (!resultAutoOpened.current) {
+        resultAutoOpened.current = true;
+        setResultOpen(true);
+      }
     }
     if (event.type === "table") {
+      if (activeExchangeRef.current)
+        activeExchangeRef.current.tables.push(event.content);
       setTables((v) => [...v, event.content]);
       setRightTab("data");
+      if (!resultAutoOpened.current) {
+        resultAutoOpened.current = true;
+        setResultOpen(true);
+      }
     }
     if (event.type === "warning" || event.type === "error")
-      setStatus(event.content?.message || "Ошибка выполнения");
-    if (event.type === "service_event" && event.content?.event?.chat_id)
-      setChat((v) => (v ? { ...v, chat_id: event.content.event.chat_id } : v));
+      updateStatus(event.content?.message || "Ошибка выполнения", "warning");
+    if (event.type === "service_event" && event.content?.event?.chat_id) {
+      const id = String(event.content.event.chat_id);
+      chatIdRef.current = id;
+      setChat((value) =>
+        value
+          ? { ...value, chat_id: id }
+          : {
+              chat_id: id,
+              title: activeExchangeRef.current?.question || null,
+              scenario_id: scenario || null,
+              project_id: project || null,
+              updated_at: new Date().toISOString(),
+              metadata: { agent_id: agentId },
+              messages: [],
+            },
+      );
+    }
     if (event.type === "token_expired")
-      refreshPipeline(event.content?.request_id);
+      void refreshPipeline(event.content?.request_id);
+  }
+  async function restoreLayers(message: Message, part: MessagePart) {
+    const key = `${message.message_id}:${part.part_seq}`;
+    setRestoreState((value) => ({ ...value, [key]: "Восстанавливаю…" }));
+    try {
+      const calls = Array.isArray(part.payload?.tool_calls)
+        ? part.payload.tool_calls
+        : Array.isArray(part.payload?.calls)
+          ? part.payload.calls
+          : [];
+      const targetCall = calls.at(-1);
+      const response = await replayToolCall(
+        settings,
+        token,
+        message.message_id,
+        part.part_seq,
+        Number(targetCall?.step || calls.length || 1),
+        scenario,
+        project,
+      );
+      const collections = findFeatureCollections(response);
+      if (!collections.length)
+        throw new Error("В сохранённом результате нет геометрий");
+      setLayers((current) => [
+        ...current,
+        ...collections.map((geojson, index) => ({
+          id: crypto.randomUUID(),
+          name: `Восстановленный слой ${current.length + index + 1}`,
+          color: colors[(current.length + index) % colors.length],
+          visible: true,
+          geojson,
+          count: geojson.features.length,
+        })),
+      ]);
+      setRightTab("map");
+      setResultOpen(true);
+      setRestoreState((value) => ({
+        ...value,
+        [key]: `Восстановлено: ${collections.length}`,
+      }));
+    } catch (error) {
+      setRestoreState((value) => ({ ...value, [key]: err(error) }));
+    }
+  }
+  function clearLayers() {
+    if (!layers.length) return;
+    setUndoLayers(layers);
+    setLayers([]);
+    if (undoTimer.current) window.clearTimeout(undoTimer.current);
+    undoTimer.current = window.setTimeout(() => setUndoLayers(null), 8000);
+  }
+  function restoreClearedLayers() {
+    if (!undoLayers) return;
+    setLayers(undoLayers);
+    setUndoLayers(null);
   }
   async function refreshPipeline(id: string) {
+    updateStatus("Обновляю доступ к данным…");
     const t = await freshToken();
-    await request(settings.agentsUrl, `/pipelines/${id}/token`, t, {
-      method: "POST",
-      body: JSON.stringify({ token: t }),
-    });
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await request(settings.agentsUrl, `/pipelines/${id}/token`, t, {
+          method: "POST",
+          body: JSON.stringify({ token: t }),
+        });
+        updateStatus("Доступ обновлён, продолжаю запрос…");
+        return;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      }
+    }
+    updateStatus(`Не удалось обновить доступ: ${err(lastError)}`, "warning");
+  }
+  async function cancelActivePipeline() {
+    const requestId = activeRequestIdRef.current;
+    try {
+      if (requestId) {
+        const currentToken = await freshToken();
+        await request(
+          settings.agentsUrl,
+          `/pipelines/${requestId}/cancel`,
+          currentToken,
+          { method: "POST" },
+        );
+      }
+      updateStatus("Запрос остановлен", "warning");
+    } catch (error) {
+      updateStatus(`Не удалось остановить запрос: ${err(error)}`, "warning");
+    } finally {
+      activeRequestIdRef.current = undefined;
+      abort.current?.abort();
+      setBusy(false);
+    }
   }
   async function submit() {
     if (!token) {
@@ -406,27 +928,44 @@ export default function App() {
       return;
     }
     if (!query.trim() || busy) return;
+    const submittedQuery = query.trim();
+    activeExchangeRef.current = {
+      question: submittedQuery,
+      answer: "",
+      tables: [],
+      finalized: false,
+    };
     setBusy(true);
+    setPendingQuestion(submittedQuery);
+    setQuery("");
     setAnswer("");
     setTables([]);
     setEvents([]);
+    setStatusEntries([]);
     stepBase.current = "";
-    setStatus("Подключение к агенту…");
+    answerIteration.current = undefined;
+    updateStatus("Подключение к агенту…");
     const url = new URL(agent.path, settings.agentsUrl);
-    url.searchParams.set("request", query);
-    url.searchParams.set("model", settings.model);
+    url.searchParams.set("request", submittedQuery);
+    // Omitted when unknown: the agents then use the provider's default.
+    if (settings.model) url.searchParams.set("model", settings.model);
     url.searchParams.set("temperature", String(settings.temperature));
     if (scenario) url.searchParams.set("scenario_id", scenario);
-    if (chat?.chat_id) url.searchParams.set("chat_id", chat.chat_id);
+    const currentChatId = reusableChatId(chat, agentId);
+    if (currentChatId) url.searchParams.set("chat_id", currentChatId);
     abort.current = new AbortController();
     try {
       await readSse(url, await freshToken(), abort.current.signal, handle);
       setBusy(false);
+      finalizeActiveExchange(
+        "Поток завершился без отдельного финального сообщения.",
+      );
     } catch (e) {
-      if ((e as Error).name !== "AbortError") {
-        setStatus(err(e));
-        setBusy(false);
-      }
+      const aborted = (e as Error).name === "AbortError";
+      const message = aborted ? "Запрос остановлен пользователем." : err(e);
+      updateStatus(message, "warning");
+      finalizeActiveExchange(message);
+      setBusy(false);
     }
   }
   async function loadSystem() {
@@ -441,35 +980,46 @@ export default function App() {
       setStatus(err(e));
     }
   }
-  const history = useMemo(() => chat?.messages || [], [chat]);
+  const history = useMemo(
+    () => normalizeMessages(chat?.messages || []),
+    [chat?.messages],
+  );
   return (
-    <div className="app-shell">
+    <div className="app-shell" ref={appRoot}>
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">g</div>
+          <div className="brand-mark">
+            <Command weight="bold" />
+          </div>
           <div>
-            gMART<small>GEOSPATIAL INTELLIGENCE</small>
+            gMART<small>пространственный интеллект</small>
           </div>
         </div>
         <nav>
+          <p className="nav-label">Навигация</p>
           <button
             className={mode === "workspace" ? "active" : ""}
             onClick={() => setMode("workspace")}
           >
-            <span>⌂</span>Рабочее пространство
+            <span>
+              <Sparkle weight="duotone" />
+            </span>
+            Работа
           </button>
+          <p className="nav-label">Команда агентов</p>
           {AGENTS.map((a) => (
             <button
               className={
                 mode === "workspace" && agentId === a.id ? "active sub" : "sub"
               }
               onClick={() => {
-                setMode("workspace");
-                setAgentId(a.id);
+                selectAgent(a.id);
               }}
               key={a.id}
             >
-              <span>{a.icon}</span>
+              <span>
+                <AgentGlyph id={a.id} />
+              </span>
               <div>
                 {a.label}
                 <small>{a.caption}</small>
@@ -477,14 +1027,35 @@ export default function App() {
             </button>
           ))}
           <button
+            className={mode === "mcp" ? "active" : ""}
+            onClick={() => setMode("mcp")}
+          >
+            <span>
+              <TerminalWindow weight="duotone" />
+            </span>
+            MCP-консоль
+          </button>
+          <button
             className={mode === "admin" ? "active" : ""}
             onClick={() => setMode("admin")}
           >
-            <span>⚙</span>Система
+            <span>
+              <GearSix weight="duotone" />
+            </span>
+            Система
           </button>
         </nav>
         <div className="side-bottom">
-          <button onClick={() => setSettingsOpen(true)}>Настройки</button>
+          <button
+            className="history-trigger"
+            onClick={() => setHistoryOpen(true)}
+            aria-label="История сообщений"
+          >
+            <ClockCounterClockwise /> <span>История сообщений</span>
+          </button>
+          <button onClick={() => setSettingsOpen(true)}>
+            <SlidersHorizontal /> <span>Настройки</span>
+          </button>
           <button
             onClick={() =>
               setSettings((s) => ({
@@ -494,18 +1065,48 @@ export default function App() {
               }))
             }
           >
-            {settings.theme === "dark" ? "☀" : "◐"}
+            {settings.theme === "dark" ? <Sun /> : <Moon />}
           </button>
         </div>
       </aside>
-      <main>
+      <main className="main-stage">
         {mode === "workspace" ? (
           <>
-            <header>
-              <div>
-                <span className="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</span>
-                <h1>{agent.label}</h1>
-                <p>{agent.caption}</p>
+            <header className="workspace-header">
+              <div className="agent-picker-wrap">
+                <button
+                  className="agent-picker"
+                  onClick={() => setAgentMenuOpen((value) => !value)}
+                >
+                  <span className="agent-picker-icon">
+                    <AgentGlyph id={agent.id} />
+                  </span>
+                  <span>
+                    <small>Активный агент</small>
+                    <strong>{agent.label}</strong>
+                  </span>
+                  <CaretDown />
+                </button>
+                {agentMenuOpen && (
+                  <div className="agent-menu">
+                    {AGENTS.map((item) => (
+                      <button
+                        className={item.id === agent.id ? "active" : ""}
+                        key={item.id}
+                        onClick={() => {
+                          selectAgent(item.id);
+                          setAgentMenuOpen(false);
+                        }}
+                      >
+                        <AgentGlyph id={item.id} />
+                        <span>
+                          <strong>{item.label}</strong>
+                          <small>{item.caption}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="context">
                 <label>
@@ -528,78 +1129,89 @@ export default function App() {
                   <i />
                   {status}
                 </span>
+                <button
+                  className="result-toggle"
+                  onClick={() => setResultOpen((value) => !value)}
+                >
+                  <MapTrifold /> Результат
+                  {(layers.length || tables.length) > 0 && (
+                    <b>{layers.length + tables.length}</b>
+                  )}
+                </button>
                 {auth !== "ready" && (
-                  <button className="primary" onClick={login}>
+                  <button className="primary login-button" onClick={login}>
                     Войти
                   </button>
                 )}
               </div>
             </header>
-            <div className="work-grid">
-              <section className="history-panel">
-                <div className="panel-head">
-                  <strong>Диалоги</strong>
-                  <button
-                    onClick={() => {
-                      setChat(null);
-                      setAnswer("");
-                    }}
-                  >
-                    ＋
-                  </button>
-                </div>
-                <div className="search">
-                  ⌕ <input placeholder="Поиск по диалогам" />
-                </div>
-                <div className="chat-list">
-                  {chats.map((c) => (
-                    <div
-                      className={`chat-row ${chat?.chat_id === c.chat_id ? "active" : ""}`}
-                      key={c.chat_id}
-                    >
-                      <button onClick={() => openChat(c.chat_id)}>
-                        <strong>{c.title || "Новый диалог"}</strong>
-                        <small>
-                          {new Date(c.updated_at).toLocaleDateString("ru")}
-                        </small>
-                      </button>
-                      <button
-                        className="delete"
-                        onClick={() => removeChat(c.chat_id)}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                  {token && !chats.length && (
-                    <div className="empty">История пока пуста</div>
-                  )}
-                </div>
-              </section>
+            <div className={`work-grid ${resultOpen ? "result-open" : ""}`}>
               <section className="conversation">
-                <div className="messages">
-                  {!history.length && !answer ? (
+                <div className="messages" ref={messagesScroller}>
+                  {!history.length && !answer && !pendingQuestion ? (
                     <Welcome agent={agent} onExample={setQuery} />
                   ) : (
                     <>
+                      {historyWindow.hasMore && (
+                        <button
+                          className="history-load-more"
+                          onClick={() => void loadOlderMessages()}
+                          disabled={historyWindow.loading}
+                        >
+                          <ClockCounterClockwise />
+                          {historyWindow.loading
+                            ? "Загружаю историю…"
+                            : "Показать предыдущие сообщения"}
+                        </button>
+                      )}
                       {history.map((m) => (
-                        <MessageView key={m.message_id} message={m} />
+                        <MessageView
+                          key={m.message_id}
+                          message={m}
+                          restore={restoreLayers}
+                          restoreState={restoreState}
+                          openTables={() => {
+                            setRightTab("data");
+                            setResultOpen(true);
+                          }}
+                        />
                       ))}
+                      {pendingQuestion && (
+                        <TransientMessage
+                          role="user"
+                          text={pendingQuestion}
+                          detail="Запрос отправлен"
+                          pending
+                        />
+                      )}
+                      {!!statusEntries.length && (
+                        <LiveStatus
+                          entries={statusEntries}
+                          current={status}
+                          busy={busy}
+                        />
+                      )}
                       {answer && (
-                        <div className="message assistant">
-                          <div className="avatar">g</div>
-                          <div>
-                            <ReactMarkdown>{answer}</ReactMarkdown>
-                          </div>
-                        </div>
+                        <TransientMessage
+                          role="assistant"
+                          text={answer}
+                          detail={busy ? "Ответ формируется" : "Ответ получен"}
+                        />
                       )}
-                      {busy && (
-                        <div className="thinking">
-                          <i />
-                          <i />
-                          <i /> {status}
-                        </div>
+                      {(layers.length > 0 ||
+                        tables.length > 0 ||
+                        events.length > 0) && (
+                        <ArtifactSummary
+                          layers={layers}
+                          tables={tables}
+                          events={events}
+                          open={(tab) => {
+                            setRightTab(tab);
+                            setResultOpen(true);
+                          }}
+                        />
                       )}
+                      <div ref={messagesEnd} />
                     </>
                   )}
                 </div>
@@ -619,36 +1231,41 @@ export default function App() {
                     <span>Enter — отправить · Shift+Enter — новая строка</span>
                     <button
                       onClick={() =>
-                        busy
-                          ? (abort.current?.abort(), setBusy(false))
-                          : submit()
+                        busy ? void cancelActivePipeline() : void submit()
                       }
                       className="send"
                     >
-                      {busy ? "■" : "↑"}
+                      {busy ? <X weight="bold" /> : <ArrowUp weight="bold" />}
                     </button>
                   </div>
                 </div>
               </section>
-              <section className="inspector">
+              <section className={`inspector ${resultOpen ? "open" : ""}`}>
                 <div className="tabs">
                   <button
                     className={rightTab === "map" ? "active" : ""}
                     onClick={() => setRightTab("map")}
                   >
-                    Карта <b>{layers.length}</b>
+                    <MapTrifold /> Карта <b>{layers.length}</b>
                   </button>
                   <button
                     className={rightTab === "data" ? "active" : ""}
                     onClick={() => setRightTab("data")}
                   >
-                    Данные <b>{tables.length}</b>
+                    <Database /> Данные <b>{tables.length}</b>
                   </button>
                   <button
                     className={rightTab === "process" ? "active" : ""}
                     onClick={() => setRightTab("process")}
                   >
-                    Ход работы
+                    <ChartDonut /> Процесс
+                  </button>
+                  <button
+                    className="close-result"
+                    onClick={() => setResultOpen(false)}
+                    aria-label="Закрыть результат"
+                  >
+                    <X />
                   </button>
                 </div>
                 {rightTab === "map" && (
@@ -665,6 +1282,12 @@ export default function App() {
                         ),
                       )
                     }
+                    onRemove={(id) =>
+                      setLayers((value) =>
+                        value.filter((layer) => layer.id !== id),
+                      )
+                    }
+                    onClear={clearLayers}
                   />
                 )}{" "}
                 {rightTab === "data" && <Tables tables={tables} />}{" "}
@@ -672,6 +1295,8 @@ export default function App() {
               </section>
             </div>
           </>
+        ) : mode === "mcp" ? (
+          <McpConsole settings={settings} token={token} setToken={setToken} />
         ) : (
           <Admin
             settings={settings}
@@ -682,6 +1307,31 @@ export default function App() {
           />
         )}
       </main>
+      <ChatHistoryDrawer
+        open={historyOpen}
+        chats={chats}
+        activeId={chat?.chat_id}
+        close={() => setHistoryOpen(false)}
+        create={() => {
+          if (chat) rememberChatWindow(chat, historyWindow);
+          setChat(null);
+          chatIdRef.current = undefined;
+          activeExchangeRef.current = null;
+          setHistoryWindow(emptyHistoryWindow);
+          setAnswer("");
+          setPendingQuestion("");
+          setStatusEntries([]);
+          setLayers([]);
+          setTables([]);
+          setEvents([]);
+          setHistoryOpen(false);
+        }}
+        openChat={(id) => {
+          openChat(id);
+          setHistoryOpen(false);
+        }}
+        removeChat={removeChat}
+      />
       {settingsOpen && (
         <SettingsModal
           settings={settings}
@@ -693,8 +1343,249 @@ export default function App() {
       {loginOpen && (
         <LoginModal login={helperLogin} close={() => setLoginOpen(false)} />
       )}
+      {undoLayers && (
+        <div className="undo-toast" role="status">
+          <span>Слои удалены с карты</span>
+          <button onClick={restoreClearedLayers}>
+            <ArrowCounterClockwise /> Отменить
+          </button>
+        </div>
+      )}
     </div>
   );
+}
+function ArtifactSummary({
+  layers,
+  tables,
+  events,
+  open,
+}: {
+  layers: LayerData[];
+  tables: TableData[];
+  events: Array<{ time: string; event: StreamEvent }>;
+  open: (tab: "map" | "data" | "process") => void;
+}) {
+  return (
+    <section className="artifact-summary">
+      <div>
+        <span className="artifact-icon">
+          <MapTrifold weight="duotone" />
+        </span>
+        <div>
+          <strong>Результаты собраны</strong>
+          <p>Карта, данные и ход анализа доступны в контексте ответа.</p>
+        </div>
+      </div>
+      <div className="artifact-actions">
+        <button onClick={() => open("map")}>
+          <MapTrifold /> Слои <b>{layers.length}</b>
+        </button>
+        <button onClick={() => open("data")}>
+          <Database /> Таблицы <b>{tables.length}</b>
+        </button>
+        <button onClick={() => open("process")}>
+          <ChartDonut /> Процесс <b>{events.length}</b>
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function LiveStatus({
+  entries,
+  current,
+  busy,
+}: {
+  entries: StatusEntry[];
+  current: string;
+  busy: boolean;
+}) {
+  const root = useRef<HTMLElement>(null);
+  useGSAP(
+    () => {
+      gsap.fromTo(
+        ".status-step",
+        { y: 12, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.35, stagger: 0.04, ease: "power2.out" },
+      );
+    },
+    { scope: root, dependencies: [busy, entries.length] },
+  );
+  return (
+    <section
+      className={`live-status ${busy ? "active" : "complete"}`}
+      ref={root}
+    >
+      <div className="live-status-head">
+        <span className="status-orb" />
+        <div>
+          <small>{busy ? "Агент работает" : "Выполнение завершено"}</small>
+          <strong>{current}</strong>
+        </div>
+        <time>{entries.at(-1)?.time}</time>
+      </div>
+      <details open={busy}>
+        <summary>Ход выполнения · {entries.length}</summary>
+        <ol>
+          {entries.map((entry) => (
+            <li className={`status-step ${entry.state}`} key={entry.id}>
+              <i />
+              <span>{entry.text}</span>
+              <time>{entry.time}</time>
+            </li>
+          ))}
+        </ol>
+      </details>
+    </section>
+  );
+}
+
+function ChatHistoryDrawer({
+  open,
+  chats,
+  activeId,
+  close,
+  create,
+  openChat,
+  removeChat,
+}: {
+  open: boolean;
+  chats: ChatSummary[];
+  activeId?: string;
+  close: () => void;
+  create: () => void;
+  openChat: (id: string) => void;
+  removeChat: (id: string) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [scenarioFilter, setScenarioFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState("");
+  const [agentFilter, setAgentFilter] = useState("");
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase("ru");
+    return chats.filter((item) => {
+      const agent = String(item.metadata?.agent_id || "");
+      return (
+        (!needle ||
+          (item.title || "Новый диалог")
+            .toLocaleLowerCase("ru")
+            .includes(needle)) &&
+        (!scenarioFilter ||
+          String(item.scenario_id || "").includes(scenarioFilter)) &&
+        (!projectFilter ||
+          String(item.project_id || "").includes(projectFilter)) &&
+        (!agentFilter || agent === agentFilter)
+      );
+    });
+  }, [agentFilter, chats, projectFilter, scenarioFilter, search]);
+  if (!open) return null;
+
+  return (
+    <>
+      <button
+        className={`drawer-backdrop ${open ? "open" : ""}`}
+        onClick={close}
+        aria-label="Закрыть историю"
+      />
+      <aside
+        className={`history-drawer ${open ? "open" : ""}`}
+        aria-hidden={!open}
+      >
+        <div className="drawer-head">
+          <div>
+            <ClockCounterClockwise />
+            <h2>Диалоги</h2>
+          </div>
+          <button onClick={close} aria-label="Закрыть">
+            <X />
+          </button>
+        </div>
+        <button className="new-chat" onClick={create}>
+          <Plus /> Новый диалог
+        </button>
+        <div className="drawer-search">
+          <List />
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Найти диалог"
+          />
+        </div>
+        <div className="history-filters">
+          <input
+            value={scenarioFilter}
+            onChange={(event) => setScenarioFilter(event.target.value)}
+            placeholder="Сценарий"
+          />
+          <input
+            value={projectFilter}
+            onChange={(event) => setProjectFilter(event.target.value)}
+            placeholder="Проект"
+          />
+          <select
+            value={agentFilter}
+            onChange={(event) => setAgentFilter(event.target.value)}
+          >
+            <option value="">Все агенты</option>
+            {AGENTS.map((item) => (
+              <option value={item.id} key={item.id}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {!!chats.length && (
+          <div className="recent-chats" aria-label="Недавние диалоги">
+            {chats.slice(0, 6).map((item) => (
+              <button key={item.chat_id} onClick={() => openChat(item.chat_id)}>
+                {item.title || "Новый диалог"}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="history-count">Найдено: {filtered.length}</div>
+        <div className="drawer-chat-list">
+          {filtered.map((item) => (
+            <div
+              className={`drawer-chat ${activeId === item.chat_id ? "active" : ""}`}
+              key={item.chat_id}
+            >
+              <button onClick={() => openChat(item.chat_id)}>
+                <strong>{item.title || "Новый диалог"}</strong>
+                <small>
+                  {labelAgent(String(item.metadata?.agent_id || ""))} · сценарий{" "}
+                  {item.scenario_id || "—"} ·{" "}
+                  {new Date(item.updated_at).toLocaleDateString("ru")}
+                </small>
+              </button>
+              <button
+                className="delete"
+                onClick={() => removeChat(item.chat_id)}
+                aria-label="Удалить диалог"
+              >
+                <Trash />
+              </button>
+            </div>
+          ))}
+          {!filtered.length && (
+            <div className="empty">Подходящих диалогов нет</div>
+          )}
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function AgentGlyph({ id }: { id: AgentId }) {
+  const props = { weight: "duotone" as const };
+  if (id === "orchestrator") return <CirclesFour {...props} />;
+  if (id === "restrictions") return <ShieldCheck {...props} />;
+  if (id === "compliance") return <CheckCircle {...props} />;
+  if (id === "provision") return <ChartDonut {...props} />;
+  if (id === "scenario_data") return <Buildings {...props} />;
+  if (id === "documents") return <FileText {...props} />;
+  if (id === "norms") return <SquaresFour {...props} />;
+  return <Sparkle {...props} />;
 }
 function LoginModal({
   login,
@@ -727,7 +1618,7 @@ function LoginModal({
       <div className="modal-card">
         <div className="panel-head">
           <div>
-            <span className="eyebrow">АВТОРИЗАЦИЯ</span>
+            <span className="context-title">Безопасный вход</span>
             <h2>Вход в IDU</h2>
           </div>
           <button onClick={close}>×</button>
@@ -777,75 +1668,429 @@ function Welcome({
 }) {
   return (
     <div className="welcome">
-      <div className="hero-mark">{agent.icon}</div>
-      <span className="eyebrow">АГЕНТ · {agent.label.toUpperCase()}</span>
-      <h2>Что исследуем сегодня?</h2>
-      <p>
-        Опишите задачу естественным языком. Агент подберёт инструменты, покажет
-        ход анализа и соберёт результат.
-      </p>
-      <div>
-        {agent.examples.map((x) => (
+      <div className="welcome-copy">
+        <div className="agent-sign">
+          <AgentGlyph id={agent.id} />
+        </div>
+        <p className="welcome-kicker">{agent.label} готов к работе</p>
+        <h2>
+          Исследуйте город <span className="title-map" aria-hidden="true" />
+          через данные
+        </h2>
+        <p className="welcome-lead">
+          Опишите задачу своими словами. Агент соберёт инструменты, покажет ход
+          анализа и представит результат на карте.
+        </p>
+      </div>
+      <div className="terrain-orbit" aria-hidden="true">
+        <div className="terrain-ring ring-one" />
+        <div className="terrain-ring ring-two" />
+        <MapTrifold weight="thin" />
+      </div>
+      <div className="prompt-grid">
+        {agent.examples.map((x, index) => (
           <button key={x} onClick={() => onExample(x)}>
-            {x}
-            <span>↗</span>
+            <span>{x}</span>
+            <ArrowUp className="prompt-arrow" weight="bold" />
+            <small>
+              {index === 0 ? "Начать с примера" : "Попробовать запрос"}
+            </small>
           </button>
         ))}
       </div>
     </div>
   );
 }
-function MessageView({ message }: { message: Message }) {
+function MessageView({
+  message,
+  restore,
+  restoreState,
+  openTables,
+}: {
+  message: Message;
+  restore: (message: Message, part: MessagePart) => void;
+  restoreState: Record<string, string>;
+  openTables: () => void;
+}) {
+  const isUser = message.role.toLowerCase() === "user";
+  const blocks = buildMessageBlocks(message.parts);
+  const formattedTime = formatMessageTime(message.created_at);
   return (
-    <div className={`message ${message.role}`}>
-      <div className="avatar">{message.role === "user" ? "В" : "g"}</div>
+    <article className={`message ${isUser ? "user" : "assistant"}`}>
+      <div className="avatar" aria-hidden="true">
+        {isUser ? "В" : "g"}
+      </div>
+      <div className="message-card">
+        <header className="message-meta">
+          <strong>{isUser ? "Вы" : "gMART"}</strong>
+          {formattedTime && (
+            <time dateTime={message.created_at}>{formattedTime}</time>
+          )}
+        </header>
+        <div className="message-content">
+          {blocks.map((block) => {
+            if (block.kind === "markdown")
+              return (
+                <MarkdownContent key={block.key}>{block.text}</MarkdownContent>
+              );
+
+            const p = block.part;
+            return p.kind === "table" ? (
+              <StoredTablePart
+                key={block.key}
+                table={p.payload as TableData}
+                open={openTables}
+              />
+            ) : p.kind === "tool_call" ? (
+              <div className="stored-tool-call" key={block.key}>
+                <div>
+                  <MapTrifold />
+                  <span>
+                    <strong>Сохранённый результат инструментов</strong>
+                    <small>{p.mcp_source || "MCP-источник"}</small>
+                  </span>
+                </div>
+                <button onClick={() => restore(message, p)}>
+                  <ArrowCounterClockwise /> Восстановить слои
+                </button>
+                {restoreState[`${message.message_id}:${p.part_seq}`] && (
+                  <small>
+                    {restoreState[`${message.message_id}:${p.part_seq}`]}
+                  </small>
+                )}
+              </div>
+            ) : p.kind === "status" ? (
+              <div className="stored-status" key={block.key}>
+                {String(p.payload.text || p.payload.status || "Этап выполнен")}
+              </div>
+            ) : [
+                "plan",
+                "plan_revision",
+                "artifact_ref",
+                "validation",
+                "failure",
+              ].includes(p.kind) ? (
+              <details className="stored-status" key={block.key}>
+                <summary>{storedPartTitle(p.kind, p.payload)}</summary>
+                <pre>{JSON.stringify(p.payload, null, 2)}</pre>
+              </details>
+            ) : (
+              <div className="stored-status" key={block.key}>
+                Сохранённая часть: {p.kind}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function storedPartTitle(kind: string, payload: Record<string, any>) {
+  if (kind === "plan") return "План получения данных";
+  if (kind === "plan_revision")
+    return `Редакция плана №${payload.revision || 1}`;
+  if (kind === "artifact_ref")
+    return `Набор данных: ${payload.rows ?? 0} строк`;
+  if (kind === "validation") return "Проверка полноты ответа";
+  if (kind === "failure") return "Ограничения выполнения";
+  return "Служебная часть";
+}
+
+function StoredTablePart({
+  table,
+  open,
+}: {
+  table: TableData;
+  open: () => void;
+}) {
+  const rows = Array.isArray(table.rows) ? table.rows.length : 0;
+  const columns = Array.isArray(table.columns) ? table.columns.length : 0;
+  return (
+    <div className="stored-table-part">
+      <Database weight="duotone" />
       <div>
-        {message.parts.map((p) =>
-          p.kind === "text" ? (
-            <ReactMarkdown key={p.part_seq}>
-              {String(p.payload.text || "")}
-            </ReactMarkdown>
-          ) : p.kind === "table" ? (
-            <Tables key={p.part_seq} tables={[p.payload as TableData]} />
-          ) : null,
-        )}
+        <strong>{table.title || table.name || "Сохранённая таблица"}</strong>
+        <small>
+          {rows} {pluralize(rows, "строка", "строки", "строк")}
+          {columns > 0 && ` · ${columns} столбцов`}
+        </small>
+      </div>
+      <button onClick={open}>Открыть в данных</button>
+    </div>
+  );
+}
+
+function TransientMessage({
+  role,
+  text,
+  detail,
+  pending = false,
+}: {
+  role: "user" | "assistant";
+  text: string;
+  detail: string;
+  pending?: boolean;
+}) {
+  const isUser = role === "user";
+  return (
+    <article className={`message ${role} ${pending ? "pending-message" : ""}`}>
+      <div className="avatar" aria-hidden="true">
+        {isUser ? "В" : "g"}
+      </div>
+      <div className="message-card">
+        <header className="message-meta">
+          <strong>{isUser ? "Вы" : "gMART"}</strong>
+          <span>{detail}</span>
+        </header>
+        <div className="message-content">
+          <MarkdownContent>{text}</MarkdownContent>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function MarkdownContent({ children }: { children: string }) {
+  return (
+    <div className="message-markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ node: _node, ...props }) => (
+            <a {...props} target="_blank" rel="noreferrer" />
+          ),
+          table: ({ node: _node, ...props }) => (
+            <div className="markdown-table-wrap">
+              <table {...props} />
+            </div>
+          ),
+        }}
+      >
+        {children}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function formatMessageTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function pluralize(
+  value: number,
+  one: string,
+  few: string,
+  many: string,
+): string {
+  const tens = value % 100;
+  const units = value % 10;
+  if (tens >= 11 && tens <= 19) return many;
+  if (units === 1) return one;
+  if (units >= 2 && units <= 4) return few;
+  return many;
+}
+
+function extractStoredTables(messages: Message[]): TableData[] {
+  return messages.flatMap((message) =>
+    message.parts
+      .filter((part) => part.kind === "table")
+      .map((part) => part.payload as TableData),
+  );
+}
+
+function findFeatureCollections(value: unknown): GeoJSON.FeatureCollection[] {
+  const found: GeoJSON.FeatureCollection[] = [];
+  const seen = new Set<unknown>();
+  function walkValue(current: unknown) {
+    if (!current || typeof current !== "object" || seen.has(current)) return;
+    seen.add(current);
+    if (
+      (current as { type?: string }).type === "FeatureCollection" &&
+      Array.isArray((current as { features?: unknown[] }).features)
+    ) {
+      found.push(current as GeoJSON.FeatureCollection);
+      return;
+    }
+    if (Array.isArray(current)) current.forEach(walkValue);
+    else Object.values(current as Record<string, unknown>).forEach(walkValue);
+  }
+  walkValue(value);
+  return found;
+}
+function ResultTable({
+  table,
+  fullscreen = false,
+}: {
+  table: TableData;
+  fullscreen?: boolean;
+}) {
+  const topScroll = useRef<HTMLDivElement>(null);
+  const viewport = useRef<HTMLDivElement>(null);
+  const track = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const top = topScroll.current;
+    const body = viewport.current;
+    const spacer = track.current;
+    if (!top || !body || !spacer) return;
+    const measure = () => {
+      spacer.style.width = `${body.scrollWidth}px`;
+      top.hidden = body.scrollWidth <= body.clientWidth + 1;
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(body);
+    const renderedTable = body.querySelector("table");
+    if (renderedTable) observer.observe(renderedTable);
+    return () => observer.disconnect();
+  }, [table, fullscreen]);
+
+  return (
+    <div className={`result-table-shell ${fullscreen ? "fullscreen" : ""}`}>
+      <div
+        className="table-scroll-proxy"
+        ref={topScroll}
+        onScroll={(event) => {
+          if (viewport.current)
+            viewport.current.scrollLeft = event.currentTarget.scrollLeft;
+        }}
+        aria-label="Горизонтальная прокрутка таблицы"
+      >
+        <div ref={track} />
+      </div>
+      <div
+        className="table-scroll-viewport"
+        ref={viewport}
+        onScroll={(event) => {
+          if (topScroll.current)
+            topScroll.current.scrollLeft = event.currentTarget.scrollLeft;
+        }}
+      >
+        <table className="result-table">
+          <thead>
+            <tr>
+              {table.columns?.map((column) => (
+                <th key={column.key}>{column.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {table.rows?.map((row, rowIndex) => (
+              <tr key={rowIndex}>
+                {table.columns.map((column) => (
+                  <td key={column.key}>{String(row[column.key] ?? "—")}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
+
 function Tables({ tables }: { tables: TableData[] }) {
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  const expanded = expandedIndex == null ? null : tables[expandedIndex];
+
+  useEffect(() => {
+    if (!expanded) return;
+    const previousOverflow = document.body.style.overflow;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpandedIndex(null);
+    };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", close);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", close);
+    };
+  }, [expanded]);
+
   return (
-    <div className="data-panel">
-      {tables.length ? (
-        tables.map((t, i) => (
-          <div className="table-card" key={i}>
-            <h3>{t.title || t.name || "Результаты"}</h3>
-            <div>
-              <table>
-                <thead>
-                  <tr>
-                    {t.columns?.map((c) => (
-                      <th key={c.key}>{c.label}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {t.rows?.map((r, n) => (
-                    <tr key={n}>
-                      {t.columns.map((c) => (
-                        <td key={c.key}>{String(r[c.key] ?? "—")}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ))
-      ) : (
-        <div className="empty">Таблицы и показатели появятся здесь</div>
-      )}
-    </div>
+    <>
+      <div className="data-panel">
+        {tables.length ? (
+          tables.map((table, index) => {
+            const title = table.title || table.name || "Результаты";
+            return (
+              <div
+                className="table-card"
+                key={`${table.name || title}-${index}`}
+              >
+                <div className="table-card-header">
+                  <div>
+                    <h3>{title}</h3>
+                    <small>
+                      {table.rows?.length || 0} строк ·{" "}
+                      {table.columns?.length || 0} столбцов
+                    </small>
+                  </div>
+                  <button
+                    className="table-expand"
+                    onClick={() => setExpandedIndex(index)}
+                    aria-label={`Открыть таблицу «${title}» на весь экран`}
+                    title="Открыть на весь экран"
+                  >
+                    <ArrowsOut />
+                  </button>
+                </div>
+                <ResultTable table={table} />
+              </div>
+            );
+          })
+        ) : (
+          <div className="empty">Таблицы и показатели появятся здесь</div>
+        )}
+      </div>
+      {expanded &&
+        createPortal(
+          <div
+            className="table-fullscreen-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setExpandedIndex(null);
+            }}
+          >
+            <section
+              className="table-fullscreen-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-label={
+                expanded.title || expanded.name || "Таблица результатов"
+              }
+            >
+              <header>
+                <div>
+                  <span className="context-title">Таблица результатов</span>
+                  <h2>{expanded.title || expanded.name || "Результаты"}</h2>
+                  <small>
+                    {expanded.rows?.length || 0} строк ·{" "}
+                    {expanded.columns?.length || 0} столбцов
+                  </small>
+                </div>
+                <button
+                  className="table-fullscreen-close"
+                  onClick={() => setExpandedIndex(null)}
+                  aria-label="Закрыть полноэкранную таблицу"
+                >
+                  <X />
+                </button>
+              </header>
+              <ResultTable table={expanded} fullscreen />
+            </section>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 function Process({
@@ -899,7 +2144,7 @@ function Admin({
     <div className="admin">
       <header>
         <div>
-          <span className="eyebrow">АДМИНИСТРИРОВАНИЕ</span>
+          <span className="context-title">Управление контуром</span>
           <h1>Состояние системы</h1>
           <p>Подключения, конфигурация и диагностика gMART</p>
         </div>
@@ -994,7 +2239,7 @@ function SettingsModal({
       <div className="modal-card">
         <div className="panel-head">
           <div>
-            <span className="eyebrow">НАСТРОЙКИ</span>
+            <span className="context-title">Персонализация пространства</span>
             <h2>Среда и модель</h2>
           </div>
           <button onClick={close}>×</button>
@@ -1020,9 +2265,12 @@ function SettingsModal({
               value={s.model}
               onChange={(e) => setS({ ...s, model: e.target.value })}
             >
-              {[s.model, ...models.filter((x) => x !== s.model)].map((x) => (
+              {(models.length ? models : [s.model].filter(Boolean)).map((x) => (
                 <option key={x}>{x}</option>
               ))}
+              {!models.length && !s.model && (
+                <option value="">по умолчанию у провайдера</option>
+              )}
             </select>
           </label>
           <label>
@@ -1089,19 +2337,30 @@ function labelAgent(key?: string) {
     (
       {
         restriction: "Ограничения",
+        restrictions: "Ограничения",
+        compliance: "Соответствие",
         provision: "Обеспеченность",
+        scenario_data: "Данные сценария",
         documents: "Документы",
         norms: "Нормы",
+        orchestrator: "Оркестратор",
+        llm: "Ассистент",
       } as Record<string, string>
     )[key || ""] ||
     key ||
-    "агент"
+    "Не определён"
   );
 }
 function labelStatus(s: string) {
   return (
     (
       {
+        tool_discovery: "Загружаю источники данных",
+        planning: "Выбираю источник данных",
+        tool_execution: "Получаю данные",
+        response_analysis: "Считаю результат",
+        answer_review: "Проверяю результат",
+        answer_retry: "Дополняю данные",
         retrieval_planning: "Планирую поиск",
         searching: "Ищу источники",
         executing: "Выполняю инструменты",

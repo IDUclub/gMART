@@ -2,7 +2,10 @@ import asyncio
 
 import aiohttp
 from fastmcp.exceptions import ToolError
+from idu_service_auth import KeycloakTokenClient
 from loguru import logger
+
+from src.common.service_auth import service_headers
 
 # Sentinel returned by _check_response_status to signal a transient failure that
 # should be retried rather than returned or raised.
@@ -24,6 +27,7 @@ class JsonApiHandler:
         base_url: str,
         max_retries: int = 3,
         backoff_base: float = 0.5,
+        service_auth: KeycloakTokenClient | None = None,
     ) -> None:
         """Initialisation function
 
@@ -41,6 +45,7 @@ class JsonApiHandler:
         self.__name__ = f"{self.base_url}_JSON_API_HANDLER"
         self.max_retries = max_retries
         self.backoff_base = backoff_base
+        self.service_auth = service_auth
 
     async def _check_response_status(
         self,
@@ -117,11 +122,13 @@ class JsonApiHandler:
                 exhausted on a transient failure.
         """
 
-        if auth_token:
-            if headers is None:
-                headers = {"Authorization": f"Bearer {auth_token}"}
-            else:
-                headers.update({"Authorization": auth_token})
+        if self.service_auth is not None:
+            outgoing = dict(headers or {})
+            outgoing.update(await service_headers(self.service_auth, auth_token))
+            headers = outgoing
+        elif auth_token:
+            headers = dict(headers or {})
+            headers["Authorization"] = f"Bearer {auth_token}"
         if not session:
             async with aiohttp.ClientSession() as session:
                 return await self._request(endpoint, headers, params, session)

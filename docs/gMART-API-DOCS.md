@@ -18,9 +18,10 @@ gMART ships two deployable apps from one codebase:
 
 This document covers the **A2A** surface of the agents app. The REST/SSE surface for the
 frontend is documented in [`frontend-service.md`](frontend-service.md) and
-[`frontend-document-qa.md`](frontend-document-qa.md).
+[`frontend-document-qa.md`](frontend-document-qa.md). Scenario-data REST/SSE and
+A2A details are in [`frontend-scenario-data.md`](frontend-scenario-data.md).
 
-The agents app exposes **three A2A agents**, each as a JSON-RPC 2.0 endpoint with an
+The agents app exposes **five A2A agents**, each as a JSON-RPC 2.0 endpoint with an
 A2A AgentCard for discovery:
 
 | Agent | Card `name` | JSON-RPC endpoint | Needs `scenario_id` |
@@ -28,6 +29,8 @@ A2A AgentCard for discovery:
 | Restriction creation | `restriction-creation-agent` | `POST /restriction/a2a` | **required** |
 | Provision effects | `provision-effects-agent` | `POST /provision/a2a` | **required** |
 | Document QA (RAG) | `document-qa-agent` | `POST /documents/a2a` | optional |
+| NormGraph QA | `norms-qa-agent` | `POST /norms/a2a` | optional |
+| Scenario data | `scenario-data-agent` | `POST /scenario-data/a2a` | optional |
 
 Protocol: **A2A 0.3.0**, transport **JSONRPC**. The agents also accept the 1.0 method
 binding names (`SendMessage`, `GetTask`, …) as aliases, but responses are serialized in the
@@ -42,6 +45,8 @@ Each agent publishes a card (no auth required):
 | Restriction | `GET /restriction/.well-known/agent-card.json` |
 | Provision | `GET /provision/.well-known/agent-card.json` |
 | Document QA | `GET /documents/.well-known/agent-card.json` |
+| NormGraph QA | `GET /norms/.well-known/agent-card.json` |
+| Scenario data | `GET /scenario-data/.well-known/agent-card.json` |
 
 Legacy aliases also resolve: `GET /.well-known/agent-card.json`,
 `GET /.well-known/agent.json`, `GET /restriction/agent.json`.
@@ -261,7 +266,8 @@ Changes made for A2A 0.3 / official-SDK compatibility (all three agents):
 - `messageId` on every `Message`, including the echoed user message.
 - `status.timestamp` in RFC3339 with a `Z` offset.
 - Part discriminator `type` → `kind` on all outgoing messages/artifacts.
-- Required, discoverable `scenario-context` extension on the restriction/provision cards.
+- Required, discoverable `scenario-context` extension on the restriction/provision cards;
+  the scenario-data card advertises the same extension as optional.
 - `application/json` advertised in `defaultInputModes` / skill `inputModes`.
 - `configuration.historyLength` / `historyLength` honored.
 - Streaming error path emits a terminal `failed` event (no empty streams).
@@ -281,9 +287,11 @@ gMART состоит из двух разворачиваемых приложе
 
 Этот документ описывает **A2A**-интерфейс приложения agents. REST/SSE-контракт для фронтенда
 описан в [`frontend-service.md`](frontend-service.md) и
-[`frontend-document-qa.md`](frontend-document-qa.md).
+[`frontend-document-qa.md`](frontend-document-qa.md). REST/SSE- и A2A-контракт
+городских данных описан в
+[`frontend-scenario-data.md`](frontend-scenario-data.md).
 
-Приложение agents предоставляет **три A2A-агента**, каждый — это эндпоинт JSON-RPC 2.0 с
+Приложение agents предоставляет **пять A2A-агентов**, каждый — это эндпоинт JSON-RPC 2.0 с
 карточкой агента (AgentCard) для обнаружения:
 
 | Агент | `name` карточки | Эндпоинт JSON-RPC | Нужен `scenario_id` |
@@ -291,6 +299,8 @@ gMART состоит из двух разворачиваемых приложе
 | Построение ограничений | `restriction-creation-agent` | `POST /restriction/a2a` | **обязателен** |
 | Эффекты обеспеченности | `provision-effects-agent` | `POST /provision/a2a` | **обязателен** |
 | QA по документам (RAG) | `document-qa-agent` | `POST /documents/a2a` | опционален |
+| QA по NormGraph | `norms-qa-agent` | `POST /norms/a2a` | опционален |
+| Городские данные | `scenario-data-agent` | `POST /scenario-data/a2a` | опционален |
 
 Протокол: **A2A 0.3.0**, транспорт **JSONRPC**. Агенты также принимают имена методов из
 биндинга 1.0 (`SendMessage`, `GetTask`, …) как алиасы, но ответы сериализуются в формате 0.3.
@@ -303,7 +313,9 @@ gMART состоит из двух разворачиваемых приложе
 |---|---|
 | Ограничения | `GET /restriction/.well-known/agent-card.json` |
 | Обеспеченность | `GET /provision/.well-known/agent-card.json` |
-| QA по документам | `GET /documents/.well-known/agent-card.json` |
+| Документы | `GET /documents/.well-known/agent-card.json` |
+| NormGraph | `GET /norms/.well-known/agent-card.json` |
+| Городские данные | `GET /scenario-data/.well-known/agent-card.json` |
 
 Также работают устаревшие алиасы: `GET /.well-known/agent-card.json`,
 `GET /.well-known/agent.json`, `GET /restriction/agent.json`.
@@ -428,7 +440,8 @@ JSON-RPC-конверт, где `result` — одно инкрементальн
 - `messageId` у каждого `Message`, включая эхо пользовательского сообщения.
 - `status.timestamp` в RFC3339 с офсетом `Z`.
 - Дискриминатор частей `type` → `kind` во всех исходящих сообщениях/артефактах.
-- Обязательное, обнаруживаемое расширение `scenario-context` на карточках restriction/provision.
+- Обязательное, обнаруживаемое расширение `scenario-context` на карточках restriction/provision;
+  карточка scenario-data объявляет то же расширение как необязательное.
 - `application/json` объявлен в `defaultInputModes` / `inputModes` навыка.
 - Учитывается `configuration.historyLength` / `historyLength`.
 - Путь ошибок стриминга эмитит терминальное `failed`-событие (нет пустых потоков).

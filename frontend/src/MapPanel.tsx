@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { Trash, X } from "@phosphor-icons/react";
 import maplibregl, { Map } from "maplibre-gl";
 import type { LayerData } from "./types";
 const styles: Record<string, string> = {
@@ -10,15 +11,20 @@ export default function MapPanel({
   layers,
   basemap,
   onToggle,
+  onRemove,
+  onClear,
   onBasemap,
 }: {
   layers: LayerData[];
   basemap: string;
   onToggle: (id: string) => void;
+  onRemove: (id: string) => void;
+  onClear: () => void;
   onBasemap: (id: string) => void;
 }) {
   const node = useRef<HTMLDivElement>(null),
-    map = useRef<Map | null>(null);
+    map = useRef<Map | null>(null),
+    renderedSources = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!node.current || map.current) return;
     map.current = new maplibregl.Map({
@@ -43,14 +49,18 @@ export default function MapPanel({
     if (!m) return;
     const draw = () => {
       const bounds = new maplibregl.LngLatBounds();
-      layers.forEach((layer, i) => {
-        const source = `gmart-${i}`;
+      renderedSources.current.forEach((source) => {
         if (m.getLayer(`${source}-fill`)) m.removeLayer(`${source}-fill`);
         if (m.getLayer(`${source}-line`)) m.removeLayer(`${source}-line`);
         if (m.getLayer(`${source}-point`)) m.removeLayer(`${source}-point`);
         if (m.getSource(source)) m.removeSource(source);
+      });
+      renderedSources.current.clear();
+      layers.forEach((layer) => {
+        const source = `gmart-${layer.id}`;
         if (!layer.visible) return;
         m.addSource(source, { type: "geojson", data: layer.geojson });
+        renderedSources.current.add(source);
         m.addLayer({
           id: `${source}-fill`,
           type: "fill",
@@ -76,9 +86,13 @@ export default function MapPanel({
             "circle-stroke-width": 2,
           },
         });
-      layer.geojson.features.forEach((f) =>
-        walk((f.geometry as GeoJSON.Geometry & { coordinates?: unknown })?.coordinates, bounds),
-      );
+        layer.geojson.features.forEach((f) =>
+          walk(
+            (f.geometry as GeoJSON.Geometry & { coordinates?: unknown })
+              ?.coordinates,
+            bounds,
+          ),
+        );
       });
       if (!bounds.isEmpty()) m.fitBounds(bounds, { padding: 55, maxZoom: 15 });
     };
@@ -89,28 +103,36 @@ export default function MapPanel({
     <div className="map-card">
       <div className="map-toolbar">
         <div>
-          <span className="eyebrow">ГЕОДАННЫЕ</span>
+          <span className="context-title">Пространственный результат</span>
           <strong>Карта результата</strong>
         </div>
-        <select value={basemap} onChange={(e) => onBasemap(e.target.value)}>
-          <option value="osm">OpenStreetMap</option>
-          <option value="cartoLight">CARTO Light</option>
-          <option value="cartoDark">CARTO Dark</option>
-        </select>
+        <div className="map-toolbar-actions">
+          {!!layers.length && (
+            <button className="clear-layers" onClick={onClear}>
+              <Trash /> Очистить слои
+            </button>
+          )}
+          <select value={basemap} onChange={(e) => onBasemap(e.target.value)}>
+            <option value="osm">OpenStreetMap</option>
+            <option value="cartoLight">CARTO Light</option>
+            <option value="cartoDark">CARTO Dark</option>
+          </select>
+        </div>
       </div>
       <div ref={node} className="map" />
       <div className="layer-list">
         {layers.length ? (
           layers.map((l) => (
-            <button
-              className={`layer-chip ${l.visible ? "active" : ""}`}
-              onClick={() => onToggle(l.id)}
-              key={l.id}
-            >
-              <i style={{ background: l.color }} />
-              {l.name}
-              <small>{l.count}</small>
-            </button>
+            <div className={`layer-chip ${l.visible ? "active" : ""}`} key={l.id}>
+              <button className="layer-toggle" onClick={() => onToggle(l.id)}>
+                <i style={{ background: l.color }} />
+                {l.name}
+                <small>{l.count}</small>
+              </button>
+              <button className="layer-remove" onClick={() => onRemove(l.id)} aria-label={`Удалить слой ${l.name}`}>
+                <X />
+              </button>
+            </div>
           ))
         ) : (
           <span className="empty-inline">

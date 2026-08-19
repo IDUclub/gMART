@@ -333,7 +333,7 @@ async def test_streaming_always_ends_on_a_done_chunk():
 
 @pytest.mark.asyncio
 async def test_think_false_becomes_reasoning_effort_by_default():
-    """The one spelling both vLLM and Ollama's /v1 honour, so it needs no config."""
+    """ "none" stays the default value, so existing deployments are unaffected."""
 
     adapter, completions = _adapter_with(
         _Completion([_Choice(message=_Delta("ok"), finish_reason="stop")])
@@ -343,6 +343,57 @@ async def test_think_false_becomes_reasoning_effort_by_default():
 
     assert completions.calls[0]["reasoning_effort"] == "none"
     assert "extra_body" not in completions.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_think_effort_value_is_configurable():
+    """The value must not be hardcoded: servers disagree on which ones they accept.
+
+    vLLM's Harmony path (how gpt-oss is served) 400s on both "none" and "minimal" and takes
+    only high/medium/low, so a contour has to be able to ask for "low".
+    """
+
+    adapter = OpenAiCompatAdapter(
+        base_url="http://vllm:8000/v1", api_key="k", think_effort="low"
+    )
+    completions = FakeCompletions(
+        _Completion([_Choice(message=_Delta("ok"), finish_reason="stop")])
+    )
+    adapter.client.chat.completions = completions  # type: ignore[assignment]
+
+    await adapter.chat("m", [], think=False)
+
+    assert completions.calls[0]["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_think_effort_reads_the_environment(monkeypatch):
+    monkeypatch.setenv("OPENAI_THINK_EFFORT", "medium")
+
+    adapter, completions = _adapter_with(
+        _Completion([_Choice(message=_Delta("ok"), finish_reason="stop")])
+    )
+
+    await adapter.chat("m", [], think=False)
+
+    assert completions.calls[0]["reasoning_effort"] == "medium"
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_caller_value_still_wins():
+    """setdefault, not assignment — a call site may pin its own effort."""
+
+    adapter = OpenAiCompatAdapter(
+        base_url="http://vllm:8000/v1", api_key="k", think_effort="low"
+    )
+    completions = FakeCompletions(
+        _Completion([_Choice(message=_Delta("ok"), finish_reason="stop")])
+    )
+    adapter.client.chat.completions = completions  # type: ignore[assignment]
+
+    await adapter.chat("m", [], think=False, reasoning_effort="high")
+
+    assert completions.calls[0]["reasoning_effort"] == "high"
 
 
 @pytest.mark.asyncio

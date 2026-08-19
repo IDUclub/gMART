@@ -94,14 +94,73 @@ class RestrictionParserService(BaseLlmService):
         self,
         mcp_client: IduMcpClient,
         temperature: float,
-        model: str,
+        model: str | None,
+        user_query: str,
+        scenario_id: int,
+        chat_id: str | None = None,
+        request_id: str | None = None,
+        persist_history: bool = True,
+    ) -> AsyncGenerator:
+        """Run the standard geometry-only restrictions pipeline."""
+
+        async for item in self._run_pipeline_entry(
+            mcp_client=mcp_client,
+            temperature=temperature,
+            model=model,
+            user_query=user_query,
+            scenario_id=scenario_id,
+            chat_id=chat_id,
+            request_id=request_id,
+            persist_history=persist_history,
+            normgraph_mcp_client=None,
+            history_agent="restrictions",
+        ):
+            yield item
+
+    async def run_compliance_pipeline(
+        self,
+        mcp_client: IduMcpClient,
+        temperature: float,
+        model: str | None,
+        user_query: str,
+        scenario_id: int,
+        normgraph_mcp_client: NormGraphMcpClient | None,
+        chat_id: str | None = None,
+        request_id: str | None = None,
+        persist_history: bool = True,
+    ) -> AsyncGenerator:
+        """Run the compliance pipeline with optional normative grounding."""
+
+        async for item in self._run_pipeline_entry(
+            mcp_client=mcp_client,
+            temperature=temperature,
+            model=model,
+            user_query=user_query,
+            scenario_id=scenario_id,
+            chat_id=chat_id,
+            request_id=request_id,
+            persist_history=persist_history,
+            normgraph_mcp_client=normgraph_mcp_client,
+            history_agent="compliance",
+        ):
+            yield item
+
+    async def _run_pipeline_entry(
+        self,
+        mcp_client: IduMcpClient,
+        temperature: float,
+        model: str | None,
         user_query: str,
         scenario_id: int,
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
         normgraph_mcp_client: NormGraphMcpClient | None = None,
+        history_agent: str = "restrictions",
     ) -> AsyncGenerator:
+        # Fill in the provider's model when the caller named none; keeps REST and A2A
+        # on one behaviour and out of backend-specific literals.
+        model = await self.resolve_model(model)
         # Mutable container so the inner pipeline can update the token on
         # refresh and the outer generator sees the latest value.
         token_ref: list[str] = [
@@ -123,6 +182,7 @@ class RestrictionParserService(BaseLlmService):
             token_ref=token_ref,
             persist_history=persist_history,
             normgraph_mcp_client=normgraph_mcp_client,
+            history_agent=history_agent,
         ):
             chat_id = self._chat_id_from_storage_event(item) or chat_id
             if item.get("type") == "tool_call":
@@ -178,6 +238,7 @@ class RestrictionParserService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
         normgraph_mcp_client: NormGraphMcpClient | None = None,
+        history_agent: str = "restrictions",
     ) -> AsyncGenerator:
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
@@ -218,8 +279,9 @@ class RestrictionParserService(BaseLlmService):
                             user_query,
                             additional_instructions="""Первый запрос пользователя был отправлен к сервису
                                 создания слоёв с ограничениями ихз запроса пользователя.
-                                """,
+                            """,
                             scenario_id=scenario_id,
+                            agent_id=history_agent,
                         ),
                         chat_result,
                     ):

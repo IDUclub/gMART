@@ -1,3 +1,5 @@
+from idu_service_auth import KeycloakTokenClient
+
 from src.idu_mcp.api_clients.urban_api_client import UrbanApiClient
 from src.idu_mcp.common.api_handlers.json_api_handler import JsonApiHandler
 from src.idu_mcp.dependencies.tool_deps.base_tool_dep import BaseDep
@@ -12,7 +14,7 @@ class UrbanApiToolsDeps(BaseDep):
         urban_api_tools: UrbanApiTool object
     """
 
-    def __init__(self, urban_api_url: str):
+    def __init__(self, urban_api_url: str, service_auth: KeycloakTokenClient):
         """
         Constructor for UrbanApiToolsDeps class
         Args:
@@ -21,6 +23,6 @@ class UrbanApiToolsDeps(BaseDep):
 
         super().__init__()
         self.urban_api_client: UrbanApiClient = UrbanApiClient(
-            JsonApiHandler(urban_api_url)
+            JsonApiHandler(urban_api_url, service_auth=service_auth)
         )
         self.urban_api_tools: UrbanApiTool = UrbanApiTool(self.urban_api_client)

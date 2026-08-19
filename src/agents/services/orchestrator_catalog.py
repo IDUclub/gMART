@@ -71,6 +71,23 @@ AGENT_CATALOG: dict[OrchestratorAgent, AgentCatalogEntry] = {
         ),
         requires_scenario_id=True,
     ),
+    OrchestratorAgent.SCENARIO_DATA: AgentCatalogEntry(
+        key=OrchestratorAgent.SCENARIO_DATA,
+        title="Агент данных сценария",
+        description=(
+            "Отвечает на произвольные фактические вопросы по Urban API: проекты, "
+            "территории, физические объекты, сервисы, справочники, показатели и "
+            "социальные группы. Может работать без выбранного сценария с общими "
+            "данными; для сценарных данных попросит выбрать сценарий. При "
+            "необходимости возвращает GeoJSON-слои и таблицы."
+        ),
+        examples=(
+            "Какие объекты есть в сценарии и сколько их по типам?",
+            "Покажи на карте физические объекты сценария",
+            "Какие значения показателей рассчитаны для сценария?",
+        ),
+        requires_scenario_id=False,
+    ),
     OrchestratorAgent.DOCUMENTS: AgentCatalogEntry(
         key=OrchestratorAgent.DOCUMENTS,
         title="Агент вопросов по нормативной документации",
@@ -126,6 +143,11 @@ def available_agents(
         if entry.key == OrchestratorAgent.DOCUMENTS and not app_config.DVD_MCP_URL:
             continue
         if entry.key == OrchestratorAgent.NORMS and not app_config.NORM_GRAPH_MCP_URL:
+            continue
+        if (
+            entry.key == OrchestratorAgent.SCENARIO_DATA
+            and not app_config.URBAN_MCP_URL
+        ):
             continue
         agents.append(entry)
     return agents
