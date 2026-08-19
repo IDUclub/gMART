@@ -1,3 +1,10 @@
+## v0.17.4 (2026-08-19)
+
+### Fix
+
+- pass user context outside m2m transports (#149) (#150)
+- pass user context outside m2m transports (#149)
+
 ## v0.17.3 (2026-08-19)
 
 ## v0.17.2 (2026-08-19)
