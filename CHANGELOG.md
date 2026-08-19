@@ -1,3 +1,10 @@
+## v0.17.1 (2026-08-19)
+
+### Fix
+
+- **ui**: generate ids without secure-context crypto.randomUUID (#142) (#143)
+- **ui**: generate ids without secure-context crypto.randomUUID (#142)
+
 ## v0.17.0 (2026-08-18)
 
 ### Feat
