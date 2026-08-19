@@ -75,6 +75,7 @@ jobs:
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_THINK_MODE: ${{ vars.OPENAI_THINK_MODE }}
+          OPENAI_THINK_EFFORT: ${{ vars.OPENAI_THINK_EFFORT }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
           SYSTEM_PASSWORD: ${{ secrets.SYSTEM_PASSWORD }}
           AUTH_HELPER_URL: ${{ vars.AUTH_HELPER_URL }}
@@ -83,6 +84,7 @@ jobs:
           SERVICE_AUTH_REALM: ${{ vars.SERVICE_AUTH_REALM }}
           SERVICE_AUTH_CLIENT_ID: ${{ vars.SERVICE_AUTH_CLIENT_ID }}
           SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.SERVICE_AUTH_CLIENT_SECRET }}
+          SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED: ${{ vars.SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED }}
         run: docker compose -f docker-compose.actions.yaml up -d --wait --wait-timeout 120
 
       - name: Container diagnostics
