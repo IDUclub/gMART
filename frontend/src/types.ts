@@ -65,6 +65,49 @@ export type StatusEntry = {
   time: string;
   state: "active" | "done" | "warning";
 };
+export type UserDocument = {
+  doc_id: string;
+  name: string;
+  version: string;
+  other_versions?: string[];
+  blocks?: string[];
+  tags?: string[];
+  node_count?: number;
+  uploaded_at?: string | null;
+  source?: string | null;
+};
+export type UserDocumentList = {
+  count: number;
+  documents: UserDocument[];
+};
+export type UserDocumentUpload = {
+  job_id: string;
+  status: string;
+};
+export type UserDocumentDeleteResult = {
+  name: string;
+  versions_removed: string[];
+  points_deleted: number;
+  points_updated: number;
+};
+export type UserDocumentJobStatus = {
+  job_id: string;
+  status: "queued" | "processing" | "done" | "error";
+  filename?: string | null;
+  stage?: string | null;
+  stage_index?: number | null;
+  stage_total?: number | null;
+  phase?: string | null;
+  progress?: number | null;
+  progress_total?: number | null;
+  task_progress?: number | null;
+  overall_progress?: number | null;
+  doc_id?: string | null;
+  name?: string | null;
+  version?: string | null;
+  nodes?: number | null;
+  error?: string | null;
+};
 export type Settings = {
   theme: "light" | "dark";
   basemap: string;

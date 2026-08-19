@@ -184,6 +184,25 @@ class TestLoop:
         args = tool_calls[0]["content"]["tool_calls"][0]["function"]["arguments"]
         assert set(args) == {"query", "limit", "context_height"}
 
+    async def test_scenario_scope_reaches_search_and_recorded_tool_call(
+        self, service, fake_llm, fake_mcp
+    ):
+        fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+        fake_llm.answer_texts = ["Ответ"]
+
+        events = await _run(service, fake_mcp, scenario_id=772)
+
+        call = fake_mcp.search_calls[0]
+        assert call.scenario_id == 772
+        assert call.include_shared is True
+        assert call.include_inherited is True
+        args = events_of_type(events, "tool_call")[0]["content"]["tool_calls"][0][
+            "function"
+        ]["arguments"]
+        assert args["scenario_id"] == "772"
+        assert args["include_shared"] is True
+        assert args["include_inherited"] is True
+
 
 # ---------------------------------------------------------------------------
 # project_id resolution + warning fallback
