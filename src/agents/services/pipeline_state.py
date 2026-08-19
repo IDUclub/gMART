@@ -141,7 +141,12 @@ class PipelineStateStore:
                     payload = json.loads(message["data"])
                     if payload.get("cancelled"):
                         raise asyncio.CancelledError
-                    return payload["token"]
+                    token = payload.get("token")
+                    if isinstance(token, str) and token:
+                        return token
+                    logger.warning(
+                        f"Ignored malformed token refresh payload for {request_id}"
+                    )
         finally:
             try:
                 await pubsub.unsubscribe(channel)
