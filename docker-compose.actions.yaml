@@ -15,6 +15,17 @@ services:
       URBAN_API_URL: ${URBAN_API_URL}
       REDIS_URL: ${REDIS_URL}
       SYSTEM_PASSWORD: ${SYSTEM_PASSWORD}
+<<<<<<< Updated upstream
+=======
+      # Both must be set for the UI login form (/auth/available -> enabled);
+      # without them the UI falls back to the auth-helper redirect.
+      AUTH_HELPER_URL: ${AUTH_HELPER_URL:-}
+      AUTH_HELPER_API_KEY: ${AUTH_HELPER_API_KEY:-}
+      SERVICE_AUTH_SERVER_URL: ${SERVICE_AUTH_SERVER_URL:?SERVICE_AUTH_SERVER_URL is required}
+      SERVICE_AUTH_REALM: ${SERVICE_AUTH_REALM:?SERVICE_AUTH_REALM is required}
+      SERVICE_AUTH_CLIENT_ID: ${SERVICE_AUTH_CLIENT_ID:?SERVICE_AUTH_CLIENT_ID is required}
+      SERVICE_AUTH_CLIENT_SECRET: ${SERVICE_AUTH_CLIENT_SECRET:?SERVICE_AUTH_CLIENT_SECRET is required}
+>>>>>>> Stashed changes
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:80/ping')\""]
       interval: 10s

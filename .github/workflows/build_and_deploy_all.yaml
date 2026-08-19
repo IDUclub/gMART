@@ -72,6 +72,15 @@ jobs:
           NORM_GRAPH_MCP_SERVER: ${{ vars.NORM_GRAPH_MCP_SERVER }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
           SYSTEM_PASSWORD: ${{ secrets.SYSTEM_PASSWORD }}
+<<<<<<< Updated upstream
+=======
+          AUTH_HELPER_URL: ${{ vars.AUTH_HELPER_URL }}
+          AUTH_HELPER_API_KEY: ${{ secrets.AUTH_HELPER_API_KEY }}
+          SERVICE_AUTH_SERVER_URL: ${{ vars.SERVICE_AUTH_SERVER_URL }}
+          SERVICE_AUTH_REALM: ${{ vars.SERVICE_AUTH_REALM }}
+          SERVICE_AUTH_CLIENT_ID: ${{ vars.SERVICE_AUTH_CLIENT_ID }}
+          SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.SERVICE_AUTH_CLIENT_SECRET }}
+>>>>>>> Stashed changes
         run: docker compose -f docker-compose.actions.yaml up -d --wait --wait-timeout 120
 
       - name: Container diagnostics
