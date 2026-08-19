@@ -54,6 +54,7 @@ class RestrictionAgentExecutor:
         self,
         params: A2AData,
         mcp_client: IduMcpClient,
+        token: str,
     ) -> A2AData:
         """
         Function executes restriction pipeline and returns final A2A task.
@@ -72,7 +73,7 @@ class RestrictionAgentExecutor:
             execution["metadata"],
         )
 
-        async for _ in self._run_pipeline(execution, mcp_client):
+        async for _ in self._run_pipeline(execution, mcp_client, token):
             pass
 
         return self.task_store.get_task(task["id"]) or task
@@ -81,6 +82,7 @@ class RestrictionAgentExecutor:
         self,
         params: A2AData,
         mcp_client: IduMcpClient,
+        token: str,
     ) -> AsyncGenerator[A2AEventData, None]:
         """
         Function executes restriction pipeline and streams A2A events.
@@ -102,13 +104,14 @@ class RestrictionAgentExecutor:
         # (kind: "task"), per A2A 0.3 SendStreamingMessageSuccessResponse.
         yield task
 
-        async for event in self._run_pipeline(execution, mcp_client):
+        async for event in self._run_pipeline(execution, mcp_client, token):
             yield event
 
     async def _run_pipeline(
         self,
         execution: A2AData,
         mcp_client: IduMcpClient,
+        token: str,
     ) -> AsyncGenerator[A2AEventData, None]:
         """
         Function runs restriction pipeline and converts chunks to A2A events.
@@ -139,6 +142,7 @@ class RestrictionAgentExecutor:
                 item
             ) in self.restriction_service.run_restriction_execution_pipline(
                 mcp_client=mcp_client,
+                token=token,
                 temperature=execution["temperature"],
                 model=execution["model"],
                 user_query=execution["user_query"],

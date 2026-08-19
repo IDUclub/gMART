@@ -118,6 +118,7 @@ class ProvisionService(BaseLlmService):
         self,
         idu_mcp_client: IduMcpClient,
         effects_mcp_client: EffectsMcpClient,
+        token: str,
         model: str | None,
         temperature: float,
         user_query: str,
@@ -129,9 +130,9 @@ class ProvisionService(BaseLlmService):
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
         model = await self.resolve_model(model)
-        token_ref: list[str] = [
-            idu_mcp_client.mcp_client.transport.auth.token.get_secret_value()
-        ]
+        # User context is passed explicitly. MCP transports contain dynamic M2M
+        # authentication and are not a source of user credentials.
+        token_ref = [token]
         text_buffer: list[str] = []
         message_parts: list[MessagePart] = []
 

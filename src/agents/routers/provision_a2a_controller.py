@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.sse import EventSourceResponse
 
+from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.dependencies import (
     get_effects_mcp_client,
     get_idu_mcp_client,
@@ -41,16 +42,21 @@ async def handle_provision_a2a_json_rpc(
     provision_a2a_service: ProvisionA2AService = Depends(get_provision_a2a_service),
     idu_mcp_client: IduMcpClient = Depends(get_idu_mcp_client),
     effects_mcp_client: EffectsMcpClient = Depends(get_effects_mcp_client),
+    token: str = Depends(verify_bearer_token),
 ):
     payload_data = _payload_to_plain_data(payload)
     if provision_a2a_service.is_streaming_request(payload_data):
         return EventSourceResponse(
             _stream_json_rpc_events(
-                provision_a2a_service, payload_data, idu_mcp_client, effects_mcp_client
+                provision_a2a_service,
+                payload_data,
+                idu_mcp_client,
+                effects_mcp_client,
+                token,
             )
         )
     return await provision_a2a_service.handle_json_rpc(
-        payload_data, idu_mcp_client, effects_mcp_client
+        payload_data, idu_mcp_client, effects_mcp_client, token
     )
 
 
@@ -59,9 +65,10 @@ async def _stream_json_rpc_events(
     payload: Any,
     idu_mcp_client: IduMcpClient,
     effects_mcp_client: EffectsMcpClient,
+    token: str,
 ):
     async for event in provision_a2a_service.stream_json_rpc(
-        payload, idu_mcp_client, effects_mcp_client
+        payload, idu_mcp_client, effects_mcp_client, token
     ):
         yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 

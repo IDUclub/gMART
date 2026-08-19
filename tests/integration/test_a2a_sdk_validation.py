@@ -54,6 +54,7 @@ async def _run_send(params: dict) -> dict:
     response = await service.handle_json_rpc(
         {"jsonrpc": "2.0", "id": "it-1", "method": "message/send", "params": params},
         object(),
+        "user-token",
     )
     assert "result" in response, response
     return response["result"]
@@ -127,6 +128,7 @@ async def _run_stream(params: dict) -> list[dict]:
                 "params": params,
             },
             object(),
+            "user-token",
         )
     ]
 
