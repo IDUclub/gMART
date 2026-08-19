@@ -94,6 +94,7 @@ class A2AService:
         self,
         payload: Any,
         mcp_client: IduMcpClient,
+        token: str,
     ) -> A2AResponse:
         """
         Function handles regular A2A JSON-RPC payload.
@@ -107,7 +108,7 @@ class A2AService:
         if isinstance(payload, list):
             return [
                 (
-                    await self._handle_single_json_rpc(item, mcp_client)
+                    await self._handle_single_json_rpc(item, mcp_client, token)
                     if isinstance(item, dict)
                     else self._error(None, A2AInvalidRequestError())
                 )
@@ -115,12 +116,13 @@ class A2AService:
             ]
         if not isinstance(payload, dict):
             return self._error(None, A2AInvalidRequestError())
-        return await self._handle_single_json_rpc(payload, mcp_client)
+        return await self._handle_single_json_rpc(payload, mcp_client, token)
 
     async def stream_json_rpc(
         self,
         payload: Any,
         mcp_client: IduMcpClient,
+        token: str,
     ) -> AsyncGenerator[A2AData, None]:
         """
         Function handles streaming A2A JSON-RPC payload.
@@ -141,11 +143,11 @@ class A2AService:
             method = payload.get("method")
             params = self._extract_params(payload)
             if method not in self.STREAMING_METHODS:
-                result = await self._dispatch(method, params, mcp_client)
+                result = await self._dispatch(method, params, mcp_client, token)
                 yield self._success(request_id, result)
                 return
 
-            async for event in self.executor.stream(params, mcp_client):
+            async for event in self.executor.stream(params, mcp_client, token):
                 yield self._success(request_id, event)
 
         except A2AJsonRpcError as exc:
@@ -163,6 +165,7 @@ class A2AService:
         self,
         payload: A2AData,
         mcp_client: IduMcpClient,
+        token: str,
     ) -> A2AData:
         """
         Function handles single A2A JSON-RPC request.
@@ -178,7 +181,7 @@ class A2AService:
             self._validate_json_rpc(payload)
             method = payload.get("method")
             params = self._extract_params(payload)
-            result = await self._dispatch(method, params, mcp_client)
+            result = await self._dispatch(method, params, mcp_client, token)
             return self._success(request_id, result)
 
         except A2AJsonRpcError as exc:
@@ -191,6 +194,7 @@ class A2AService:
         method: str | None,
         params: A2AData,
         mcp_client: IduMcpClient,
+        token: str,
     ) -> A2AResponse:
         """
         Function dispatches A2A method to corresponding handler.
@@ -203,7 +207,7 @@ class A2AService:
         """
 
         if method in {"SendMessage", "message/send", "tasks/send"}:
-            task = await self.executor.execute(params, mcp_client)
+            task = await self.executor.execute(params, mcp_client, token)
             configuration = params.get("configuration") or {}
             return apply_history_length(task, configuration.get("historyLength"))
         if method in self.STREAMING_METHODS:

@@ -40,11 +40,12 @@ async def test_restriction_executor_disables_history_persistence():
     service = FakeRestrictionService()
     ex = RestrictionAgentExecutor(service, A2ATaskStore())
 
-    async for _ in ex.stream(_PARAMS, mcp_client=object()):
+    async for _ in ex.stream(_PARAMS, mcp_client=object(), token="user-token"):
         pass
 
     (call,) = service.calls
     assert call["persist_history"] is False
+    assert call["token"] == "user-token"
 
 
 async def test_provision_executor_disables_history_persistence():
@@ -52,9 +53,13 @@ async def test_provision_executor_disables_history_persistence():
     ex = ProvisionAgentExecutor(service, A2ATaskStore())
 
     async for _ in ex.stream(
-        _PARAMS, idu_mcp_client=object(), effects_mcp_client=object()
+        _PARAMS,
+        idu_mcp_client=object(),
+        effects_mcp_client=object(),
+        token="user-token",
     ):
         pass
 
     (call,) = service.calls
     assert call["persist_history"] is False
+    assert call["token"] == "user-token"

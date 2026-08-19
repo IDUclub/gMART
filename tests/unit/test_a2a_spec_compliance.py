@@ -187,7 +187,9 @@ def test_data_part_scenario_id_wins_over_text():
 async def test_user_echo_has_message_id():
     ex = _executor([{"type": "chunk", "content": {"text": "ok"}}])
     task = await ex.execute(
-        {"message": _message("scenario_id=1 build")}, mcp_client=object()
+        {"message": _message("scenario_id=1 build")},
+        mcp_client=object(),
+        token="user-token",
     )
     assert task["history"], "history must not be empty"
     for msg in task["history"]:
@@ -200,6 +202,7 @@ async def test_user_echo_preserves_incoming_message_id():
     task = await ex.execute(
         {"message": _message("scenario_id=1 build", messageId="client-123")},
         mcp_client=object(),
+        token="user-token",
     )
     assert task["history"][0]["messageId"] == "client-123"
 
@@ -213,6 +216,7 @@ async def test_task_id_is_threaded_through_as_request_id():
     await ex.execute(
         {"id": "task-77", "message": _message("scenario_id=1 build")},
         mcp_client=object(),
+        token="user-token",
     )
     assert fake.calls[0]["request_id"] == "task-77"
 
@@ -228,7 +232,9 @@ async def test_token_expired_event_surfaces_as_waiting_status():
         ]
     )
     task = await ex.execute(
-        {"message": _message("scenario_id=1 build")}, mcp_client=object()
+        {"message": _message("scenario_id=1 build")},
+        mcp_client=object(),
+        token="user-token",
     )
     warning_messages = [
         msg["parts"][0]["text"]
@@ -252,7 +258,9 @@ async def test_pipeline_suspended_event_surfaces_as_terminal_failed():
         ]
     )
     task = await ex.execute(
-        {"message": _message("scenario_id=1 build")}, mcp_client=object()
+        {"message": _message("scenario_id=1 build")},
+        mcp_client=object(),
+        token="user-token",
     )
     assert task["status"]["state"] == "failed"
     assert "приостановлено" in task["status"]["message"]["parts"][0]["text"]
@@ -295,6 +303,7 @@ async def test_service_response_uses_kind_discriminator():
             "params": {"message": _message("scenario_id=772 build")},
         },
         object(),
+        "user-token",
     )
     task = response["result"]
     # Every part across history / status.message / artifacts uses "kind".
@@ -325,6 +334,7 @@ async def test_missing_scenario_id_returns_minus_32602():
             "params": {"message": _message("build zone")},
         },
         object(),
+        "user-token",
     )
     assert "error" in response
     assert response["error"]["code"] == -32602
@@ -346,6 +356,7 @@ async def test_history_length_zero_drops_history():
             },
         },
         object(),
+        "user-token",
     )
     assert response["result"]["history"] == []
 
@@ -365,6 +376,7 @@ async def test_stream_invalid_params_emits_terminal_failed():
                 "params": {"message": _message("no scenario here")},
             },
             object(),
+            "user-token",
         )
     ]
     assert events, "stream must not be empty on error"
@@ -392,6 +404,7 @@ async def test_stream_happy_path_emits_completed_terminal():
                 "params": {"message": _message("scenario_id=1 build")},
             },
             object(),
+            "user-token",
         )
     ]
     assert events[0]["result"]["kind"] == "task"

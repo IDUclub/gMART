@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from fastapi.sse import EventSourceResponse
 
+from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.executors.sse_executors import stream_with_error_handling
 from src.agents.dependencies.dependencies import (
     get_effects_mcp_client,
@@ -27,6 +28,7 @@ provision_router = APIRouter(prefix="/provision", tags=["provision"])
 async def calculate_provision_effects(
     request: Request,
     user_request: Annotated[ProvisionRequestDTO, Depends(ProvisionRequestDTO)],
+    token: str = Depends(verify_bearer_token),
     idu_mcp_client: IduMcpClient = Depends(get_idu_mcp_client),
     effects_mcp_client: EffectsMcpClient = Depends(get_effects_mcp_client),
     provision_service: ProvisionService = Depends(get_provision_service),
@@ -40,6 +42,7 @@ async def calculate_provision_effects(
         rerun=False,
         idu_mcp_client=idu_mcp_client,
         effects_mcp_client=effects_mcp_client,
+        token=token,
         user_query=user_request.request,
         scenario_id=user_request.scenario_id,
         chat_id=user_request.chat_id,

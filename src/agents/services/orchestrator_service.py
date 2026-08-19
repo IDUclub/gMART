@@ -313,6 +313,7 @@ class OrchestratorService(BaseLlmService):
                 raise ValueError("restriction step requires scenario_id")
             return self.restriction_service.run_restriction_execution_pipline(
                 mcp_client=idu_mcp_client,
+                token=token,
                 temperature=temperature,
                 model=model,
                 user_query=user_query,
@@ -326,6 +327,7 @@ class OrchestratorService(BaseLlmService):
             return self.provision_service.run_provision_pipeline(
                 idu_mcp_client=idu_mcp_client,
                 effects_mcp_client=effects_mcp_client,
+                token=token,
                 model=model,
                 temperature=temperature,
                 user_query=user_query,

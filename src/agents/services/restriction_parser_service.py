@@ -89,6 +89,7 @@ class RestrictionParserService(BaseLlmService):
     async def run_restriction_execution_pipline(
         self,
         mcp_client: IduMcpClient,
+        token: str,
         temperature: float,
         model: str | None,
         user_query: str,
@@ -101,6 +102,7 @@ class RestrictionParserService(BaseLlmService):
 
         async for item in self._run_pipeline_entry(
             mcp_client=mcp_client,
+            token=token,
             temperature=temperature,
             model=model,
             user_query=user_query,
@@ -116,6 +118,7 @@ class RestrictionParserService(BaseLlmService):
     async def run_compliance_pipeline(
         self,
         mcp_client: IduMcpClient,
+        token: str,
         temperature: float,
         model: str | None,
         user_query: str,
@@ -129,6 +132,7 @@ class RestrictionParserService(BaseLlmService):
 
         async for item in self._run_pipeline_entry(
             mcp_client=mcp_client,
+            token=token,
             temperature=temperature,
             model=model,
             user_query=user_query,
@@ -144,6 +148,7 @@ class RestrictionParserService(BaseLlmService):
     async def _run_pipeline_entry(
         self,
         mcp_client: IduMcpClient,
+        token: str,
         temperature: float,
         model: str | None,
         user_query: str,
@@ -157,11 +162,9 @@ class RestrictionParserService(BaseLlmService):
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
         model = await self.resolve_model(model)
-        # Mutable container so the inner pipeline can update the token on
-        # refresh and the outer generator sees the latest value.
-        token_ref: list[str] = [
-            mcp_client.mcp_client.transport.auth.token.get_secret_value()
-        ]
+        # User context is passed explicitly. The MCP transport contains only
+        # dynamic M2M authentication and must never be inspected for a user JWT.
+        token_ref = [token]
         text_buffer: list[str] = []
         message_parts: list[
             TextPartRequest | StatusPartRequest | ToolCallPartRequest
@@ -212,7 +215,6 @@ class RestrictionParserService(BaseLlmService):
 
         if text_buffer:
             self._flush_text_buffer_to_parts(text_buffer, message_parts)
-        # Use token_ref[0]: may have been refreshed during pipeline execution.
         # A2A runs pass persist_history=False — no ChatStorage writes at all.
         if persist_history:
             self._schedule_add_message_parts_to_chat(
