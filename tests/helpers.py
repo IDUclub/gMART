@@ -107,6 +107,9 @@ class FakeDvdMcpClient:
                 document_names=kwargs.get("document_names"),
                 block=kwargs.get("block"),
                 types=kwargs.get("types"),
+                scenario_id=kwargs.get("scenario_id"),
+                include_shared=kwargs.get("include_shared"),
+                include_inherited=kwargs.get("include_inherited"),
             )
         )
         if self._hits_per_call is not None:
