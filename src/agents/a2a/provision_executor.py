@@ -40,6 +40,7 @@ class ProvisionAgentExecutor:
         params: A2AData,
         idu_mcp_client: IduMcpClient,
         effects_mcp_client: EffectsMcpClient,
+        token: str,
     ) -> A2AData:
         execution = self._prepare_execution(params)
         task = self.task_store.create_task(
@@ -49,7 +50,7 @@ class ProvisionAgentExecutor:
             execution["metadata"],
         )
         async for _ in self._run_pipeline(
-            execution, idu_mcp_client, effects_mcp_client
+            execution, idu_mcp_client, effects_mcp_client, token
         ):
             pass
         return self.task_store.get_task(task["id"]) or task
@@ -59,6 +60,7 @@ class ProvisionAgentExecutor:
         params: A2AData,
         idu_mcp_client: IduMcpClient,
         effects_mcp_client: EffectsMcpClient,
+        token: str,
     ) -> AsyncGenerator[A2AEventData, None]:
         execution = self._prepare_execution(params)
         task = self.task_store.create_task(
@@ -71,7 +73,7 @@ class ProvisionAgentExecutor:
         # (kind: "task"), per A2A 0.3 SendStreamingMessageSuccessResponse.
         yield task
         async for event in self._run_pipeline(
-            execution, idu_mcp_client, effects_mcp_client
+            execution, idu_mcp_client, effects_mcp_client, token
         ):
             yield event
 
@@ -80,6 +82,7 @@ class ProvisionAgentExecutor:
         execution: A2AData,
         idu_mcp_client: IduMcpClient,
         effects_mcp_client: EffectsMcpClient,
+        token: str,
     ) -> AsyncGenerator[A2AEventData, None]:
         task_id = execution["task_id"]
         context_id = execution["context_id"]
@@ -98,6 +101,7 @@ class ProvisionAgentExecutor:
             async for item in self.provision_service.run_provision_pipeline(
                 idu_mcp_client=idu_mcp_client,
                 effects_mcp_client=effects_mcp_client,
+                token=token,
                 temperature=execution["temperature"],
                 model=execution["model"],
                 user_query=execution["user_query"],

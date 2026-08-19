@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.sse import EventSourceResponse
 
+from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.dependencies import (
     get_a2a_service,
     get_idu_mcp_client,
@@ -49,13 +50,14 @@ async def _handle_restriction_a2a(
     payload: A2AJsonRpcPayloadDTO,
     a2a_service: A2AService,
     idu_mcp_client: IduMcpClient,
+    token: str,
 ):
     payload_data = _payload_to_plain_data(payload)
     if a2a_service.is_streaming_request(payload_data):
         return EventSourceResponse(
-            _stream_json_rpc_events(a2a_service, payload_data, idu_mcp_client),
+            _stream_json_rpc_events(a2a_service, payload_data, idu_mcp_client, token),
         )
-    return await a2a_service.handle_json_rpc(payload_data, idu_mcp_client)
+    return await a2a_service.handle_json_rpc(payload_data, idu_mcp_client, token)
 
 
 # ── Canonical endpoint ────────────────────────────────────────────────────────
@@ -69,6 +71,7 @@ async def handle_restriction_a2a_json_rpc(
     payload: A2AJsonRpcPayloadDTO = Body(...),
     a2a_service: A2AService = Depends(get_a2a_service),
     idu_mcp_client: IduMcpClient = Depends(get_idu_mcp_client),
+    token: str = Depends(verify_bearer_token),
 ):
     """
     Canonical A2A JSON-RPC endpoint for the restriction generation agent.
@@ -78,7 +81,7 @@ async def handle_restriction_a2a_json_rpc(
     ``tasks/sendSubscribe``) return an SSE stream; all other methods
     return a plain JSON response.
     """
-    return await _handle_restriction_a2a(payload, a2a_service, idu_mcp_client)
+    return await _handle_restriction_a2a(payload, a2a_service, idu_mcp_client, token)
 
 
 # ── Deprecated root-level endpoint ───────────────────────────────────────────
@@ -93,13 +96,14 @@ async def handle_a2a_json_rpc(
     payload: A2AJsonRpcPayloadDTO = Body(...),
     a2a_service: A2AService = Depends(get_a2a_service),
     idu_mcp_client: IduMcpClient = Depends(get_idu_mcp_client),
+    token: str = Depends(verify_bearer_token),
 ):
     """
     **Deprecated.** Use ``POST /restriction/a2a`` instead.
 
     Kept for backward compatibility. Will be removed in a future release.
     """
-    return await _handle_restriction_a2a(payload, a2a_service, idu_mcp_client)
+    return await _handle_restriction_a2a(payload, a2a_service, idu_mcp_client, token)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -109,8 +113,9 @@ async def _stream_json_rpc_events(
     a2a_service: A2AService,
     payload: Any,
     idu_mcp_client: IduMcpClient,
+    token: str,
 ):
-    async for event in a2a_service.stream_json_rpc(payload, idu_mcp_client):
+    async for event in a2a_service.stream_json_rpc(payload, idu_mcp_client, token):
         yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 

@@ -63,12 +63,13 @@ class ProvisionA2AService:
         payload: Any,
         idu_mcp_client: IduMcpClient,
         effects_mcp_client: EffectsMcpClient,
+        token: str,
     ) -> A2AResponse:
         if isinstance(payload, list):
             return [
                 (
                     await self._handle_single_json_rpc(
-                        item, idu_mcp_client, effects_mcp_client
+                        item, idu_mcp_client, effects_mcp_client, token
                     )
                     if isinstance(item, dict)
                     else self._error(None, A2AInvalidRequestError())
@@ -78,7 +79,7 @@ class ProvisionA2AService:
         if not isinstance(payload, dict):
             return self._error(None, A2AInvalidRequestError())
         return await self._handle_single_json_rpc(
-            payload, idu_mcp_client, effects_mcp_client
+            payload, idu_mcp_client, effects_mcp_client, token
         )
 
     async def stream_json_rpc(
@@ -86,6 +87,7 @@ class ProvisionA2AService:
         payload: Any,
         idu_mcp_client: IduMcpClient,
         effects_mcp_client: EffectsMcpClient,
+        token: str,
     ) -> AsyncGenerator[A2AData, None]:
         if not isinstance(payload, dict):
             yield self._error(None, A2AInvalidRequestError())
@@ -98,13 +100,13 @@ class ProvisionA2AService:
             params = self._extract_params(payload)
             if method not in self.STREAMING_METHODS:
                 result = await self._dispatch(
-                    method, params, idu_mcp_client, effects_mcp_client
+                    method, params, idu_mcp_client, effects_mcp_client, token
                 )
                 yield self._success(request_id, result)
                 return
 
             async for event in self.executor.stream(
-                params, idu_mcp_client, effects_mcp_client
+                params, idu_mcp_client, effects_mcp_client, token
             ):
                 yield self._success(request_id, event)
 
@@ -124,6 +126,7 @@ class ProvisionA2AService:
         payload: A2AData,
         idu_mcp_client: IduMcpClient,
         effects_mcp_client: EffectsMcpClient,
+        token: str,
     ) -> A2AData:
         request_id = payload.get("id")
         try:
@@ -131,7 +134,7 @@ class ProvisionA2AService:
             method = payload.get("method")
             params = self._extract_params(payload)
             result = await self._dispatch(
-                method, params, idu_mcp_client, effects_mcp_client
+                method, params, idu_mcp_client, effects_mcp_client, token
             )
             return self._success(request_id, result)
         except A2AJsonRpcError as exc:
@@ -145,10 +148,11 @@ class ProvisionA2AService:
         params: A2AData,
         idu_mcp_client: IduMcpClient,
         effects_mcp_client: EffectsMcpClient,
+        token: str,
     ) -> A2AResponse:
         if method in {"SendMessage", "message/send", "tasks/send"}:
             task = await self.executor.execute(
-                params, idu_mcp_client, effects_mcp_client
+                params, idu_mcp_client, effects_mcp_client, token
             )
             configuration = params.get("configuration") or {}
             return apply_history_length(task, configuration.get("historyLength"))

@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from fastapi.sse import EventSourceResponse
 
+from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.executors.sse_executors import stream_with_error_handling
 from src.agents.dependencies.dependencies import (
     get_idu_mcp_client,
@@ -23,6 +24,7 @@ compliance_router = APIRouter(prefix="/compliance", tags=["compliance"])
 async def check_compliance(
     request: Request,
     user_request: Annotated[RestrictionRequestDTO, Depends(RestrictionRequestDTO)],
+    token: str = Depends(verify_bearer_token),
     idu_mcp_client: IduMcpClient = Depends(get_idu_mcp_client),
     normgraph_mcp_client: NormGraphMcpClient | None = Depends(
         get_optional_normgraph_mcp_client
@@ -40,6 +42,7 @@ async def check_compliance(
         user_request.model,
         rerun=False,
         mcp_client=idu_mcp_client,
+        token=token,
         normgraph_mcp_client=normgraph_mcp_client,
         user_query=user_request.request,
         scenario_id=user_request.scenario_id,
