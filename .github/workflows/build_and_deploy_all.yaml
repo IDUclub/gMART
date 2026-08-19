@@ -77,6 +77,8 @@ jobs:
           OPENAI_THINK_MODE: ${{ vars.OPENAI_THINK_MODE }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
           SYSTEM_PASSWORD: ${{ secrets.SYSTEM_PASSWORD }}
+          AUTH_HELPER_URL: ${{ vars.AUTH_HELPER_URL }}
+          AUTH_HELPER_API_KEY: ${{ secrets.AUTH_HELPER_API_KEY }}
           SERVICE_AUTH_SERVER_URL: ${{ vars.SERVICE_AUTH_SERVER_URL }}
           SERVICE_AUTH_REALM: ${{ vars.SERVICE_AUTH_REALM }}
           SERVICE_AUTH_CLIENT_ID: ${{ vars.SERVICE_AUTH_CLIENT_ID }}
