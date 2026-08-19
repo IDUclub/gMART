@@ -1,4 +1,7 @@
 import type { Message, TableData } from "./types";
+// Explicit extension: this module is loaded directly by the node test runner,
+// which cannot resolve extensionless specifiers the way Vite does.
+import { uid } from "./uid.ts";
 
 export const CHAT_PAGE_SIZE = 40;
 export const MAX_CHAT_MESSAGES = 200;
@@ -94,7 +97,7 @@ export function appendSseExchange(
   chatId: string,
   current: Message[],
   exchange: SseExchange,
-  makeId: () => string = () => crypto.randomUUID(),
+  makeId: () => string = uid,
   now: () => string = () => new Date().toISOString(),
   limits: MessageWindowLimits = defaultLimits,
 ) {

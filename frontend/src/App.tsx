@@ -44,6 +44,7 @@ import {
   oldestServerSequence,
 } from "./chatWindow";
 import { buildMessageBlocks, normalizeMessages } from "./messageHistory";
+import { uid } from "./uid";
 import {
   authAvailable,
   authLogin,
@@ -590,7 +591,7 @@ export default function App() {
       return [
         ...completed,
         {
-          id: crypto.randomUUID(),
+          id: uid(),
           text,
           time: new Date().toLocaleTimeString("ru", {
             hour: "2-digit",
@@ -781,7 +782,7 @@ export default function App() {
         event.content;
       setLayers((v) =>
         appendLatestVisibleLayer(v, {
-          id: crypto.randomUUID(),
+          id: uid(),
           name: event.content?.name || `Слой ${v.length + 1}`,
           color: colors[v.length % colors.length],
           visible: true,
@@ -852,7 +853,7 @@ export default function App() {
       setLayers((current) => [
         ...current,
         ...collections.map((geojson, index) => ({
-          id: crypto.randomUUID(),
+          id: uid(),
           name: `Восстановленный слой ${current.length + index + 1}`,
           color: colors[(current.length + index) % colors.length],
           visible: true,
