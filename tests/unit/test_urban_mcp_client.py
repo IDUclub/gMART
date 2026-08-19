@@ -83,16 +83,16 @@ async def test_duplicate_tool_names_across_groups_fail_clearly():
         await client.load_tools()
 
 
-def test_update_token_recreates_every_authenticated_transport():
+def test_service_auth_object_is_preserved_for_every_transport():
     created = []
+    service_auth = object()
 
     def factory(url, auth):
         created.append((url, auth))
         return FakeTransport([])
 
-    client = UrbanMcpClient("https://urban.example", "old", client_factory=factory)
-    client.update_token("new")
+    UrbanMcpClient("https://urban.example", service_auth, client_factory=factory)
 
-    assert len(created) == len(URBAN_MCP_GROUPS) * 2
-    assert {auth for _, auth in created[-len(URBAN_MCP_GROUPS) :]} == {"new"}
+    assert len(created) == len(URBAN_MCP_GROUPS)
+    assert all(auth is service_auth for _, auth in created)
     assert all(url.endswith("/") for url, _ in created)

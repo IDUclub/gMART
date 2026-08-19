@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import time
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
@@ -22,17 +21,10 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPartRequest,
     ToolCallPayload,
 )
-from src.agents.common.exceptions.token_exceptions import (
-    PipelineSuspendedError,
-    TokenExpiredError,
-)
+from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient, UrbanMcpTool
 from src.agents.services.base_llm_service import BaseLlmService
-from src.agents.services.pipeline_state import (
-    TOKEN_REFRESH_TIMEOUT,
-    PipelineStateStore,
-    PipelineStatus,
-)
+from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.scenario_data_aggregate import (
     aggregate_result,
     bounded_public_observation_context,
@@ -1132,6 +1124,7 @@ class ScenarioDataService(BaseLlmService):
         *,
         retry_transient: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        del client, token_ref
         transient_retries = 0
         while True:
             if await self.state_store.is_cancelled(request_id):
@@ -1139,30 +1132,6 @@ class ScenarioDataService(BaseLlmService):
             try:
                 result.append(await asyncio.wait_for(operation(), timeout=60.0))
                 return
-            except TokenExpiredError:
-                await self.state_store.set_status(
-                    request_id, PipelineStatus.WAITING_TOKEN
-                )
-                yield self._token_expired(request_id)
-                wait_started = time.monotonic()
-                try:
-                    token = await asyncio.wait_for(
-                        self.state_store.wait_for_token(request_id),
-                        timeout=TOKEN_REFRESH_TIMEOUT,
-                    )
-                except asyncio.TimeoutError as exc:
-                    await self.state_store.set_status(
-                        request_id, PipelineStatus.SUSPENDED
-                    )
-                    yield self._pipeline_suspended(request_id)
-                    raise PipelineSuspendedError(request_id) from exc
-                finally:
-                    await self.state_store.add_token_wait(
-                        request_id, time.monotonic() - wait_started
-                    )
-                client.update_token(token)
-                token_ref[0] = token
-                await self.state_store.set_status(request_id, PipelineStatus.RUNNING)
             except Exception as exc:
                 if (
                     not retry_transient
