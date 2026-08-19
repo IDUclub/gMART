@@ -93,7 +93,6 @@ class UrbanMcpClient:
         client_factory: Callable[..., Any] = McpClient,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self._token = token
         self._client_factory = client_factory
         self._clients = clients or self._build_clients(token)
         missing = set(URBAN_MCP_GROUPS) - set(self._clients)
@@ -112,12 +111,6 @@ class UrbanMcpClient:
             group: self._client_factory(self.endpoint_url(group), **auth)
             for group in URBAN_MCP_GROUPS
         }
-
-    def update_token(self, new_token: str) -> None:
-        if not isinstance(self._token, str):
-            return
-        self._token = new_token
-        self._clients = self._build_clients(new_token)
 
     async def load_tools(self) -> list[UrbanMcpTool]:
         async def load_group(group: str) -> tuple[str, list[Any]]:

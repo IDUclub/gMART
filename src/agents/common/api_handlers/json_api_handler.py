@@ -79,6 +79,16 @@ class JsonApiHandler:
         if response.status == 401:
             info = await response.json()
             logger.warning(info)
+            if self.service_auth is not None:
+                raise DownstreamServiceError(
+                    service=self.base_url,
+                    downstream_status=response.status,
+                    message=(
+                        f"Service authentication rejected by {self.base_url}; "
+                        "the M2M client owns token refresh"
+                    ),
+                    error_input=info,
+                )
             # TODO revise to more strict rule
             if info.get("message") == "Token expired.":
                 raise TokenExpiredError

@@ -23,15 +23,11 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
-from src.agents.common.exceptions.token_exceptions import (
-    PipelineSuspendedError,
-    TokenExpiredError,
-)
+from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.pipeline_state import (
     PIPELINE_TTL,
-    TOKEN_REFRESH_TIMEOUT,
     PipelineStateStore,
     PipelineStatus,
     PipelineStep,
@@ -917,38 +913,11 @@ class ProvisionService(BaseLlmService):
         step_fn: Callable,
         result: list,
     ) -> AsyncGenerator[dict, None]:
-        while True:
-            try:
-                result.append(await step_fn())
-                return
-            except TokenExpiredError:
-                logger.warning(
-                    f"Token expired for request_id={request_id}, waiting for refresh"
-                )
-                yield self._token_expired_event(request_id)
-                await self.state_store.set_status(
-                    request_id, PipelineStatus.WAITING_TOKEN
-                )
-                try:
-                    new_token = await asyncio.wait_for(
-                        self.state_store.wait_for_token(request_id),
-                        timeout=TOKEN_REFRESH_TIMEOUT,
-                    )
-                    idu_mcp_client.update_token(new_token)
-                    effects_mcp_client.update_token(new_token)
-                    token_ref[0] = new_token
-                    await self.state_store.set_status(
-                        request_id, PipelineStatus.RUNNING
-                    )
-                    logger.info(
-                        f"Token refreshed for request_id={request_id}, retrying"
-                    )
-                except asyncio.TimeoutError:
-                    await self.state_store.set_status(
-                        request_id, PipelineStatus.SUSPENDED
-                    )
-                    yield self._pipeline_suspended_event(request_id)
-                    raise PipelineSuspendedError(request_id)
+        """Execute a step without replacing the clients' M2M credentials."""
+        del request_id, idu_mcp_client, effects_mcp_client, token_ref
+        result.append(await step_fn())
+        if False:  # pragma: no cover
+            yield {}
 
     def _buf(self, request_id: str, event: dict) -> dict:
         asyncio.create_task(self.state_store.buffer_event(request_id, event))

@@ -162,6 +162,17 @@ async def test_get_401_token_expired():
         await _handler().get("/v1/x", session=session)
 
 
+async def test_service_auth_401_is_downstream_failure_not_user_token_refresh():
+    session = FakeSession([FakeResponse(401, json_body={"message": "Token expired."})])
+    handler = JsonApiHandler("http://urban", service_auth=FakeServiceAuth())
+
+    with pytest.raises(DownstreamServiceError) as exc_info:
+        await handler.get("/v1/x", session=session)
+
+    assert exc_info.value.downstream_status == 401
+    assert exc_info.value.status_code == 502
+
+
 async def test_get_401_other_message_unauthorized():
     session = FakeSession([FakeResponse(401, json_body={"message": "nope"})])
     with pytest.raises(AgentsUnauthorizedException):

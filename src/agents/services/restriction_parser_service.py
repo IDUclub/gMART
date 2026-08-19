@@ -22,10 +22,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
-from src.agents.common.exceptions.token_exceptions import (
-    PipelineSuspendedError,
-    TokenExpiredError,
-)
+from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.normgraph_restriction_retriever import (
@@ -33,7 +30,6 @@ from src.agents.services.normgraph_restriction_retriever import (
 )
 from src.agents.services.pipeline_state import (
     PIPELINE_TTL,
-    TOKEN_REFRESH_TIMEOUT,
     PipelineStateStore,
     PipelineStatus,
     PipelineStep,
@@ -622,54 +618,17 @@ class RestrictionParserService(BaseLlmService):
         step_fn: Callable,
         result: list,
     ) -> AsyncGenerator[dict, None]:
-        """
-        Async-generator that executes any pipeline step with automatic
-        token-refresh on ``TokenExpiredError``.
+        """Execute a step without replacing the pipeline's M2M credentials.
 
-        Works for both MCP tool calls and HTTP API calls (chat storage, etc.)
-        — the caller must capture ``mcp_client`` and ``token_ref[0]`` from the
-        enclosing scope inside the ``step_fn`` lambda so they see the refreshed
-        values on retry.
-
-        Yields ``token_expired`` events while waiting for a new token.
-        On success, appends the result to ``result``.
-        On timeout, sets pipeline status to SUSPENDED, yields a
-        ``pipeline_suspended`` event, and raises ``PipelineSuspendedError``.
+        ``mcp_client`` and ``token_ref`` remain in the signature for call-site
+        compatibility.  Authentication refresh belongs to ``ServiceTokenAuth``;
+        a downstream 401 must surface as a service-auth failure instead of asking
+        the browser for a new user JWT.
         """
-        while True:
-            try:
-                result.append(await step_fn())
-                return
-            except TokenExpiredError:
-                logger.warning(
-                    f"Token expired for request_id={request_id}, waiting for refresh"
-                )
-                yield self._token_expired_event(request_id)
-                await self.state_store.set_status(
-                    request_id, PipelineStatus.WAITING_TOKEN
-                )
-                try:
-                    new_token = await asyncio.wait_for(
-                        self.state_store.wait_for_token(request_id),
-                        timeout=TOKEN_REFRESH_TIMEOUT,
-                    )
-                    mcp_client.update_token(new_token)
-                    token_ref[0] = new_token
-                    await self.state_store.set_status(
-                        request_id, PipelineStatus.RUNNING
-                    )
-                    logger.info(
-                        f"Token refreshed for request_id={request_id}, retrying step"
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        f"Token refresh timed out for request_id={request_id}, suspending"
-                    )
-                    await self.state_store.set_status(
-                        request_id, PipelineStatus.SUSPENDED
-                    )
-                    yield self._pipeline_suspended_event(request_id)
-                    raise PipelineSuspendedError(request_id)
+        del request_id, mcp_client, token_ref
+        result.append(await step_fn())
+        if False:  # pragma: no cover
+            yield {}
 
     def _buf(self, request_id: str, event: dict) -> dict:
         """Fire-and-forget: buffer the event to Redis and return it for yielding."""
