@@ -1,4 +1,13 @@
-import type { Chat, ChatSummary, Settings, StreamEvent } from "./types";
+import type {
+  Chat,
+  ChatSummary,
+  Settings,
+  StreamEvent,
+  UserDocumentDeleteResult,
+  UserDocumentJobStatus,
+  UserDocumentList,
+  UserDocumentUpload,
+} from "./types";
 
 export async function request<T>(
   base: string,
@@ -26,11 +35,11 @@ export async function request<T>(
   return response.json();
 }
 
-export async function readSse(
+export async function readSse<T = StreamEvent>(
   url: URL,
   token: string,
   signal: AbortSignal,
-  onEvent: (event: StreamEvent) => void,
+  onEvent: (event: T) => void,
 ) {
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: "text/event-stream" },
@@ -150,4 +159,158 @@ export async function authLogin(
     );
   }
   return response.json();
+}
+
+export function userDocumentScopeParams(
+  scenario?: string,
+  project?: string,
+): URLSearchParams {
+  const query = new URLSearchParams();
+  if (scenario?.trim()) query.set("scenario_id", scenario.trim());
+  if (project?.trim()) query.set("project_id", project.trim());
+  return query;
+}
+
+export function userDocumentPath(name: string) {
+  return `/documents/user-documents/${encodeURIComponent(name)}`;
+}
+
+export function listUserDocuments(
+  settings: Settings,
+  token: string,
+  scenario?: string,
+  project?: string,
+) {
+  const query = userDocumentScopeParams(scenario, project);
+  return request<UserDocumentList>(
+    settings.agentsUrl,
+    `/documents/user-documents?${query}`,
+    token,
+  );
+}
+
+export async function uploadUserDocument(
+  settings: Settings,
+  token: string,
+  payload: {
+    file: File;
+    scenario?: string;
+    project?: string;
+    name?: string;
+    version?: string;
+  },
+  onProgress?: (progress: number) => void,
+): Promise<UserDocumentUpload> {
+  const form = new FormData();
+  form.set("file", payload.file);
+  if (payload.scenario?.trim())
+    form.set("scenario_id", payload.scenario.trim());
+  if (payload.project?.trim()) form.set("project_id", payload.project.trim());
+  if (payload.name?.trim()) form.set("name", payload.name.trim());
+  if (payload.version?.trim()) form.set("version", payload.version.trim());
+
+  const url = new URL(
+    "documents/user-documents",
+    settings.agentsUrl.replace(/\/+$/, "") + "/",
+  );
+  return sendUserDocumentFile(url, "POST", token, form, onProgress);
+}
+
+export async function updateUserDocument(
+  settings: Settings,
+  token: string,
+  name: string,
+  payload: {
+    file: File;
+    scenario?: string;
+    project?: string;
+    version?: string;
+  },
+  onProgress?: (progress: number) => void,
+): Promise<UserDocumentUpload> {
+  const form = new FormData();
+  form.set("file", payload.file);
+  if (payload.scenario?.trim())
+    form.set("scenario_id", payload.scenario.trim());
+  if (payload.project?.trim()) form.set("project_id", payload.project.trim());
+  if (payload.version?.trim()) form.set("version", payload.version.trim());
+
+  const url = new URL(
+    userDocumentPath(name).replace(/^\//, ""),
+    settings.agentsUrl.replace(/\/+$/, "") + "/",
+  );
+  return sendUserDocumentFile(url, "PATCH", token, form, onProgress);
+}
+
+function sendUserDocumentFile(
+  url: URL,
+  method: "POST" | "PATCH",
+  token: string,
+  form: FormData,
+  onProgress?: (progress: number) => void,
+): Promise<UserDocumentUpload> {
+  return new Promise<UserDocumentUpload>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.responseType = "json";
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress?.(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Сеть недоступна во время загрузки"));
+    xhr.onabort = () =>
+      reject(new DOMException("Загрузка отменена", "AbortError"));
+    xhr.onload = () => {
+      const body = xhr.response;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress?.(100);
+        resolve(body as UserDocumentUpload);
+        return;
+      }
+      reject(
+        new Error(
+          body?.detail?.message ??
+            body?.detail ??
+            body?.message ??
+            `Ошибка обработки документа: ${xhr.status}`,
+        ),
+      );
+    };
+    xhr.send(form);
+  });
+}
+
+export function deleteUserDocument(
+  settings: Settings,
+  token: string,
+  name: string,
+  scenario?: string,
+  project?: string,
+  version?: string,
+) {
+  const query = userDocumentScopeParams(scenario, project);
+  if (version?.trim()) query.set("version", version.trim());
+  const suffix = query.size ? `?${query}` : "";
+  return request<UserDocumentDeleteResult>(
+    settings.agentsUrl,
+    `${userDocumentPath(name)}${suffix}`,
+    token,
+    { method: "DELETE" },
+  );
+}
+
+export function readUserDocumentJob(
+  settings: Settings,
+  token: string,
+  jobId: string,
+  signal: AbortSignal,
+  onStatus: (status: UserDocumentJobStatus) => void,
+) {
+  const url = new URL(
+    `documents/user-documents/jobs/${encodeURIComponent(jobId)}/stream`,
+    settings.agentsUrl.replace(/\/+$/, "") + "/",
+  );
+  return readSse<UserDocumentJobStatus>(url, token, signal, onStatus);
 }

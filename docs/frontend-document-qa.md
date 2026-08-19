@@ -4,9 +4,40 @@
 городское планирование): извлекает фрагменты из **IDU_DVD** (векторная БД документов, через MCP
 по `DVD_MCP_SERVER`) и формирует ответ, обоснованный источниками.
 
+Тестовый UI также позволяет пользователю загрузить собственный документ в индекс проекта.
+REST-адрес IDU_DVD задаётся через `DVD_API_URL`; если переменная отсутствует, gMART выводит его
+из `DVD_MCP_SERVER`, удаляя завершающий `/mcp`.
+
 Общие механики — авторизация (`Authorization: Bearer <token>`), формат SSE, переподключение по
 `request_id` — те же, что в [frontend-service.md](frontend-service.md). Ниже только специфика
 этого агента.
+
+## Пользовательские документы
+
+- `POST /documents/user-documents` — multipart upload. Поля: `file`, необязательные `name`,
+  `version`, `project_id`, `scenario_id`; требуется хотя бы `project_id` или `scenario_id`.
+  Если передан только сценарий, gMART получает проект через Urban API.
+- `GET /documents/user-documents?scenario_id=...&project_id=...` — список документов текущего
+  пользователя в выбранном проекте.
+- `PATCH /documents/user-documents/{name}` — multipart-обновление существующего документа.
+  Поля: `file`, необязательные `version`, `project_id`, `scenario_id`; ответ `202` содержит новый
+  `job_id`, прогресс которого читается тем же SSE-методом.
+- `DELETE /documents/user-documents/{name}?scenario_id=...&project_id=...` — удаление документа и
+  всех его версий. Необязательный `version` ограничивает удаление одной версией.
+- `GET /documents/user-documents/jobs/{job_id}/stream` — SSE-снимки прогресса загрузки и
+  индексации. Поток завершается при `status=done` или `status=error`.
+
+Ответ upload содержит `job_id`. Клиент сначала показывает сетевую передачу multipart-файла
+как этап 0–10%, затем подключается к SSE. Снимок содержит `stage`, `phase`,
+`stage_index` / `stage_total`, `task_progress` для текущего этапа и `overall_progress` для всего
+пайплайна. Этапы IDU_DVD: `structure-markup`, `type-tagging`, `hierarchy`, `identity`,
+`references`, `embeddings`, `indexing`.
+
+gMART не пересылает пользовательский bearer-token в IDU_DVD напрямую: вызов выполняется с
+service-token и заголовком `X-User-Id`, извлечённым из уже проверенного JWT. При запросе
+`GET /documents/qa/stream?...&scenario_id=...` тот же `scenario_id` передаётся в MCP
+`search_texts` / `search_tables` / `search_all`; поэтому поиск объединяет общую нормативную базу
+и пользовательский индекс проекта. Без `scenario_id` агент продолжает работать только по общей базе.
 
 ## Как работает
 

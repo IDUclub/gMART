@@ -10,7 +10,7 @@
     "preview": "vite preview --host 0.0.0.0 --base /ui/"
   },
   "dependencies": {
-    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/outfit": "^5.3.0",
     "@gsap/react": "^2.1.2",
     "@phosphor-icons/react": "^2.1.10",
     "@vitejs/plugin-react": "^5.0.0",
