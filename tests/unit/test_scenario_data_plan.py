@@ -12,6 +12,7 @@ from src.agents.services.scenario_data_mapping import (
     context_mapping_snapshots,
     enrich_acquisition_mappings,
     ensure_entity_retrieval_outputs,
+    mapping_need_is_resolved,
     mapping_snapshot,
 )
 from src.agents.services.scenario_data_plan_builder import ScenarioDataPlanBuilder
@@ -181,6 +182,64 @@ def test_unproven_named_type_is_resolved_against_both_urban_type_domains():
         ("physical_object_type", "GetPhysicalObjectTypes", {}),
         ("service_type", "GetServiceTypes", {}),
     ]
+    assert [call.need.values for call in calls] == [["school"], ["school"]]
+
+
+def test_named_type_mapping_scans_past_first_hundred_dictionary_rows():
+    acquisition = AcquisitionPlan(
+        objective="Показать детские сады на территории проекта",
+        requirements=[
+            DataRequirement(
+                requirement_id="get_kindergartens",
+                description="Получить детские сады",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="physical_object_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=["Детские сады"],
+                    )
+                ],
+            )
+        ],
+    )
+    physical_types = UrbanMcpTool(
+        group="dictionaries",
+        name="GetPhysicalObjectTypes",
+        title="Physical object types",
+        description="Physical object type dictionary",
+        input_schema={"type": "object", "properties": {}},
+        tags=(),
+    )
+    service_types = UrbanMcpTool(
+        group="dictionaries",
+        name="GetServiceTypes",
+        title="Service types",
+        description="Service type dictionary",
+        input_schema={"type": "object", "properties": {}},
+        tags=(),
+    )
+
+    calls = UrbanMappingResolver().plan_calls(
+        acquisition, [physical_types, service_types], 772, project_id=604
+    )
+    service_call = next(call for call in calls if call.need.domain == "service_type")
+    service_catalog = [
+        {"id": index, "name": f"Сервисный тип {index}"} for index in range(100)
+    ] + [{"id": 121, "name": "Детский сад"}]
+
+    snapshot = mapping_snapshot(service_call, service_catalog)
+
+    assert snapshot["requested_values"] == ["Детские сады"]
+    assert snapshot["matches"] == [{"id": 121, "name": "Детский сад"}]
+    enriched = enrich_acquisition_mappings(
+        acquisition,
+        "Показать детские сады на территории проекта",
+        [snapshot],
+    )
+    assert len(enriched.requirements[0].mapping_needs) == 1
+    resolved_need = enriched.requirements[0].mapping_needs[0]
+    assert resolved_need.domain == "service_type"
+    assert mapping_need_is_resolved(resolved_need, [snapshot])
 
 
 def test_residential_buildings_recover_when_planner_drops_mapping_needs():

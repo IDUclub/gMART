@@ -602,7 +602,10 @@ def _lookup_needs(need: MappingNeed) -> list[MappingNeed]:
     if need.direction != MappingDirection.NAME_TO_ID or domain not in _TYPE_DOMAINS:
         return [need]
     return [
-        need.model_copy(update={"domain": candidate, "values": []})
+        # Keep the requested names as evidence even when the selected dictionary
+        # cannot filter by name and must be fetched in full.  mapping_snapshot()
+        # uses them to scan the complete result before applying its 100-match cap.
+        need.model_copy(update={"domain": candidate})
         for candidate in _TYPE_DOMAINS
     ]
 
