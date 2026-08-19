@@ -210,6 +210,7 @@ class DvdRagService(BaseLlmService):
             history,
             collected,
             request_id,
+            scenario_id,
         ):
             yield event
 
@@ -231,6 +232,7 @@ class DvdRagService(BaseLlmService):
         history: list[dict],
         collected: dict[str, Any],
         request_id: str,
+        scenario_id: int | None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         checkpoint = await self.state_store.get_checkpoint(request_id)
         progress = checkpoint.get(_QA_PROGRESS) or {}
@@ -288,6 +290,10 @@ class DvdRagService(BaseLlmService):
                 search_args["block"] = plan.block
             if plan.types:
                 search_args["types"] = plan.types
+            if scenario_id is not None:
+                search_args["scenario_id"] = str(scenario_id)
+                search_args["include_shared"] = True
+                search_args["include_inherited"] = True
             search_result = await dvd_mcp_client.search(
                 plan.search_query,
                 kind=plan.kind,
@@ -296,6 +302,9 @@ class DvdRagService(BaseLlmService):
                 document_names=plan.document_names,
                 block=plan.block,
                 types=plan.types,
+                scenario_id=scenario_id,
+                include_shared=True,
+                include_inherited=True,
             )
             hits = search_result.get("hits") or []
 

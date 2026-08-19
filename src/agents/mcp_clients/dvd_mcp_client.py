@@ -50,6 +50,10 @@ class DvdMcpClient(BaseMcpClient):
         document_names: list[str] | None = None,
         block: str | None = None,
         types: list[str] | None = None,
+        project_id: str | int | None = None,
+        scenario_id: str | int | None = None,
+        include_shared: bool = True,
+        include_inherited: bool = True,
     ) -> dict[str, Any]:
         """
         Run a vector search against the IDU_DVD MCP server.
@@ -64,6 +68,8 @@ class DvdMcpClient(BaseMcpClient):
             document_names (list[str] | None): Optional filter to any of these document names.
             block (str | None): Optional structural block filter (``main`` / ``amendment``).
             types (list[str] | None): Optional structural level filter (chapter/clause/table/...).
+            project_id (str | int | None): User-document project scope.
+            scenario_id (str | int | None): User-document scenario scope.
         Returns:
             dict[str, Any]: ``{"count": int, "hits": list[dict]}`` (see IDU_DVD SearchResponse).
         """
@@ -86,6 +92,13 @@ class DvdMcpClient(BaseMcpClient):
             arguments["block"] = block
         if types:
             arguments["types"] = types
+        if project_id is not None:
+            arguments["project_id"] = str(project_id)
+        if scenario_id is not None:
+            arguments["scenario_id"] = str(scenario_id)
+        if project_id is not None or scenario_id is not None:
+            arguments["include_shared"] = include_shared
+            arguments["include_inherited"] = include_inherited
         result = await self.execute_tool(tool_name, arguments)
         return self._normalize(result)
 

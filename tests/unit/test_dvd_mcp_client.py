@@ -54,6 +54,16 @@ async def test_search_includes_structural_filters():
     assert args["types"] == ["clause", "table"]
 
 
+async def test_search_includes_user_index_scope():
+    c = _client()
+    c.execute_tool = AsyncMock(return_value={"hits": []})
+    await c.search("q", scenario_id=772)
+    _, args = c.execute_tool.await_args.args
+    assert args["scenario_id"] == "772"
+    assert args["include_shared"] is True
+    assert args["include_inherited"] is True
+
+
 async def test_search_omits_empty_filters():
     c = _client()
     c.execute_tool = AsyncMock(return_value={"hits": []})

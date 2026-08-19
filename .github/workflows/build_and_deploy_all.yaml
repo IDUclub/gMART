@@ -69,6 +69,7 @@ jobs:
           CHAT_STORAGE: ${{ vars.CHAT_STORAGE }}
           URBAN_API_URL: ${{ vars.URBAN_API_URL }}
           DVD_MCP_SERVER: ${{ vars.DVD_MCP_SERVER }}
+          DVD_API_URL: ${{ vars.DVD_API_URL }}
           NORM_GRAPH_MCP_SERVER: ${{ vars.NORM_GRAPH_MCP_SERVER }}
           URBAN_MCP_SERVER: ${{ vars.URBAN_MCP_SERVER }}
           LLM_BACKEND: ${{ vars.LLM_BACKEND }}

@@ -34,6 +34,7 @@ import { createPortal } from "react-dom";
 import remarkGfm from "remark-gfm";
 import MapPanel from "./MapPanel";
 import McpConsole from "./McpConsole";
+import DocumentLibrary from "./DocumentLibrary";
 import { reusableChatId } from "./agentSession";
 import { appendLatestVisibleLayer } from "./layerState";
 import {
@@ -1216,6 +1217,15 @@ export default function App() {
                     </>
                   )}
                 </div>
+                {agentId === "documents" && (
+                  <DocumentLibrary
+                    settings={settings}
+                    token={token}
+                    scenario={scenario}
+                    project={project}
+                    getToken={freshToken}
+                  />
+                )}
                 <div className="composer">
                   <textarea
                     value={query}
@@ -1674,7 +1684,7 @@ function Welcome({
           <AgentGlyph id={agent.id} />
         </div>
         <p className="welcome-kicker">{agent.label} готов к работе</p>
-        <h2>
+        <h2 className="max-w-6xl">
           Исследуйте город <span className="title-map" aria-hidden="true" />
           через данные
         </h2>

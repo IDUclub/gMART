@@ -1,6 +1,7 @@
 from fastapi import Depends
 from idu_service_auth import KeycloakTokenClient
 
+from src.agents.api_clients.dvd_api_client import DvdApiClient
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.config.app_config import AgentsAppConfig
@@ -156,6 +157,19 @@ async def get_dvd_mcp_client(
         mcp_url, get_service_auth(), user_id_from_jwt(token)
     )
     return DvdMcpClient(client, mcp_url=mcp_url)
+
+
+async def get_dvd_api_client(
+    token: str = Depends(verify_bearer_token),
+) -> DvdApiClient:
+    """Return a user-scoped REST client for IDU_DVD uploads and listings."""
+
+    api_url: str | None = app_deps["app_config"].DVD_API_URL
+    if not api_url:
+        raise ValueError(
+            "DVD_API_URL is not configured and could not be derived from DVD_MCP_SERVER"
+        )
+    return DvdApiClient(api_url, get_service_auth(), user_id_from_jwt(token))
 
 
 def get_dvd_rag_service() -> DvdRagService:

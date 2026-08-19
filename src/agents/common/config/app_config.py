@@ -10,6 +10,7 @@ class AgentsAppConfig:
         IDU_MCP_URL (str): IDU MCP URL.
         EFFECTS_MCP_URL (str): Object Effects MCP URL.
         DVD_MCP_URL (str | None): IDU_DVD document vector-DB MCP URL (optional).
+        DVD_API_URL (str | None): IDU_DVD REST URL used for user-document uploads.
         NORM_GRAPH_MCP_URL (str | None): NormGraph normative-restrictions graph MCP URL (optional).
         URBAN_MCP_URL (str | None): Base URL of the external Urban MCP server.
         CHAT_STORAGE_URL (str): Chat Storage service URL.
@@ -27,6 +28,7 @@ class AgentsAppConfig:
     IDU_MCP_URL: str
     EFFECTS_MCP_URL: str
     DVD_MCP_URL: str | None
+    DVD_API_URL: str | None
     NORM_GRAPH_MCP_URL: str | None
     URBAN_MCP_URL: str | None
     CHAT_STORAGE_URL: str
@@ -44,6 +46,7 @@ class AgentsAppConfig:
         chat_storage_url: str,
         urban_api_url: str,
         dvd_mcp_url: str | None = None,
+        dvd_api_url: str | None = None,
         norm_graph_mcp_url: str | None = None,
         urban_mcp_url: str | None = None,
         redis_url: str = "redis://localhost:6379",
@@ -71,6 +74,15 @@ class AgentsAppConfig:
         # existing deployments without DVD_MCP_SERVER still start; the DVD endpoints
         # raise a clear error if it is unset (see dependencies.get_dvd_mcp_client).
         self.DVD_MCP_URL = dvd_mcp_url or None
+        clean_dvd_mcp_url = dvd_mcp_url.rstrip("/") if dvd_mcp_url else ""
+        derived_dvd_api_url = (
+            clean_dvd_mcp_url[: -len("/mcp")]
+            if clean_dvd_mcp_url.endswith("/mcp")
+            else clean_dvd_mcp_url
+        )
+        self.DVD_API_URL = (
+            dvd_api_url.rstrip("/") if dvd_api_url else derived_dvd_api_url or None
+        )
         # Optional: only required by the norms-QA (NormGraph graph-RAG) agent. Kept optional
         # so existing deployments without NORM_GRAPH_MCP_SERVER still start; the /norms
         # endpoints raise a clear error if it is unset (see dependencies.get_normgraph_mcp_client).
@@ -115,6 +127,7 @@ class AgentsAppConfig:
             "IDU_MCP_URL": self.IDU_MCP_URL,
             "EFFECTS_MCP_URL": self.EFFECTS_MCP_URL,
             "DVD_MCP_URL": self.DVD_MCP_URL or "",
+            "DVD_API_URL": self.DVD_API_URL or "",
             "NORM_GRAPH_MCP_URL": self.NORM_GRAPH_MCP_URL or "",
             "URBAN_MCP_URL": self.URBAN_MCP_URL or "",
             "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,
