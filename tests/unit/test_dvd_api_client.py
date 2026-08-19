@@ -118,9 +118,7 @@ async def test_update_forwards_encoded_name_file_and_scope():
     assert result == {"job_id": "job-2", "status": "queued"}
     method, url, kwargs = FakeAsyncClient.calls[0]
     assert method == "PATCH"
-    assert url.endswith(
-        "/user-documents/%D0%9C%D0%BE%D0%B9%20%D0%B4%D0%BE%D0%BA"
-    )
+    assert url.endswith("/user-documents/%D0%9C%D0%BE%D0%B9%20%D0%B4%D0%BE%D0%BA")
     assert kwargs["params"] == {"project_id": "42", "scenario_id": "772"}
     assert kwargs["data"] == {"version": "2"}
     assert kwargs["files"]["file"][0] == "replacement.docx"
