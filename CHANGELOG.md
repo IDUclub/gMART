@@ -1,3 +1,10 @@
+## v0.17.2 (2026-08-19)
+
+### Fix
+
+- updated think parametres (#144) (#145)
+- updated think parametres (#144)
+
 ## v0.17.1 (2026-08-19)
 
 ### Fix
