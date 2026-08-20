@@ -26,7 +26,7 @@ class UrbanApiTool:
         names: list[str],
         object_type: ObjectTypeEnum | str,
         token: str,
-    ) -> dict[str, FeatureCollection]:
+    ) -> dict[str, dict]:
         """
         Method for getting all services with given names
         Args:
@@ -58,10 +58,18 @@ class UrbanApiTool:
                 )
                 raise ValueError("Unsupported object type")
         existing_names = list(object_name_id)
-        return {
-            existing_names[i]: FeatureCollection(**objects[i])
-            for i in range(len(existing_names))
-        }
+        result: dict[str, dict] = {}
+        for index, name in enumerate(existing_names):
+            collection = FeatureCollection(**objects[index]).model_dump(mode="json")
+            collection["meta"] = {
+                "complete": True,
+                "truncated": False,
+                "revision": (
+                    f"scenario:{scenario_id}:{str(object_type).lower()}:{object_name_id[name]}"
+                ),
+            }
+            result[name] = collection
+        return result
 
     async def get_entity_id_by_name(
         self,
@@ -81,3 +89,63 @@ class UrbanApiTool:
             [service_name.capitalize()], token
         )
         return service_name_id.get(service_name.capitalize())
+
+    async def get_functional_zones(
+        self,
+        scenario_id: int,
+        token: str,
+        *,
+        source: str | None = None,
+        year: int | None = None,
+        zone_type_names: list[str] | None = None,
+    ) -> dict[str, dict]:
+        """Resolve a source/year and return a bounded functional-zone layer."""
+
+        sources = await self.client.get_functional_zone_sources(scenario_id, token)
+        candidates = [
+            item
+            for item in sources
+            if (
+                source is None
+                or str(item.get("source") or item.get("name", "")).casefold()
+                == source.casefold()
+            )
+            and (year is None or int(item.get("year", -1)) == year)
+        ]
+        if not candidates:
+            return {}
+        selected = max(candidates, key=lambda item: int(item.get("year", 0)))
+        selected_source = str(selected.get("source") or selected.get("name") or "")
+        selected_year = int(selected["year"])
+        collection = await self.client.get_functional_zones(
+            scenario_id,
+            source=selected_source,
+            year=selected_year,
+            token=token,
+        )
+        requested = {name.casefold() for name in (zone_type_names or [])}
+        if requested:
+
+            def zone_type_name(feature: dict) -> str:
+                properties = feature.get("properties") or {}
+                value = properties.get("functional_zone_type")
+                if isinstance(value, dict):
+                    value = value.get("name")
+                return str(value or properties.get("functional_zone_type_name") or "")
+
+            collection = {
+                **collection,
+                "features": [
+                    feature
+                    for feature in collection.get("features", [])
+                    if zone_type_name(feature).casefold() in requested
+                ],
+            }
+        collection["meta"] = {
+            "complete": True,
+            "truncated": False,
+            "source": selected_source,
+            "year": selected_year,
+            "revision": f"scenario:{scenario_id}:functional_zones:{selected_source}:{selected_year}",
+        }
+        return {"functional_zones": collection}

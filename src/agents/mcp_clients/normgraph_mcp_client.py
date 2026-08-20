@@ -170,6 +170,33 @@ class NormGraphMcpClient(BaseMcpClient):
         result.setdefault("count", len(conflicts))
         return result
 
+    async def pending_check_plans(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return automatically generated plans waiting for expert review."""
+
+        result = await self.execute_tool("pending_check_plans", {"limit": int(limit)})
+        return [self._to_dict(item) for item in (result or [])]
+
+    async def review_check_plan(
+        self,
+        restriction_id: str,
+        action: str,
+        *,
+        plan: dict[str, Any] | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Approve, reject or replace a CheckPlan through NormGraph MCP."""
+
+        arguments: dict[str, Any] = {
+            "restriction_id": restriction_id,
+            "action": action,
+        }
+        if plan is not None:
+            arguments["plan"] = plan
+        if reason:
+            arguments["reason"] = reason
+        result = await self.execute_tool("review_check_plan", arguments)
+        return self._to_dict(result) if result is not None else None
+
     @staticmethod
     def _filters(**kwargs: Any) -> dict[str, Any]:
         """Drop ``None``/empty-list values so the MCP call only carries active filters."""

@@ -4,6 +4,7 @@ from geojson_pydantic import FeatureCollection
 from pydantic import BaseModel
 
 from src.agents.common.exceptions.sse_exceptions import SseBaseError
+from src.agents.services.service_entities.compliance import CheckPlan, ComplianceResult
 
 
 class StatusResponse(BaseModel):
@@ -21,6 +22,10 @@ class StatusResponse(BaseModel):
         "buffer_creation",
         "restriction_formation",
         "context_preparation",
+        "check_plan_validation",
+        "requirements_resolution",
+        "template_execution",
+        "verdict_aggregation",
     ]
     text: str
 
@@ -71,6 +76,30 @@ class ToolCallContent(BaseModel):
     mcp_source: str | None = None
 
 
+class CheckPlanEventContent(BaseModel):
+    restriction_id: str
+    plan: CheckPlan
+
+
+class RequirementResolutionEventContent(BaseModel):
+    restriction_id: str
+    effective_requirements: dict[str, Any]
+    resolved_requirements: list[dict[str, Any]]
+    missing_requirements: list[str]
+
+
+class ComplianceSummaryEventContent(BaseModel):
+    request_id: str
+    total_norms: int
+    violated_norms: int
+    passed_norms: int
+    unverifiable_norms: int
+    unsupported_norms: int
+    not_applicable_norms: int
+    partial_norms: int
+    results: list[ComplianceResult]
+
+
 class RestrictionsResponse(BaseModel):
     type: Literal[
         "status",
@@ -82,6 +111,10 @@ class RestrictionsResponse(BaseModel):
         "token_expired",
         "pipeline_suspended",
         "tool_call",
+        "check_plan",
+        "requirement_resolution",
+        "compliance_result",
+        "compliance_summary",
     ]
     content: (
         StatusResponse
@@ -92,4 +125,8 @@ class RestrictionsResponse(BaseModel):
         | PipelineStartedContent
         | PipelineEventContent
         | ToolCallContent
+        | CheckPlanEventContent
+        | RequirementResolutionEventContent
+        | ComplianceResult
+        | ComplianceSummaryEventContent
     )

@@ -39,7 +39,7 @@ async def get_services_by_name(
     scenario_id: Annotated[int, "ID сценария из Urban API"],
     user_id: str = Depends(extract_user_id),
     urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
-) -> dict[str, FeatureCollection]:
+) -> dict[str, dict]:
     """
     Urban API tools interface method to retrieve services from scenario.
     Args:
@@ -81,7 +81,7 @@ async def get_physical_objects_by_name(
     scenario_id: Annotated[int, "ID сценария из Urban API"],
     user_id: str = Depends(extract_user_id),
     urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
-) -> dict[str, FeatureCollection]:
+) -> dict[str, dict]:
     """
     Urban API tools interface method to retrieve physical objects from scenario.
     Args:
@@ -130,3 +130,32 @@ async def get_service_type_id_by_name(
     """
 
     return await urban_api_tools.get_entity_id_by_name(service_name, user_id)
+
+
+@urban_api_mcp.tool(
+    name="GetFunctionalZones",
+    title="Получить функциональные зоны",
+    description=(
+        "Получить полный GeoJSON-слой функциональных зон сценария. Источник и год "
+        "можно задать явно; иначе выбирается самая новая доступная версия. Опциональный "
+        "список типов зон фильтруется по точному названию."
+    ),
+    tags=tools_tags,
+    annotations={"title": "GET functional zones", "readOnlyHint": True},
+    meta={"author": "ICII"},
+)
+async def get_functional_zones(
+    scenario_id: Annotated[int, "ID сценария из Urban API"],
+    source: str | None = None,
+    year: int | None = None,
+    zone_type_names: list[str] | None = None,
+    user_id: str = Depends(extract_user_id),
+    urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
+) -> dict[str, dict]:
+    return await urban_api_tools.get_functional_zones(
+        scenario_id,
+        user_id,
+        source=source,
+        year=year,
+        zone_type_names=zone_type_names,
+    )

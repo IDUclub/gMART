@@ -25,6 +25,10 @@ class PipelineStatus(StrEnum):
 
 class PipelineStep(StrEnum):
     NORMGRAPH = "normgraph"
+    CHECK_PLAN_VALIDATION = "check_plan_validation"
+    REQUIREMENTS_RESOLUTION = "requirements_resolution"
+    TEMPLATE_EXECUTION = "template_execution"
+    VERDICT_AGGREGATION = "verdict_aggregation"
     PLAN = "plan"
     PLAN_EXPLANATION = "plan_explanation"
     LAYERS = "layers"

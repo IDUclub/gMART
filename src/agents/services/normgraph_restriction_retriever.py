@@ -37,7 +37,7 @@ class NormGraphRestrictionRetrieval:
 
 
 class NormGraphRestrictionRetriever:
-    """Retrieve and retain only restrictions executable by the phase-one GIS flow."""
+    """Retrieve restrictions, retaining unsupported hits for compliance reporting."""
 
     def __init__(self, llm_client) -> None:
         self.planner = NormGraphRetrievalPlanner(llm_client)
@@ -48,6 +48,7 @@ class NormGraphRestrictionRetriever:
         model: str,
         user_query: str,
         history: list[dict] | None = None,
+        retain_unsupported: bool = False,
     ) -> NormGraphRestrictionRetrieval:
         plan = await self.planner.build_plan(model, user_query, history=history)
         if plan.primary_tool == PrimaryTool.APPLICABLE:
@@ -107,9 +108,19 @@ class NormGraphRestrictionRetriever:
             hits = explicit_hits
 
         supported = [hit for hit in hits if self.is_canonical(hit)]
+        restrictions = hits if retain_unsupported else supported
+        unsupported_count = sum(
+            1
+            for hit in hits
+            if not self.is_canonical(hit)
+            and (
+                not isinstance(hit.get("check_plan"), dict)
+                or hit["check_plan"].get("planner_status") == "unsupported"
+            )
+        )
         return NormGraphRestrictionRetrieval(
-            restrictions=supported,
-            unsupported_count=len(hits) - len(supported),
+            restrictions=restrictions,
+            unsupported_count=unsupported_count,
             tool_call={"function": {"name": tool_name, "arguments": arguments}},
         )
 

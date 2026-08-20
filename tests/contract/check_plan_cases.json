@@ -1,0 +1,97 @@
+{
+  "schema_version": "1.0",
+  "cases": [
+    {
+      "name": "valid_t1",
+      "valid": true,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "distance_from_source",
+        "template_version": 1,
+        "params": {
+          "source_layer": "source",
+          "targets": ["targets"],
+          "geometry_mode": "buffered",
+          "distance_m": 50,
+          "predicate": "intersects",
+          "violation_when": "matched",
+          "result_mode": "both"
+        },
+        "declared_requirements": {
+          "layers": [
+            {
+              "role": "source",
+              "entity": "Школа",
+              "entity_type": "service",
+              "geometry_types": ["Point"],
+              "required": true
+            },
+            {
+              "role": "targets",
+              "entity": "Жилой дом",
+              "entity_type": "physical_object",
+              "geometry_types": ["Point", "Polygon"],
+              "required": true
+            }
+          ],
+          "attributes": []
+        },
+        "source": {
+          "restriction_id": "fixture-r1",
+          "document_name": "СП fixture",
+          "clause_number": "1.1",
+          "extraction_text": "Не менее 50 м"
+        },
+        "planner_status": "auto"
+      }
+    },
+    {
+      "name": "invalid_schema",
+      "valid": false,
+      "plan": {
+        "schema_version": "2.0",
+        "template": "distance_from_source",
+        "template_version": 1,
+        "params": {},
+        "source": {"restriction_id": "fixture-r2"},
+        "planner_status": "auto"
+      }
+    },
+    {
+      "name": "invalid_template_version",
+      "valid": false,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "distance_from_source",
+        "template_version": 2,
+        "params": {
+          "source_layer": "source",
+          "targets": ["targets"],
+          "geometry_mode": "source_geometry",
+          "predicate": "intersects",
+          "violation_when": "matched"
+        },
+        "source": {"restriction_id": "fixture-r3"},
+        "planner_status": "auto"
+      }
+    },
+    {
+      "name": "invalid_missing_buffer_distance",
+      "valid": false,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "distance_from_source",
+        "template_version": 1,
+        "params": {
+          "source_layer": "source",
+          "targets": ["targets"],
+          "geometry_mode": "buffered",
+          "predicate": "intersects",
+          "violation_when": "matched"
+        },
+        "source": {"restriction_id": "fixture-r4"},
+        "planner_status": "auto"
+      }
+    }
+  ]
+}

@@ -1,12 +1,18 @@
-from typing import Any
+import asyncio
+import json
+from typing import Any, Literal
 
 from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
 from geojson_pydantic import FeatureCollection
 
-from src.idu_mcp.dependencies.dependencies import get_geom_tools
+from src.idu_mcp.dependencies.dependencies import (
+    get_compliance_geometry_tools,
+    get_geom_tools,
+)
 from src.idu_mcp.tools_descriptions import geometry_validation_messages as messages
+from src.idu_mcp.tools_services.compliance_geometry import ComplianceGeometryTools
 from src.idu_mcp.tools_services.geometry_tools import GeometryTools
 from src.idu_mcp.tools_services.geometry_validator import GeometryToolValidator
 
@@ -158,3 +164,235 @@ async def create_restrictions(
         )
     except Exception as e:
         raise ToolError(messages.RESTRICTIONS_RUNTIME_ERROR.format(error=e)) from e
+
+
+async def _run_compliance_operation(
+    method,
+    *,
+    timeout_seconds: int = 120,
+    max_payload_bytes: int = 64 * 1024 * 1024,
+    **kwargs,
+) -> dict[str, Any]:
+    def invoke():
+        payload_size = len(
+            json.dumps(kwargs.get("layers") or {}, ensure_ascii=False).encode("utf-8")
+        )
+        if payload_size > max_payload_bytes:
+            raise ValueError(
+                f"Payload exceeds the {max_payload_bytes} byte operation limit"
+            )
+        return method(**kwargs)
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(invoke), timeout=timeout_seconds
+        )
+    except TimeoutError as exc:
+        raise ToolError("Операция проверки превысила лимит времени") from exc
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ToolError(f"Некорректные данные проверки: {exc}") from exc
+    except Exception as exc:
+        raise ToolError(f"Ошибка геопространственной проверки: {exc}") from exc
+
+
+@geometry_mcp.tool(
+    name="CheckDistanceFromSource",
+    title="Проверить расстояние или готовую зону",
+    description=(
+        "Детерминированно проверяет полный набор целевых объектов относительно исходной "
+        "или буферной геометрии. Возвращает отдельные корзины violated/passed/unchecked, "
+        "coverage и evidence по object_ref."
+    ),
+    tags={"geometry", "compliance"},
+)
+async def check_distance_from_source(
+    source_layer: str,
+    targets: list[str],
+    geometry_mode: Literal["buffered", "source_geometry"],
+    predicate: Literal["intersects", "within", "contains"],
+    violation_when: Literal["matched", "not_matched"],
+    result_mode: Literal["violated", "passed", "both"],
+    restriction_id: str,
+    layers: dict,
+    template_version: int = 1,
+    distance_m: float | None = None,
+    provenance: dict[str, Any] | None = None,
+    input_revision: str | None = None,
+    tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
+) -> dict[str, Any]:
+    return await _run_compliance_operation(
+        tools.distance_from_source,
+        source_layer=source_layer,
+        targets=targets,
+        geometry_mode=geometry_mode,
+        predicate=predicate,
+        violation_when=violation_when,
+        result_mode=result_mode,
+        restriction_id=restriction_id,
+        layers=layers,
+        template_version=template_version,
+        distance_m=distance_m,
+        provenance=provenance,
+        input_revision=input_revision,
+    )
+
+
+@geometry_mcp.tool(
+    name="CheckDistanceTable",
+    title="Проверить индивидуальные расстояния",
+    description=(
+        "Строит индивидуальный буфер источника по разрешённому атрибуту и таблице "
+        "непересекающихся диапазонов; неизвестные значения остаются непроверенными."
+    ),
+    tags={"geometry", "compliance"},
+)
+async def check_distance_table(
+    source_layer: str,
+    targets: list[str],
+    attribute_field: str,
+    bands: list[dict[str, Any]],
+    predicate: Literal["intersects", "within", "contains"],
+    violation_when: Literal["matched", "not_matched"],
+    result_mode: Literal["violated", "passed", "both"],
+    restriction_id: str,
+    layers: dict,
+    template_version: int = 1,
+    provenance: dict[str, Any] | None = None,
+    input_revision: str | None = None,
+    tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
+) -> dict[str, Any]:
+    return await _run_compliance_operation(
+        tools.distance_table,
+        source_layer=source_layer,
+        targets=targets,
+        attribute_field=attribute_field,
+        bands=bands,
+        predicate=predicate,
+        violation_when=violation_when,
+        result_mode=result_mode,
+        restriction_id=restriction_id,
+        layers=layers,
+        template_version=template_version,
+        provenance=provenance,
+        input_revision=input_revision,
+    )
+
+
+@geometry_mcp.tool(
+    name="CheckPresenceWithin",
+    title="Проверить наличие соседей",
+    description=(
+        "Выполняет полный spatial left/anti join и возвращает каждый применимый объект "
+        "ровно один раз, включая доказательство отсутствия соседа."
+    ),
+    tags={"geometry", "compliance"},
+)
+async def check_presence_within(
+    objects_layer: str,
+    required_neighbor_layers: list[str],
+    distance_m: float,
+    minimum_neighbors: int,
+    result_mode: Literal["violated", "passed", "both"],
+    restriction_id: str,
+    layers: dict,
+    template_version: int = 1,
+    provenance: dict[str, Any] | None = None,
+    input_revision: str | None = None,
+    tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
+) -> dict[str, Any]:
+    return await _run_compliance_operation(
+        tools.presence_within,
+        objects_layer=objects_layer,
+        required_neighbor_layers=required_neighbor_layers,
+        distance_m=distance_m,
+        minimum_neighbors=minimum_neighbors,
+        result_mode=result_mode,
+        restriction_id=restriction_id,
+        layers=layers,
+        template_version=template_version,
+        provenance=provenance,
+        input_revision=input_revision,
+    )
+
+
+@geometry_mcp.tool(
+    name="CheckZonalAttributeThreshold",
+    title="Сравнить атрибут с зональным порогом",
+    description=(
+        "Сопоставляет объекты зонам и проверяет атрибут по константе или разрешённому "
+        "атрибуту зоны с политикой strictest_threshold."
+    ),
+    tags={"geometry", "compliance"},
+)
+async def check_zonal_attribute_threshold(
+    objects_layer: str,
+    zones_layer: str,
+    object_attribute: str,
+    operator: Literal["<", "<=", ">", ">=", "=="],
+    join_predicate: Literal["intersects", "within", "contains"],
+    result_mode: Literal["violated", "passed", "both"],
+    restriction_id: str,
+    layers: dict,
+    constant_threshold: float | None = None,
+    zone_threshold_attribute: str | None = None,
+    template_version: int = 1,
+    provenance: dict[str, Any] | None = None,
+    input_revision: str | None = None,
+    tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
+) -> dict[str, Any]:
+    return await _run_compliance_operation(
+        tools.zonal_attribute_threshold,
+        objects_layer=objects_layer,
+        zones_layer=zones_layer,
+        object_attribute=object_attribute,
+        operator=operator,
+        constant_threshold=constant_threshold,
+        zone_threshold_attribute=zone_threshold_attribute,
+        join_predicate=join_predicate,
+        result_mode=result_mode,
+        restriction_id=restriction_id,
+        layers=layers,
+        template_version=template_version,
+        provenance=provenance,
+        input_revision=input_revision,
+    )
+
+
+@geometry_mcp.tool(
+    name="CheckZonalRatio",
+    title="Проверить долю площади в зоне",
+    description=(
+        "В локальной метрической CRS обрезает числитель границей зоны, объединяет "
+        "перекрытия и сравнивает процент с нормативным порогом."
+    ),
+    tags={"geometry", "compliance"},
+)
+async def check_zonal_ratio(
+    zones_layer: str,
+    numerator_layer: str,
+    operator: Literal["<", "<=", ">", ">=", "=="],
+    threshold: float,
+    result_mode: Literal["violated", "passed", "both"],
+    invalid_geometry_policy: Literal["repair", "reject"],
+    restriction_id: str,
+    layers: dict,
+    template_version: int = 1,
+    provenance: dict[str, Any] | None = None,
+    input_revision: str | None = None,
+    tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
+) -> dict[str, Any]:
+    return await _run_compliance_operation(
+        tools.zonal_ratio,
+        timeout_seconds=180,
+        zones_layer=zones_layer,
+        numerator_layer=numerator_layer,
+        operator=operator,
+        threshold=threshold,
+        result_mode=result_mode,
+        invalid_geometry_policy=invalid_geometry_policy,
+        restriction_id=restriction_id,
+        layers=layers,
+        template_version=template_version,
+        provenance=provenance,
+        input_revision=input_revision,
+    )
