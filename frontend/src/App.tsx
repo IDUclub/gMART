@@ -55,6 +55,7 @@ import {
   getModels,
   readSse,
   replayToolCall,
+  reviewCheckPlan,
   request,
 } from "./api";
 import type {
@@ -62,6 +63,8 @@ import type {
   AgentId,
   Chat,
   ChatSummary,
+  ComplianceResult,
+  ComplianceSummary,
   LayerData,
   Message,
   MessagePart,
@@ -228,6 +231,9 @@ export default function App() {
     [answer, setAnswer] = useState(""),
     [layers, setLayers] = useState<LayerData[]>([]),
     [tables, setTables] = useState<TableData[]>([]),
+    [complianceResults, setComplianceResults] = useState<ComplianceResult[]>([]),
+    [complianceSummary, setComplianceSummary] =
+      useState<ComplianceSummary | null>(null),
     [events, setEvents] = useState<Array<{ time: string; event: StreamEvent }>>(
       [],
     ),
@@ -237,7 +243,9 @@ export default function App() {
     [restoreState, setRestoreState] = useState<Record<string, string>>({}),
     [undoLayers, setUndoLayers] = useState<LayerData[] | null>(null),
     [busy, setBusy] = useState(false),
-    [rightTab, setRightTab] = useState<"map" | "data" | "process">("map"),
+    [rightTab, setRightTab] = useState<
+      "map" | "data" | "compliance" | "process"
+    >("map"),
     [historyOpen, setHistoryOpen] = useState(false),
     [agentMenuOpen, setAgentMenuOpen] = useState(false),
     [resultOpen, setResultOpen] = useState(false),
@@ -419,6 +427,8 @@ export default function App() {
       setStatusEntries([]);
       setLayers([]);
       setTables(extractStoredTables(cached.chat.messages));
+      setComplianceResults(extractStoredCompliance(cached.chat.messages));
+      setComplianceSummary(null);
       scrollChatToBottom();
       return;
     }
@@ -444,6 +454,8 @@ export default function App() {
       setStatusEntries([]);
       setLayers([]);
       setTables(extractStoredTables(stored.messages));
+      setComplianceResults(extractStoredCompliance(stored.messages));
+      setComplianceSummary(null);
       scrollChatToBottom();
     } catch (e) {
       setStatus(err(e));
@@ -466,6 +478,8 @@ export default function App() {
     setStatusEntries([]);
     setLayers([]);
     setTables([]);
+    setComplianceResults([]);
+    setComplianceSummary(null);
     setEvents([]);
     setStatus("Готов к работе");
     resultAutoOpened.current = false;
@@ -500,6 +514,7 @@ export default function App() {
         };
       });
       setTables(extractStoredTables(merged.messages));
+      setComplianceResults(extractStoredCompliance(merged.messages));
       setHistoryWindow({
         hasMore: Boolean(page.has_more),
         nextBeforeSeq: page.next_before_seq ?? null,
@@ -807,6 +822,27 @@ export default function App() {
         setResultOpen(true);
       }
     }
+    if (event.type === "compliance_result") {
+      const result = event.content as ComplianceResult;
+      setComplianceResults((current) => [
+        ...current.filter(
+          (item) => item.restriction_id !== result.restriction_id,
+        ),
+        result,
+      ]);
+      setRightTab("compliance");
+      if (!resultAutoOpened.current) {
+        resultAutoOpened.current = true;
+        setResultOpen(true);
+      }
+    }
+    if (event.type === "compliance_summary") {
+      const summary = event.content as ComplianceSummary;
+      setComplianceSummary(summary);
+      setComplianceResults(summary.results || []);
+      setRightTab("compliance");
+      setResultOpen(true);
+    }
     if (event.type === "warning" || event.type === "error")
       updateStatus(event.content?.message || "Ошибка выполнения", "warning");
     if (event.type === "service_event" && event.content?.event?.chat_id) {
@@ -942,6 +978,8 @@ export default function App() {
     setQuery("");
     setAnswer("");
     setTables([]);
+    setComplianceResults([]);
+    setComplianceSummary(null);
     setEvents([]);
     setStatusEntries([]);
     stepBase.current = "";
@@ -1271,6 +1309,14 @@ export default function App() {
                   >
                     <ChartDonut /> Процесс
                   </button>
+                  {!!complianceResults.length && (
+                    <button
+                      className={rightTab === "compliance" ? "active" : ""}
+                      onClick={() => setRightTab("compliance")}
+                    >
+                      <ShieldCheck /> Проверка <b>{complianceResults.length}</b>
+                    </button>
+                  )}
                   <button
                     className="close-result"
                     onClick={() => setResultOpen(false)}
@@ -1302,6 +1348,14 @@ export default function App() {
                   />
                 )}{" "}
                 {rightTab === "data" && <Tables tables={tables} />}{" "}
+                {rightTab === "compliance" && (
+                  <CompliancePanel
+                    results={complianceResults}
+                    summary={complianceSummary}
+                    settings={settings}
+                    token={token}
+                  />
+                )}{" "}
                 {rightTab === "process" && <Process events={events} />}
               </section>
             </div>
@@ -1334,6 +1388,8 @@ export default function App() {
           setStatusEntries([]);
           setLayers([]);
           setTables([]);
+          setComplianceResults([]);
+          setComplianceSummary(null);
           setEvents([]);
           setHistoryOpen(false);
         }}
@@ -1774,12 +1830,20 @@ function MessageView({
               <div className="stored-status" key={block.key}>
                 {String(p.payload.text || p.payload.status || "Этап выполнен")}
               </div>
+            ) : p.kind === "compliance_result" ? (
+              <StoredComplianceResult
+                key={block.key}
+                result={p.payload as ComplianceResult}
+              />
             ) : [
                 "plan",
                 "plan_revision",
                 "artifact_ref",
                 "validation",
                 "failure",
+                "check_plan",
+                "requirement_resolution",
+                "compliance_summary",
               ].includes(p.kind) ? (
               <details className="stored-status" key={block.key}>
                 <summary>{storedPartTitle(p.kind, p.payload)}</summary>
@@ -1805,6 +1869,9 @@ function storedPartTitle(kind: string, payload: Record<string, any>) {
     return `Набор данных: ${payload.rows ?? 0} строк`;
   if (kind === "validation") return "Проверка полноты ответа";
   if (kind === "failure") return "Ограничения выполнения";
+  if (kind === "check_plan") return "Исполняемый план нормы";
+  if (kind === "requirement_resolution") return "Разрешение данных нормы";
+  if (kind === "compliance_summary") return "Итог нормативной проверки";
   return "Служебная часть";
 }
 
@@ -1914,6 +1981,265 @@ function extractStoredTables(messages: Message[]): TableData[] {
     message.parts
       .filter((part) => part.kind === "table")
       .map((part) => part.payload as TableData),
+  );
+}
+
+function extractStoredCompliance(messages: Message[]): ComplianceResult[] {
+  const byId = new Map<string, ComplianceResult>();
+  messages.forEach((message) =>
+    message.parts
+      .filter((part) => part.kind === "compliance_result")
+      .forEach((part) => {
+        const result = part.payload as ComplianceResult;
+        if (result.restriction_id) byId.set(result.restriction_id, result);
+      }),
+  );
+  return [...byId.values()];
+}
+
+function verificationLabel(status: ComplianceResult["verification_status"]) {
+  return {
+    complete: "Проверено полностью",
+    partial: "Проверено частично",
+    unverifiable: "Недостаточно данных",
+    not_applicable: "Не применимо",
+    unsupported: "Не поддерживается",
+  }[status];
+}
+
+function complianceLabel(status: ComplianceResult["compliance_status"]) {
+  return {
+    passed: "Нарушений не найдено",
+    violated: "Есть нарушения",
+    unknown: "Соблюдение не определено",
+  }[status];
+}
+
+function objectTitle(value: Record<string, any> | undefined) {
+  if (!value) return "Объект";
+  return String(value.name || value.id || value.entity_id || "Объект");
+}
+
+function StoredComplianceResult({ result }: { result: ComplianceResult }) {
+  return (
+    <div className={`stored-compliance ${result.compliance_status}`}>
+      <ShieldCheck />
+      <span>
+        <strong>{complianceLabel(result.compliance_status)}</strong>
+        <small>
+          {verificationLabel(result.verification_status)} · проверено {result.coverage.checked_objects} из {result.coverage.applicable_objects}
+        </small>
+      </span>
+    </div>
+  );
+}
+
+function CompliancePanel({
+  results,
+  summary,
+  settings,
+  token,
+}: {
+  results: ComplianceResult[];
+  summary: ComplianceSummary | null;
+  settings: Settings;
+  token: string;
+}) {
+  return (
+    <div className="compliance-panel">
+      <header className="compliance-head">
+        <div>
+          <span className="eyebrow">Нормативная проверка</span>
+          <strong>
+            {results.length
+              ? `${results.length} ${pluralize(results.length, "норма", "нормы", "норм")}`
+              : "Результатов пока нет"}
+          </strong>
+        </div>
+        {summary && (
+          <div className="compliance-totals">
+            <span className="violated">{summary.violated_norms} нарушено</span>
+            <span className="passed">{summary.passed_norms} без нарушений</span>
+            <span>{summary.unverifiable_norms + summary.unsupported_norms} не проверено</span>
+          </div>
+        )}
+      </header>
+      <div className="compliance-list">
+        {results.map((result) => {
+          const source = result.source || {};
+          const evidence = result.evidence || [];
+          const violated = evidence.filter((item) => item.violated);
+          const passed = evidence.filter((item) => !item.violated);
+          const percent = Math.round((result.coverage.fill_rate || 0) * 100);
+          return (
+            <article
+              className={`compliance-card ${result.verification_status} ${result.compliance_status}`}
+              key={result.restriction_id}
+            >
+              <header>
+                <div>
+                  <span>{source.document_name || "Нормативный источник"}</span>
+                  <strong>
+                    {source.clause_number ? `Пункт ${source.clause_number} · ` : ""}
+                    {result.template}@v{result.template_version}
+                  </strong>
+                </div>
+                <div className="compliance-badges">
+                  <b className={`verification ${result.verification_status}`}>
+                    {verificationLabel(result.verification_status)}
+                  </b>
+                  <b className={`verdict ${result.compliance_status}`}>
+                    {complianceLabel(result.compliance_status)}
+                  </b>
+                </div>
+              </header>
+              <div className="coverage-row">
+                <div>
+                  <span style={{ width: `${percent}%` }} />
+                </div>
+                <b>{percent}% покрытия</b>
+              </div>
+              <dl className="coverage-stats">
+                <div><dt>Применимо</dt><dd>{result.coverage.applicable_objects}</dd></div>
+                <div><dt>Проверено</dt><dd>{result.coverage.checked_objects}</dd></div>
+                <div><dt>Не проверено</dt><dd>{result.coverage.unchecked_objects}</dd></div>
+                <div><dt>Нарушения</dt><dd>{result.summary.violated_objects}</dd></div>
+              </dl>
+              {result.verification_status === "partial" && (
+                <p className="coverage-warning">
+                  На проверенной части {result.compliance_status === "passed" ? "нарушений не обнаружено" : "найдены нарушения"}. Непроверенные объекты не входят в этот вывод.
+                </p>
+              )}
+              {!!result.missing_requirements?.length && (
+                <div className="missing-requirements">
+                  <strong>Почему проверка невозможна</strong>
+                  <ul>{result.missing_requirements.map((item) => <li key={item}>{item}</li>)}</ul>
+                </div>
+              )}
+              {!!result.resolved_requirements?.length && (
+                <details>
+                  <summary>Использованные слои и атрибуты</summary>
+                  <ul className="resolved-fields">
+                    {result.resolved_requirements.map((item, index) => (
+                      <li key={`${String(item.role)}:${index}`}>
+                        <b>{String(item.role)}</b>
+                        <span>{String(item.field || item.layer || item.reason || "не разрешено")}</span>
+                        {item.quality && <em>{String(item.quality === "derived" ? "производный" : "прямой")}</em>}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {!!violated.length && (
+                <details open>
+                  <summary>Нарушающие объекты · {violated.length}</summary>
+                  <EvidenceList items={violated} />
+                </details>
+              )}
+              {!!passed.length && (
+                <details>
+                  <summary>Проверены без нарушений · {passed.length}</summary>
+                  <EvidenceList items={passed} />
+                </details>
+              )}
+              {!!result.warnings?.length && (
+                <ul className="compliance-warnings">
+                  {result.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                </ul>
+              )}
+              {result.source?.check_plan && (
+                <CheckPlanReviewControls
+                  result={result}
+                  settings={settings}
+                  token={token}
+                />
+              )}
+              <footer>restriction_id: {result.restriction_id} · evidence {result.evidence_schema_version}</footer>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CheckPlanReviewControls({
+  result,
+  settings,
+  token,
+}: {
+  result: ComplianceResult;
+  settings: Settings;
+  token: string;
+}) {
+  const [planText, setPlanText] = useState(
+    JSON.stringify(result.source?.check_plan || {}, null, 2),
+  );
+  const [reason, setReason] = useState("");
+  const [feedback, setFeedback] = useState("");
+  const [saving, setSaving] = useState(false);
+  async function submitReview(action: "approve" | "reject" | "replace") {
+    setSaving(true);
+    setFeedback("Сохраняю ревизию…");
+    try {
+      const plan = action === "replace" ? JSON.parse(planText) : undefined;
+      const response = await reviewCheckPlan(
+        settings,
+        token,
+        result.restriction_id,
+        action,
+        plan,
+        reason,
+      );
+      setFeedback(
+        `Сохранено: ревизия ${String(response.revision || "обновлена")}`,
+      );
+    } catch (error) {
+      setFeedback(err(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <details className="check-plan-review">
+      <summary>Экспертное ревью CheckPlan</summary>
+      <textarea
+        value={planText}
+        onChange={(event) => setPlanText(event.target.value)}
+        spellCheck={false}
+        aria-label="JSON CheckPlan"
+      />
+      <input
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+        placeholder="Комментарий к ревью (необязательно)"
+      />
+      <div>
+        <button disabled={saving} onClick={() => void submitReview("approve")}>Подтвердить</button>
+        <button disabled={saving} onClick={() => void submitReview("reject")}>Отклонить</button>
+        <button disabled={saving} onClick={() => void submitReview("replace")}>Сохранить замену</button>
+      </div>
+      {feedback && <small>{feedback}</small>}
+    </details>
+  );
+}
+
+function EvidenceList({ items }: { items: ComplianceResult["evidence"] }) {
+  return (
+    <ul className="evidence-list">
+      {(items || []).map((item, index) => (
+        <li key={`${String(item.object_ref?.id || index)}:${index}`}>
+          <div>
+            <strong>{objectTitle(item.object_ref)}</strong>
+            <small>{String(item.object_ref?.id || "Идентификатор отсутствует")}</small>
+          </div>
+          <span>
+            {item.measured_value != null ? `${Number(item.measured_value).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} ${item.unit || ""}` : item.operation}
+            {item.threshold != null ? ` · порог ${item.operator || ""} ${item.threshold}` : ""}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
