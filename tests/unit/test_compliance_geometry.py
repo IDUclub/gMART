@@ -212,7 +212,10 @@ def test_zonal_ratio_zero_area_zone_is_unchecked():
     layers = {
         "zones": _fc((zero_area, {"physical_object_id": 1})),
         "numerator": _fc(
-            (Polygon([(0, 0), (0.01, 0), (0.01, 0.01), (0, 0.01)]), {"physical_object_id": 2})
+            (
+                Polygon([(0, 0), (0.01, 0), (0.01, 0.01), (0, 0.01)]),
+                {"physical_object_id": 2},
+            )
         ),
     }
     result = ComplianceGeometryTools().zonal_ratio(

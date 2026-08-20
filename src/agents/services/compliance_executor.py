@@ -370,9 +370,7 @@ class ComplianceTemplateExecutor:
             count = len(layer.get("features") or [])
             if count > entry.max_features:
                 return f"layer:{name}:feature_limit:{entry.max_features}"
-        payload_size = len(
-            json.dumps(layers, ensure_ascii=False).encode("utf-8")
-        )
+        payload_size = len(json.dumps(layers, ensure_ascii=False).encode("utf-8"))
         if payload_size > entry.max_payload_bytes:
             return f"payload_limit:{entry.max_payload_bytes}"
         return None

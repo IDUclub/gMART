@@ -238,10 +238,7 @@ class ComplianceDataGate:
             selection: tuple[AttributeCandidate, dict[str, Any]] | None = None
             for candidate in requirement.accepts:
                 field = fields.get(candidate.field)
-                if (
-                    field
-                    and field["numeric_fill_rate"] > 0
-                ):
+                if field and field["numeric_fill_rate"] > 0:
                     selection = (candidate, field)
                     break
             if selection is None:
