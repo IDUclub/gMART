@@ -20,6 +20,8 @@ This document covers the **A2A** surface of the agents app. The REST/SSE surface
 frontend is documented in [`frontend-service.md`](frontend-service.md) and
 [`frontend-document-qa.md`](frontend-document-qa.md). Scenario-data REST/SSE and
 A2A details are in [`frontend-scenario-data.md`](frontend-scenario-data.md).
+The executable-norm compliance REST/SSE contract, CheckPlan registry and review
+API are documented in [`compliance-agent.md`](compliance-agent.md).
 
 The agents app exposes **five A2A agents**, each as a JSON-RPC 2.0 endpoint with an
 A2A AgentCard for discovery:
@@ -290,6 +292,8 @@ gMART состоит из двух разворачиваемых приложе
 [`frontend-document-qa.md`](frontend-document-qa.md). REST/SSE- и A2A-контракт
 городских данных описан в
 [`frontend-scenario-data.md`](frontend-scenario-data.md).
+Исполнение нормативных CheckPlan, compliance SSE и экспертное ревью описаны в
+[`compliance-agent.md`](compliance-agent.md).
 
 Приложение agents предоставляет **пять A2A-агентов**, каждый — это эндпоинт JSON-RPC 2.0 с
 карточкой агента (AgentCard) для обнаружения:
