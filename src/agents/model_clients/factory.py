@@ -19,6 +19,10 @@ from urllib.parse import urlparse
 
 from loguru import logger
 
+from src.agents.model_clients.endpoint_policy import (
+    reject_forbidden_llm_host,
+    require_local_ollama_url,
+)
 from src.agents.model_clients.llm_base import BaseLlmAdapter
 from src.agents.model_clients.ollama_adapter import OllamaAdapter
 from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
@@ -54,11 +58,13 @@ def build_llm_adapter(
 
     chosen = resolve_backend(backend)
     if chosen == OLLAMA:
+        require_local_ollama_url(host, "OLLAMA_API_URL")
         return OllamaAdapter(host=host)
 
     url = base_url or os.getenv("OPENAI_BASE_URL") or host
     if not url:
         raise ValueError("LLM_BACKEND=openai requires OPENAI_BASE_URL")
+    reject_forbidden_llm_host(url, "OPENAI_BASE_URL")
     url = _with_api_path(url)
     key = api_key or os.getenv("OPENAI_API_KEY")
     logger.info(f"LLM backend: OpenAI-compatible at {url}")
@@ -68,7 +74,7 @@ def build_llm_adapter(
 def _with_api_path(url: str) -> str:
     """Append ``/v1`` to a bare origin.
 
-    The fallback base URL is OLLAMA_API_URL (``http://a.dgx:11434``), and a vLLM
+    The fallback base URL is OLLAMA_API_URL, and a vLLM
     address is just as easily written without the suffix; either would make every
     request 404 on a path that does not exist. A URL that already carries a path
     is left alone, since deployments behind a proxy mount the API elsewhere.

@@ -16,6 +16,8 @@ services:
         condition: service_healthy
       idu_mcp:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - localnet
 
@@ -48,6 +50,8 @@ services:
     depends_on:
       pipeline_storage:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     profiles: ["context-worker"]
     networks:
