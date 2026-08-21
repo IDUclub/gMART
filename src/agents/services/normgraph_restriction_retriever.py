@@ -27,6 +27,8 @@ _CANONICAL_KINDS = {
     "запрет_размещения",
     "требование_размещения",
 }
+_ALL_RESTRICTIONS_INITIAL_LIMIT = 256
+_ALL_RESTRICTIONS_MAX_LIMIT = 65_536
 
 
 @dataclass(frozen=True)
@@ -37,7 +39,7 @@ class NormGraphRestrictionRetrieval:
 
 
 class NormGraphRestrictionRetriever:
-    """Retrieve and retain only restrictions executable by the phase-one GIS flow."""
+    """Retrieve restrictions, retaining unsupported hits for compliance reporting."""
 
     def __init__(self, llm_client) -> None:
         self.planner = NormGraphRetrievalPlanner(llm_client)
@@ -48,7 +50,36 @@ class NormGraphRestrictionRetriever:
         model: str,
         user_query: str,
         history: list[dict] | None = None,
+        retain_unsupported: bool = False,
+        retrieve_all: bool = False,
     ) -> NormGraphRestrictionRetrieval:
+        # Compliance is an audit, not a relevance-ranked QA answer.  The LLM may
+        # choose a small result window for ordinary questions, but it must never
+        # decide how many persisted norms an audit checks.
+        if retrieve_all:
+            hits, arguments = await self._retrieve_all(client)
+            return self._result(
+                hits, arguments, "search_restrictions", retain_unsupported
+            )
+
+        exhaustive_document_codes = self._exhaustive_document_codes(user_query)
+        if exhaustive_document_codes is not None:
+            arguments = {"limit": 100, "neighbors_depth": 0}
+            result = await client.search_restrictions(**arguments)
+            hits = [hit for hit in result.get("hits") or [] if isinstance(hit, dict)]
+            if exhaustive_document_codes:
+                hits = [
+                    hit
+                    for hit in hits
+                    if self._matches_document_code(hit, exhaustive_document_codes)
+                ]
+            return self._result(
+                hits,
+                arguments,
+                "search_restrictions",
+                retain_unsupported,
+            )
+
         plan = await self.planner.build_plan(model, user_query, history=history)
         if plan.primary_tool == PrimaryTool.APPLICABLE:
             arguments = self._active_arguments(
@@ -106,10 +137,61 @@ class NormGraphRestrictionRetriever:
         if explicit_hits is not None:
             hits = explicit_hits
 
-        supported = [hit for hit in hits if self.is_canonical(hit)]
+        return self._result(hits, arguments, tool_name, retain_unsupported)
+
+    async def _retrieve_all(
+        self, client: "NormGraphMcpClient"
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Fetch the complete NormGraph corpus without a silent top-k window.
+
+        NormGraph currently exposes a ``limit`` but no offset/cursor.  Grow the
+        window until the server returns fewer rows than requested.  Hitting the
+        explicit safety ceiling is an error: returning a partial audit as if it
+        were complete would be worse than failing visibly.
+        """
+
+        limit = _ALL_RESTRICTIONS_INITIAL_LIMIT
+        while True:
+            arguments = {"limit": limit, "neighbors_depth": 0}
+            response = await client.search_restrictions(**arguments)
+            hits = [hit for hit in response.get("hits") or [] if isinstance(hit, dict)]
+            if len(hits) < limit:
+                # Preserve graph order while protecting the executor and summary
+                # from duplicate restriction IDs.
+                unique: dict[str, dict[str, Any]] = {}
+                for index, hit in enumerate(hits):
+                    unique.setdefault(str(hit.get("id") or index), hit)
+                return list(unique.values()), arguments
+            if limit >= _ALL_RESTRICTIONS_MAX_LIMIT:
+                raise RuntimeError(
+                    "NormGraph returned at least "
+                    f"{_ALL_RESTRICTIONS_MAX_LIMIT} restrictions; complete "
+                    "compliance retrieval requires server-side pagination"
+                )
+            limit = min(limit * 2, _ALL_RESTRICTIONS_MAX_LIMIT)
+
+    @classmethod
+    def _result(
+        cls,
+        hits: list[dict[str, Any]],
+        arguments: dict[str, Any],
+        tool_name: str,
+        retain_unsupported: bool,
+    ) -> NormGraphRestrictionRetrieval:
+        supported = [hit for hit in hits if cls.is_canonical(hit)]
+        restrictions = hits if retain_unsupported else supported
+        unsupported_count = sum(
+            1
+            for hit in hits
+            if not cls.is_canonical(hit)
+            and (
+                not isinstance(hit.get("check_plan"), dict)
+                or hit["check_plan"].get("planner_status") == "unsupported"
+            )
+        )
         return NormGraphRestrictionRetrieval(
-            restrictions=supported,
-            unsupported_count=len(hits) - len(supported),
+            restrictions=restrictions,
+            unsupported_count=unsupported_count,
             tool_call={"function": {"name": tool_name, "arguments": arguments}},
         )
 
@@ -136,6 +218,26 @@ class NormGraphRestrictionRetriever:
             for key, value in values.items()
             if value is not None and value != []
         }
+
+    @staticmethod
+    def _exhaustive_document_codes(user_query: str) -> list[str] | None:
+        query = user_query.casefold()
+        asks_for_every_item = bool(
+            re.search(r"\b(?:все\w*|кажд\w*)\b", query)
+            and re.search(r"\b(?:огранич|норм|требован)", query)
+        )
+        if not asks_for_every_item:
+            return None
+        return list(dict.fromkeys(re.findall(r"\bсп\s*(\d+(?:\.\d+)+)", query)))
+
+    @staticmethod
+    def _matches_document_code(hit: dict[str, Any], codes: list[str]) -> bool:
+        name = re.sub(
+            r"\s+",
+            "",
+            str((hit.get("provenance") or {}).get("name") or "").casefold(),
+        )
+        return any(f"сп{code}" in name for code in codes)
 
     @staticmethod
     def _filter_explicit_references(

@@ -137,3 +137,72 @@ def test_explicit_document_clause_and_distance_narrow_semantic_results():
     )
 
     assert narrowed == [wanted]
+
+
+@pytest.mark.asyncio
+async def test_exhaustive_request_lists_all_named_documents_without_llm_ranking():
+    hits = [
+        {
+            "id": "sp-104",
+            "kind": "минимальное_расстояние",
+            "value": {"number": 5.0, "unit": "м"},
+            "provenance": {"name": "СП 104.13330.2016 — корпус"},
+        },
+        {
+            "id": "sp-42",
+            "kind": "минимальное_расстояние",
+            "value": {"number": 500.0, "unit": "м"},
+            "provenance": {"name": "СП 42.13330.2016 — корпус"},
+        },
+        {
+            "id": "other",
+            "kind": "минимальное_расстояние",
+            "value": {"number": 10.0, "unit": "м"},
+            "provenance": {"name": "СП 4.13130.2013"},
+        },
+    ]
+    retriever = NormGraphRestrictionRetriever(llm_client=None)
+    client = FakeClient(hits)
+
+    result = await retriever.retrieve(
+        client,
+        "model",
+        (
+            "Проверь все ограничения из СП 104.13330.2016 и СП 42.13330.2016. "
+            "Верни результат по каждой норме."
+        ),
+    )
+
+    assert [hit["id"] for hit in result.restrictions] == ["sp-104", "sp-42"]
+    assert client.calls == [
+        ("search_restrictions", {"limit": 100, "neighbors_depth": 0})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_compliance_retrieval_fetches_all_norms_without_llm_limit():
+    hits = [
+        {
+            "id": f"r-{index}",
+            "kind": "минимальное_расстояние",
+            "value": {"number": 10.0, "unit": "м"},
+        }
+        for index in range(300)
+    ]
+    retriever = NormGraphRestrictionRetriever(llm_client=None)
+    retriever.planner = FakePlanner(None)
+    client = FakeClient(hits)
+
+    result = await retriever.retrieve(
+        client,
+        "model",
+        "Проверь соответствие проекта",
+        retain_unsupported=True,
+        retrieve_all=True,
+    )
+
+    assert len(result.restrictions) == 300
+    assert client.calls == [
+        ("search_restrictions", {"limit": 256, "neighbors_depth": 0}),
+        ("search_restrictions", {"limit": 512, "neighbors_depth": 0}),
+    ]

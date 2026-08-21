@@ -15,6 +15,7 @@ from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
     StatusPartRequest,
     StatusPayload,
+    StructuredPartRequest,
     TextPartRequest,
     TextPayload,
     ToolCall,
@@ -25,6 +26,12 @@ from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiCli
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.compliance_executor import ComplianceTemplateExecutor
+from src.agents.services.compliance_metrics import COMPLIANCE_METRICS
+from src.agents.services.compliance_result_harness import (
+    ComplianceResultHarness,
+    PreparedComplianceFollowUp,
+)
 from src.agents.services.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,
 )
@@ -37,6 +44,11 @@ from src.agents.services.pipeline_state import (
 from src.agents.services.restriction_catalog import RestrictionPlanBuilder
 from src.agents.services.restriction_context import RestrictionContextBuilder
 from src.agents.services.restriction_tool_executor import RestrictionToolExecutor
+from src.agents.services.service_entities.compliance import (
+    ComplianceResult,
+    ComplianceSummary,
+    VerificationCoverage,
+)
 from src.agents.services.service_entities.restriction_plan import (
     RestrictionPlan,
     RestrictionTaskMode,
@@ -83,6 +95,8 @@ class RestrictionParserService(BaseLlmService):
         self.plan_builder = RestrictionPlanBuilder(self.llm_client)
         self.normgraph_retriever = NormGraphRestrictionRetriever(self.llm_client)
         self.tool_executor = RestrictionToolExecutor()
+        self.compliance_executor = ComplianceTemplateExecutor()
+        self.compliance_result_harness = ComplianceResultHarness()
         self.context_builder = RestrictionContextBuilder()
         self.state_store = state_store
 
@@ -167,7 +181,10 @@ class RestrictionParserService(BaseLlmService):
         token_ref = [token]
         text_buffer: list[str] = []
         message_parts: list[
-            TextPartRequest | StatusPartRequest | ToolCallPartRequest
+            TextPartRequest
+            | StatusPartRequest
+            | ToolCallPartRequest
+            | StructuredPartRequest
         ] = []
 
         async for item in self._run_restriction_execution_pipline(
@@ -303,11 +320,13 @@ class RestrictionParserService(BaseLlmService):
         )
 
         llm_history: list[dict] = []
+        chat_messages: list[dict[str, Any]] = []
         if original_chat_id:
             try:
                 chat_info = await self.get_chat_messages(token_ref[0], original_chat_id)
+                chat_messages = chat_info.messages
                 llm_history = self.build_llm_history(
-                    chat_info.messages, current_user_query=user_query
+                    chat_messages, current_user_query=user_query
                 )
                 logger.info(f"Loaded {len(llm_history)} messages from chat history")
             except Exception as exc:
@@ -332,6 +351,27 @@ class RestrictionParserService(BaseLlmService):
             except Exception as exc:
                 logger.warning(f"Failed to persist user question: {exc}")
 
+        if history_agent == "compliance" and not is_reconnect:
+            prepared_follow_up = self.compliance_result_harness.prepare_follow_up(
+                user_query, chat_messages, llm_history
+            )
+            if prepared_follow_up is not None:
+                yield self._buf(
+                    request_id,
+                    self._status(
+                        "compliance_result_analysis",
+                        "Анализирую результат последней проверки",
+                    ),
+                )
+                async for chunk in self.generate_compliance_follow_up(
+                    model,
+                    prepared_follow_up,
+                    temperature,
+                ):
+                    yield self._buf(request_id, chunk)
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
+
         checkpoint = await self.state_store.get_checkpoint(request_id)
 
         normgraph_restrictions: list[dict[str, Any]] = []
@@ -349,6 +389,8 @@ class RestrictionParserService(BaseLlmService):
                     model,
                     user_query,
                     history=llm_history,
+                    retain_unsupported=history_agent == "compliance",
+                    retrieve_all=history_agent == "compliance",
                 )
                 normgraph_restrictions = retrieval.restrictions
                 checkpoint_data = {
@@ -371,6 +413,17 @@ class RestrictionParserService(BaseLlmService):
                 normgraph_restrictions = checkpoint[PipelineStep.NORMGRAPH].get(
                     "restrictions", []
                 )
+
+        if history_agent == "compliance" and normgraph_mcp_client is not None:
+            async for event in self._run_executable_compliance(
+                mcp_client=mcp_client,
+                request_id=request_id,
+                scenario_id=scenario_id,
+                restrictions=normgraph_restrictions,
+                checkpoint=checkpoint,
+            ):
+                yield event
+            return
 
         yield self._buf(
             request_id,
@@ -612,6 +665,289 @@ class RestrictionParserService(BaseLlmService):
 
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
 
+    async def _run_executable_compliance(
+        self,
+        *,
+        mcp_client: IduMcpClient,
+        request_id: str,
+        scenario_id: int,
+        restrictions: list[dict[str, Any]],
+        checkpoint: dict[str, Any],
+    ) -> AsyncGenerator[dict, None]:
+        """Execute each NormGraph CheckPlan independently and emit replayable results."""
+
+        if PipelineStep.VERDICT_AGGREGATION in checkpoint:
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
+
+        yield self._buf(
+            request_id,
+            self._status(
+                "check_plan_validation",
+                "Проверяю версии и параметры нормативных планов",
+            ),
+        )
+        plans: list[dict[str, Any]] = []
+        for hit in restrictions:
+            raw_plan = hit.get("check_plan")
+            if not isinstance(raw_plan, dict):
+                raw_plan = {
+                    "schema_version": "1.0",
+                    "template": "unsupported",
+                    "template_version": 1,
+                    "params": {},
+                    "source": {
+                        "restriction_id": str(hit.get("id") or "unknown"),
+                        "document_name": (hit.get("provenance") or {}).get("name"),
+                        "clause_number": (hit.get("provenance") or {}).get("numbering"),
+                        "extraction_text": hit.get("extraction_text"),
+                    },
+                    "planner_status": "unsupported",
+                }
+            plans.append(raw_plan)
+            yield self._buf(
+                request_id,
+                {
+                    "type": "check_plan",
+                    "content": {
+                        "restriction_id": raw_plan["source"]["restriction_id"],
+                        "plan": raw_plan,
+                    },
+                },
+            )
+        await self.state_store.save_checkpoint(
+            request_id, PipelineStep.CHECK_PLAN_VALIDATION, plans
+        )
+
+        yield self._buf(
+            request_id,
+            self._status(
+                "requirements_resolution",
+                "Проверяю наличие слоёв, атрибутов и полноту данных",
+            ),
+        )
+        results: list[ComplianceResult] = []
+        resolution_events: list[dict[str, Any]] = []
+        yield self._buf(
+            request_id,
+            {
+                "type": "compliance_progress",
+                "content": self._compliance_progress(results, len(plans)),
+            },
+        )
+        for index, raw_plan in enumerate(plans, start=1):
+            execution_calls: list[dict[str, Any]] = []
+            timings_ms: dict[str, float] = {}
+            try:
+                execution = await self.compliance_executor.execute(
+                    mcp_client, raw_plan, scenario_id
+                )
+                result = execution.result
+                execution_calls = execution.tool_calls
+                timings_ms = execution.timings_ms
+            except Exception as exc:  # one norm must not erase the others
+                logger.bind(
+                    restriction_id=(raw_plan.get("source") or {}).get("restriction_id"),
+                    template=raw_plan.get("template"),
+                ).exception("Compliance template failed")
+                error_text = f"{type(exc).__name__} {exc}".lower()
+                COMPLIANCE_METRICS.observe_downstream_error(
+                    "urban_api" if "urban" in error_text else "idu_mcp"
+                )
+                result = self._failed_compliance_result(raw_plan, str(exc))
+            planner_status = str(raw_plan.get("planner_status") or "unsupported")
+            COMPLIANCE_METRICS.observe(
+                result,
+                planner_status=planner_status,
+                timings_ms=timings_ms,
+            )
+            logger.bind(
+                request_id=request_id,
+                restriction_id=result.restriction_id,
+                template=result.template,
+                template_version=result.template_version,
+                planner_status=planner_status,
+                verification_status=result.verification_status,
+                compliance_status=result.compliance_status,
+                timings_ms=timings_ms,
+                applicable_objects=result.coverage.applicable_objects,
+                checked_objects=result.coverage.checked_objects,
+                unchecked_objects=result.coverage.unchecked_objects,
+                fill_rate=result.coverage.fill_rate,
+                violated_objects=result.summary.violated_objects,
+            ).info("Compliance norm completed")
+            results.append(result)
+            resolution_content = {
+                "restriction_id": result.restriction_id,
+                "effective_requirements": result.effective_requirements.model_dump(
+                    mode="json"
+                ),
+                "resolved_requirements": [
+                    item.model_dump(mode="json")
+                    for item in result.resolved_requirements
+                ],
+                "missing_requirements": result.missing_requirements,
+            }
+            resolution_events.append(resolution_content)
+            yield self._buf(
+                request_id,
+                {"type": "requirement_resolution", "content": resolution_content},
+            )
+            yield self._buf(
+                request_id,
+                self._status(
+                    "template_execution",
+                    f"Выполняю {result.template}@v{result.template_version}",
+                ),
+            )
+            if execution_calls:
+                yield self._buf(
+                    request_id,
+                    self._tool_call(
+                        "template_execution", execution_calls, "IDU_MCP_URL"
+                    ),
+                )
+            yield self._buf(
+                request_id,
+                {
+                    "type": "compliance_result",
+                    "content": result.model_dump(mode="json"),
+                },
+            )
+            progress = self._compliance_progress(results, len(plans))
+            yield self._buf(
+                request_id,
+                {"type": "compliance_progress", "content": progress},
+            )
+            yield self._buf(
+                request_id,
+                self._status(
+                    "template_execution",
+                    f"Проверено {index} из {len(plans)} норм",
+                ),
+            )
+            feature_layers = {}
+            if result.violated_features is not None:
+                feature_layers[f"Нарушения: {result.restriction_id}"] = (
+                    result.violated_features
+                )
+            if result.passed_features is not None:
+                feature_layers[f"Проверено без нарушений: {result.restriction_id}"] = (
+                    result.passed_features
+                )
+            for item in self._feature_collections(feature_layers):
+                yield self._buf(request_id, item)
+
+        await self.state_store.save_checkpoint(
+            request_id, PipelineStep.REQUIREMENTS_RESOLUTION, resolution_events
+        )
+        await self.state_store.save_checkpoint(
+            request_id,
+            PipelineStep.TEMPLATE_EXECUTION,
+            [item.model_dump(mode="json") for item in results],
+        )
+        yield self._buf(
+            request_id,
+            self._status("verdict_aggregation", "Собираю итог по всем нормам"),
+        )
+        summary = self._compliance_summary(request_id, results)
+        await self.state_store.save_checkpoint(
+            request_id, PipelineStep.VERDICT_AGGREGATION, summary
+        )
+        yield self._buf(request_id, {"type": "compliance_summary", "content": summary})
+        yield self._buf(
+            request_id,
+            self._chunk(self._compliance_summary_text(summary), done=True),
+        )
+        await self.state_store.set_status(request_id, PipelineStatus.DONE)
+
+    @staticmethod
+    def _failed_compliance_result(
+        raw_plan: dict[str, Any], reason: str
+    ) -> ComplianceResult:
+        source = raw_plan.get("source") or {}
+        return ComplianceResult(
+            restriction_id=str(source.get("restriction_id") or "unknown"),
+            template=str(raw_plan.get("template") or "unknown"),
+            template_version=int(raw_plan.get("template_version") or 1),
+            verification_status="unverifiable",
+            compliance_status="unknown",
+            coverage=VerificationCoverage(
+                applicable_objects=0,
+                checked_objects=0,
+                unchecked_objects=0,
+                fill_rate=0,
+            ),
+            summary=ComplianceSummary(violated_objects=0, passed_objects=0),
+            missing_requirements=["template_execution_failed"],
+            warnings=[reason[:1000]],
+            source=source,
+        )
+
+    @staticmethod
+    def _compliance_summary(
+        request_id: str, results: list[ComplianceResult]
+    ) -> dict[str, Any]:
+        return {
+            "request_id": request_id,
+            "total_norms": len(results),
+            "violated_norms": sum(
+                item.compliance_status == "violated" for item in results
+            ),
+            "passed_norms": sum(item.compliance_status == "passed" for item in results),
+            "unverifiable_norms": sum(
+                item.verification_status == "unverifiable" for item in results
+            ),
+            "unsupported_norms": sum(
+                item.verification_status == "unsupported" for item in results
+            ),
+            "not_applicable_norms": sum(
+                item.verification_status == "not_applicable" for item in results
+            ),
+            "partial_norms": sum(
+                item.verification_status == "partial" for item in results
+            ),
+            "results": [item.model_dump(mode="json") for item in results],
+        }
+
+    @staticmethod
+    def _compliance_progress(
+        results: list[ComplianceResult], total_norms: int
+    ) -> dict[str, int]:
+        completed = len(results)
+        return {
+            "total_norms": total_norms,
+            "completed_norms": completed,
+            "pending_norms": max(total_norms - completed, 0),
+            "passed_norms": sum(item.compliance_status == "passed" for item in results),
+            "violated_norms": sum(
+                item.compliance_status == "violated" for item in results
+            ),
+            "unverifiable_norms": sum(
+                item.verification_status == "unverifiable" for item in results
+            ),
+            "unsupported_norms": sum(
+                item.verification_status == "unsupported" for item in results
+            ),
+        }
+
+    @staticmethod
+    def _compliance_summary_text(summary: dict[str, Any]) -> str:
+        if summary["total_norms"] == 0:
+            return "Применимые нормы не найдены."
+        parts = [
+            f"Проверка завершена для {summary['total_norms']} норм.",
+            f"Нарушено: {summary['violated_norms']}.",
+            f"На проверенной части без нарушений: {summary['passed_norms']}.",
+            f"Не удалось проверить: {summary['unverifiable_norms']}.",
+            f"Не поддерживается: {summary['unsupported_norms']}.",
+        ]
+        if summary["partial_norms"]:
+            parts.append(
+                f"С частичным покрытием: {summary['partial_norms']}; вывод относится только к проверенной части."
+            )
+        return " ".join(parts)
+
     async def _retryable_step(
         self,
         request_id: str,
@@ -731,6 +1067,35 @@ class RestrictionParserService(BaseLlmService):
         yield self._chunk("", done=True)
         logger.debug(f"LLM final response [{model}]: {''.join(response_buffer)}")
 
+    async def generate_compliance_follow_up(
+        self,
+        model: str,
+        prepared: PreparedComplianceFollowUp,
+        temperature: float,
+    ) -> AsyncGenerator[dict[str, str | dict[str, str | None | bool]], None]:
+        """Answer from the persisted result without invoking compliance tools."""
+
+        response_buffer: list[str] = []
+        async for part in await self.llm_client.chat(
+            model,
+            prepared.messages,
+            think=False,
+            options={"temperature": min(temperature, 0.2)},
+            stream=True,
+        ):
+            part: LlmChatResponse
+            if part.message.content:
+                response_buffer.append(part.message.content)
+        raw_answer = "".join(
+            response_buffer
+        ) or self.compliance_result_harness.fallback_answer(prepared.summary)
+        answer = self.compliance_result_harness.normalize_answer(
+            prepared.summary, raw_answer
+        )
+        yield self._chunk(answer, done=False)
+        yield self._chunk("", done=True)
+        logger.debug(f"LLM compliance follow-up [{model}]: {answer}")
+
     @staticmethod
     def _fallback_final_response(context: str) -> str:
         """Return a useful user-facing result if Ollama emits no content."""
@@ -758,7 +1123,12 @@ class RestrictionParserService(BaseLlmService):
         self,
         token: str,
         chat_id: str | None,
-        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        parts: list[
+            TextPartRequest
+            | StatusPartRequest
+            | ToolCallPartRequest
+            | StructuredPartRequest
+        ],
         **metadata,
     ) -> None:
         if not chat_id or not parts:
@@ -771,7 +1141,12 @@ class RestrictionParserService(BaseLlmService):
         self,
         token: str,
         chat_id: str | None,
-        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        parts: list[
+            TextPartRequest
+            | StatusPartRequest
+            | ToolCallPartRequest
+            | StructuredPartRequest
+        ],
         **metadata,
     ) -> None:
         if not chat_id or not parts:
@@ -791,7 +1166,12 @@ class RestrictionParserService(BaseLlmService):
     @staticmethod
     def _flush_text_buffer_to_parts(
         text_buffer: list[str],
-        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        parts: list[
+            TextPartRequest
+            | StatusPartRequest
+            | ToolCallPartRequest
+            | StructuredPartRequest
+        ],
     ) -> None:
         if not text_buffer:
             return
@@ -802,7 +1182,12 @@ class RestrictionParserService(BaseLlmService):
 
     def _add_tool_calls_to_parts(
         self,
-        parts: list[TextPartRequest | StatusPartRequest | ToolCallPartRequest],
+        parts: list[
+            TextPartRequest
+            | StatusPartRequest
+            | ToolCallPartRequest
+            | StructuredPartRequest
+        ],
         tool_calls: list[dict],
         execution_mode: str,
         mcp_source: str | None = None,
@@ -824,7 +1209,7 @@ class RestrictionParserService(BaseLlmService):
     @staticmethod
     def _pipeline_item_to_chat_part(
         item: dict,
-    ) -> TextPartRequest | StatusPartRequest | None:
+    ) -> TextPartRequest | StatusPartRequest | StructuredPartRequest | None:
         item_type = item.get("type")
         content = item.get("content") or {}
         if item_type == "status":
@@ -839,6 +1224,16 @@ class RestrictionParserService(BaseLlmService):
             if not text:
                 return None
             return TextPartRequest(kind="text", payload=TextPayload(text=text))
+        if item_type in {
+            "check_plan",
+            "requirement_resolution",
+            "compliance_result",
+            "compliance_summary",
+        }:
+            return StructuredPartRequest(
+                kind="data",
+                payload={"event_type": item_type, "content": content},
+            )
         return None
 
     @staticmethod

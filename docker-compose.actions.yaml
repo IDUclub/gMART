@@ -31,6 +31,8 @@ services:
       SERVICE_AUTH_CLIENT_ID: ${SERVICE_AUTH_CLIENT_ID:?SERVICE_AUTH_CLIENT_ID is required}
       SERVICE_AUTH_CLIENT_SECRET: ${SERVICE_AUTH_CLIENT_SECRET:?SERVICE_AUTH_CLIENT_SECRET is required}
       SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED: ${SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:80/ping')\""]
       interval: 10s

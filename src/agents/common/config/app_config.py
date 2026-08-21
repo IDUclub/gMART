@@ -1,3 +1,9 @@
+from src.agents.model_clients.endpoint_policy import (
+    reject_forbidden_llm_host,
+    require_local_ollama_url,
+)
+
+
 class AgentsAppConfig:
     """
     Fast API rest agents service configuration class.
@@ -61,6 +67,7 @@ class AgentsAppConfig:
 
         if not ollama_api_url:
             raise ValueError("OLLAMA_API_URL must be set")
+        require_local_ollama_url(ollama_api_url, "OLLAMA_API_URL")
         self.OLLAMA_URL = ollama_api_url
         if not idu_mcp_url:
             raise ValueError("IDU_MCP_URL must be set")
@@ -108,6 +115,7 @@ class AgentsAppConfig:
         if self.LLM_BACKEND not in ("ollama", "openai"):
             raise ValueError("LLM_BACKEND must be 'ollama' or 'openai'")
         self.OPENAI_BASE_URL = openai_base_url or None
+        reject_forbidden_llm_host(self.OPENAI_BASE_URL, "OPENAI_BASE_URL")
         self.SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED = (
             scenario_data_linear_workflow_enabled
         )

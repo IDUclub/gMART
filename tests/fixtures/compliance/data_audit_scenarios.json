@@ -1,0 +1,62 @@
+{
+  "audit_date": "2026-08-20",
+  "urban_api_base_url": "https://urban-api.testing.idulab.ru/api",
+  "scenarios": [
+    {
+      "scenario_id": 772,
+      "project_id": 604,
+      "catalog": {"physical_object_types": 21, "service_types": 24},
+      "samples": {"residential_buildings": 70, "schools": 3},
+      "zone_sources": [
+        {"kind": "PZZ", "year": 2023, "features": 124},
+        {"kind": "OSM", "year": 2024, "features": 100}
+      ]
+    },
+    {
+      "scenario_id": 744,
+      "project_id": 593,
+      "samples": {"industrial_objects": 1},
+      "zone_sources": [{"kind": "OSM", "year": 2025, "features": 7}]
+    },
+    {
+      "scenario_id": 1429,
+      "project_id": 938,
+      "catalog": {"physical_object_types": 27, "service_types": 52},
+      "zone_sources": [{"kind": "OSM", "year": 2024}]
+    },
+    {
+      "scenario_id": 198,
+      "project_id": 120,
+      "zone_sources": [
+        {"kind": "PZZ", "year": 2023},
+        {"kind": "OSM", "year": 2024},
+        {"kind": "User", "year": 2026, "features": 68}
+      ]
+    }
+  ],
+  "attribute_profiles": {
+    "scenario_772_residential_buildings": {
+      "applicable_objects": 70,
+      "fields": [
+        {"path": "building.floors", "filled": 59, "fill_rate": 0.842857, "normalized_type": "number"},
+        {"path": "building.properties.floor_count_min", "filled": 59, "fill_rate": 0.842857, "normalized_type": "number"},
+        {"path": "building.properties.storeys_count", "filled": 50, "fill_rate": 0.714286, "normalized_type": "number"},
+        {"path": "osm.building:levels", "filled": 65, "fill_rate": 0.928571, "normalized_type": "string"},
+        {"path": "osm.height", "filled": 2, "fill_rate": 0.028571, "normalized_type": "number", "derive": "height_to_floors_v1"}
+      ]
+    },
+    "scenario_772_schools": {
+      "applicable_objects": 3,
+      "capacity_filled": 3,
+      "fill_rate": 1.0
+    }
+  },
+  "template_decisions": {
+    "distance_from_source@1": "enabled",
+    "distance_table@1": "enabled",
+    "presence_within@1": "enabled",
+    "zonal_attribute_threshold@1:constant": "enabled",
+    "zonal_attribute_threshold@1:zone_attribute": "unverifiable_without_confirmed_attribute",
+    "zonal_ratio@1": "enabled"
+  }
+}

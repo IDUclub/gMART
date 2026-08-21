@@ -5,11 +5,13 @@ from src.idu_mcp.dependencies.tool_deps.geom_tools_deps import GeomToolsDeps
 from src.idu_mcp.dependencies.tool_deps.urban_api_tools_deps import (
     UrbanApiToolsDeps,
 )
+from src.idu_mcp.tools_services.compliance_geometry import ComplianceGeometryTools
 from src.idu_mcp.tools_services.geometry_tools import GeometryTools
 from src.idu_mcp.tools_services.urb_api_tools import UrbanApiTool
 from src.idu_mcp.tools_services.workspace_store import WorkspaceStore
 
 mcp_deps: dict[str, BaseDep | UrbanApiToolsDeps | GeomToolsDeps] = init_dependencies()
+compliance_geometry_tools = ComplianceGeometryTools()
 
 
 def get_urban_api_tools() -> UrbanApiTool:
@@ -18,6 +20,10 @@ def get_urban_api_tools() -> UrbanApiTool:
 
 def get_geom_tools() -> GeometryTools:
     return mcp_deps["geom_tools"]
+
+
+def get_compliance_geometry_tools() -> ComplianceGeometryTools:
+    return compliance_geometry_tools
 
 
 def get_urban_api_client() -> UrbanApiClient:
