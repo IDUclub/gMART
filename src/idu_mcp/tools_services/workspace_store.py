@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import hashlib
 import json
 import os
 import time
@@ -94,6 +95,9 @@ class WorkspaceStore:
                     "created_at": created,
                     "expires_at": created + self.ttl_seconds,
                     "lineage": lineage or {},
+                    "complete": bool((lineage or {}).get("source_complete", True)),
+                    "truncated": bool((lineage or {}).get("source_truncated", False)),
+                    "revision": self._file_hash(path),
                 }
                 await self.redis.set(
                     self.KEY_PREFIX + handle,
@@ -183,12 +187,44 @@ class WorkspaceStore:
         result["null_counts"] = {
             name: int(value) for name, value in frame.isna().sum().items()
         }
+        row_count = len(frame)
+        result["fill_rates"] = {
+            str(name): (
+                float(1 - frame[name].isna().sum() / row_count) if row_count else 1.0
+            )
+            for name in frame.columns
+        }
+        result["normalized_types"] = {
+            str(name): self._normalized_dtype(frame[name]) for name in frame.columns
+        }
+        result["sample_values"] = {
+            str(name): [
+                self._json_scalar(value) for value in frame[name].dropna().head(3)
+            ]
+            for name in list(frame.columns)[:24]
+            if name != "geometry"
+        }
+        warnings: list[str] = []
         if isinstance(frame, gpd.GeoDataFrame):
             result["crs"] = str(frame.crs) if frame.crs else None
             result["geometry_type_counts"] = {
                 str(name): int(count)
                 for name, count in frame.geometry.geom_type.value_counts().items()
             }
+            invalid_count = int(
+                (~frame.geometry.is_valid & frame.geometry.notna()).sum()
+            )
+            result["invalid_geometry_count"] = invalid_count
+            if invalid_count:
+                warnings.append("invalid_geometry")
+        for name in frame.columns:
+            if name != "geometry" and frame[name].dtype == "object":
+                types = {
+                    type(value).__name__ for value in frame[name].dropna().head(100)
+                }
+                if len(types) > 1:
+                    warnings.append(f"mixed_types:{name}")
+        result["warnings"] = warnings
         return result
 
     async def _metadata(
@@ -275,6 +311,28 @@ class WorkspaceStore:
             for key, value in metadata.items()
             if key not in {"path", "owner_id"}
         }
+
+    @staticmethod
+    def _file_hash(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
+
+    @staticmethod
+    def _normalized_dtype(series: pd.Series) -> str:
+        if pd.api.types.is_bool_dtype(series):
+            return "boolean"
+        if pd.api.types.is_integer_dtype(series):
+            return "integer"
+        if pd.api.types.is_float_dtype(series):
+            return "number"
+        if pd.api.types.is_datetime64_any_dtype(series):
+            return "datetime"
+        if getattr(series.dtype, "name", "") == "geometry":
+            return "geometry"
+        return "string"
 
     @classmethod
     def _profile(cls, frame: pd.DataFrame) -> dict[str, Any]:

@@ -215,20 +215,20 @@ def test_backend_defaults_to_openai(monkeypatch):
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
     assert resolve_backend() == "openai"
-    adapter = build_llm_adapter("http://a.dgx:11434")
+    adapter = build_llm_adapter("http://localhost:11434")
     assert isinstance(adapter, OpenAiCompatAdapter)
-    assert adapter.base_url == "http://a.dgx:11434/v1"
+    assert adapter.base_url == "http://localhost:11434/v1"
 
 
 def test_ollama_backend_is_selected_by_env(monkeypatch):
     monkeypatch.setenv("LLM_BACKEND", "ollama")
-    assert isinstance(build_llm_adapter("http://a.dgx:11434"), OllamaAdapter)
+    assert isinstance(build_llm_adapter("http://localhost:11434"), OllamaAdapter)
 
 
 def test_openai_backend_is_selected_by_env(monkeypatch):
     monkeypatch.setenv("LLM_BACKEND", "openai")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://vllm:8000/v1")
-    adapter = build_llm_adapter("http://a.dgx:11434")
+    adapter = build_llm_adapter("http://localhost:11434")
     assert isinstance(adapter, OpenAiCompatAdapter)
     assert adapter.base_url == "http://vllm:8000/v1"
 
@@ -236,7 +236,7 @@ def test_openai_backend_is_selected_by_env(monkeypatch):
 def test_unknown_backend_is_rejected(monkeypatch):
     monkeypatch.setenv("LLM_BACKEND", "llamacpp")
     with pytest.raises(ValueError):
-        build_llm_adapter("http://a.dgx:11434")
+        build_llm_adapter("http://localhost:11434")
 
 
 @pytest.mark.asyncio
@@ -250,7 +250,7 @@ async def test_ollama_adapter_translates_its_error_type():
         async def chat(self, **kwargs):
             raise ResponseError("model not found", 404)
 
-    adapter = OllamaAdapter(host="http://a.dgx:11434")
+    adapter = OllamaAdapter(host="http://localhost:11434")
     adapter.client = Failing()  # type: ignore[assignment]
 
     with pytest.raises(LlmResponseError) as exc:
@@ -270,7 +270,7 @@ async def test_ollama_adapter_forwards_the_ollama_only_arguments():
             self.call = kwargs
             return LlmChatResponse()
 
-    adapter = OllamaAdapter(host="http://a.dgx:11434")
+    adapter = OllamaAdapter(host="http://localhost:11434")
     recording = Recording()
     adapter.client = recording  # type: ignore[assignment]
 
@@ -467,7 +467,7 @@ def test_think_mode_comes_from_the_environment(monkeypatch):
     [
         ("http://vllm:8000", "http://vllm:8000/v1"),
         ("http://vllm:8000/", "http://vllm:8000/v1"),
-        ("http://a.dgx:11434", "http://a.dgx:11434/v1"),
+        ("http://localhost:11434", "http://localhost:11434/v1"),
         ("http://vllm:8000/v1", "http://vllm:8000/v1"),
         ("https://gw.example.ru/llm/v1", "https://gw.example.ru/llm/v1"),
     ],
@@ -480,7 +480,7 @@ def test_base_url_gets_the_api_path_when_it_is_a_bare_origin(
     monkeypatch.setenv("LLM_BACKEND", "openai")
     monkeypatch.setenv("OPENAI_BASE_URL", configured)
 
-    assert build_llm_adapter("http://a.dgx:11434").base_url == expected
+    assert build_llm_adapter("http://localhost:11434").base_url == expected
 
 
 def test_openai_backend_falls_back_to_the_ollama_url_with_the_api_path(monkeypatch):
@@ -489,7 +489,17 @@ def test_openai_backend_falls_back_to_the_ollama_url_with_the_api_path(monkeypat
     monkeypatch.setenv("LLM_BACKEND", "openai")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
-    assert build_llm_adapter("http://a.dgx:11434").base_url == "http://a.dgx:11434/v1"
+    assert (
+        build_llm_adapter("http://localhost:11434").base_url
+        == "http://localhost:11434/v1"
+    )
+
+
+def test_native_ollama_backend_rejects_a_remote_host(monkeypatch):
+    monkeypatch.setenv("LLM_BACKEND", "ollama")
+
+    with pytest.raises(ValueError, match="must point to local Ollama"):
+        build_llm_adapter("http://a.dgx:11434")
 
 
 @pytest.mark.asyncio

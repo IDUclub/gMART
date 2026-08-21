@@ -30,6 +30,72 @@ export type LayerData = {
   count: number;
 };
 export type StreamEvent = { type: string; content: any };
+export type VerificationStatus =
+  | "complete"
+  | "partial"
+  | "unverifiable"
+  | "not_applicable"
+  | "unsupported";
+export type ComplianceStatus = "passed" | "violated" | "unknown";
+export type ComplianceEvidence = {
+  object_ref: Record<string, any>;
+  generator_ref?: Record<string, any> | null;
+  generator_refs?: Array<Record<string, any>>;
+  zone_ref?: Record<string, any> | null;
+  zone_refs?: Array<Record<string, any>>;
+  operation: string;
+  measured_value?: number | null;
+  unit?: string | null;
+  threshold?: number | null;
+  operator?: string | null;
+  violated: boolean;
+  used_fields?: Array<Record<string, any>>;
+  warnings?: string[];
+  neighbor_count?: number | null;
+  numerator_area_m2?: number | null;
+  denominator_area_m2?: number | null;
+};
+export type ComplianceResult = {
+  restriction_id: string;
+  template: string;
+  template_version: number;
+  verification_status: VerificationStatus;
+  compliance_status: ComplianceStatus;
+  coverage: {
+    applicable_objects: number;
+    checked_objects: number;
+    unchecked_objects: number;
+    fill_rate: number;
+  };
+  summary: { violated_objects: number; passed_objects: number };
+  effective_requirements?: Record<string, any>;
+  resolved_requirements?: Array<Record<string, any>>;
+  missing_requirements?: string[];
+  warnings?: string[];
+  evidence_schema_version: string;
+  source?: Record<string, any>;
+  evidence?: ComplianceEvidence[];
+};
+export type ComplianceSummary = {
+  request_id: string;
+  total_norms: number;
+  violated_norms: number;
+  passed_norms: number;
+  unverifiable_norms: number;
+  unsupported_norms: number;
+  not_applicable_norms: number;
+  partial_norms: number;
+  results: ComplianceResult[];
+};
+export type ComplianceProgress = {
+  total_norms: number;
+  completed_norms: number;
+  pending_norms: number;
+  passed_norms: number;
+  violated_norms: number;
+  unverifiable_norms: number;
+  unsupported_norms: number;
+};
 export type ChatSummary = {
   chat_id: string;
   title: string | null;

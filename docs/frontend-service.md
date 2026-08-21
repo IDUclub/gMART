@@ -217,6 +217,32 @@ Content-Type: application/json
 
 ---
 
+## Compliance endpoint
+
+### `GET /compliance/check/stream`
+
+Параметры, авторизация, создание чата и переподключение совпадают с restrictions
+endpoint. Этот поток проверяет исполняемые планы NormGraph и дополнительно отдаёт
+`check_plan`, `requirement_resolution`, `compliance_result` и
+`compliance_summary`.
+
+Встроенный UI собирает результаты по нормам во вкладке «Проверка норм». В карточке
+отдельно показываются проверяемость и соблюдение, coverage, отсутствующие
+требования, direct/derived поля, прошедшие и нарушающие объекты и раскрываемое
+evidence. Для `partial + passed` используется формулировка «на проверенной части
+нарушений не обнаружено».
+
+План из `compliance_result.content.source.check_plan` можно отправить на экспертное
+ревью через `POST /compliance/check-plans/{restriction_id}/review`. Действия:
+`approve`, `reject`, `replace`; для `replace` UI отправляет отредактированный JSON
+в поле `plan`, комментарий — в `reason`. Автор определяется сервером по токену.
+
+Сохранённый `compliance_result` восстанавливается из ChatStorage как
+структурированная карточка. Кнопка восстановления MCP-вызовов запускает новый
+расчёт на текущих данных сценария и не означает исторически идентичный replay.
+
+---
+
 ## Типы SSE-событий
 
 События приходят в поле `data` стандартного SSE-сообщения. Значение `data` — JSON одного из типов ниже.
@@ -259,6 +285,10 @@ Content-Type: application/json
 | `buffer_creation` | Построение буферных зон |
 | `restriction_formation` | Извлечение нормативных ограничений |
 | `context_preparation` | Подготовка контекста для финального ответа |
+| `check_plan_validation` | Проверка схемы и точной версии шаблона |
+| `requirements_resolution` | Сопоставление слоёв и атрибутов сценария |
+| `template_execution` | Детерминированное исполнение IDU MCP tool |
+| `verdict_aggregation` | Сбор итогов по всем нормам |
 
 ### `chunk`
 
@@ -275,6 +305,38 @@ Content-Type: application/json
 ```
 
 При `content.done === true` текстовый ответ завершён.
+
+### Compliance structured events
+
+```json
+{
+  "type": "compliance_result",
+  "content": {
+    "restriction_id": "restriction-uuid",
+    "template": "distance_from_source",
+    "template_version": 1,
+    "verification_status": "partial",
+    "compliance_status": "passed",
+    "coverage": {
+      "applicable_objects": 70,
+      "checked_objects": 59,
+      "unchecked_objects": 11,
+      "fill_rate": 0.842857
+    },
+    "summary": {"violated_objects": 0, "passed_objects": 59},
+    "resolved_requirements": [],
+    "missing_requirements": [],
+    "warnings": ["Проверена только часть применимых объектов"],
+    "evidence": []
+  }
+}
+```
+
+`check_plan.content.plan` содержит принятый план,
+`requirement_resolution.content` — effective/resolved/missing requirements,
+`compliance_summary.content` — агрегаты `total_norms`, `violated_norms`,
+`passed_norms` и `unchecked_norms`. Не вычисляйте compliance из текста `chunk`:
+источником истины является структурированное событие.
 
 ### `feature_collection`
 
@@ -533,7 +595,11 @@ type StatusEvent = {
       | "plan_explanation"
       | "buffer_creation"
       | "restriction_formation"
-      | "context_preparation";
+      | "context_preparation"
+      | "check_plan_validation"
+      | "requirements_resolution"
+      | "template_execution"
+      | "verdict_aggregation";
     text: string;
   };
 };
@@ -580,6 +646,26 @@ type ErrorEvent = {
   content: { message: string; traceback?: string };
 };
 
+type ComplianceResultEvent = {
+  type: "compliance_result";
+  content: {
+    restriction_id: string;
+    template: string;
+    template_version: number;
+    verification_status:
+      | "complete" | "partial" | "unverifiable" | "not_applicable" | "unsupported";
+    compliance_status: "passed" | "violated" | "unknown";
+    coverage: {
+      applicable_objects: number;
+      checked_objects: number;
+      unchecked_objects: number;
+      fill_rate: number;
+    };
+    summary: { violated_objects: number; passed_objects: number };
+    evidence: unknown[];
+  };
+};
+
 type RestrictionEvent =
   | PipelineStartedEvent
   | StatusEvent
@@ -589,6 +675,7 @@ type RestrictionEvent =
   | ServiceEvent
   | TokenExpiredEvent
   | PipelineSuspendedEvent
+  | ComplianceResultEvent
   | ErrorEvent;
 ```
 

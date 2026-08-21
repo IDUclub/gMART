@@ -124,6 +124,24 @@ export const replayToolCall = (
 export const getModels = (settings: Settings, token: string) =>
   request<string[]>(settings.agentsUrl, "/llm/available_models", token);
 
+export const reviewCheckPlan = (
+  settings: Settings,
+  token: string,
+  restrictionId: string,
+  action: "approve" | "reject" | "replace",
+  plan?: Record<string, unknown>,
+  reason?: string,
+) =>
+  request<Record<string, unknown>>(
+    settings.agentsUrl,
+    `/compliance/check-plans/${encodeURIComponent(restrictionId)}/review`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({ action, plan, reason: reason || undefined }),
+    },
+  );
+
 export async function authAvailable(settings: Settings): Promise<boolean> {
   try {
     const response = await fetch(
