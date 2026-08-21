@@ -63,6 +63,7 @@ import type {
   AgentId,
   Chat,
   ChatSummary,
+  ComplianceProgress,
   ComplianceResult,
   ComplianceSummary,
   LayerData,
@@ -234,6 +235,8 @@ export default function App() {
     [complianceResults, setComplianceResults] = useState<ComplianceResult[]>([]),
     [complianceSummary, setComplianceSummary] =
       useState<ComplianceSummary | null>(null),
+    [complianceProgress, setComplianceProgress] =
+      useState<ComplianceProgress | null>(null),
     [events, setEvents] = useState<Array<{ time: string; event: StreamEvent }>>(
       [],
     ),
@@ -429,6 +432,7 @@ export default function App() {
       setTables(extractStoredTables(cached.chat.messages));
       setComplianceResults(extractStoredCompliance(cached.chat.messages));
       setComplianceSummary(null);
+      setComplianceProgress(null);
       scrollChatToBottom();
       return;
     }
@@ -456,6 +460,7 @@ export default function App() {
       setTables(extractStoredTables(stored.messages));
       setComplianceResults(extractStoredCompliance(stored.messages));
       setComplianceSummary(null);
+      setComplianceProgress(null);
       scrollChatToBottom();
     } catch (e) {
       setStatus(err(e));
@@ -480,6 +485,7 @@ export default function App() {
     setTables([]);
     setComplianceResults([]);
     setComplianceSummary(null);
+    setComplianceProgress(null);
     setEvents([]);
     setStatus("Готов к работе");
     resultAutoOpened.current = false;
@@ -836,9 +842,25 @@ export default function App() {
         setResultOpen(true);
       }
     }
+    if (event.type === "compliance_progress") {
+      const progress = event.content as ComplianceProgress;
+      setComplianceProgress(progress);
+      updateStatus(
+        `Проверено ${progress.completed_norms} из ${progress.total_norms} норм`,
+      );
+    }
     if (event.type === "compliance_summary") {
       const summary = event.content as ComplianceSummary;
       setComplianceSummary(summary);
+      setComplianceProgress({
+        total_norms: summary.total_norms,
+        completed_norms: summary.total_norms,
+        pending_norms: 0,
+        passed_norms: summary.passed_norms,
+        violated_norms: summary.violated_norms,
+        unverifiable_norms: summary.unverifiable_norms,
+        unsupported_norms: summary.unsupported_norms,
+      });
       setComplianceResults(summary.results || []);
       setRightTab("compliance");
       setResultOpen(true);
@@ -980,6 +1002,7 @@ export default function App() {
     setTables([]);
     setComplianceResults([]);
     setComplianceSummary(null);
+    setComplianceProgress(null);
     setEvents([]);
     setStatusEntries([]);
     stepBase.current = "";
@@ -1352,6 +1375,7 @@ export default function App() {
                   <CompliancePanel
                     results={complianceResults}
                     summary={complianceSummary}
+                    progress={complianceProgress}
                     settings={settings}
                     token={token}
                   />
@@ -1390,6 +1414,7 @@ export default function App() {
           setTables([]);
           setComplianceResults([]);
           setComplianceSummary(null);
+          setComplianceProgress(null);
           setEvents([]);
           setHistoryOpen(false);
         }}
@@ -2037,11 +2062,13 @@ function StoredComplianceResult({ result }: { result: ComplianceResult }) {
 function CompliancePanel({
   results,
   summary,
+  progress,
   settings,
   token,
 }: {
   results: ComplianceResult[];
   summary: ComplianceSummary | null;
+  progress: ComplianceProgress | null;
   settings: Settings;
   token: string;
 }) {
@@ -2055,6 +2082,11 @@ function CompliancePanel({
               ? `${results.length} ${pluralize(results.length, "норма", "нормы", "норм")}`
               : "Результатов пока нет"}
           </strong>
+          {progress && progress.completed_norms < progress.total_norms && (
+            <small>
+              Проверено {progress.completed_norms} из {progress.total_norms}
+            </small>
+          )}
         </div>
         {summary && (
           <div className="compliance-totals">

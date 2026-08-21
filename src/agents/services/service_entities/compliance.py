@@ -277,6 +277,7 @@ class ComplianceEvidence(StrictModel):
     warnings: list[str] = Field(default_factory=list, max_length=50)
     input_revision: str | None = None
     neighbor_count: int | None = Field(default=None, ge=0)
+    neighbor_counts: dict[str, int] = Field(default_factory=dict)
     radius_m: float | None = Field(default=None, gt=0)
     neighbor_layers: list[str] = Field(default_factory=list, max_length=16)
     numerator_area_m2: float | None = Field(default=None, ge=0)

@@ -26,6 +26,7 @@ class StatusResponse(BaseModel):
         "requirements_resolution",
         "template_execution",
         "verdict_aggregation",
+        "compliance_result_analysis",
     ]
     text: str
 
@@ -100,6 +101,16 @@ class ComplianceSummaryEventContent(BaseModel):
     results: list[ComplianceResult]
 
 
+class ComplianceProgressEventContent(BaseModel):
+    total_norms: int
+    completed_norms: int
+    pending_norms: int
+    passed_norms: int
+    violated_norms: int
+    unverifiable_norms: int
+    unsupported_norms: int
+
+
 class RestrictionsResponse(BaseModel):
     type: Literal[
         "status",
@@ -114,6 +125,7 @@ class RestrictionsResponse(BaseModel):
         "check_plan",
         "requirement_resolution",
         "compliance_result",
+        "compliance_progress",
         "compliance_summary",
     ]
     content: (
@@ -128,5 +140,6 @@ class RestrictionsResponse(BaseModel):
         | CheckPlanEventContent
         | RequirementResolutionEventContent
         | ComplianceResult
+        | ComplianceProgressEventContent
         | ComplianceSummaryEventContent
     )

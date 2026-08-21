@@ -30,12 +30,14 @@ class ComplianceGeometryTools:
     def _layer(self, name: str, layers: dict[str, dict]) -> gpd.GeoDataFrame:
         if name not in layers:
             raise ValueError(f"Layer {name!r} is missing")
-        frame = GeometryTools._feature_collection_to_gdf(name, layers[name])
+        features = layers[name].get("features") or []
+        frame = (
+            GeometryTools._feature_collection_to_gdf(name, layers[name])
+            if features
+            else gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=4326)
+        )
         flattened = pd.json_normalize(
-            [
-                feature.get("properties") or {}
-                for feature in layers[name].get("features", [])
-            ],
+            [feature.get("properties") or {} for feature in features],
             sep=".",
         )
         for column in flattened.columns:
@@ -228,12 +230,17 @@ class ComplianceGeometryTools:
     ) -> dict[str, Any]:
         source = self._layer(source_layer, layers)
         objects = self._combine([self._layer(name, layers) for name in targets])
-        if attribute_field not in source.columns:
+        if not source.empty and attribute_field not in source.columns:
             raise ValueError(f"Attribute {attribute_field!r} is missing")
         metric_crs = self._metric_crs(source, objects)
         metric = source.to_crs(metric_crs).copy()
         distances: list[float | None] = []
-        for value in pd.to_numeric(metric[attribute_field], errors="coerce"):
+        values = (
+            pd.to_numeric(metric[attribute_field], errors="coerce")
+            if attribute_field in metric.columns
+            else []
+        )
+        for value in values:
             selected = next(
                 (
                     float(band["distance_m"])
@@ -324,23 +331,37 @@ class ComplianceGeometryTools:
         input_revision: str | None = None,
     ) -> dict[str, Any]:
         objects = self._layer(objects_layer, layers)
-        neighbors = self._combine(
-            [self._layer(name, layers) for name in required_neighbor_layers]
-        )
+        neighbor_frames = {
+            name: self._layer(name, layers) for name in required_neighbor_layers
+        }
+        neighbors = self._combine(list(neighbor_frames.values()))
         metric_crs = self._metric_crs(objects, neighbors)
         buffers = objects.to_crs(metric_crs).copy()
         buffers["geometry"] = buffers.geometry.buffer(
             distance_m, cap_style=BufferTypeEnum.ROUND
         )
-        matches = self._matched_refs(buffers.to_crs(4326), neighbors, "intersects")
+        wgs84_buffers = buffers.to_crs(4326)
+        matches_by_layer = {
+            name: self._matched_refs(wgs84_buffers, frame, "intersects")
+            for name, frame in neighbor_frames.items()
+        }
         annotated = objects.copy()
         evidence: list[dict[str, Any]] = []
         violated_values: list[bool] = []
         evidence_values: list[list[dict[str, Any]]] = []
         for _, row in annotated.iterrows():
-            refs = matches.get(str(row["_row_id"]), [])
-            count = len(refs)
-            violated = count < minimum_neighbors
+            row_id = str(row["_row_id"])
+            refs_by_layer = {
+                name: matches.get(row_id, [])
+                for name, matches in matches_by_layer.items()
+            }
+            neighbor_counts = {name: len(refs) for name, refs in refs_by_layer.items()}
+            refs = [ref for layer_refs in refs_by_layer.values() for ref in layer_refs]
+            count = min(neighbor_counts.values(), default=0)
+            violated = any(
+                layer_count < minimum_neighbors
+                for layer_count in neighbor_counts.values()
+            )
             item = {
                 "restriction_id": restriction_id,
                 "template": "presence_within",
@@ -351,6 +372,7 @@ class ComplianceGeometryTools:
                 "operation": "neighbors_within",
                 "measured_value": count,
                 "neighbor_count": count,
+                "neighbor_counts": neighbor_counts,
                 "unit": "count",
                 "threshold": minimum_neighbors,
                 "operator": ">=",

@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from src.agents.services.compliance_catalog import ComplianceCatalogResolver
 from src.agents.services.compliance_registry import (
     DEFAULT_COMPLIANCE_REGISTRY,
     TemplateRegistry,
@@ -41,9 +42,11 @@ class ComplianceTemplateExecutor:
         self,
         registry: TemplateRegistry = DEFAULT_COMPLIANCE_REGISTRY,
         data_gate: ComplianceDataGate | None = None,
+        catalog_resolver: ComplianceCatalogResolver | None = None,
     ) -> None:
         self.registry = registry
         self.data_gate = data_gate or ComplianceDataGate()
+        self.catalog_resolver = catalog_resolver or ComplianceCatalogResolver()
         self.tools = RestrictionToolExecutor()
 
     async def execute(
@@ -76,6 +79,11 @@ class ComplianceTemplateExecutor:
                     verification_status="unsupported",
                     missing=[str(exc)],
                     warnings=["check_plan_validation_failed"],
+                    source={
+                        **(raw_plan.get("source") or {}),
+                        "planner_status": raw_plan.get("planner_status"),
+                        "check_plan": raw_plan,
+                    },
                 ),
                 tool_calls=[],
                 layers={},
@@ -93,6 +101,7 @@ class ComplianceTemplateExecutor:
                     template_version=plan.template_version,
                     verification_status="unsupported",
                     missing=["planner_status:unsupported"],
+                    source=self._result_source(plan),
                 ),
                 tool_calls=[],
                 layers={},
@@ -120,6 +129,33 @@ class ComplianceTemplateExecutor:
                         for role in effective["missing_registry_roles"]
                     ],
                     effective_requirements=requirements,
+                    source=self._result_source(plan),
+                ),
+                tool_calls=[],
+                layers={},
+                timings_ms=timings_ms,
+            )
+
+        catalog_resolution = await self.catalog_resolver.resolve(
+            mcp_client, scenario_id, requirements
+        )
+        requirements = catalog_resolution.requirements
+        if not catalog_resolution.executable:
+            timings_ms["requirements_resolution"] = (
+                perf_counter() - resolution_started
+            ) * 1000
+            return ComplianceExecution(
+                plan=plan,
+                result=self._outcome(
+                    restriction_id=plan.source.restriction_id,
+                    template=plan.template,
+                    template_version=plan.template_version,
+                    verification_status="unverifiable",
+                    missing=catalog_resolution.missing,
+                    warnings=catalog_resolution.warnings,
+                    effective_requirements=requirements,
+                    resolved_requirements=catalog_resolution.unresolved,
+                    source=self._result_source(plan),
                 ),
                 tool_calls=[],
                 layers={},
@@ -133,6 +169,53 @@ class ComplianceTemplateExecutor:
         timings_ms["requirements_resolution"] = (
             perf_counter() - resolution_started
         ) * 1000
+        if self._no_applicable_objects(plan, params, resolution):
+            # This is a complete proof, not missing data: the canonical scenario
+            # layers were returned in full and the quantified object set is empty.
+            # Universal prohibitions/requirements are therefore vacuously true.
+            resolved_requirements = [
+                (
+                    item.model_copy(
+                        update={
+                            "resolved": True,
+                            "reason": "not_required_no_applicable_objects",
+                        }
+                    )
+                    if item.requirement_type == "attribute" and not item.resolved
+                    else item
+                )
+                for item in resolution.resolved
+            ]
+            result = ComplianceResult(
+                restriction_id=plan.source.restriction_id,
+                template=plan.template,
+                template_version=plan.template_version,
+                verification_status="complete",
+                compliance_status="passed",
+                coverage=VerificationCoverage(
+                    applicable_objects=0,
+                    checked_objects=0,
+                    unchecked_objects=0,
+                    fill_rate=1,
+                ),
+                summary=ComplianceSummary(violated_objects=0, passed_objects=0),
+                effective_requirements=requirements,
+                resolved_requirements=resolved_requirements,
+                missing_requirements=[],
+                warnings=["no_applicable_objects"],
+                source={
+                    **plan.source.model_dump(mode="json"),
+                    "planner_status": plan.planner_status,
+                    "check_plan": plan.model_dump(mode="json"),
+                },
+            )
+            return ComplianceExecution(
+                plan=plan,
+                result=result,
+                tool_calls=retrieval_calls,
+                layers=layers,
+                timings_ms=timings_ms,
+            )
         if not resolution.executable:
             return ComplianceExecution(
                 plan=plan,
@@ -144,6 +227,7 @@ class ComplianceTemplateExecutor:
                     missing=resolution.missing,
                     effective_requirements=requirements,
                     resolved_requirements=resolution.resolved,
+                    source=self._result_source(plan),
                 ),
                 tool_calls=retrieval_calls,
                 layers=layers,
@@ -163,6 +247,7 @@ class ComplianceTemplateExecutor:
                     missing=[limit_error],
                     effective_requirements=requirements,
                     resolved_requirements=resolution.resolved,
+                    source=self._result_source(plan),
                 ),
                 tool_calls=retrieval_calls,
                 layers=layers,
@@ -231,6 +316,32 @@ class ComplianceTemplateExecutor:
             timings_ms=timings_ms,
         )
 
+    @staticmethod
+    def _no_applicable_objects(plan: CheckPlan, params, resolution) -> bool:
+        """Whether all quantified/application layers are complete and empty."""
+
+        if any(item.startswith("layer:") for item in resolution.missing):
+            return False
+        if plan.template in {"distance_from_source", "distance_table"}:
+            roles = list(params.targets)
+        elif plan.template == "presence_within":
+            roles = [params.objects_layer]
+        elif plan.template == "zonal_attribute_threshold":
+            roles = [params.objects_layer]
+        elif plan.template == "zonal_ratio":
+            roles = [params.zones_layer]
+        else:
+            return False
+        if not roles:
+            return False
+        return all(
+            role in resolution.profiles
+            and resolution.profiles[role]["complete"]
+            and not resolution.profiles[role]["truncated"]
+            and resolution.profiles[role]["object_count"] == 0
+            for role in roles
+        )
+
     async def _retrieve_layers(
         self, mcp_client, requirements: DeclaredRequirements, scenario_id: int
     ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
@@ -250,9 +361,10 @@ class ComplianceTemplateExecutor:
             if not names:
                 continue
             arguments = {argument_name: names, "scenario_id": scenario_id}
-            layers.update(
-                await self.tools.execute_named_tool(mcp_client, tool_name, arguments)
+            response = await self.tools.execute_named_tool(
+                mcp_client, tool_name, arguments
             )
+            layers.update(response or {})
             calls.append({"function": {"name": tool_name, "arguments": arguments}})
 
         for requirement in (
@@ -272,6 +384,7 @@ class ComplianceTemplateExecutor:
             response = await self.tools.execute_named_tool(
                 mcp_client, "GetFunctionalZones", arguments
             )
+            response = response or {}
             if "functional_zones" in response:
                 layers[requirement.entity] = response["functional_zones"]
             calls.append(
@@ -365,6 +478,14 @@ class ComplianceTemplateExecutor:
         return f"sha256:{digest}"
 
     @staticmethod
+    def _result_source(plan: CheckPlan) -> dict[str, Any]:
+        return {
+            **plan.source.model_dump(mode="json"),
+            "planner_status": plan.planner_status,
+            "check_plan": plan.model_dump(mode="json"),
+        }
+
+    @staticmethod
     def _limit_error(entry, layers: dict[str, dict[str, Any]]) -> str | None:
         for name, layer in layers.items():
             count = len(layer.get("features") or [])
@@ -386,6 +507,7 @@ class ComplianceTemplateExecutor:
         warnings: list[str] | None = None,
         effective_requirements: DeclaredRequirements | None = None,
         resolved_requirements: list | None = None,
+        source: dict[str, Any] | None = None,
     ) -> ComplianceResult:
         return ComplianceResult(
             restriction_id=restriction_id,
@@ -404,4 +526,5 @@ class ComplianceTemplateExecutor:
             resolved_requirements=resolved_requirements or [],
             missing_requirements=missing,
             warnings=warnings or [],
+            source=source or {},
         )

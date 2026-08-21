@@ -1,3 +1,5 @@
+import asyncio
+
 from geojson_pydantic import FeatureCollection
 from loguru import logger
 
@@ -89,6 +91,66 @@ class UrbanApiTool:
             [service_name.capitalize()], token
         )
         return service_name_id.get(service_name.capitalize())
+
+    async def resolve_entity_types(
+        self,
+        *,
+        service_names: list[str],
+        physical_object_names: list[str],
+        token: str,
+    ) -> dict[str, dict[str, dict]]:
+        """Resolve names against global Urban API type dictionaries.
+
+        This lookup is intentionally independent of a scenario.  A type may be
+        canonical even when the selected scenario contains zero instances of it.
+        """
+
+        services = list(
+            dict.fromkeys(name.strip().capitalize() for name in service_names)
+        )
+        physical_objects = list(
+            dict.fromkeys(name.strip().capitalize() for name in physical_object_names)
+        )
+
+        async def service_ids() -> dict[str, int]:
+            if not services:
+                return {}
+            return await self.client.get_service_name_id(services, token)
+
+        async def physical_object_ids() -> dict[str, int]:
+            if not physical_objects:
+                return {}
+            return await self.client.get_physical_objects_name_id(
+                physical_objects, token
+            )
+
+        resolved_services, resolved_physical_objects = await asyncio.gather(
+            service_ids(), physical_object_ids()
+        )
+        return {
+            "service": self._type_resolution(services, resolved_services),
+            "physical_object": self._type_resolution(
+                physical_objects, resolved_physical_objects
+            ),
+        }
+
+    @staticmethod
+    def _type_resolution(
+        requested_names: list[str], resolved: dict[str, int]
+    ) -> dict[str, dict]:
+        canonical_by_normalized = {
+            name.strip().casefold(): (name, type_id)
+            for name, type_id in resolved.items()
+        }
+        result: dict[str, dict] = {}
+        for requested in requested_names:
+            match = canonical_by_normalized.get(requested.strip().casefold())
+            result[requested] = {
+                "found": match is not None,
+                "canonical_name": match[0] if match else None,
+                "type_id": match[1] if match else None,
+            }
+        return result
 
     async def get_functional_zones(
         self,

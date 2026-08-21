@@ -133,6 +133,31 @@ async def get_service_type_id_by_name(
 
 
 @urban_api_mcp.tool(
+    name="ResolveUrbanEntityTypes",
+    title="Проверить канонические типы объектов Urban API",
+    description=(
+        "Проверяет названия сервисов и физических объектов по глобальным справочникам "
+        "Urban API независимо от выбранного сценария. Позволяет отличить неизвестный "
+        "тип от существующего типа, экземпляров которого в сценарии нет."
+    ),
+    tags=tools_tags,
+    annotations={"title": "Resolve Urban API entity types", "readOnlyHint": True},
+    meta={"author": "ICII"},
+)
+async def resolve_urban_entity_types(
+    service_names: list[str] | None = None,
+    physical_object_names: list[str] | None = None,
+    user_id: str = Depends(extract_user_id),
+    urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
+) -> dict[str, dict[str, dict]]:
+    return await urban_api_tools.resolve_entity_types(
+        service_names=service_names or [],
+        physical_object_names=physical_object_names or [],
+        token=user_id,
+    )
+
+
+@urban_api_mcp.tool(
     name="GetFunctionalZones",
     title="Получить функциональные зоны",
     description=(

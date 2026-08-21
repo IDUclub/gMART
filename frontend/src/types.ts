@@ -87,6 +87,15 @@ export type ComplianceSummary = {
   partial_norms: number;
   results: ComplianceResult[];
 };
+export type ComplianceProgress = {
+  total_norms: number;
+  completed_norms: number;
+  pending_norms: number;
+  passed_norms: number;
+  violated_norms: number;
+  unverifiable_norms: number;
+  unsupported_norms: number;
+};
 export type ChatSummary = {
   chat_id: string;
   title: string | null;

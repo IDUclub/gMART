@@ -130,6 +130,7 @@ class ToolCallPartRequest(BaseModel):
 
 
 StructuredPartKind = Literal[
+    "data",
     "plan",
     "plan_revision",
     "artifact_ref",

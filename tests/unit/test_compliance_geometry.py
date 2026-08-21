@@ -97,6 +97,32 @@ def test_presence_within_is_an_anti_join_with_explicit_zero_neighbors():
     assert missing["generator_ref"] is None
 
 
+def test_presence_within_requires_minimum_for_each_neighbor_layer():
+    layers = {
+        "objects": _fc((Point(0, 0), {"physical_object_id": 1})),
+        "schools": _fc(
+            (Point(0.0001, 0), {"service_id": 1}),
+            (Point(0.0002, 0), {"service_id": 2}),
+        ),
+        "kindergartens": _fc((Point(0.02, 0), {"service_id": 3})),
+    }
+
+    result = ComplianceGeometryTools().presence_within(
+        objects_layer="objects",
+        required_neighbor_layers=["schools", "kindergartens"],
+        distance_m=100,
+        minimum_neighbors=1,
+        result_mode="both",
+        layers=layers,
+        restriction_id="r-required-layers",
+    )
+
+    assert result["summary"] == {"violated_objects": 1, "passed_objects": 0}
+    evidence = result["evidence"][0]
+    assert evidence["neighbor_counts"] == {"schools": 2, "kindergartens": 0}
+    assert evidence["neighbor_count"] == 0
+
+
 def test_distance_table_does_not_guess_missing_source_attribute():
     layers = {
         "source": _fc(
@@ -154,6 +180,30 @@ def test_zonal_attribute_uses_strictest_threshold():
     assert result["summary"]["violated_objects"] == 1
     assert result["evidence"][0]["threshold"] == 7
     assert len(result["evidence"][0]["zone_refs"]) == 2
+
+
+def test_zonal_attribute_passes_when_known_value_is_below_threshold():
+    zone = Polygon([(-1, -1), (1, -1), (1, 1), (-1, 1)])
+    layers = {
+        "objects": _fc((Point(0, 0), {"physical_object_id": 1, "height_m": 20})),
+        "zones": _fc((zone, {"functional_zone_id": 10})),
+    }
+
+    result = ComplianceGeometryTools().zonal_attribute_threshold(
+        objects_layer="objects",
+        zones_layer="zones",
+        object_attribute="height_m",
+        operator="<=",
+        constant_threshold=28,
+        zone_threshold_attribute=None,
+        join_predicate="within",
+        result_mode="both",
+        layers=layers,
+        restriction_id="r-height",
+    )
+
+    assert result["summary"] == {"violated_objects": 0, "passed_objects": 1}
+    assert result["coverage"]["checked_objects"] == 1
 
 
 def test_zonal_attribute_equality_with_conflicting_zone_thresholds_is_unchecked():

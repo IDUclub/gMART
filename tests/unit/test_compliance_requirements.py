@@ -143,3 +143,88 @@ def test_gate_uses_registered_height_derivation_when_direct_field_is_absent():
         result.layers["жилой дом"]["features"][0]["properties"]["__derived__.floors"]
         == 3
     )
+
+
+def test_gate_does_not_treat_attribute_schema_of_empty_complete_layer_as_missing():
+    requirements = DeclaredRequirements.model_validate(
+        {
+            "layers": [
+                {
+                    "role": "objects",
+                    "entity": "жилой дом",
+                    "entity_type": "physical_object",
+                    "geometry_types": ["Point"],
+                }
+            ],
+            "attributes": [
+                {
+                    "role": "height",
+                    "on": "objects",
+                    "accepts": [
+                        {"field": "height_m", "unit": "m", "quality": "direct"}
+                    ],
+                }
+            ],
+        }
+    )
+    plan = CheckPlan.model_validate(
+        {
+            "schema_version": "1.0",
+            "template": "zonal_attribute_threshold",
+            "template_version": 1,
+            "params": {},
+            "source": {"restriction_id": "r-empty"},
+            "planner_status": "reviewed",
+        }
+    )
+
+    result = ComplianceDataGate().resolve(
+        plan,
+        {"жилой дом": {"type": "FeatureCollection", "features": []}},
+        requirements,
+    )
+
+    assert result.executable is True
+    assert result.selected_fields["height"] == "height_m"
+    assert result.resolved[-1].reason == "empty_layer_no_values"
+
+
+def test_gate_marks_missing_height_on_existing_objects_unverifiable():
+    requirements = DeclaredRequirements.model_validate(
+        {
+            "layers": [
+                {
+                    "role": "objects",
+                    "entity": "жилой дом",
+                    "entity_type": "physical_object",
+                    "geometry_types": ["Point"],
+                }
+            ],
+            "attributes": [
+                {
+                    "role": "height",
+                    "on": "objects",
+                    "accepts": [
+                        {"field": "height_m", "unit": "m", "quality": "direct"}
+                    ],
+                }
+            ],
+        }
+    )
+    plan = CheckPlan.model_validate(
+        {
+            "schema_version": "1.0",
+            "template": "zonal_attribute_threshold",
+            "template_version": 1,
+            "params": {},
+            "source": {"restriction_id": "r-no-height"},
+            "planner_status": "reviewed",
+        }
+    )
+
+    result = ComplianceDataGate().resolve(
+        plan, {"жилой дом": _fc([{"name": "Дом без высоты"}])}, requirements
+    )
+
+    assert result.executable is False
+    assert result.missing == ["attribute:height"]

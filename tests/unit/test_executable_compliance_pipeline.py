@@ -83,7 +83,13 @@ async def test_pipeline_emits_and_checkpoints_structured_compliance_events():
     assert "check_plan" in event_types
     assert "requirement_resolution" in event_types
     assert "compliance_result" in event_types
+    assert event_types.count("compliance_progress") == 2
     assert "compliance_summary" in event_types
+    progress = [
+        event["content"] for event in events if event["type"] == "compliance_progress"
+    ]
+    assert progress[0]["completed_norms"] == 0
+    assert progress[-1]["completed_norms"] == progress[-1]["total_norms"] == 1
     checkpoints = [
         call.args[1] for call in service.state_store.save_checkpoint.await_args_list
     ]
@@ -111,3 +117,18 @@ async def test_completed_reconnect_does_not_reexecute_templates():
     ]
     assert events == []
     service.compliance_executor.execute.assert_not_awaited()
+
+
+def test_compliance_summary_is_persisted_as_chat_storage_data_part():
+    summary = {"request_id": "request-1", "results": []}
+
+    part = RestrictionParserService._pipeline_item_to_chat_part(
+        {"type": "compliance_summary", "content": summary}
+    )
+
+    assert part is not None
+    assert part.kind == "data"
+    assert part.payload == {
+        "event_type": "compliance_summary",
+        "content": summary,
+    }

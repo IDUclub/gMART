@@ -28,6 +28,10 @@ from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.compliance_executor import ComplianceTemplateExecutor
 from src.agents.services.compliance_metrics import COMPLIANCE_METRICS
+from src.agents.services.compliance_result_harness import (
+    ComplianceResultHarness,
+    PreparedComplianceFollowUp,
+)
 from src.agents.services.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,
 )
@@ -92,6 +96,7 @@ class RestrictionParserService(BaseLlmService):
         self.normgraph_retriever = NormGraphRestrictionRetriever(self.llm_client)
         self.tool_executor = RestrictionToolExecutor()
         self.compliance_executor = ComplianceTemplateExecutor()
+        self.compliance_result_harness = ComplianceResultHarness()
         self.context_builder = RestrictionContextBuilder()
         self.state_store = state_store
 
@@ -315,11 +320,13 @@ class RestrictionParserService(BaseLlmService):
         )
 
         llm_history: list[dict] = []
+        chat_messages: list[dict[str, Any]] = []
         if original_chat_id:
             try:
                 chat_info = await self.get_chat_messages(token_ref[0], original_chat_id)
+                chat_messages = chat_info.messages
                 llm_history = self.build_llm_history(
-                    chat_info.messages, current_user_query=user_query
+                    chat_messages, current_user_query=user_query
                 )
                 logger.info(f"Loaded {len(llm_history)} messages from chat history")
             except Exception as exc:
@@ -344,6 +351,27 @@ class RestrictionParserService(BaseLlmService):
             except Exception as exc:
                 logger.warning(f"Failed to persist user question: {exc}")
 
+        if history_agent == "compliance" and not is_reconnect:
+            prepared_follow_up = self.compliance_result_harness.prepare_follow_up(
+                user_query, chat_messages, llm_history
+            )
+            if prepared_follow_up is not None:
+                yield self._buf(
+                    request_id,
+                    self._status(
+                        "compliance_result_analysis",
+                        "Анализирую результат последней проверки",
+                    ),
+                )
+                async for chunk in self.generate_compliance_follow_up(
+                    model,
+                    prepared_follow_up,
+                    temperature,
+                ):
+                    yield self._buf(request_id, chunk)
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
+
         checkpoint = await self.state_store.get_checkpoint(request_id)
 
         normgraph_restrictions: list[dict[str, Any]] = []
@@ -362,6 +390,7 @@ class RestrictionParserService(BaseLlmService):
                     user_query,
                     history=llm_history,
                     retain_unsupported=history_agent == "compliance",
+                    retrieve_all=history_agent == "compliance",
                 )
                 normgraph_restrictions = retrieval.restrictions
                 checkpoint_data = {
@@ -699,7 +728,14 @@ class RestrictionParserService(BaseLlmService):
         )
         results: list[ComplianceResult] = []
         resolution_events: list[dict[str, Any]] = []
-        for raw_plan in plans:
+        yield self._buf(
+            request_id,
+            {
+                "type": "compliance_progress",
+                "content": self._compliance_progress(results, len(plans)),
+            },
+        )
+        for index, raw_plan in enumerate(plans, start=1):
             execution_calls: list[dict[str, Any]] = []
             timings_ms: dict[str, float] = {}
             try:
@@ -777,6 +813,18 @@ class RestrictionParserService(BaseLlmService):
                     "type": "compliance_result",
                     "content": result.model_dump(mode="json"),
                 },
+            )
+            progress = self._compliance_progress(results, len(plans))
+            yield self._buf(
+                request_id,
+                {"type": "compliance_progress", "content": progress},
+            )
+            yield self._buf(
+                request_id,
+                self._status(
+                    "template_execution",
+                    f"Проверено {index} из {len(plans)} норм",
+                ),
             )
             feature_layers = {}
             if result.violated_features is not None:
@@ -860,6 +908,27 @@ class RestrictionParserService(BaseLlmService):
                 item.verification_status == "partial" for item in results
             ),
             "results": [item.model_dump(mode="json") for item in results],
+        }
+
+    @staticmethod
+    def _compliance_progress(
+        results: list[ComplianceResult], total_norms: int
+    ) -> dict[str, int]:
+        completed = len(results)
+        return {
+            "total_norms": total_norms,
+            "completed_norms": completed,
+            "pending_norms": max(total_norms - completed, 0),
+            "passed_norms": sum(item.compliance_status == "passed" for item in results),
+            "violated_norms": sum(
+                item.compliance_status == "violated" for item in results
+            ),
+            "unverifiable_norms": sum(
+                item.verification_status == "unverifiable" for item in results
+            ),
+            "unsupported_norms": sum(
+                item.verification_status == "unsupported" for item in results
+            ),
         }
 
     @staticmethod
@@ -998,6 +1067,35 @@ class RestrictionParserService(BaseLlmService):
         yield self._chunk("", done=True)
         logger.debug(f"LLM final response [{model}]: {''.join(response_buffer)}")
 
+    async def generate_compliance_follow_up(
+        self,
+        model: str,
+        prepared: PreparedComplianceFollowUp,
+        temperature: float,
+    ) -> AsyncGenerator[dict[str, str | dict[str, str | None | bool]], None]:
+        """Answer from the persisted result without invoking compliance tools."""
+
+        response_buffer: list[str] = []
+        async for part in await self.llm_client.chat(
+            model,
+            prepared.messages,
+            think=False,
+            options={"temperature": min(temperature, 0.2)},
+            stream=True,
+        ):
+            part: LlmChatResponse
+            if part.message.content:
+                response_buffer.append(part.message.content)
+        raw_answer = "".join(
+            response_buffer
+        ) or self.compliance_result_harness.fallback_answer(prepared.summary)
+        answer = self.compliance_result_harness.normalize_answer(
+            prepared.summary, raw_answer
+        )
+        yield self._chunk(answer, done=False)
+        yield self._chunk("", done=True)
+        logger.debug(f"LLM compliance follow-up [{model}]: {answer}")
+
     @staticmethod
     def _fallback_final_response(context: str) -> str:
         """Return a useful user-facing result if Ollama emits no content."""
@@ -1126,16 +1224,16 @@ class RestrictionParserService(BaseLlmService):
             if not text:
                 return None
             return TextPartRequest(kind="text", payload=TextPayload(text=text))
-        if item_type == "check_plan":
-            return StructuredPartRequest(
-                kind="check_plan", payload=content.get("plan") or {}
-            )
         if item_type in {
+            "check_plan",
             "requirement_resolution",
             "compliance_result",
             "compliance_summary",
         }:
-            return StructuredPartRequest(kind=item_type, payload=content)
+            return StructuredPartRequest(
+                kind="data",
+                payload={"event_type": item_type, "content": content},
+            )
         return None
 
     @staticmethod

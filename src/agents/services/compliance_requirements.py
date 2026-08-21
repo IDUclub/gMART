@@ -234,6 +234,32 @@ class ComplianceDataGate:
                 )
                 continue
             profile = profiles[requirement.on]
+            if profile["object_count"] == 0:
+                # An empty but complete canonical layer has no values from which
+                # a field schema can be inferred.  This is not missing source
+                # data; template-level absence semantics decide the outcome.
+                candidate = requirement.accepts[0]
+                selected_field = (
+                    f"__derived__.{requirement.role}"
+                    if candidate.derive == "height_to_floors_v1"
+                    else candidate.field
+                )
+                selected_fields[requirement.role] = selected_field
+                resolved.append(
+                    ResolvedRequirement(
+                        role=requirement.role,
+                        requirement_type="attribute",
+                        resolved=True,
+                        layer=layer_name,
+                        field=selected_field,
+                        unit=candidate.unit,
+                        quality=candidate.quality,
+                        derive=candidate.derive,
+                        fill_rate=1,
+                        reason="empty_layer_no_values",
+                    )
+                )
+                continue
             fields = {item["name"]: item for item in profile["fields"]}
             selection: tuple[AttributeCandidate, dict[str, Any]] | None = None
             for candidate in requirement.accepts:

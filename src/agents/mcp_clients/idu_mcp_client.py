@@ -152,3 +152,19 @@ class IduMcpClient(BaseMcpClient):
             ["GetAvailablePhysicalObjects"], {"scenario_id": scenario_id}
         )
         return result[0].model_dump()["messages"][0]["content"]["text"]
+
+    async def resolve_urban_entity_types(
+        self,
+        *,
+        service_names: list[str],
+        physical_object_names: list[str],
+    ) -> dict:
+        """Resolve canonical types globally, independently of scenario contents."""
+
+        return await self.execute_tool(
+            "ResolveUrbanEntityTypes",
+            {
+                "service_names": service_names,
+                "physical_object_names": physical_object_names,
+            },
+        )
