@@ -1,3 +1,14 @@
+## v0.18.0 (2026-08-21)
+
+### Feat
+
+- **documents**: manage user documents in test UI (#153)
+
+### Fix
+
+- ci-cd skip changes in tests action (#156)
+- preserve named type mapping values (#152)
+
 ## v0.17.4 (2026-08-19)
 
 ### Fix
