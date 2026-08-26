@@ -26,7 +26,6 @@ dependencies = [
     "starlette>=1.6.0",
     "anyio>=4.14.2",
     "idu-service-auth @ https://github.com/IDUclub/idu-service-auth/archive/1b8a418d9b1ab702860eb7289a3b75244666a8d8.tar.gz",
-    "pandas-stubs~=3.0.5",
 ]
 
 [dependency-groups]
@@ -42,6 +41,7 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "fakeredis>=2.26.0",
+    "pandas-stubs~=3.0.5",
 ]
 
 [tool.pytest.ini_options]
