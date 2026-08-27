@@ -60,7 +60,14 @@ class ChatStorageApiClient:
             endpoint="/api/v1/chat_history/chats/titles", auth_token=token
         )
 
-    async def get_chat(self, token: str, chat_id: str) -> ChatHistory:
+    async def get_chat(
+        self,
+        token: str | None,
+        chat_id: str,
+        *,
+        space: str = "main",
+        user_id: str | None = None,
+    ) -> ChatHistory:
         """
         Function retrieves chat messages from ChatStorage service.
         Args:
@@ -70,17 +77,26 @@ class ChatStorageApiClient:
             ChatHistory: ChatHistory dataclass instance with chat history info.
         """
 
+        request_options: dict[str, Any] = {}
+        if space != "main":
+            request_options["params"] = {"space": space}
+        if user_id is not None:
+            request_options["user_id"] = user_id
         chat = await self.json_handler.get(
-            endpoint=f"/api/v1/chat_history/{chat_id}", auth_token=token
+            endpoint=f"/api/v1/chat_history/{chat_id}",
+            auth_token=token,
+            **request_options,
         )
         return ChatHistory.from_response(chat)
 
     async def create_chat(
         self,
-        token: str,
+        token: str | None,
         title: str,
         scenario_id: int | None = None,
         project_id: int | None = None,
+        space: str = "main",
+        user_id: str | None = None,
         **kwargs: Any,
     ) -> ChatCreated:
         """
@@ -99,21 +115,31 @@ class ChatStorageApiClient:
             "title": title,
             "scenario_id": scenario_id,
             "project_id": project_id,
+            "space": space if space != "main" else None,
             "metadata": kwargs,
         }
+        request_options = {"user_id": user_id} if user_id is not None else {}
         chat = await self.json_handler.post(
             endpoint="/api/v1/chat_history/create_chat",
             auth_token=token,
-            data={k: v for k, v in data_to_post.items() if v},
+            data={k: v for k, v in data_to_post.items() if v is not None},
+            **request_options,
         )
-        return ChatCreated(chat_id=chat["chat_id"], title=chat["title"])
+        return ChatCreated(
+            chat_id=chat["chat_id"],
+            title=chat.get("title") or title,
+            metadata=chat.get("metadata"),
+        )
 
     async def add_single_message(
         self,
-        token: str,
+        token: str | None,
         chat_id: str,
         role: RoleEnum | str,
         content: str,
+        space: str = "main",
+        user_id: str | None = None,
+        source_event_id: str | None = None,
         **kwargs: Any,
     ) -> MessageAdded:
         """
@@ -128,20 +154,31 @@ class ChatStorageApiClient:
             MessageAdded: Dataclass with created message info.
         """
 
+        metadata = dict(kwargs)
+        if source_event_id is not None:
+            metadata.setdefault("source_event_id", source_event_id)
+        data_to_post = {
+            "role": RoleEnum.parse(role).value,
+            "content": content,
+            "metadata": metadata,
+            "source_event_id": source_event_id,
+        }
+        request_options: dict[str, Any] = {}
+        if space != "main":
+            request_options["params"] = {"space": space}
+        if user_id is not None:
+            request_options["user_id"] = user_id
         message = await self.json_handler.post(
             endpoint=f"/api/v1/chat_history/{chat_id}/message",
             auth_token=token,
-            data={
-                "role": RoleEnum.parse(role).value,
-                "content": content,
-                "metadata": kwargs,
-            },
+            data={k: v for k, v in data_to_post.items() if v is not None},
+            **request_options,
         )
         return await self._message_created(message, MessageUploadType.TEXT)
 
     async def add_parts_message(
         self,
-        token: str,
+        token: str | None,
         chat_id: str,
         role: RoleEnum | str,
         parts: list[
@@ -151,6 +188,9 @@ class ChatStorageApiClient:
             | TablePartRequest
             | StructuredPartRequest
         ],
+        space: str = "main",
+        user_id: str | None = None,
+        source_event_id: str | None = None,
         **kwargs,
     ) -> MessageAdded:
         """
@@ -165,16 +205,27 @@ class ChatStorageApiClient:
             MessageAdded: Dataclass with created message info.
         """
 
+        metadata = dict(kwargs)
+        if source_event_id is not None:
+            metadata.setdefault("source_event_id", source_event_id)
+        data_to_post = {
+            "role": RoleEnum.parse(role).value,
+            "parts": [
+                part.model_dump(mode="json", exclude_none=True) for part in parts
+            ],
+            "metadata": metadata,
+            "source_event_id": source_event_id,
+        }
+        request_options: dict[str, Any] = {}
+        if space != "main":
+            request_options["params"] = {"space": space}
+        if user_id is not None:
+            request_options["user_id"] = user_id
         message = await self.json_handler.post(
             endpoint=f"api/v1/chat_history/{chat_id}/message",
             auth_token=token,
-            data={
-                "role": RoleEnum.parse(role).value,
-                "parts": [
-                    part.model_dump(mode="json", exclude_none=True) for part in parts
-                ],
-                "metadata": kwargs,
-            },
+            data={k: v for k, v in data_to_post.items() if v is not None},
+            **request_options,
         )
         return await self._message_created(message, MessageUploadType.PARTS)
 

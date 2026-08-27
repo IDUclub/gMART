@@ -30,6 +30,27 @@ def try_load(env_file_extension: str):
 
 def load_config() -> AgentsAppConfig:
 
+    def synapse_settings() -> dict:
+        return {
+            "synapse_enabled": os.getenv("SYNAPSE_ENABLED", "false").lower()
+            in {"1", "true", "yes", "on"},
+            "synapse_api_url": os.getenv("SYNAPSE_API_URL"),
+            "synapse_service_email": os.getenv("SYNAPSE_SERVICE_EMAIL"),
+            "synapse_service_password": os.getenv("SYNAPSE_SERVICE_PASSWORD"),
+            "synapse_workflow_id": os.getenv("SYNAPSE_WORKFLOW_ID"),
+            "synapse_run_config_id": os.getenv("SYNAPSE_RUN_CONFIG_ID"),
+            "synapse_approval_mode": os.getenv("SYNAPSE_APPROVAL_MODE", "auto"),
+            "synapse_http_timeout": float(os.getenv("SYNAPSE_HTTP_TIMEOUT", "30")),
+            "synapse_sse_reconnect_max_seconds": float(
+                os.getenv("SYNAPSE_SSE_RECONNECT_MAX_SECONDS", "30")
+            ),
+            "synapse_run_ttl_seconds": int(
+                os.getenv("SYNAPSE_RUN_TTL_SECONDS", "86400")
+            ),
+            "synapse_a2a_client_id": os.getenv("SYNAPSE_A2A_CLIENT_ID", "synapse"),
+            "synapse_auth_audience": os.getenv("SYNAPSE_AUTH_AUDIENCE"),
+        }
+
     for extension in ENV_EXTENSIONS:
         if try_load(extension):
             return AgentsAppConfig(
@@ -56,6 +77,7 @@ def load_config() -> AgentsAppConfig:
                     "SCENARIO_DATA_WORKSPACE_ENABLED", "false"
                 ).lower()
                 in {"1", "true", "yes", "on"},
+                **synapse_settings(),
             )
     logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
     try:
@@ -83,6 +105,7 @@ def load_config() -> AgentsAppConfig:
                 "SCENARIO_DATA_WORKSPACE_ENABLED", "false"
             ).lower()
             in {"1", "true", "yes", "on"},
+            **synapse_settings(),
         )
     except ValueError:
         raise

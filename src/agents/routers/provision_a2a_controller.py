@@ -6,11 +6,15 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.sse import EventSourceResponse
 
+from src.agents.a2a.a2a_format import synapse_prepopulated_params_agent_card
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.dependencies import (
+    a2a_effects_mcp_client,
+    a2a_idu_mcp_client,
     get_effects_mcp_client,
     get_idu_mcp_client,
     get_provision_a2a_service,
+    resolve_a2a_caller,
 )
 from src.agents.dto.a2a_dto import A2AJsonRpcPayloadDTO
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
@@ -26,6 +30,18 @@ async def get_provision_agent_card(
     provision_a2a_service: ProvisionA2AService = Depends(get_provision_a2a_service),
 ) -> dict[str, Any]:
     return provision_a2a_service.get_agent_card(str(request.base_url))
+
+
+@provision_a2a_router.get(
+    "/.well-known/synapse-agent-card.json", include_in_schema=False
+)
+async def get_synapse_provision_agent_card(
+    request: Request,
+    provision_a2a_service: ProvisionA2AService = Depends(get_provision_a2a_service),
+) -> dict[str, Any]:
+    return synapse_prepopulated_params_agent_card(
+        provision_a2a_service.get_agent_card(str(request.base_url))
+    )
 
 
 @provision_a2a_router.get("/agent.json", include_in_schema=False)
@@ -45,6 +61,11 @@ async def handle_provision_a2a_json_rpc(
     token: str = Depends(verify_bearer_token),
 ):
     payload_data = _payload_to_plain_data(payload)
+    caller = await resolve_a2a_caller(payload_data, token)
+    if caller.is_synapse:
+        idu_mcp_client = await a2a_idu_mcp_client(caller.user_id)
+        effects_mcp_client = await a2a_effects_mcp_client(caller.user_id)
+    token = caller.pipeline_token
     if provision_a2a_service.is_streaming_request(payload_data):
         return EventSourceResponse(
             _stream_json_rpc_events(

@@ -8,8 +8,10 @@ from fastapi.sse import EventSourceResponse
 
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.dependencies import (
+    a2a_dvd_mcp_client,
     get_dvd_a2a_service,
     get_dvd_mcp_client,
+    resolve_a2a_caller,
 )
 from src.agents.dto.a2a_dto import A2AJsonRpcPayloadDTO
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
@@ -52,6 +54,10 @@ async def handle_dvd_a2a_json_rpc(
     SSE stream; all other methods return a plain JSON response.
     """
     payload_data = _payload_to_plain_data(payload)
+    caller = await resolve_a2a_caller(payload_data, token)
+    if caller.is_synapse:
+        dvd_mcp_client = await a2a_dvd_mcp_client(caller.user_id)
+    token = caller.pipeline_token
     if dvd_a2a_service.is_streaming_request(payload_data):
         return EventSourceResponse(
             _stream_json_rpc_events(

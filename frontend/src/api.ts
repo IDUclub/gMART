@@ -3,6 +3,8 @@ import type {
   ChatSummary,
   Settings,
   StreamEvent,
+  SynapseEvent,
+  SynapseRun,
   UserDocumentDeleteResult,
   UserDocumentJobStatus,
   UserDocumentList,
@@ -35,11 +37,46 @@ export async function request<T>(
   return response.json();
 }
 
+export type ParsedSseFrame<T> = {
+  data: T;
+  id?: string;
+  event?: string;
+};
+
+export function parseSseBuffer<T>(buffer: string): {
+  frames: ParsedSseFrame<T>[];
+  rest: string;
+} {
+  const blocks = buffer.replace(/\r\n/g, "\n").split("\n\n");
+  const rest = blocks.pop() ?? "";
+  const frames: ParsedSseFrame<T>[] = [];
+  for (const block of blocks) {
+    const lines = block.split("\n");
+    const rawData = lines
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (!rawData) continue;
+    frames.push({
+      data: JSON.parse(rawData) as T,
+      id: lines
+        .find((line) => line.startsWith("id:"))
+        ?.slice(3)
+        .trimStart(),
+      event: lines
+        .find((line) => line.startsWith("event:"))
+        ?.slice(6)
+        .trimStart(),
+    });
+  }
+  return { frames, rest };
+}
+
 export async function readSse<T = StreamEvent>(
   url: URL,
   token: string,
   signal: AbortSignal,
-  onEvent: (event: T) => void,
+  onEvent: (event: T, frame?: { id?: string; event?: string }) => void,
 ) {
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: "text/event-stream" },
@@ -56,22 +93,20 @@ export async function readSse<T = StreamEvent>(
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
-    const blocks = buffer.split("\n\n");
-    buffer = blocks.pop() ?? "";
-    for (const block of blocks) {
-      const data = block
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\n");
-      if (data) onEvent(JSON.parse(data));
-    }
+    buffer += decoder.decode(value, { stream: true });
+    const parsed = parseSseBuffer<T>(buffer);
+    buffer = parsed.rest;
+    for (const frame of parsed.frames)
+      onEvent(frame.data, { id: frame.id, event: frame.event });
   }
 }
 
-export async function getChats(settings: Settings, token: string) {
-  const query = new URLSearchParams({ limit: "100", offset: "0" });
+export async function getChats(
+  settings: Settings,
+  token: string,
+  space = "main",
+) {
+  const query = new URLSearchParams({ limit: "100", offset: "0", space });
   return request<{ items: ChatSummary[] }>(
     settings.chatStorageUrl,
     `/api/v1/chat_history/chats?${query}`,
@@ -84,8 +119,9 @@ export const getChat = (
   token: string,
   id: string,
   page?: { limit: number; beforeSeq?: number | null },
+  space = "main",
 ) => {
-  const query = new URLSearchParams();
+  const query = new URLSearchParams({ space });
   if (page) query.set("message_limit", String(page.limit));
   if (page?.beforeSeq != null) query.set("before_seq", String(page.beforeSeq));
   const suffix = query.size ? `?${query}` : "";
@@ -96,10 +132,80 @@ export const getChat = (
   );
 };
 
-export const deleteChat = (settings: Settings, token: string, id: string) =>
-  request(settings.chatStorageUrl, `/api/v1/chat_history/${id}`, token, {
-    method: "DELETE",
+export const deleteChat = (
+  settings: Settings,
+  token: string,
+  id: string,
+  space = "main",
+) =>
+  request(
+    settings.chatStorageUrl,
+    `/api/v1/chat_history/${id}?${new URLSearchParams({ space })}`,
+    token,
+    {
+      method: "DELETE",
+    },
+  );
+
+export function startSynapseRun(
+  settings: Settings,
+  token: string,
+  idempotencyKey: string,
+  payload: {
+    request: string;
+    chat_id?: string | null;
+    scenario_id: number;
+    project_id?: number | null;
+    metadata?: Record<string, unknown>;
+  },
+) {
+  return request<SynapseRun>(settings.agentsUrl, "/synapse/runs", token, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
   });
+}
+
+export const getSynapseRun = (
+  settings: Settings,
+  token: string,
+  requestId: string,
+) =>
+  request<SynapseRun>(
+    settings.agentsUrl,
+    `/synapse/runs/${encodeURIComponent(requestId)}`,
+    token,
+  );
+
+export const cancelSynapseRun = (
+  settings: Settings,
+  token: string,
+  requestId: string,
+) =>
+  request<SynapseRun>(
+    settings.agentsUrl,
+    `/synapse/runs/${encodeURIComponent(requestId)}/cancel`,
+    token,
+    { method: "POST" },
+  );
+
+export function readSynapseEvents(
+  settings: Settings,
+  token: string,
+  requestId: string,
+  after: string,
+  signal: AbortSignal,
+  onEvent: (event: SynapseEvent, cursor?: string) => void,
+) {
+  const url = new URL(
+    `synapse/runs/${encodeURIComponent(requestId)}/events`,
+    settings.agentsUrl.replace(/\/+$/, "") + "/",
+  );
+  url.searchParams.set("after", after || "0-0");
+  return readSse<SynapseEvent>(url, token, signal, (event, frame) =>
+    onEvent(event, frame?.id),
+  );
+}
 
 export const replayToolCall = (
   settings: Settings,
@@ -146,6 +252,21 @@ export async function authAvailable(settings: Settings): Promise<boolean> {
   try {
     const response = await fetch(
       new URL("auth/available", settings.agentsUrl.replace(/\/+$/, "") + "/"),
+    );
+    if (!response.ok) return false;
+    return Boolean((await response.json())?.enabled);
+  } catch {
+    return false;
+  }
+}
+
+export async function synapseAvailable(settings: Settings): Promise<boolean> {
+  try {
+    const response = await fetch(
+      new URL(
+        "synapse/available",
+        settings.agentsUrl.replace(/\/+$/, "") + "/",
+      ),
     );
     if (!response.ok) return false;
     return Boolean((await response.json())?.enabled);

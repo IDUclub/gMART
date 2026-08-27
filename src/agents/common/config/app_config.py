@@ -26,6 +26,7 @@ class AgentsAppConfig:
         AUTH_HELPER_URL (str | None): IDU auth helper base URL (optional; enables /auth/token).
         AUTH_HELPER_API_KEY (str | None): API key for the auth helper /api/token endpoint.
             Secret — kept server-side only, never exposed via /system/config or logs.
+        SYNAPSE_ENABLED (bool): Enable the optional Synapse gateway.
     """
 
     OLLAMA_URL: str
@@ -43,6 +44,18 @@ class AgentsAppConfig:
     SYSTEM_PASSWORD: str | None
     AUTH_HELPER_URL: str | None
     AUTH_HELPER_API_KEY: str | None
+    SYNAPSE_ENABLED: bool
+    SYNAPSE_API_URL: str | None
+    SYNAPSE_SERVICE_EMAIL: str | None
+    SYNAPSE_SERVICE_PASSWORD: str | None
+    SYNAPSE_WORKFLOW_ID: str | None
+    SYNAPSE_RUN_CONFIG_ID: str | None
+    SYNAPSE_APPROVAL_MODE: str
+    SYNAPSE_HTTP_TIMEOUT: float
+    SYNAPSE_SSE_RECONNECT_MAX_SECONDS: float
+    SYNAPSE_RUN_TTL_SECONDS: int
+    SYNAPSE_A2A_CLIENT_ID: str
+    SYNAPSE_AUTH_AUDIENCE: str | None
 
     def __init__(
         self,
@@ -63,6 +76,18 @@ class AgentsAppConfig:
         openai_base_url: str | None = None,
         scenario_data_linear_workflow_enabled: bool = False,
         scenario_data_workspace_enabled: bool = False,
+        synapse_enabled: bool = False,
+        synapse_api_url: str | None = None,
+        synapse_service_email: str | None = None,
+        synapse_service_password: str | None = None,
+        synapse_workflow_id: str | None = None,
+        synapse_run_config_id: str | None = None,
+        synapse_approval_mode: str = "auto",
+        synapse_http_timeout: float = 30.0,
+        synapse_sse_reconnect_max_seconds: float = 30.0,
+        synapse_run_ttl_seconds: int = 86400,
+        synapse_a2a_client_id: str = "synapse",
+        synapse_auth_audience: str | None = None,
     ) -> None:
 
         if not ollama_api_url:
@@ -120,6 +145,33 @@ class AgentsAppConfig:
             scenario_data_linear_workflow_enabled
         )
         self.SCENARIO_DATA_WORKSPACE_ENABLED = scenario_data_workspace_enabled
+        self.SYNAPSE_ENABLED = synapse_enabled
+        self.SYNAPSE_API_URL = synapse_api_url.rstrip("/") if synapse_api_url else None
+        self.SYNAPSE_SERVICE_EMAIL = synapse_service_email or None
+        self.SYNAPSE_SERVICE_PASSWORD = synapse_service_password or None
+        self.SYNAPSE_WORKFLOW_ID = synapse_workflow_id or None
+        self.SYNAPSE_RUN_CONFIG_ID = synapse_run_config_id or None
+        self.SYNAPSE_APPROVAL_MODE = synapse_approval_mode
+        self.SYNAPSE_HTTP_TIMEOUT = synapse_http_timeout
+        self.SYNAPSE_SSE_RECONNECT_MAX_SECONDS = synapse_sse_reconnect_max_seconds
+        self.SYNAPSE_RUN_TTL_SECONDS = synapse_run_ttl_seconds
+        self.SYNAPSE_A2A_CLIENT_ID = synapse_a2a_client_id
+        self.SYNAPSE_AUTH_AUDIENCE = synapse_auth_audience or None
+        if self.SYNAPSE_ENABLED:
+            required_synapse = {
+                "SYNAPSE_API_URL": self.SYNAPSE_API_URL,
+                "SYNAPSE_SERVICE_EMAIL": self.SYNAPSE_SERVICE_EMAIL,
+                "SYNAPSE_SERVICE_PASSWORD": self.SYNAPSE_SERVICE_PASSWORD,
+                "SYNAPSE_WORKFLOW_ID": self.SYNAPSE_WORKFLOW_ID,
+                "SYNAPSE_RUN_CONFIG_ID": self.SYNAPSE_RUN_CONFIG_ID,
+            }
+            missing_synapse = [
+                name for name, value in required_synapse.items() if not value
+            ]
+            if missing_synapse:
+                raise ValueError(
+                    "Missing mandatory Synapse variables: " + ", ".join(missing_synapse)
+                )
         if self.LLM_BACKEND == "openai" and not (
             self.OPENAI_BASE_URL or self.OLLAMA_URL
         ):
@@ -150,6 +202,13 @@ class AgentsAppConfig:
             "SCENARIO_DATA_WORKSPACE_ENABLED": str(
                 self.SCENARIO_DATA_WORKSPACE_ENABLED
             ),
+            "SYNAPSE_ENABLED": str(self.SYNAPSE_ENABLED),
+            "SYNAPSE_API_URL": self.SYNAPSE_API_URL or "",
+            "SYNAPSE_WORKFLOW_ID": self.SYNAPSE_WORKFLOW_ID or "",
+            "SYNAPSE_RUN_CONFIG_ID": self.SYNAPSE_RUN_CONFIG_ID or "",
+            "SYNAPSE_APPROVAL_MODE": self.SYNAPSE_APPROVAL_MODE,
+            "SYNAPSE_A2A_CLIENT_ID": self.SYNAPSE_A2A_CLIENT_ID,
+            "SYNAPSE_AUTH_AUDIENCE": self.SYNAPSE_AUTH_AUDIENCE or "",
         }
 
     def __repr__(self) -> str:

@@ -61,16 +61,20 @@ Frontend продолжает передавать пользовательск�
 Authorization: Bearer <user-access-token>
 ```
 
-gMART получает из него `sub` и использует это значение как `user_id`. В production
-подпись, issuer и audience токена должны проверяться либо ingress, либо отдельной
-Keycloak-aware dependency. Текущая `verify_bearer_token` только извлекает Bearer и не
-проверяет его подпись.
+gMART получает из него `sub` и использует это значение как `user_id`. При включённой
+интеграции подпись, issuer и опциональный audience проверяет `SynapseCallerVerifier` по
+JWKS соответствующего Keycloak realm. Feature flag по умолчанию выключен, поэтому до
+настройки окружения существующие endpoint не меняют поведение.
 
 ### 3.2. gMART → Synapse API
 
 Текущий Synapse не принимает Keycloak `client_credentials` как собственную
 аутентификацию API. Поэтому без изменения Synapse нужно завести технического пользователя
 в tenant, где находится настроенный оркестратор.
+
+По локальной копии tenant определить нельзя: локальный MongoDB не запущен, а доступные
+env-файлы не содержат подключения к общей базе. Tenant станет известен из сессии
+технического пользователя после её создания. До этого конфигурация Synapse не меняется.
 
 gMART использует штатные endpoints Synapse:
 
@@ -96,23 +100,24 @@ OAuth2 `client_credentials`:
   "auth": {
     "type": "oauth2",
     "token_url": "https://keycloak.example/realms/idu/protocol/openid-connect/token",
-    "client_id": "synapse-gmart",
+    "client_id": "synapse",
     "client_secret_env": "SYNAPSE_GMART_CLIENT_SECRET",
     "grant_type": "client_credentials"
   }
 }
 ```
 
-Keycloak client `synapse-gmart` должен:
+Keycloak client `synapse` должен:
 
 - иметь разрешение на A2A endpoints gMART;
 - иметь audience, ожидаемый gMART/ingress;
 - не иметь административных прав, не нужных для выполнения агентов;
 - хранить secret только в secret manager или переменной окружения Synapse.
 
-Для production нельзя полагаться только на текущую `verify_bearer_token`: она проверяет
-наличие заголовка, но не валидность сервисного JWT. Проверку выполняет доверенный ingress
-или отдельная dependency gMART с проверкой Keycloak JWKS, issuer и audience.
+gMART проверяет сервисный JWT самостоятельно: issuer и подпись обязательны, audience
+можно зафиксировать через `SYNAPSE_AUTH_AUDIENCE`. Только токен с `azp` или `client_id`,
+равным `synapse`, получает доступ к восстановлению исходного пользователя по связке
+Synapse project/run. Остальные валидные A2A-клиенты сохраняют прежний режим работы.
 
 ### 3.4. gMART → ChatStorage и другие IDU-сервисы
 
@@ -355,10 +360,10 @@ Relay выполняет следующий цикл:
 
 1. открывает Synapse event stream с последним cursor;
 2. нормализует событие;
-3. атомарно проверяет `source_event_id` через Redis `SET`/Lua или транзакцию;
-4. добавляет событие в Redis Stream;
-5. сохраняет представление события в ChatStorage;
-6. обновляет `last_event_id` только после успешной обработки;
+3. сохраняет устойчивое представление события в ChatStorage с идемпотентным
+   `source_event_id`;
+4. атомарно проверяет `source_event_id` в Redis и добавляет событие в Redis Stream;
+5. обновляет `last_event_id` только после успешной записи в обе системы;
 7. завершает run на terminal event;
 8. при обрыве соединения переподключается с `Last-Event-ID`.
 
@@ -422,8 +427,10 @@ Frontend получает все live events, а ChatStorage хранит уст
 Redis `seen` защищает от повторов при обычном reconnect. Для строгой идемпотентности
 после рестарта между записью в ChatStorage и подтверждением Redis необходимо расширить
 ChatStorage полем `source_event_id` и уникальным индексом
-`(user_id, space, chat_id, source_event_id)`. Без этого невозможно обеспечить exactly-once
-между двумя независимыми системами; допустима только at-least-once доставка.
+`(user_id, chat_id, source_event_id)`. `chat_id` в ChatStorage глобально уникален между
+пространствами, поэтому добавлять `space` в индекс не требуется. Без этого невозможно
+обеспечить exactly-once между двумя независимыми системами; допустима только at-least-once
+доставка.
 
 ## 9. Изменения в gMART
 
@@ -473,11 +480,10 @@ src/agents/routers/synapse_controller.py
 
 ### A2A Agent Cards
 
-До подключения live Synapse прогнать все Agent Cards через его строгую валидацию.
-Текущие карточки gMART содержат нестандартные поля `google_a2a_compatible` и
-`parts_array_format` внутри `capabilities`. Если настроенный Synapse использует эти
-карточки, поля нужно убрать из сериализуемого Agent Card. Изменение выполняется только
-в gMART; код Synapse не затрагивается.
+Все пять Agent Cards (restriction, provision, document-QA, NormGraph и scenario-data)
+проверены локальным валидатором Synapse A2A 0.3. Нестандартные внутренние флаги
+`google_a2a_compatible` и `parts_array_format` удаляются только из сериализуемого
+`capabilities`; внутреннее поведение агентов не меняется. Код Synapse не затрагивается.
 
 ## 10. Переменные окружения gMART
 
@@ -492,6 +498,8 @@ SYNAPSE_APPROVAL_MODE=auto
 SYNAPSE_HTTP_TIMEOUT=30
 SYNAPSE_SSE_RECONNECT_MAX_SECONDS=30
 SYNAPSE_RUN_TTL_SECONDS=86400
+SYNAPSE_A2A_CLIENT_ID=synapse
+SYNAPSE_AUTH_AUDIENCE=
 ```
 
 Если gMART получает готовый технический токен от ingress, email/password заменяются
@@ -550,7 +558,7 @@ SYNAPSE_RUN_TTL_SECONDS=86400
 
 ## 13. Порядок внедрения
 
-1. Подготовить технического пользователя Synapse и Keycloak client `synapse-gmart`.
+1. Подготовить технического пользователя Synapse и Keycloak client `synapse`.
 2. Проверить A2A Agent Cards и service-token доступ к gMART.
 3. Реализовать config и `SynapseApiClient`.
 4. Реализовать `SynapseRunStore` и background relay.
