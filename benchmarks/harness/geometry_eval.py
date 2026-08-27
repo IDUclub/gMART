@@ -59,7 +59,6 @@ from shapely.ops import unary_union
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "eval"))
 from gold_parser import load_gold, norm  # noqa: E402
-
 from shapely.geometry import shape as _shape  # noqa: E402
 
 CENTROID_TOL_M = 5.0  # two objects are "the same" within this many metres
@@ -111,12 +110,18 @@ def _parse_ref_name(path: Path) -> RefFile:
     # 2-5 digit number instead of anchoring to a keyword (a keyword-anchored regex
     # silently misread "буфер_остановки_100" as 0). The leading row number, if any,
     # is not a distance.
-    body = n[len(str(row_no)):] if row_no is not None and n.startswith(str(row_no)) else n
+    body = (
+        n[len(str(row_no)) :] if row_no is not None and n.startswith(str(row_no)) else n
+    )
     numbers = [int(x) for x in re.findall(r"(?<!\d)(\d{2,5})(?!\d)", body)]
     near_keyword = [
         int(x)
-        for x in re.findall(r"(?:буфер|зон)[а-я]*[_ ]*(?:[а-я]+[_ ]*)*?(\d{2,5})(?!\d)", body)
-    ] + [int(x) for x in re.findall(r"(?<!\d)(\d{2,5})(?!\d)[_ ]*м(?:етр)?[а-я]*", body)]
+        for x in re.findall(
+            r"(?:буфер|зон)[а-я]*[_ ]*(?:[а-я]+[_ ]*)*?(\d{2,5})(?!\d)", body
+        )
+    ] + [
+        int(x) for x in re.findall(r"(?<!\d)(\d{2,5})(?!\d)[_ ]*м(?:етр)?[а-я]*", body)
+    ]
     dist = (near_keyword or numbers or [None])[0]
     return RefFile(path, role, row_no, dist, _stems(stem))
 
@@ -180,7 +185,7 @@ def build_reference_index(
                 )
 
             hits = [f for f in cands if exact(f)]
-            if len(hits) != 1:          # zero, or two files equally entitled
+            if len(hits) != 1:  # zero, or two files equally entitled
                 skipped += 1
                 continue
             index.setdefault(base, {})[role] = (hits[0].path, "exact")
@@ -214,7 +219,10 @@ def load_territories(path: Path, gold_csv: Path) -> dict[int, object]:
     ids = pd.to_numeric(gold["ID проекта"], errors="coerce")
     by_scenario = (
         pd.DataFrame({"sid": gold["scenario_id"], "pid": ids})
-        .dropna().drop_duplicates("sid").set_index("sid")["pid"].to_dict()
+        .dropna()
+        .drop_duplicates("sid")
+        .set_index("sid")["pid"]
+        .to_dict()
     )
     ids = ids.fillna(gold["scenario_id"].map(by_scenario))
     out: dict[int, object] = {}
@@ -237,15 +245,22 @@ def _frame(features: list[dict]) -> gpd.GeoDataFrame | None:
     return gpd.GeoDataFrame(geometry=geoms, crs=4326)
 
 
-def object_selection_prf(pred: gpd.GeoDataFrame | None,
-                         ref: gpd.GeoDataFrame | None) -> dict:
+def object_selection_prf(
+    pred: gpd.GeoDataFrame | None, ref: gpd.GeoDataFrame | None
+) -> dict:
     """Greedy centroid-nearest matching within CENTROID_TOL_M."""
     n_pred = 0 if pred is None else len(pred)
     n_ref = 0 if ref is None else len(ref)
     if n_pred == 0 or n_ref == 0:
         p = 1.0 if n_pred == 0 and n_ref == 0 else 0.0
-        return {"precision": p, "recall": p, "f1": p,
-                "n_pred": n_pred, "n_ref": n_ref, "tp": 0}
+        return {
+            "precision": p,
+            "recall": p,
+            "f1": p,
+            "n_pred": n_pred,
+            "n_ref": n_ref,
+            "tp": 0,
+        }
     pc = list(pred.geometry.centroid)
     rc = list(ref.geometry.centroid)
     used: set[int] = set()
@@ -264,12 +279,19 @@ def object_selection_prf(pred: gpd.GeoDataFrame | None,
     precision = tp / n_pred
     recall = tp / n_ref
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
-    return {"precision": precision, "recall": recall, "f1": f1,
-            "n_pred": n_pred, "n_ref": n_ref, "tp": tp}
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "n_pred": n_pred,
+        "n_ref": n_ref,
+        "tp": tp,
+    }
 
 
-def geometry_iou(pred: gpd.GeoDataFrame | None,
-                 ref: gpd.GeoDataFrame | None) -> float | None:
+def geometry_iou(
+    pred: gpd.GeoDataFrame | None, ref: gpd.GeoDataFrame | None
+) -> float | None:
     if pred is None or ref is None:
         return None
     pu = unary_union(list(pred.geometry))
@@ -278,11 +300,37 @@ def geometry_iou(pred: gpd.GeoDataFrame | None,
     return pu.intersection(ru).area / union if union else None
 
 
-def layers_by_name(rec: dict) -> dict[str, list[dict]]:
+def layers_by_name(
+    rec: dict, results_root: Path | None = None
+) -> dict[str, list[dict]]:
+    """The produced layers of one record, whichever harness wrote it.
+
+    The HTTP harness inlined every feature collection into the record, which is
+    what made a full results.jsonl run to gigabytes. The in-process runner writes
+    each layer to its own GeoJSON under ``--save-layers`` and records the path, so
+    a record stays small and a layer is read only when it is actually scored.
+    Paths are resolved relative to the results file when they are not absolute,
+    so a results directory stays movable.
+    """
+
     out: dict[str, list[dict]] = {}
     for layer in rec.get("layers") or []:
         fc = layer.get("feature_collection") or {}
         out[norm(layer.get("name"))] = fc.get("features", []) or []
+    for name, raw_path in (rec.get("layer_files") or {}).items():
+        key = norm(name)
+        if key in out:
+            continue
+        path = Path(raw_path)
+        if not path.is_absolute() and results_root is not None:
+            path = results_root / path
+        try:
+            with path.open(encoding="utf-8") as handle:
+                fc = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"  warning: cannot read layer {name!r} at {path}: {exc}")
+            continue
+        out[key] = fc.get("features", []) or []
     return out
 
 
@@ -293,12 +341,17 @@ PRODUCED_ALIASES = {
     "objects": ["objects", "объекты в зоне ограничений"],
     "buffer": ["generators", "источники ограничений"],
 }
-RESERVED_LAYERS = {"objects", "generators",
-                   "объекты в зоне ограничений", "источники ограничений"}
+RESERVED_LAYERS = {
+    "objects",
+    "generators",
+    "объекты в зоне ограничений",
+    "источники ограничений",
+}
 
 
-def _produced_for(role: str, produced: dict[str, list[dict]],
-                  ref_path: Path) -> list[dict]:
+def _produced_for(
+    role: str, produced: dict[str, list[dict]], ref_path: Path
+) -> list[dict]:
     """The produced layer that the reference file should be compared against."""
     if role in PRODUCED_ALIASES:
         for alias in PRODUCED_ALIASES[role]:
@@ -316,9 +369,12 @@ def _produced_for(role: str, produced: dict[str, list[dict]],
     return best
 
 
-def evaluate(results_path: Path, base_of: dict[int, int],
-             ref_index: dict[int, dict[str, Path]],
-             territories: dict[int, object] | None = None) -> pd.DataFrame:
+def evaluate(
+    results_path: Path,
+    base_of: dict[int, int],
+    ref_index: dict[int, dict[str, Path]],
+    territories: dict[int, object] | None = None,
+) -> pd.DataFrame:
     cache: dict[Path, gpd.GeoDataFrame] = {}
     rows = []
     for line in results_path.open(encoding="utf-8"):
@@ -326,10 +382,13 @@ def evaluate(results_path: Path, base_of: dict[int, int],
         base = base_of.get(rec.get("idx"))
         if base is None or base not in ref_index:
             continue
-        produced = layers_by_name(rec)
-        row = {"idx": rec.get("idx"), "base_index": base,
-               "scenario_id": rec.get("scenario_id"),
-               "prompt": str(rec.get("prompt"))[:60]}
+        produced = layers_by_name(rec, results_root=results_path.parent)
+        row = {
+            "idx": rec.get("idx"),
+            "base_index": base,
+            "scenario_id": rec.get("scenario_id"),
+            "prompt": str(rec.get("prompt"))[:60],
+        }
         scored = False
         for role in ("objects", "buffer", "entity"):
             entry = ref_index[base].get(role)
@@ -378,38 +437,60 @@ def evaluate(results_path: Path, base_of: dict[int, int],
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--results", required=True,
-                    help="results.jsonl of a model (full file, with layers)")
+    ap.add_argument(
+        "--results",
+        required=True,
+        help="results.jsonl of one run. Either harness: the HTTP one "
+        "inlines the layers, the in-process one records paths to "
+        "GeoJSON written under --save-layers (resolved relative "
+        "to this file).",
+    )
     ap.add_argument("--gold", default="benchmarks/data/gold/exp_data.csv")
     ap.add_argument("--dataset", default="benchmarks/data/gold/expanded_goldfirst.csv")
     ap.add_argument("--reference", default="benchmarks/data/gold/reference")
     ap.add_argument("--out", default="benchmarks/out/geometry_report.csv")
-    ap.add_argument("--match", choices=["unique", "exact"], default="unique",
-                    help="'unique': score only rows whose reference layer is "
-                         "unambiguous (folder belongs to one gold row and holds "
-                         "one layer for the role) — no interpretation at all. "
-                         "'exact': additionally accept a file that states the gold "
-                         "distance and names the gold entity in full.")
-    ap.add_argument("--clip", action="store_true",
-                    help="clip both the reference and the produced layers to the "
-                         "project territory before scoring (needs territories.json "
-                         "from fetch_territories.py)")
+    ap.add_argument(
+        "--match",
+        choices=["unique", "exact"],
+        default="unique",
+        help="'unique': score only rows whose reference layer is "
+        "unambiguous (folder belongs to one gold row and holds "
+        "one layer for the role) — no interpretation at all. "
+        "'exact': additionally accept a file that states the gold "
+        "distance and names the gold entity in full.",
+    )
+    ap.add_argument(
+        "--clip",
+        action="store_true",
+        help="clip both the reference and the produced layers to the "
+        "project territory before scoring (needs territories.json "
+        "from fetch_territories.py)",
+    )
     ap.add_argument("--territories", default="benchmarks/data/gold/territories.json")
-    ap.add_argument("--base-only", action="store_true",
-                    help="score only the 202 base gold rows, not the paraphrases")
+    ap.add_argument(
+        "--base-only",
+        action="store_true",
+        help="score only the 202 base gold rows, not the paraphrases",
+    )
     args = ap.parse_args()
 
     ref_dir = Path(args.reference)
     if not (ref_dir / "manifest.csv").exists():
-        sys.exit(f"no manifest at {ref_dir}/manifest.csv — run fetch_reference.py first.")
+        sys.exit(
+            f"no manifest at {ref_dir}/manifest.csv — run fetch_reference.py first."
+        )
 
     gold = load_gold(args.gold)
     ref_index = build_reference_index(ref_dir, gold, match=args.match)
-    counts = {r: sum(1 for v in ref_index.values() if r in v)
-              for r in ("objects", "buffer", "entity")}
-    print(f"gold rows with a reference layer: {len(ref_index)}/{len(gold)} "
-          f"(filtered-objects {counts['objects']}, zone {counts['buffer']}, "
-          f"entity {counts['entity']})")
+    counts = {
+        r: sum(1 for v in ref_index.values() if r in v)
+        for r in ("objects", "buffer", "entity")
+    }
+    print(
+        f"gold rows with a reference layer: {len(ref_index)}/{len(gold)} "
+        f"(filtered-objects {counts['objects']}, zone {counts['buffer']}, "
+        f"entity {counts['entity']})"
+    )
 
     df = pd.read_csv(args.dataset, sep=";", engine="python")
     base_of = {i: int(b) for i, b in enumerate(df["base_index"])}
@@ -423,7 +504,10 @@ def main():
         print(f"project territories available for {len(territories)} gold rows")
     out = evaluate(Path(args.results), base_of, ref_index, territories)
     if out.empty:
-        print("no records scored — check that the results file carries layers.")
+        print(
+            "no records scored — the results file carries neither inline layers "
+            "nor layer_files paths (the in-process runner needs --save-layers)."
+        )
         return
     out.to_csv(args.out, index=False)
     print(f"scored {len(out)} records -> {args.out}")

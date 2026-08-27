@@ -21,9 +21,10 @@ The re-run is driven **in code**, not through the deployed application. See
 | `harness/prefetch_scenarios.py` | Fills the offline Urban API store so runs need no network. Run once with the VPN up. |
 | `harness/run_benchmark.py` | The previous HTTP/SSE harness. Kept for the transport comparison and for reproducing the old numbers; not the path for new results. |
 | `eval/gold_parser.py` | Parse the 202 gold records → structured ground truth (intent, source/target entity, distance, expected layers, expected count) with per-field confidence flags. |
-| `eval/semantic_eval.py` | Task-aware evaluation → `out/task_aware_report.md` (end states, failure taxonomy, task-aware success, count agreement). |
+| `eval/inproc_eval.py` | **The report for the re-run.** Task-aware success by task type, plan correctness, end states, failure taxonomy, ablation and transport comparisons → `out/inproc_report.md`. |
+| `eval/semantic_eval.py` | The same shape of report for the older HTTP runs (which carry no plan) → `out/task_aware_report.md`. |
 | `harness/expand_dataset.py` | Paraphrase expansion of the 202 base queries (distance/entities preserved). |
-| `harness/geometry_eval.py` | Object-selection P/R/F1 + geometry IoU vs reference GeoJSON *(pending the GeoJSON upload)*. |
+| `harness/geometry_eval.py` | Object-selection P/R/F1 + geometry IoU vs reference GeoJSON. Reads either harness's records: inline layers, or the GeoJSON files the in-process runner writes under `--save-layers` *(scoring still pending the reference GeoJSON upload)*. |
 
 `data/`, `out/` and `runtime/` are git-ignored (large / local).
 
@@ -136,7 +137,13 @@ python benchmarks/harness/inproc_runner.py \
 python benchmarks/harness/inproc_runner.py --limit 30 \
     --transports local mcp-http --models gemma3:12b --urban-data replay ...
 
-# 2. Post-hoc screening over the existing (HTTP) results — no server needed
+# 2. The report
+python benchmarks/eval/inproc_eval.py \
+    --results benchmarks/data/results_inproc \
+    --gold benchmarks/data/gold/exp_data.csv \
+    --out benchmarks/out/inproc_report.md
+
+# 2b. Post-hoc screening over the existing (HTTP) results — no server needed
 python benchmarks/eval/semantic_eval.py
 
 # 3. Dataset expansion (Ollama only)
@@ -144,7 +151,8 @@ python benchmarks/harness/expand_dataset.py --model gpt-oss:20b \
     --n-paraphrases 10 --out benchmarks/data/gold/expanded.csv
 
 # 4. Geometry (after reference GeoJSON is placed under data/gold/reference/)
-python benchmarks/harness/geometry_eval.py
+python benchmarks/harness/geometry_eval.py \
+    --results benchmarks/data/results_inproc/gemma3_12b/base--local/results.jsonl
 ```
 
 A run resumes: rows already written **without an error** are skipped, failed rows are
@@ -188,8 +196,23 @@ zone): 200 restrictions + 2 clarification, 0 buffers_only.
 | Failure taxonomy (infra vs model vs backend) | in-process run (at source) | ✅ |
 | Task-aware restrictions success | either harness | ✅ |
 | Object-count agreement (cross-check) | results + gold NL | ⚠️ weak (NL negation/OCR noise) |
-| Intent / source & target entity / **buffer parameter** accuracy | in-process run (plan recorded) | ✅ (⛔ from the old HTTP runs — the plan never reached the stream) |
+| Intent / entity roles / **buffer parameter** accuracy | in-process run (plan recorded) | ✅ (⛔ from the old HTTP runs — the plan never reached the stream) |
 | Object-selection P/R/F1 + geometry IoU | reference GeoJSON | ⛔ pending upload |
+
+## One trap in the gold set: the entity roles are inverted
+
+`gold_parser` and `RestrictionPlan` name the two entities in opposite directions,
+and `gold_parser` says so in its own comments:
+
+| meaning | gold field | plan field | produced layer |
+|---|---|---|---|
+| the entity the zone is drawn **around** | `target_entity` | `source_entities` | `generators` |
+| the entity **counted inside** the zone | `source_entity` | `target_entities` | `objects` |
+
+Comparing the two `source` fields to each other looks obviously right and is
+wrong: it reports near-zero entity accuracy and charges it to the models.
+`inproc_eval.py` names its columns **Buffered** and **Counted** for exactly this
+reason, and a test pins the convention in both directions.
 
 ## Model lifecycle (run_benchmark.py, HTTP path only)
 

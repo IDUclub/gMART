@@ -486,8 +486,20 @@ def _write_layer(layers_dir: Path, idx: int, name: str, collection: dict) -> Pat
 # --------------------------------------------------------------------------- #
 # Batch
 # --------------------------------------------------------------------------- #
+def read_table(path: Path) -> pd.DataFrame:
+    """Read the dataset whatever delimiter it uses.
+
+    The gold export is semicolon-separated (``gold_parser.load_gold`` hardcodes
+    ``sep=";"``) while the paraphrase expansion is written with commas. Sniffing
+    covers both; a hardcoded separator silently yields a single fused column and
+    fails later as a missing-column error.
+    """
+
+    return pd.read_csv(path, sep=None, engine="python")
+
+
 def load_dataset(path: Path, limit: int | None) -> pd.DataFrame:
-    frame = pd.read_csv(path)
+    frame = read_table(path)
     missing = [column for column in (COL_Q, COL_SID) if column not in frame.columns]
     if missing:
         raise SystemExit(

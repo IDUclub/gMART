@@ -98,6 +98,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def read_table(path: Path) -> pd.DataFrame:
+    """Read the dataset whatever delimiter it uses.
+
+    The gold export is semicolon-separated (``gold_parser.load_gold`` hardcodes
+    ``sep=";"``) while the paraphrase expansion is written with commas. Sniffing
+    covers both; a hardcoded separator silently yields a single fused column and
+    fails later as a missing-column error.
+    """
+
+    return pd.read_csv(path, sep=None, engine="python")
+
+
 def scenario_names(frame: pd.DataFrame) -> dict[int, tuple[set[str], set[str]]]:
     """Gold entity names per scenario: (service names, physical-object names)."""
 
@@ -182,7 +194,7 @@ async def main_async(args: argparse.Namespace) -> None:
     from src.agents.mcp_clients.local_idu_mcp_client import LocalIduMcpClient
     from src.idu_mcp.common.api_handlers.urban_data_store import UrbanDataStore
 
-    frame = pd.read_csv(args.dataset)
+    frame = read_table(Path(args.dataset))
     per_scenario = scenario_names(frame)
     if args.scenarios:
         wanted = set(args.scenarios)
