@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
+from src.common.service_auth import (
+    ANONYMOUS_USER_ID,
+    USER_ID_HEADER,
+    service_headers,
+)
 
 
 def _client() -> DvdMcpClient:
@@ -92,3 +100,33 @@ def test_normalize_unwraps_pydantic_like_objects():
 def test_normalize_fills_missing_count():
     out = DvdMcpClient._normalize({"hits": [{"a": 1}, {"b": 2}]})
     assert out["count"] == 2
+
+
+class TestAnonymousTransportHeaders:
+    """A public document-QA question still reaches IDU_DVD as an authorized service call."""
+
+    @pytest.mark.asyncio
+    async def test_anonymous_caller_sends_service_token_and_placeholder_user_id(
+        self, monkeypatch
+    ):
+        # IDU_DVD rejects every search tool call without X-User-Id, so the anonymous
+        # path must announce a placeholder subject rather than omit the header.
+        from src.agents.dependencies import dependencies
+
+        class FakeServiceAuth:
+            async def get_authorization_headers(self):
+                return {"Authorization": "Bearer service-token"}
+
+        monkeypatch.setitem(
+            dependencies.app_deps,
+            "app_config",
+            SimpleNamespace(DVD_MCP_URL="http://dvd:8000/mcp"),
+        )
+        monkeypatch.setattr(dependencies, "get_service_auth", FakeServiceAuth)
+
+        client = await dependencies.get_dvd_mcp_client(token=None)
+
+        auth = client.mcp_client.transport.auth
+        headers = await service_headers(auth.auth, auth.user_id)
+        assert headers["Authorization"] == "Bearer service-token"
+        assert headers[USER_ID_HEADER] == ANONYMOUS_USER_ID

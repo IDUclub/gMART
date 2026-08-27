@@ -3,7 +3,7 @@ from idu_service_auth import KeycloakTokenClient
 
 from src.agents.api_clients.dvd_api_client import DvdApiClient
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
-from src.agents.common.auth.auth import verify_bearer_token
+from src.agents.common.auth.auth import optional_bearer_token, verify_bearer_token
 from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.dependencies.init_dependencies import init_dependencies
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
@@ -29,6 +29,7 @@ from src.agents.services.scenario_data_service import ScenarioDataService
 from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.system_service import SystemService
 from src.common.service_auth import (
+    ANONYMOUS_USER_ID,
     ServiceTokenAuth,
     service_mcp_client,
     user_id_from_jwt,
@@ -136,12 +137,18 @@ async def get_effects_mcp_client(
 
 
 async def get_dvd_mcp_client(
-    token: str = Depends(verify_bearer_token),
+    token: str | None = Depends(optional_bearer_token),
 ) -> DvdMcpClient:
     """
     Function returns a DvdMcpClient for the IDU_DVD document vector-DB MCP server.
 
     The IDU_DVD MCP server receives the process-wide service token and user id.
+    The bearer token is optional: anonymous callers of the public document-QA stream
+    have no Keycloak subject, so they are announced as ANONYMOUS_USER_ID. IDU_DVD
+    requires the header but honours the value only together with project_id /
+    scenario_id, which an anonymous request is never allowed to send — so the search
+    stays on the shared index. Endpoints that must stay authorized keep their own
+    verify_bearer_token.
     Returns:
         DvdMcpClient: Client for the IDU_DVD MCP server.
     Raises:
@@ -154,7 +161,9 @@ async def get_dvd_mcp_client(
             "DVD_MCP_SERVER is not configured — set it to enable the /documents agent"
         )
     client = await service_mcp_client(
-        mcp_url, get_service_auth(), user_id_from_jwt(token)
+        mcp_url,
+        get_service_auth(),
+        user_id_from_jwt(token) if token else ANONYMOUS_USER_ID,
     )
     return DvdMcpClient(client, mcp_url=mcp_url)
 

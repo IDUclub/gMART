@@ -8,7 +8,9 @@ class DocumentQaRequestDTO(SimpleRequestDTO):
     DTO for the regulatory-documents QA (RAG) endpoint.
 
     The agent retrieves fragments from IDU_DVD and answers the natural-language question;
-    scenario_id / chat_id are optional and used for chat-history persistence.
+    scenario_id / chat_id are optional and used for chat-history persistence. Both bind the
+    request to a user, so they are only accepted on an authorized request — without a bearer
+    token the agent answers over the shared regulatory index and keeps no history.
     Attributes:
         scenario_id (int | None): Scenario ID from Urban API. When chat_id is not provided,
             a new chat is created in ChatStorage tagged with this scenario_id and the
@@ -24,7 +26,7 @@ class DocumentQaRequestDTO(SimpleRequestDTO):
         description=(
             "Scenario ID from Urban API (optional). When chat_id is not provided, a new "
             "chat is created in ChatStorage tagged with this scenario_id and the "
-            "project_id resolved from it."
+            "project_id resolved from it. Requires an authorized request."
         ),
     )
     chat_id: str | None = Field(
@@ -32,7 +34,9 @@ class DocumentQaRequestDTO(SimpleRequestDTO):
         max_length=36,
         default=None,
         examples=["550e8400-e29b-41d4-a716-446655440000"],
-        description="Chat ID from Chat Storage for history continuity",
+        description=(
+            "Chat ID from Chat Storage for history continuity. Requires an authorized request."
+        ),
     )
     request_id: str | None = Field(
         min_length=36,
