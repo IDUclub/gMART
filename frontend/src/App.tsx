@@ -49,14 +49,19 @@ import { uid } from "./uid";
 import {
   authAvailable,
   authLogin,
+  cancelSynapseRun,
   deleteChat,
   getChat,
   getChats,
   getModels,
+  getSynapseRun,
   readSse,
+  readSynapseEvents,
   replayToolCall,
   reviewCheckPlan,
   request,
+  startSynapseRun,
+  synapseAvailable,
 } from "./api";
 import type {
   Agent,
@@ -72,10 +77,22 @@ import type {
   Settings,
   StatusEntry,
   StreamEvent,
+  SynapseEvent,
   TableData,
 } from "./types";
 gsap.registerPlugin(useGSAP);
 const AGENTS: Agent[] = [
+  {
+    id: "synapse",
+    label: "Synapse",
+    caption: "Альтернативный оркестратор",
+    path: "/synapse/runs",
+    needsScenario: true,
+    examples: [
+      "Проверь ограничения для выбранной территории и предложи последовательность действий",
+      "Собери сведения о сценарии, нормативных требованиях и обеспеченности сервисами",
+    ],
+  },
   {
     id: "orchestrator",
     label: "Оркестратор",
@@ -205,6 +222,9 @@ const emptyHistoryWindow: HistoryWindow = {
   loading: false,
 };
 const MAX_CACHED_CHAT_WINDOWS = 6;
+const SYNAPSE_RESUME_KEY = "gmart-synapse-active-run";
+const SYNAPSE_PENDING_START_KEY = "gmart-synapse-pending-start";
+const spaceForAgent = (id: AgentId) => (id === "synapse" ? "synapse" : "main");
 function load() {
   try {
     return {
@@ -232,7 +252,9 @@ export default function App() {
     [answer, setAnswer] = useState(""),
     [layers, setLayers] = useState<LayerData[]>([]),
     [tables, setTables] = useState<TableData[]>([]),
-    [complianceResults, setComplianceResults] = useState<ComplianceResult[]>([]),
+    [complianceResults, setComplianceResults] = useState<ComplianceResult[]>(
+      [],
+    ),
     [complianceSummary, setComplianceSummary] =
       useState<ComplianceSummary | null>(null),
     [complianceProgress, setComplianceProgress] =
@@ -256,6 +278,7 @@ export default function App() {
     [settingsOpen, setSettingsOpen] = useState(false),
     [loginOpen, setLoginOpen] = useState(false),
     [authApi, setAuthApi] = useState(false),
+    [synapseApi, setSynapseApi] = useState(false),
     [systemPassword, setSystemPassword] = useState(""),
     [systemConfig, setSystemConfig] = useState<Record<string, string> | null>(
       null,
@@ -276,6 +299,10 @@ export default function App() {
     messagesScroller = useRef<HTMLDivElement>(null),
     messagesEnd = useRef<HTMLDivElement>(null),
     undoTimer = useRef<number | null>(null);
+  const availableAgents = useMemo(
+    () => AGENTS.filter((item) => item.id !== "synapse" || synapseApi),
+    [synapseApi],
+  );
   const agent = AGENTS.find((a) => a.id === agentId)!;
   useGSAP(
     () => {
@@ -322,6 +349,7 @@ export default function App() {
   }, [settings]);
   useEffect(() => {
     authAvailable(settings).then(setAuthApi);
+    synapseAvailable(settings).then(setSynapseApi);
     return () => {
       if (reloginTimer.current) window.clearTimeout(reloginTimer.current);
     };
@@ -361,7 +389,11 @@ export default function App() {
   useEffect(() => {
     if (!token) return;
     loadChats();
-  }, [token]);
+  }, [token, agentId]);
+  useEffect(() => {
+    if (!token || agentId !== "synapse") return;
+    void resumeSynapseRun();
+  }, [token, agentId]);
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: busy ? "smooth" : "auto" });
   }, [answer, busy, pendingQuestion, statusEntries]);
@@ -386,7 +418,7 @@ export default function App() {
   useEffect(() => setQuery(agent.examples[0]), [agentId]);
   async function loadChats() {
     try {
-      setChats((await getChats(settings, token)).items);
+      setChats((await getChats(settings, token, spaceForAgent(agentId))).items);
     } catch (e) {
       setStatus(err(e));
     }
@@ -437,9 +469,15 @@ export default function App() {
       return;
     }
     try {
-      const stored = await getChat(settings, token, id, {
-        limit: CHAT_PAGE_SIZE,
-      });
+      const stored = await getChat(
+        settings,
+        token,
+        id,
+        {
+          limit: CHAT_PAGE_SIZE,
+        },
+        spaceForAgent(agentId),
+      );
       setChat(stored);
       setHistoryWindow({
         hasMore: Boolean(stored.has_more),
@@ -507,10 +545,16 @@ export default function App() {
     const previousTop = scroller?.scrollTop || 0;
     setHistoryWindow((value) => ({ ...value, loading: true }));
     try {
-      const page = await getChat(settings, token, current.chat_id, {
-        limit: CHAT_PAGE_SIZE,
-        beforeSeq,
-      });
+      const page = await getChat(
+        settings,
+        token,
+        current.chat_id,
+        {
+          limit: CHAT_PAGE_SIZE,
+          beforeSeq,
+        },
+        spaceForAgent(agentId),
+      );
       const merged = mergeMessageWindow(page.messages, current.messages);
       setChat((value) => {
         if (!value || value.chat_id !== current.chat_id) return value;
@@ -538,7 +582,7 @@ export default function App() {
   }
   async function removeChat(id: string) {
     if (!confirm("Удалить этот диалог?")) return;
-    await deleteChat(settings, token, id);
+    await deleteChat(settings, token, id, spaceForAgent(agentId));
     if (chat?.chat_id === id) {
       setChat(null);
       chatIdRef.current = undefined;
@@ -599,6 +643,167 @@ export default function App() {
       [{ time: new Date().toLocaleTimeString(), event }, ...v].slice(0, 100),
     );
     route(event);
+  }
+  function handleSynapseEvent(event: SynapseEvent): boolean {
+    setEvents((current) =>
+      [
+        { time: new Date().toLocaleTimeString(), event: event as StreamEvent },
+        ...current,
+      ].slice(0, 100),
+    );
+    const source = event.source_type;
+    const text = synapseEventText(event);
+    if (source.endsWith("text.delta") && text) {
+      updateSseAnswer((current) => current + text);
+    } else if (
+      (source === "message_appended" || source === "a2a_message") &&
+      text
+    ) {
+      const role = String(
+        event.content?.message?.role || event.content?.role || "",
+      );
+      if (role !== "user") updateSseAnswer(text);
+    }
+    const collections = findFeatureCollections(event.content);
+    if (collections.length) {
+      setLayers((current) =>
+        collections.reduce(
+          (next, geojson, index) =>
+            appendLatestVisibleLayer(next, {
+              id: `${event.source_event_id}:${index}`,
+              name: `Synapse · ${source}`,
+              color: colors[next.length % colors.length],
+              visible: true,
+              geojson,
+              count: geojson.features.length,
+            }),
+          current,
+        ),
+      );
+      setRightTab("map");
+      setResultOpen(true);
+    }
+    if (source === "agent.delegation.started" || source === "a2a_agent_started")
+      updateStatus("Synapse передал задачу агенту gMART…");
+    else if (
+      source === "agent.delegation.completed" ||
+      source === "a2a_agent_completed"
+    )
+      updateStatus("Агент gMART завершил задачу");
+    else if (source.startsWith("phase.")) updateStatus(`Synapse: ${source}`);
+    else if (source === "project_failed")
+      updateStatus(text || "Synapse завершил работу с ошибкой", "warning");
+    else if (source === "project_stopped")
+      updateStatus("Запрос Synapse остановлен", "warning");
+    else if (source === "project_completed")
+      updateStatus("Ответ Synapse готов", "done");
+
+    const terminal = [
+      "project_completed",
+      "project_failed",
+      "project_stopped",
+    ].includes(source);
+    if (terminal) {
+      activeRequestIdRef.current = undefined;
+      localStorage.removeItem(SYNAPSE_RESUME_KEY);
+      setBusy(false);
+      finalizeActiveExchange(
+        source === "project_completed"
+          ? "Synapse завершил работу. Результат сохранён в истории."
+          : text || "Выполнение Synapse завершено.",
+      );
+      void loadChats();
+    }
+    return terminal;
+  }
+
+  async function streamSynapseRun(
+    requestId: string,
+    initialCursor: string,
+    question: string,
+  ) {
+    let cursor = initialCursor || "0-0";
+    let terminal = false;
+    let backoff = 400;
+    const controller = new AbortController();
+    abort.current = controller;
+    while (!terminal && !controller.signal.aborted) {
+      try {
+        const currentToken = await freshToken();
+        await readSynapseEvents(
+          settings,
+          currentToken,
+          requestId,
+          cursor,
+          controller.signal,
+          (event, nextCursor) => {
+            if (nextCursor) cursor = nextCursor;
+            localStorage.setItem(
+              SYNAPSE_RESUME_KEY,
+              JSON.stringify({
+                requestId,
+                cursor,
+                chatId: chatIdRef.current,
+                question,
+              }),
+            );
+            terminal = handleSynapseEvent(event);
+            if (terminal) controller.abort();
+          },
+        );
+        backoff = 400;
+      } catch (error) {
+        if (terminal) return;
+        if (controller.signal.aborted) throw error;
+        updateStatus("Переподключаю поток Synapse…", "warning");
+        await new Promise((resolve) => window.setTimeout(resolve, backoff));
+        backoff = Math.min(backoff * 2, 5000);
+      }
+    }
+  }
+
+  async function resumeSynapseRun() {
+    if (busy || activeRequestIdRef.current) return;
+    const raw = localStorage.getItem(SYNAPSE_RESUME_KEY);
+    if (!raw) return;
+    try {
+      const saved = JSON.parse(raw) as {
+        requestId: string;
+        cursor?: string;
+        chatId?: string;
+        question?: string;
+      };
+      const currentToken = await freshToken();
+      const state = await getSynapseRun(
+        settings,
+        currentToken,
+        saved.requestId,
+      );
+      if (!["starting", "running", "start_unknown"].includes(state.status)) {
+        localStorage.removeItem(SYNAPSE_RESUME_KEY);
+        return;
+      }
+      activeRequestIdRef.current = state.request_id;
+      chatIdRef.current = state.chat_id || saved.chatId;
+      activeExchangeRef.current = {
+        question: saved.question || "Продолжение запроса Synapse",
+        answer: "",
+        tables: [],
+        finalized: false,
+      };
+      setPendingQuestion(saved.question || "Запрос Synapse выполняется");
+      setBusy(true);
+      updateStatus("Восстанавливаю поток Synapse…");
+      await streamSynapseRun(
+        state.request_id,
+        saved.cursor || state.last_stream_id || "0-0",
+        saved.question || "",
+      );
+    } catch (error) {
+      localStorage.removeItem(SYNAPSE_RESUME_KEY);
+      updateStatus(`Не удалось восстановить Synapse: ${err(error)}`, "warning");
+      setBusy(false);
+    }
   }
   function updateStatus(text: string, state: StatusEntry["state"] = "active") {
     if (!text) return;
@@ -966,18 +1171,22 @@ export default function App() {
     try {
       if (requestId) {
         const currentToken = await freshToken();
-        await request(
-          settings.agentsUrl,
-          `/pipelines/${requestId}/cancel`,
-          currentToken,
-          { method: "POST" },
-        );
+        if (agentId === "synapse")
+          await cancelSynapseRun(settings, currentToken, requestId);
+        else
+          await request(
+            settings.agentsUrl,
+            `/pipelines/${requestId}/cancel`,
+            currentToken,
+            { method: "POST" },
+          );
       }
       updateStatus("Запрос остановлен", "warning");
     } catch (error) {
       updateStatus(`Не удалось остановить запрос: ${err(error)}`, "warning");
     } finally {
       activeRequestIdRef.current = undefined;
+      if (agentId === "synapse") localStorage.removeItem(SYNAPSE_RESUME_KEY);
       abort.current?.abort();
       setBusy(false);
     }
@@ -1008,6 +1217,96 @@ export default function App() {
     stepBase.current = "";
     answerIteration.current = undefined;
     updateStatus("Подключение к агенту…");
+    if (agentId === "synapse") {
+      try {
+        const scenarioId = Number(scenario);
+        if (!Number.isInteger(scenarioId))
+          throw new Error("Для Synapse нужен целочисленный ID сценария");
+        const projectId = project.trim() ? Number(project) : null;
+        if (projectId != null && !Number.isInteger(projectId))
+          throw new Error("ID проекта должен быть целым числом");
+        const currentToken = await freshToken();
+        const startPayload = {
+          request: submittedQuery,
+          chat_id: reusableChatId(chat, agentId) || null,
+          scenario_id: scenarioId,
+          project_id: projectId,
+          metadata: {},
+        };
+        const startSignature = JSON.stringify(startPayload);
+        let pendingStart: { signature?: string; idempotencyKey?: string } = {};
+        try {
+          pendingStart = JSON.parse(
+            localStorage.getItem(SYNAPSE_PENDING_START_KEY) || "{}",
+          );
+        } catch {
+          pendingStart = {};
+        }
+        const idempotencyKey =
+          pendingStart.signature === startSignature &&
+          pendingStart.idempotencyKey
+            ? pendingStart.idempotencyKey
+            : crypto.randomUUID();
+        localStorage.setItem(
+          SYNAPSE_PENDING_START_KEY,
+          JSON.stringify({ signature: startSignature, idempotencyKey }),
+        );
+        const started = await startSynapseRun(
+          settings,
+          currentToken,
+          idempotencyKey,
+          startPayload,
+        );
+        if (started.status === "start_unknown") {
+          activeRequestIdRef.current = started.request_id;
+          setPendingQuestion("");
+          setAnswer(
+            "Synapse мог принять запрос, но результат запуска пока неизвестен. " +
+              "Повторная отправка того же запроса использует прежний Idempotency-Key и не создаст дубликат.",
+          );
+          updateStatus("Статус запуска Synapse неизвестен", "warning");
+          setBusy(false);
+          return;
+        }
+        localStorage.removeItem(SYNAPSE_PENDING_START_KEY);
+        activeRequestIdRef.current = started.request_id;
+        chatIdRef.current = started.chat_id || undefined;
+        if (started.chat_id) {
+          setChat(
+            (current) =>
+              current || {
+                chat_id: started.chat_id!,
+                title: submittedQuery,
+                scenario_id: scenarioId,
+                project_id: projectId,
+                updated_at: new Date().toISOString(),
+                metadata: {
+                  agent_id: "synapse",
+                  synapse_project_id: started.synapse_project_id,
+                },
+                messages: [],
+              },
+          );
+        }
+        localStorage.setItem(
+          SYNAPSE_RESUME_KEY,
+          JSON.stringify({
+            requestId: started.request_id,
+            cursor: "0-0",
+            chatId: started.chat_id,
+            question: submittedQuery,
+          }),
+        );
+        await streamSynapseRun(started.request_id, "0-0", submittedQuery);
+      } catch (e) {
+        const aborted = (e as Error).name === "AbortError";
+        const message = aborted ? "Запрос остановлен пользователем." : err(e);
+        updateStatus(message, "warning");
+        finalizeActiveExchange(message);
+        setBusy(false);
+      }
+      return;
+    }
     const url = new URL(agent.path, settings.agentsUrl);
     url.searchParams.set("request", submittedQuery);
     // Omitted when unknown: the agents then use the provider's default.
@@ -1070,7 +1369,7 @@ export default function App() {
             Работа
           </button>
           <p className="nav-label">Команда агентов</p>
-          {AGENTS.map((a) => (
+          {availableAgents.map((a) => (
             <button
               className={
                 mode === "workspace" && agentId === a.id ? "active sub" : "sub"
@@ -1152,7 +1451,7 @@ export default function App() {
                 </button>
                 {agentMenuOpen && (
                   <div className="agent-menu">
-                    {AGENTS.map((item) => (
+                    {availableAgents.map((item) => (
                       <button
                         className={item.id === agent.id ? "active" : ""}
                         key={item.id}
@@ -1671,6 +1970,7 @@ function ChatHistoryDrawer({
 function AgentGlyph({ id }: { id: AgentId }) {
   const props = { weight: "duotone" as const };
   if (id === "orchestrator") return <CirclesFour {...props} />;
+  if (id === "synapse") return <Sparkle {...props} />;
   if (id === "restrictions") return <ShieldCheck {...props} />;
   if (id === "compliance") return <CheckCircle {...props} />;
   if (id === "provision") return <ChartDonut {...props} />;
@@ -2052,7 +2352,9 @@ function StoredComplianceResult({ result }: { result: ComplianceResult }) {
       <span>
         <strong>{complianceLabel(result.compliance_status)}</strong>
         <small>
-          {verificationLabel(result.verification_status)} · проверено {result.coverage.checked_objects} из {result.coverage.applicable_objects}
+          {verificationLabel(result.verification_status)} · проверено{" "}
+          {result.coverage.checked_objects} из{" "}
+          {result.coverage.applicable_objects}
         </small>
       </span>
     </div>
@@ -2092,7 +2394,10 @@ function CompliancePanel({
           <div className="compliance-totals">
             <span className="violated">{summary.violated_norms} нарушено</span>
             <span className="passed">{summary.passed_norms} без нарушений</span>
-            <span>{summary.unverifiable_norms + summary.unsupported_norms} не проверено</span>
+            <span>
+              {summary.unverifiable_norms + summary.unsupported_norms} не
+              проверено
+            </span>
           </div>
         )}
       </header>
@@ -2112,7 +2417,9 @@ function CompliancePanel({
                 <div>
                   <span>{source.document_name || "Нормативный источник"}</span>
                   <strong>
-                    {source.clause_number ? `Пункт ${source.clause_number} · ` : ""}
+                    {source.clause_number
+                      ? `Пункт ${source.clause_number} · `
+                      : ""}
                     {result.template}@v{result.template_version}
                   </strong>
                 </div>
@@ -2132,20 +2439,40 @@ function CompliancePanel({
                 <b>{percent}% покрытия</b>
               </div>
               <dl className="coverage-stats">
-                <div><dt>Применимо</dt><dd>{result.coverage.applicable_objects}</dd></div>
-                <div><dt>Проверено</dt><dd>{result.coverage.checked_objects}</dd></div>
-                <div><dt>Не проверено</dt><dd>{result.coverage.unchecked_objects}</dd></div>
-                <div><dt>Нарушения</dt><dd>{result.summary.violated_objects}</dd></div>
+                <div>
+                  <dt>Применимо</dt>
+                  <dd>{result.coverage.applicable_objects}</dd>
+                </div>
+                <div>
+                  <dt>Проверено</dt>
+                  <dd>{result.coverage.checked_objects}</dd>
+                </div>
+                <div>
+                  <dt>Не проверено</dt>
+                  <dd>{result.coverage.unchecked_objects}</dd>
+                </div>
+                <div>
+                  <dt>Нарушения</dt>
+                  <dd>{result.summary.violated_objects}</dd>
+                </div>
               </dl>
               {result.verification_status === "partial" && (
                 <p className="coverage-warning">
-                  На проверенной части {result.compliance_status === "passed" ? "нарушений не обнаружено" : "найдены нарушения"}. Непроверенные объекты не входят в этот вывод.
+                  На проверенной части{" "}
+                  {result.compliance_status === "passed"
+                    ? "нарушений не обнаружено"
+                    : "найдены нарушения"}
+                  . Непроверенные объекты не входят в этот вывод.
                 </p>
               )}
               {!!result.missing_requirements?.length && (
                 <div className="missing-requirements">
                   <strong>Почему проверка невозможна</strong>
-                  <ul>{result.missing_requirements.map((item) => <li key={item}>{item}</li>)}</ul>
+                  <ul>
+                    {result.missing_requirements.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
                 </div>
               )}
               {!!result.resolved_requirements?.length && (
@@ -2155,8 +2482,23 @@ function CompliancePanel({
                     {result.resolved_requirements.map((item, index) => (
                       <li key={`${String(item.role)}:${index}`}>
                         <b>{String(item.role)}</b>
-                        <span>{String(item.field || item.layer || item.reason || "не разрешено")}</span>
-                        {item.quality && <em>{String(item.quality === "derived" ? "производный" : "прямой")}</em>}
+                        <span>
+                          {String(
+                            item.field ||
+                              item.layer ||
+                              item.reason ||
+                              "не разрешено",
+                          )}
+                        </span>
+                        {item.quality && (
+                          <em>
+                            {String(
+                              item.quality === "derived"
+                                ? "производный"
+                                : "прямой",
+                            )}
+                          </em>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -2176,7 +2518,9 @@ function CompliancePanel({
               )}
               {!!result.warnings?.length && (
                 <ul className="compliance-warnings">
-                  {result.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                  {result.warnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
                 </ul>
               )}
               {result.source?.check_plan && (
@@ -2186,7 +2530,10 @@ function CompliancePanel({
                   token={token}
                 />
               )}
-              <footer>restriction_id: {result.restriction_id} · evidence {result.evidence_schema_version}</footer>
+              <footer>
+                restriction_id: {result.restriction_id} · evidence{" "}
+                {result.evidence_schema_version}
+              </footer>
             </article>
           );
         })}
@@ -2247,9 +2594,15 @@ function CheckPlanReviewControls({
         placeholder="Комментарий к ревью (необязательно)"
       />
       <div>
-        <button disabled={saving} onClick={() => void submitReview("approve")}>Подтвердить</button>
-        <button disabled={saving} onClick={() => void submitReview("reject")}>Отклонить</button>
-        <button disabled={saving} onClick={() => void submitReview("replace")}>Сохранить замену</button>
+        <button disabled={saving} onClick={() => void submitReview("approve")}>
+          Подтвердить
+        </button>
+        <button disabled={saving} onClick={() => void submitReview("reject")}>
+          Отклонить
+        </button>
+        <button disabled={saving} onClick={() => void submitReview("replace")}>
+          Сохранить замену
+        </button>
       </div>
       {feedback && <small>{feedback}</small>}
     </details>
@@ -2263,11 +2616,17 @@ function EvidenceList({ items }: { items: ComplianceResult["evidence"] }) {
         <li key={`${String(item.object_ref?.id || index)}:${index}`}>
           <div>
             <strong>{objectTitle(item.object_ref)}</strong>
-            <small>{String(item.object_ref?.id || "Идентификатор отсутствует")}</small>
+            <small>
+              {String(item.object_ref?.id || "Идентификатор отсутствует")}
+            </small>
           </div>
           <span>
-            {item.measured_value != null ? `${Number(item.measured_value).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} ${item.unit || ""}` : item.operation}
-            {item.threshold != null ? ` · порог ${item.operator || ""} ${item.threshold}` : ""}
+            {item.measured_value != null
+              ? `${Number(item.measured_value).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} ${item.unit || ""}`
+              : item.operation}
+            {item.threshold != null
+              ? ` · порог ${item.operator || ""} ${item.threshold}`
+              : ""}
           </span>
         </li>
       ))}
@@ -2293,6 +2652,25 @@ function findFeatureCollections(value: unknown): GeoJSON.FeatureCollection[] {
   }
   walkValue(value);
   return found;
+}
+function synapseEventText(event: SynapseEvent): string {
+  const content = event.content || {};
+  const message =
+    content.message && typeof content.message === "object"
+      ? content.message
+      : undefined;
+  const candidates = [
+    content.text,
+    message?.text,
+    message?.content,
+    content.content,
+    content.error,
+    content.detail,
+  ];
+  for (const value of candidates) {
+    if (typeof value === "string" && value) return value;
+  }
+  return "";
 }
 function ResultTable({
   table,
@@ -2713,6 +3091,7 @@ function labelAgent(key?: string) {
         documents: "Документы",
         norms: "Нормы",
         orchestrator: "Оркестратор",
+        synapse: "Synapse",
         llm: "Ассистент",
       } as Record<string, string>
     )[key || ""] ||

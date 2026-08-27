@@ -1,4 +1,4 @@
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -29,6 +29,7 @@ from src.agents.routers.restriction_parser_controller import restriction_router
 from src.agents.routers.scenario_data_a2a_controller import scenario_data_a2a_router
 from src.agents.routers.scenario_data_controller import scenario_data_router
 from src.agents.routers.simple_llm_controller import llm_router
+from src.agents.routers.synapse_controller import synapse_router
 from src.agents.routers.system_controller import system_router
 from src.agents.routers.token_refresh_controller import token_refresh_router
 from src.common.service_auth import service_auth_lifespan
@@ -41,8 +42,20 @@ UI_DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"loaded dependencies {app_deps}")
-    async with service_auth_lifespan(app_deps["service_auth"]):
-        yield
+    async with AsyncExitStack() as stack:
+        service_auth = app_deps["service_auth"]
+        idu_mcp_service_auth = app_deps["idu_mcp_service_auth"]
+        await stack.enter_async_context(service_auth_lifespan(service_auth))
+        if idu_mcp_service_auth is not service_auth:
+            await stack.enter_async_context(service_auth_lifespan(idu_mcp_service_auth))
+        synapse_service = app_deps.get("synapse_gateway_service")
+        if synapse_service is not None:
+            await synapse_service.recover_active_runs()
+        try:
+            yield
+        finally:
+            if synapse_service is not None:
+                await synapse_service.close()
 
 
 app = FastAPI(
@@ -94,6 +107,7 @@ app.include_router(dvd_a2a_router)
 app.include_router(norms_a2a_router)
 app.include_router(a2a_router)
 app.include_router(system_router)
+app.include_router(synapse_router)
 
 if UI_DIST_DIR.exists():
     app.mount("/ui", StaticFiles(directory=UI_DIST_DIR, html=True), name="ui")

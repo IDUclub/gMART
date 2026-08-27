@@ -6,10 +6,13 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.sse import EventSourceResponse
 
+from src.agents.a2a.a2a_format import synapse_prepopulated_params_agent_card
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.dependencies import (
+    a2a_idu_mcp_client,
     get_a2a_service,
     get_idu_mcp_client,
+    resolve_a2a_caller,
 )
 from src.agents.dto.a2a_dto import A2AJsonRpcPayloadDTO
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
@@ -32,6 +35,18 @@ async def get_agent_card(
     a2a_service: A2AService = Depends(get_a2a_service),
 ) -> dict[str, Any]:
     return a2a_service.get_agent_card(str(request.base_url))
+
+
+@restriction_a2a_router.get(
+    "/.well-known/synapse-agent-card.json", include_in_schema=False
+)
+async def get_synapse_restriction_agent_card(
+    request: Request,
+    a2a_service: A2AService = Depends(get_a2a_service),
+) -> dict[str, Any]:
+    return synapse_prepopulated_params_agent_card(
+        a2a_service.get_agent_card(str(request.base_url))
+    )
 
 
 @restriction_a2a_router.get("/agent.json", include_in_schema=False)
@@ -81,7 +96,15 @@ async def handle_restriction_a2a_json_rpc(
     ``tasks/sendSubscribe``) return an SSE stream; all other methods
     return a plain JSON response.
     """
-    return await _handle_restriction_a2a(payload, a2a_service, idu_mcp_client, token)
+    caller = await resolve_a2a_caller(payload, token)
+    if caller.is_synapse:
+        idu_mcp_client = await a2a_idu_mcp_client(caller.user_id)
+    return await _handle_restriction_a2a(
+        payload,
+        a2a_service,
+        idu_mcp_client,
+        caller.pipeline_token,
+    )
 
 
 # ── Deprecated root-level endpoint ───────────────────────────────────────────
@@ -103,7 +126,15 @@ async def handle_a2a_json_rpc(
 
     Kept for backward compatibility. Will be removed in a future release.
     """
-    return await _handle_restriction_a2a(payload, a2a_service, idu_mcp_client, token)
+    caller = await resolve_a2a_caller(payload, token)
+    if caller.is_synapse:
+        idu_mcp_client = await a2a_idu_mcp_client(caller.user_id)
+    return await _handle_restriction_a2a(
+        payload,
+        a2a_service,
+        idu_mcp_client,
+        caller.pipeline_token,
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

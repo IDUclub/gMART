@@ -145,7 +145,10 @@ class JsonApiHandler:
         return params
 
     async def _with_auth(
-        self, headers: dict | None, auth_token: str | None
+        self,
+        headers: dict | None,
+        auth_token: str | None,
+        user_id: str | None = None,
     ) -> dict | None:
         """
         Attach the authorization header when a token is supplied.
@@ -161,7 +164,7 @@ class JsonApiHandler:
             outgoing.update(
                 await service_headers(
                     self.service_auth,
-                    user_id_from_jwt(auth_token) if auth_token else None,
+                    user_id or (user_id_from_jwt(auth_token) if auth_token else None),
                 )
             )
             return outgoing
@@ -243,6 +246,7 @@ class JsonApiHandler:
         headers: dict | None = None,
         params: dict | None = None,
         session: aiohttp.ClientSession | None = None,
+        user_id: str | None = None,
     ) -> dict | list | None:
         """Function to get data from api
         Args:
@@ -255,7 +259,7 @@ class JsonApiHandler:
             dict | list | None: Response data as python object
         """
 
-        headers = await self._with_auth(headers, auth_token)
+        headers = await self._with_auth(headers, auth_token, user_id)
         if not session:
             async with aiohttp.ClientSession() as session:
                 return await self._request("get", endpoint, headers, params, session)
@@ -269,6 +273,7 @@ class JsonApiHandler:
         params: dict | None = None,
         data: dict | None = None,
         session: aiohttp.ClientSession | None = None,
+        user_id: str | None = None,
     ) -> dict | list | None:
         """Function to post data to api.
         Args:
@@ -282,7 +287,7 @@ class JsonApiHandler:
             dict | list | None: Response data as python object.
         """
 
-        headers = await self._with_auth(headers, auth_token)
+        headers = await self._with_auth(headers, auth_token, user_id)
         if not session:
             async with aiohttp.ClientSession() as session:
                 return await self._request(

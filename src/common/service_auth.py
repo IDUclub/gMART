@@ -17,11 +17,11 @@ USER_ID_HEADER = "X-User-Id"
 ANONYMOUS_USER_ID = "anonymous"
 
 
-def build_service_auth() -> KeycloakTokenClient:
-    """Build the process-wide service-token client from mandatory settings."""
+def build_service_auth(env_prefix: str = "") -> KeycloakTokenClient:
+    """Build a service-token client from mandatory, optionally prefixed settings."""
 
     values = {
-        name: (os.getenv(name) or "").strip()
+        name: (os.getenv(f"{env_prefix}{name}") or "").strip()
         for name in (
             "SERVICE_AUTH_SERVER_URL",
             "SERVICE_AUTH_REALM",
@@ -32,7 +32,8 @@ def build_service_auth() -> KeycloakTokenClient:
     missing = [name for name, value in values.items() if not value]
     if missing:
         raise ValueError(
-            "Missing mandatory service-auth variables: " + ", ".join(missing)
+            "Missing mandatory service-auth variables: "
+            + ", ".join(f"{env_prefix}{name}" for name in missing)
         )
     return KeycloakTokenClient(
         KeycloakTokenConfig(
@@ -43,6 +44,24 @@ def build_service_auth() -> KeycloakTokenClient:
             background_refresh=True,
         )
     )
+
+
+def build_optional_service_auth(env_prefix: str) -> KeycloakTokenClient | None:
+    """Build a prefixed auth client when configured, otherwise return ``None``.
+
+    A partially configured client is rejected instead of silently falling back to the
+    default identity. This makes service-boundary mistakes visible during startup.
+    """
+
+    names = (
+        "SERVICE_AUTH_SERVER_URL",
+        "SERVICE_AUTH_REALM",
+        "SERVICE_AUTH_CLIENT_ID",
+        "SERVICE_AUTH_CLIENT_SECRET",
+    )
+    if not any((os.getenv(f"{env_prefix}{name}") or "").strip() for name in names):
+        return None
+    return build_service_auth(env_prefix)
 
 
 @asynccontextmanager
@@ -72,6 +91,26 @@ def user_id_from_jwt(token: str) -> str:
     if not isinstance(user_id, str) or not user_id:
         raise ValueError("Bearer token does not contain a user id")
     return user_id
+
+
+def internal_user_context_jwt(user_id: str) -> str:
+    """Build a non-authorizing JWT-shaped value used only for in-process user context.
+
+    Downstream transports replace it with the process service token; its only purpose is
+    to preserve the already verified ``sub`` through legacy pipeline signatures.
+    """
+
+    header = (
+        base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
+    )
+    payload = (
+        base64.urlsafe_b64encode(
+            json.dumps({"sub": user_id}, separators=(",", ":")).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    return f"{header}.{payload}."
 
 
 async def service_headers(

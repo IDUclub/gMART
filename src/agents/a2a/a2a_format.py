@@ -1,10 +1,54 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 A2AData = dict[str, Any]
+
+
+def synapse_compatible_agent_card(card: A2AData) -> A2AData:
+    """Remove legacy flags rejected by Synapse's strict A2A 0.3 schema."""
+
+    capabilities = card.get("capabilities")
+    if isinstance(capabilities, dict):
+        capabilities.pop("google_a2a_compatible", None)
+        capabilities.pop("parts_array_format", None)
+    return card
+
+
+def synapse_prepopulated_params_agent_card(card: A2AData) -> A2AData:
+    """Build a discovery card for Synapse workflows that already send DataParts.
+
+    Synapse currently invokes its own LLM parameter extractor for every extension
+    marked ``required``, even when the workflow supplied every required field as a
+    DataPart.  Local/static workflows can avoid that redundant dependency by
+    discovering this card and declaring the extension optional.  The parameter
+    schema remains unchanged and gMART still validates ``scenario_id`` at runtime.
+
+    The canonical card is deep-copied and stays strict for all other A2A clients.
+    """
+
+    compatible = synapse_compatible_agent_card(deepcopy(card))
+    capabilities = compatible.get("capabilities")
+    extensions = (
+        capabilities.get("extensions") if isinstance(capabilities, dict) else None
+    )
+    if not isinstance(extensions, list):
+        return compatible
+    for extension in extensions:
+        if (
+            isinstance(extension, dict)
+            and extension.get("uri") == SCENARIO_CONTEXT_EXTENSION_URI
+        ):
+            extension["required"] = False
+            extension["description"] = (
+                "Synapse workflow compatibility card: provide scenario_id as a "
+                "pre-populated DataPart. gMART still requires and validates it at runtime."
+            )
+    return compatible
+
 
 # Stable identifier of the A2A profile extension that declares a project scenario id.
 # Restriction/provision require it; scenario-data advertises the same field as optional.
