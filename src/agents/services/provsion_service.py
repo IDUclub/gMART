@@ -130,9 +130,7 @@ class ProvisionService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
     ) -> AsyncGenerator:
-        token_ref: list[str] = [
-            idu_mcp_client.mcp_client.transport.auth.token.get_secret_value()
-        ]
+        token_ref: list[str] = [idu_mcp_client.current_token()]
         text_buffer: list[str] = []
         message_parts: list[MessagePart] = []
 

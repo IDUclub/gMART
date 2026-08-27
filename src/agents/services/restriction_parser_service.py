@@ -82,6 +82,7 @@ class RestrictionParserService(BaseLlmService):
         chat_storage_client: ChatStorageApiClient,
         urban_api_client: UrbanApiClient,
         state_store: PipelineStateStore,
+        ablation_no_catalog: bool | None = None,
     ) -> None:
 
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
@@ -90,6 +91,18 @@ class RestrictionParserService(BaseLlmService):
         self.tool_executor = RestrictionToolExecutor()
         self.context_builder = RestrictionContextBuilder()
         self.state_store = state_store
+        # Per-instance ablation switch. None keeps the env-gated behaviour, so
+        # production is unchanged; the experiment runner sets it explicitly and
+        # can then hold both arms — with and without catalog grounding — in one
+        # process instead of restarting the service between them.
+        self.ablation_no_catalog = ablation_no_catalog
+
+    def _no_catalog(self) -> bool:
+        """Whether this instance builds plans without domain-catalog grounding."""
+
+        if self.ablation_no_catalog is None:
+            return _ablation_no_catalog()
+        return self.ablation_no_catalog
 
     async def run_restriction_execution_pipline(
         self,
@@ -105,9 +118,7 @@ class RestrictionParserService(BaseLlmService):
     ) -> AsyncGenerator:
         # Mutable container so the inner pipeline can update the token on
         # refresh and the outer generator sees the latest value.
-        token_ref: list[str] = [
-            mcp_client.mcp_client.transport.auth.token.get_secret_value()
-        ]
+        token_ref: list[str] = [mcp_client.current_token()]
         persist_history = persist_history and not chat_history_disabled()
         text_buffer: list[str] = []
         message_parts: list[
@@ -1018,12 +1029,12 @@ class RestrictionParserService(BaseLlmService):
         history: list[dict] | None = None,
         normgraph_restrictions: list[dict[str, Any]] | None = None,
     ) -> RestrictionPlan:
-        # Ablation switch (evaluation only): when ABLATION_NO_CATALOG is set the
-        # plan is built WITHOUT the domain-catalog grounding, so the effect of
-        # catalog grounding on plan validity / entity correctness can be measured.
-        # Env-gated (not per-request) so an ablation arm runs as a separate pass
-        # and the public request contract is untouched.
-        if _ablation_no_catalog():
+        # Ablation switch (evaluation only): the plan is built WITHOUT the
+        # domain-catalog grounding, so the effect of catalog grounding on plan
+        # validity / entity correctness can be measured. Set per service instance
+        # (or, unset, by ABLATION_NO_CATALOG) rather than per request, so an
+        # ablation arm is a separate pass and the public contract is untouched.
+        if self._no_catalog():
             services_catalog: list[str] = []
             physical_objects_catalog: list[str] = []
         else:

@@ -4,6 +4,11 @@ import aiohttp
 from fastmcp.exceptions import ToolError
 from loguru import logger
 
+from src.idu_mcp.common.api_handlers.urban_data_store import (
+    UrbanDataStore,
+    UrbanDataUnavailable,
+)
+
 # Sentinel returned by _check_response_status to signal a transient failure that
 # should be retried rather than returned or raised.
 _RETRY = object()
@@ -24,6 +29,7 @@ class JsonApiHandler:
         base_url: str,
         max_retries: int = 3,
         backoff_base: float = 0.5,
+        store: UrbanDataStore | None = None,
     ) -> None:
         """Initialisation function
 
@@ -33,6 +39,9 @@ class JsonApiHandler:
                 up. Defaults to 3.
             backoff_base (float): Base delay (seconds) for exponential backoff
                 between retries. Defaults to 0.5.
+            store (UrbanDataStore | None): On-disk response store for offline
+                experiment runs. Defaults to one built from ``URBAN_DATA_MODE``,
+                which is ``live`` — no store — unless a benchmark sets it.
         Returns:
             None
         """
@@ -41,6 +50,7 @@ class JsonApiHandler:
         self.__name__ = f"{self.base_url}_JSON_API_HANDLER"
         self.max_retries = max_retries
         self.backoff_base = backoff_base
+        self.store = UrbanDataStore() if store is None else store
 
     async def _check_response_status(
         self,
@@ -115,6 +125,10 @@ class JsonApiHandler:
         Raises:
             ToolError: On a non-retryable downstream status or when retries are
                 exhausted on a transient failure.
+            UrbanDataUnavailable: In ``replay`` mode, when the request has no
+                stored response. Deliberately not a ToolError: a gap in the
+                offline data is not the model's failure and must not be scored
+                as one.
         """
 
         if auth_token:
@@ -122,10 +136,22 @@ class JsonApiHandler:
                 headers = {"Authorization": f"Bearer {auth_token}"}
             else:
                 headers.update({"Authorization": auth_token})
+        # Normalise up front so the key is the same whether it is computed here
+        # or after _request has rewritten the booleans in place.
+        params = await self._check_request_params(params)
+        if self.store.enabled:
+            try:
+                return self.store.get(self.base_url, endpoint, params)
+            except KeyError:
+                if self.store.offline:
+                    raise UrbanDataUnavailable(endpoint, params) from None
         if not session:
             async with aiohttp.ClientSession() as session:
-                return await self._request(endpoint, headers, params, session)
-        return await self._request(endpoint, headers, params, session)
+                result = await self._request(endpoint, headers, params, session)
+        else:
+            result = await self._request(endpoint, headers, params, session)
+        self.store.set(self.base_url, endpoint, params, result)
+        return result
 
     async def _request(
         self,

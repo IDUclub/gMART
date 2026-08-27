@@ -22,6 +22,24 @@ class BaseMcpClient:
 
         self.mcp_client: MCPClient = mcp_client
 
+    def current_token(self) -> str:
+        """The bearer token this client sends, read from its HTTP transport.
+
+        Callers that need the token (to refresh it, or to pass it on to another
+        service) ask the client for it rather than reaching through
+        ``mcp_client.transport.auth.token`` themselves: a client that is not
+        speaking HTTP — the in-process one used by the experiment runner — has no
+        transport to reach into, and would break every such caller.
+
+        Returns:
+            str: the token, or "" when the transport carries no bearer auth.
+        """
+
+        try:
+            return self.mcp_client.transport.auth.token.get_secret_value()
+        except AttributeError:
+            return ""
+
     @staticmethod
     async def __filter_tools_by_tag__(
         tools: ListToolsResult, tags: list[str]
