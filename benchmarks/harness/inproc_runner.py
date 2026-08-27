@@ -56,6 +56,7 @@ import os
 import sys
 import time
 import traceback
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -248,38 +249,63 @@ class RunRecord:
         return data
 
 
-class PlanCapture:
-    """Records the ``RestrictionPlan`` where it is built.
+# The plan is not part of the event stream — there is no ``plan`` event type in
+# ``RestrictionsResponse`` — so scraping the stream for it (as the SSE harness
+# did) finds nothing. Wrapping the builder is the only way to get the object
+# without changing the service's public contract, and it captures exactly what
+# the pipeline went on to execute.
+#
+# The slot is a ContextVar, not an attribute on the builder, because rows share
+# one service: asyncio copies the context when it creates a task, so each row's
+# worker gets its own slot and concurrent rows cannot pick up one another's plan.
+# The wrapper itself is installed once per builder — installing it per row would
+# stack the wrappers and route every plan through every one of them.
+#
+# The slot holds a *list*, and the capture appends to it rather than re-setting
+# the variable. Context copies are shallow, so the inner task the pipeline runs
+# in shares the list object with the row that created it; a plain ``set()`` there
+# would land in the copy and be invisible to the caller — which is exactly what
+# happens across ``asyncio.wait_for``, since it wraps the coroutine in a task.
+_PLAN_SLOT: ContextVar[list | None] = ContextVar("plan_slot", default=None)
+_CAPTURE_FLAG = "_inproc_plan_capture_installed"
 
-    The plan is not part of the event stream — there is no ``plan`` event type in
-    ``RestrictionsResponse`` — so scraping the stream for it (as the SSE harness
-    did) finds nothing. Wrapping the builder is the only way to get the object
-    without changing the service's public contract, and it captures exactly what
-    the pipeline went on to execute.
-    """
 
-    def __init__(self, service: RestrictionParserService) -> None:
-        self._builder = service.plan_builder
-        self._original = self._builder.build_plan
-        self.plan: Any | None = None
+def install_plan_capture(service: RestrictionParserService) -> None:
+    """Make ``plan_builder`` record the plan it returns into this row's slot."""
 
-        async def capturing(*args, **kwargs):
-            plan = await self._original(*args, **kwargs)
-            self.plan = plan
-            return plan
+    builder = service.plan_builder
+    if getattr(builder, _CAPTURE_FLAG, False):
+        return
+    original = builder.build_plan
 
-        self._builder.build_plan = capturing  # type: ignore[method-assign]
+    async def capturing(*args, **kwargs):
+        plan = await original(*args, **kwargs)
+        slot = _PLAN_SLOT.get()
+        if slot is not None:
+            slot.append(plan)
+        return plan
 
-    def restore(self) -> None:
-        self._builder.build_plan = self._original  # type: ignore[method-assign]
+    builder.build_plan = capturing  # type: ignore[method-assign]
+    setattr(builder, _CAPTURE_FLAG, True)
 
-    def dump(self) -> dict | None:
-        if self.plan is None:
-            return None
-        try:
-            return self.plan.model_dump(mode="json")
-        except AttributeError:
-            return None
+
+def open_plan_slot() -> list:
+    """Start a fresh slot for the current row and return it."""
+
+    slot: list = []
+    _PLAN_SLOT.set(slot)
+    return slot
+
+
+def captured_plan(slot: list) -> dict | None:
+    """The plan this row built, as plain JSON, or None if it never got that far."""
+
+    if not slot:
+        return None
+    try:
+        return slot[-1].model_dump(mode="json")
+    except AttributeError:
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -342,7 +368,9 @@ async def run_one(
         prompt=prompt,
         scenario_id=scenario_id,
     )
-    capture = PlanCapture(service)
+    install_plan_capture(service)
+    # This row's own slot, even though the service (and its builder) is shared.
+    plan_slot = open_plan_slot()
     stage = STAGE_START
     started = time.time()
     stage_started = started
@@ -412,12 +440,11 @@ async def run_one(
             # close it rather than only the message.
             record.error = record.error + "\n" + traceback.format_exc(limit=8)
     finally:
-        capture.restore()
         record.stages.append(
             {"stage": stage, "seconds": round(time.time() - stage_started, 2)}
         )
 
-    record.restriction_plan = capture.dump()
+    record.restriction_plan = captured_plan(plan_slot)
     record.duration_sec = round(time.time() - started, 2)
     joined = "".join(text_parts).strip()
     plan_mode = (record.restriction_plan or {}).get("mode")

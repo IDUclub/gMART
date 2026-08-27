@@ -463,13 +463,88 @@ async def test_a_clarification_run_is_not_counted_as_empty():
     assert record.end_state == runner.STATE_CLARIFICATION
 
 
-async def test_the_plan_capture_is_removed_after_the_run():
-    """A leaked wrapper would stack on the next row and skew the timings."""
+async def test_the_plan_capture_is_installed_once_and_does_not_stack():
+    """Rows share one service; a wrapper per row would nest on every run."""
 
     service = FakeService(_events_for_a_successful_restrictions_run())
-    original = service.plan_builder.build_plan
 
-    await runner.run_one(
+    runner.install_plan_capture(service)
+    after_first = service.plan_builder.build_plan
+    runner.install_plan_capture(service)
+
+    assert service.plan_builder.build_plan is after_first
+
+
+async def test_concurrent_rows_do_not_pick_up_each_others_plan():
+    """Rows share one service and one plan builder, as they do in a real arm.
+
+    Each row must record the plan *its own* query produced. A capture kept on the
+    builder, or a wrapper installed per row, would let the two cross — and with
+    the default concurrency of 2 that would silently mis-attribute plans in the
+    results the paper is built from.
+
+    The interleaving is chosen so the ordering alone cannot save a broken
+    implementation: the row that builds its plan *first* is the one that finishes
+    *last*, so a single shared slot hands it the other row's plan.
+    """
+
+    import asyncio
+
+    class InterleavingService(FakeService):
+        """One builder, a plan per query, and a scripted schedule per query."""
+
+        # query -> (delay before its plan is built, delay after)
+        SCHEDULE = {"ранний": (0.01, 0.08), "поздний": (0.04, 0.01)}
+        PLANS = {"ранний": "restrictions", "поздний": "buffers_only"}
+
+        def __init__(self) -> None:
+            super().__init__([])
+            self.plans = {query: FakePlan(mode) for query, mode in self.PLANS.items()}
+            service = self
+
+            class Builder:
+                async def build_plan(inner, query, **kwargs):  # noqa: N805
+                    return service.plans[query]
+
+            self.plan_builder = Builder()
+
+        async def run_restriction_execution_pipline(self, **kwargs):
+            query = kwargs["user_query"]
+            before, after = self.SCHEDULE[query]
+            await asyncio.sleep(before)
+            await self.plan_builder.build_plan(query)
+            await asyncio.sleep(after)
+            yield {"type": "chunk", "content": {"text": f"ответ {query}", "done": True}}
+
+    service = InterleavingService()
+
+    def _row(query, idx):
+        return runner.run_one(
+            service,
+            client=None,
+            idx=idx,
+            model="m",
+            prompt=query,
+            scenario_id=7,
+            transport=runner.LOCAL,
+            arm=runner.ARM_BASE,
+            temperature=0.0,
+            timeout=30,
+            layers_dir=None,
+        )
+
+    early, late = await asyncio.gather(_row("ранний", 0), _row("поздний", 1))
+
+    assert early.restriction_plan["mode"] == "restrictions"
+    assert late.restriction_plan["mode"] == "buffers_only"
+
+
+async def test_a_row_that_never_built_a_plan_records_none():
+    """A failure before planning must not inherit the previous row's plan."""
+
+    service = FakeService([], error=RuntimeError("died early"))
+
+    record = await runner.run_one(
         service,
         client=None,
         idx=0,
@@ -483,4 +558,4 @@ async def test_the_plan_capture_is_removed_after_the_run():
         layers_dir=None,
     )
 
-    assert service.plan_builder.build_plan == original
+    assert record.restriction_plan is None
