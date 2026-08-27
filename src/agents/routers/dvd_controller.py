@@ -9,8 +9,11 @@ from fastapi.sse import EventSourceResponse
 
 from src.agents.api_clients.dvd_api_client import DvdApiClient
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
-from src.agents.common.auth.auth import verify_bearer_token
-from src.agents.common.exceptions.base_exceptions import AgentsInputException
+from src.agents.common.auth.auth import optional_bearer_token, verify_bearer_token
+from src.agents.common.exceptions.base_exceptions import (
+    AgentsInputException,
+    AgentsUnauthorizedException,
+)
 from src.agents.common.executors.sse_executors import stream_with_error_handling
 from src.agents.dependencies.dependencies import (
     get_dvd_api_client,
@@ -160,6 +163,55 @@ async def stream_user_document_job(
     )
 
 
+async def resolve_document_qa_token(
+    user_request: Annotated[DocumentQaRequestDTO, Depends(DocumentQaRequestDTO)],
+    token: str | None = Depends(optional_bearer_token),
+    dvd_rag_service: DvdRagService = Depends(get_dvd_rag_service),
+) -> str | None:
+    """
+    Authorize the document-QA stream, keeping questions to the shared index public.
+
+    A question without a bearer token is answered only when it stays in the public
+    scope: the search runs over the shared regulatory index and nothing is written
+    to Chat Storage. Anything user-bound needs a token — `scenario_id` (project
+    documents), `chat_id` (chat history), and a `request_id` reconnect to a
+    pipeline that was started with either of those.
+
+    This runs as a dependency, not inside the endpoint generator: once the SSE
+    response has started, its status code can no longer be changed.
+    Args:
+        user_request (DocumentQaRequestDTO): Parsed query parameters of the request.
+        token (str | None): Bearer token, when the caller sent one.
+        dvd_rag_service (DvdRagService): Service owning the pipeline state store.
+    Returns:
+        str | None: The token to run the pipeline with, or None for an anonymous run.
+    Raises:
+        AgentsUnauthorizedException: If an anonymous request reaches beyond the shared index.
+    """
+
+    if token is not None:
+        return token
+
+    if user_request.scenario_id is not None or user_request.chat_id is not None:
+        raise AgentsUnauthorizedException(
+            "scenario_id and chat_id require an authorized request",
+            error_input={
+                "scenario_id": user_request.scenario_id,
+                "chat_id": user_request.chat_id,
+            },
+        )
+
+    if user_request.request_id:
+        state = await dvd_rag_service.state_store.get_state(user_request.request_id)
+        if state and (state.get("scenario_id") is not None or state.get("chat_id")):
+            raise AgentsUnauthorizedException(
+                "This pipeline was started by an authorized request",
+                error_input={"request_id": user_request.request_id},
+            )
+
+    return None
+
+
 @dvd_router.get(
     "/qa/stream",
     response_class=EventSourceResponse,
@@ -168,7 +220,7 @@ async def stream_user_document_job(
 async def stream_document_qa(
     request: Request,
     user_request: Annotated[DocumentQaRequestDTO, Depends(DocumentQaRequestDTO)],
-    token: str = Depends(verify_bearer_token),
+    token: str | None = Depends(resolve_document_qa_token),
     dvd_mcp_client: DvdMcpClient = Depends(get_dvd_mcp_client),
     dvd_rag_service: DvdRagService = Depends(get_dvd_rag_service),
 ) -> AsyncIterable[DvdResponse]:
@@ -186,5 +238,7 @@ async def stream_document_qa(
         chat_id=user_request.chat_id,
         request_id=user_request.request_id,
         temperature=user_request.temperature,
+        # Chat Storage always requires a user JWT — an anonymous run keeps no history.
+        persist_history=token is not None,
     ):
         yield DvdResponse(**chunk)
