@@ -79,6 +79,10 @@ Authorization: Bearer <access_token>
 - `GET /restrictions/generate_restrictions/stream`
 - `POST /a2a`
 
+Исключение — `GET /documents/qa/stream`: вопрос по общей нормативной базе обслуживается
+без заголовка. Токен нужен, как только запрос выходит за публичный контур (`scenario_id`,
+`chat_id`) — подробности в [frontend-document-qa.md](frontend-document-qa.md#публичный-доступ).
+
 ## Общие эндпоинты
 
 ### MCP-консоль

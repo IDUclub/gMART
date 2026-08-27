@@ -78,7 +78,7 @@ class DvdRagService(BaseLlmService):
     async def run_document_qa_pipeline(
         self,
         dvd_mcp_client: "DvdMcpClient",
-        token: str,
+        token: str | None,
         model: str | None,
         temperature: float,
         user_query: str,
@@ -125,8 +125,9 @@ class DvdRagService(BaseLlmService):
             # No chat_id supplied → create a new chat tagged with scenario_id. The
             # project_id is resolved from scenario_id; if that lookup fails we warn the
             # client, drop the project filter, and keep going (the chat is still created).
-            # A2A runs pass persist_history=False: no chat is created and nothing is
-            # written to ChatStorage (history stays read-only).
+            # A2A runs and anonymous public runs pass persist_history=False: no chat
+            # is created and nothing is written to ChatStorage (an anonymous run has
+            # no user JWT, and ChatStorage accepts none of its calls without one).
             if not chat_id and persist_history:
                 project_id: int | None = None
                 if scenario_id is not None:

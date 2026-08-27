@@ -11,6 +11,10 @@ from fastmcp import Client
 from idu_service_auth import KeycloakTokenClient, KeycloakTokenConfig
 
 USER_ID_HEADER = "X-User-Id"
+# IDU_DVD demands X-User-Id on every search tool, even for the shared index where it
+# discards the value (it is only honoured together with project_id/scenario_id). Public,
+# unauthenticated document-QA questions carry this placeholder instead of a Keycloak sub.
+ANONYMOUS_USER_ID = "anonymous"
 
 
 def build_service_auth() -> KeycloakTokenClient:
