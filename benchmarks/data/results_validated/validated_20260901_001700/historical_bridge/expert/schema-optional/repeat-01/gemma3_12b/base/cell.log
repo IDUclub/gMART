@@ -1,0 +1,18 @@
+
+$ C:\Projects\IDU\IDUclub\ICII\gMART\.venv\Scripts\python.exe benchmarks/harness/inproc_runner.py --dataset benchmarks/data/gold/exp_data_restrictions.csv --out-dir C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\historical_bridge\expert\schema-optional\repeat-01\gemma3_12b\base --models gemma3:12b --arms base --transports local --urban-data replay --llm-host http://localhost:11434 --urban-api-url https://urban-api.testing.idulab.ru/api --schema-arm optional --repeat-id 1 --run-id validated_20260901_001700 --concurrency 1 --timeout 900.0 --fail-fast-after 3 --progress-every 10 --log-level WARNING
+manifest: C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\historical_bridge\expert\schema-optional\repeat-01\gemma3_12b\base\run_manifest.json
+dataset: 95 rows from benchmarks/data/gold/exp_data_restrictions.csv
+urban data store: {'mode': 'replay', 'root': 'runtime\\urban_data', 'entries': 1121, 'megabytes': 26.0, 'scenarios': 30, 'hits': 0, 'misses': 0, 'writes': 0}
+  gemma3:12b / base / local: 95 rows to run (0 already done) -> C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\historical_bridge\expert\schema-optional\repeat-01\gemma3_12b\base\gemma3_12b\base--local\results.jsonl
+    10/95  {'clarification': 10}
+    20/95  {'clarification': 20}
+    30/95  {'clarification': 30}
+    40/95  {'clarification': 40}
+    50/95  {'clarification': 47, 'full_success': 3}
+    60/95  {'clarification': 55, 'full_success': 5}
+    70/95  {'clarification': 62, 'full_success': 8}
+    80/95  {'clarification': 70, 'full_success': 10}
+    90/95  {'clarification': 77, 'full_success': 13}
+    95/95  {'clarification': 82, 'full_success': 13}
+    finished gemma3:12b/base/local: {'clarification': 82, 'full_success': 13}
+urban data store: {'mode': 'replay', 'root': 'runtime\\urban_data', 'entries': 1121, 'megabytes': 26.0, 'scenarios': 30, 'hits': 0, 'misses': 0, 'writes': 0}

@@ -73,7 +73,12 @@ async def test_repair_retry_preserves_conversation():
     assert roles == ["system", "user", "assistant", "user"]
     assert "жилые дома" in retry_msgs[1]["content"]  # user query kept
     assert "not valid json" in retry_msgs[2]["content"]  # invalid answer kept
-    assert "невалидный" in retry_msgs[3]["content"].lower()  # repair instruction
+    repair = retry_msgs[3]["content"].lower()
+    assert "проверку схемы" in repair  # repair instruction
+    # The model can only fix what it is told is broken, and since
+    # target_names became required the failures are schema failures rather
+    # than syntax ones -- so the validation error itself must be forwarded.
+    assert "validation error" in repair
 
 
 def test_feature_collections_translate_reserved_names():

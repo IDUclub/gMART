@@ -1,0 +1,19 @@
+
+$ C:\Projects\IDU\IDUclub\ICII\gMART\.venv\Scripts\python.exe benchmarks/harness/inproc_runner.py --dataset benchmarks/data/gold/expanded_catalog.csv --out-dir C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\robustness\synthetic\schema-required\repeat-01\gemma4_12b\base --models gemma4:12b --arms base --transports local --urban-data replay --llm-host http://localhost:11434 --urban-api-url https://urban-api.testing.idulab.ru/api --schema-arm required --repeat-id 1 --run-id validated_20260901_001700 --concurrency 1 --timeout 900.0 --fail-fast-after 3 --progress-every 10 --log-level WARNING --sample-per-scenario 5 --sample-seed 20260831
+manifest: C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\robustness\synthetic\schema-required\repeat-01\gemma4_12b\base\run_manifest.json
+dataset: 110 rows from benchmarks/data/gold/expanded_catalog.csv
+urban data store: {'mode': 'replay', 'root': 'runtime\\urban_data', 'entries': 1121, 'megabytes': 26.0, 'scenarios': 30, 'hits': 0, 'misses': 0, 'writes': 0}
+  gemma4:12b / base / local: 110 rows to run (0 already done) -> C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\robustness\synthetic\schema-required\repeat-01\gemma4_12b\base\gemma4_12b\base--local\results.jsonl
+    10/110  {'full_success': 10}
+    20/110  {'full_success': 20}
+    30/110  {'full_success': 30}
+    40/110  {'full_success': 40}
+    50/110  {'full_success': 50}
+    60/110  {'full_success': 60}
+    70/110  {'full_success': 70}
+    80/110  {'full_success': 79, 'planning_failure': 1}
+    90/110  {'full_success': 89, 'planning_failure': 1}
+    100/110  {'full_success': 98, 'planning_failure': 2}
+    110/110  {'full_success': 107, 'planning_failure': 2, 'clarification': 1}
+    finished gemma4:12b/base/local: {'full_success': 107, 'planning_failure': 2, 'clarification': 1}
+urban data store: {'mode': 'replay', 'root': 'runtime\\urban_data', 'entries': 1121, 'megabytes': 26.0, 'scenarios': 30, 'hits': 0, 'misses': 0, 'writes': 0}

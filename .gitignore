@@ -49,3 +49,6 @@ benchmarks/out/
 
 # local scenario cache (SCENARIO_CACHE_DIR default)
 runtime/
+
+# Benchmark-run credentials (local only)
+env/.env.benchmark.local

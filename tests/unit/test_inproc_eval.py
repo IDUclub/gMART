@@ -521,3 +521,174 @@ def test_an_empty_results_directory_fails_loudly(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["inproc_eval.py", "--results", str(tmp_path)])
     with pytest.raises(SystemExit):
         ev.main()
+
+
+# --------------------------------------------------------------------------- #
+# The model's plan vs the pipeline's
+# --------------------------------------------------------------------------- #
+def _matching_gold() -> GoldRecord:
+    """Gold whose roles line up with ``_plan()``.
+
+    The two sides name the roles in opposite directions: gold's ``target`` is the
+    buffered entity (plan ``source_entities``) and gold's ``source`` is the
+    counted one (plan ``target_entities``).
+    """
+
+    return _gold(source="Жилой дом", target="Школа")
+
+
+def _downgraded_record(**kwargs) -> dict:
+    """A row shaped like gemma3's: correct plan, refused by canonicalisation.
+
+    The model names both entities and the radius, but its restriction rule
+    carries no `target_names`; the pipeline drops the rule, flips the mode and
+    blanks `target_entities` on the way out.
+    """
+
+    record = _record(**kwargs)
+    record["model_plan"] = {
+        **_plan(),
+        "restriction_rules": [{"source_name": "Школа", "target_names": []}],
+    }
+    record["restriction_plan"] = _plan(
+        mode="needs_clarification", targets=[], distances=[100.0]
+    )
+    return record
+
+
+def test_entity_accuracy_is_read_off_the_models_plan_not_the_pipelines():
+    """The whole reason `model_plan` is recorded: the executed plan says the
+
+    model named no counted entity, and the model in fact named it."""
+
+    record = _downgraded_record()
+
+    tallies = ev.score_plan([(record, _matching_gold())])
+
+    assert tallies["counted_entity"].correct == 1
+    assert tallies["buffered_entity"].correct == 1
+
+
+def test_scoring_the_pipeline_plan_would_have_reported_zero():
+    """Pins what the bug looked like, so a revert cannot pass silently."""
+
+    record = _downgraded_record()
+    record.pop("model_plan")
+
+    tallies = ev.score_plan([(record, _matching_gold())])
+
+    assert tallies["counted_entity"].correct == 0
+
+
+def test_an_older_record_without_a_model_plan_still_scores():
+    record = _record()
+    assert "model_plan" not in record
+
+    tallies = ev.score_plan([(record, _matching_gold())])
+
+    assert tallies["counted_entity"].comparable == 1
+
+
+def test_schema_loss_counts_the_refused_plan_and_names_the_cause():
+    loss = ev.schema_loss([_downgraded_record()])
+
+    assert loss["downgraded"] == 1
+    assert loss["missing_target_names"] == 1
+
+
+def test_schema_loss_ignores_a_plan_the_pipeline_accepted():
+    record = _record()
+    record["model_plan"] = _plan()
+
+    loss = ev.schema_loss([record])
+
+    assert loss["downgraded"] == 0
+
+
+def test_schema_loss_ignores_a_model_that_asked_for_clarification_itself():
+    """A model that chose `needs_clarification` was not overruled by the schema."""
+
+    record = _record(end_state=runner.STATE_CLARIFICATION)
+    record["model_plan"] = _plan(mode="needs_clarification")
+    record["restriction_plan"] = _plan(mode="needs_clarification")
+
+    loss = ev.schema_loss([record])
+
+    assert loss["downgraded"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Mode evasion: the model must not be allowed to pick its own exam
+# --------------------------------------------------------------------------- #
+def _buffers_only_record(**kwargs) -> dict:
+    """A row that built a buffer, counted nothing, and called itself complete.
+
+    This is what llama3.1:8b did on 1153 of 1705 restrictions tasks: it declared
+    `buffers_only`, the pipeline built the zone, and `inproc_runner.end_state`
+    — which can only see the mode the model declared — called it a full success.
+    """
+
+    record = _record(**kwargs)
+    record["restriction_plan"] = _plan(mode="buffers_only", targets=[])
+    record["layer_counts"] = {"generators": 4}
+    record["llm_response"] = "Буферные зоны построены."
+    return record
+
+
+def test_declaring_buffers_only_on_a_counting_task_is_not_a_success():
+    gold = _gold(intent="restrictions")
+    record = _buffers_only_record()
+
+    assert record["end_state"] == runner.STATE_FULL_SUCCESS
+    assert ev.resolved_end_state(record, gold) == runner.STATE_PARTIAL_SPATIAL
+
+
+def test_declaring_buffers_only_on_a_buffers_only_task_stays_a_success():
+    """The gold task is the criterion in both directions, not a blanket penalty."""
+
+    gold = _gold(intent="buffers_only", target=None)
+    record = _buffers_only_record()
+
+    assert ev.resolved_end_state(record, gold) == runner.STATE_FULL_SUCCESS
+
+
+def test_a_restrictions_task_answered_with_both_layers_stays_a_success():
+    gold = _gold(intent="restrictions")
+    record = _record()
+    record["llm_response"] = "Найдено 3 объекта."
+
+    assert ev.resolved_end_state(record, gold) == runner.STATE_FULL_SUCCESS
+
+
+def test_only_the_success_verdict_is_re_judged_never_a_failure():
+    """Re-judging is one-way: it can withdraw a success, never invent one."""
+
+    gold = _gold(intent="restrictions")
+    for state in (
+        runner.STATE_CLARIFICATION,
+        runner.STATE_TIMEOUT,
+        runner.STATE_PLANNING_FAILURE,
+        runner.STATE_TOOL_INFRA_FAILURE,
+    ):
+        record = _buffers_only_record(end_state=state)
+        assert ev.resolved_end_state(record, gold) == state
+
+
+def test_an_unpaired_row_keeps_whatever_the_runner_said():
+    record = _buffers_only_record()
+    assert ev.resolved_end_state(record, None) == runner.STATE_FULL_SUCCESS
+
+
+def test_the_report_separates_reported_success_from_actual():
+    """Table 1b must show the gap, not quietly close it."""
+
+    gold = _gold(intent="restrictions", question="вопрос")
+    records = [_buffers_only_record(idx=0, prompt="вопрос")]
+    result = ev.evaluate(_arm(records), {(7, "вопрос"): gold})
+
+    assert result["mode_evasion"] == 1
+    assert result["naive_success"] == 1
+    assert result["overall"].correct == 0
+    assert result["overall"].comparable == 1
+    assert result["states"][runner.STATE_FULL_SUCCESS] == 0
+    assert result["states"][runner.STATE_PARTIAL_SPATIAL] == 1

@@ -1,0 +1,18 @@
+
+$ C:\Projects\IDU\IDUclub\ICII\gMART\.venv\Scripts\python.exe benchmarks/harness/inproc_runner.py --dataset benchmarks/data/gold/exp_data_restrictions.csv --out-dir C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\historical_bridge\expert\schema-required\repeat-01\gemma3_12b\base --models gemma3:12b --arms base --transports local --urban-data replay --llm-host http://localhost:11434 --urban-api-url https://urban-api.testing.idulab.ru/api --schema-arm required --repeat-id 1 --run-id validated_20260901_001700 --concurrency 1 --timeout 900.0 --fail-fast-after 3 --progress-every 10 --log-level WARNING --save-layers
+manifest: C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\historical_bridge\expert\schema-required\repeat-01\gemma3_12b\base\run_manifest.json
+dataset: 95 rows from benchmarks/data/gold/exp_data_restrictions.csv
+urban data store: {'mode': 'replay', 'root': 'runtime\\urban_data', 'entries': 1121, 'megabytes': 26.0, 'scenarios': 30, 'hits': 0, 'misses': 0, 'writes': 0}
+  gemma3:12b / base / local: 95 rows to run (0 already done) -> C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\historical_bridge\expert\schema-required\repeat-01\gemma3_12b\base\gemma3_12b\base--local\results.jsonl
+    10/95  {'full_success': 10}
+    20/95  {'full_success': 20}
+    30/95  {'full_success': 30}
+    40/95  {'full_success': 39, 'clarification': 1}
+    50/95  {'full_success': 49, 'clarification': 1}
+    60/95  {'full_success': 57, 'clarification': 3}
+    70/95  {'full_success': 67, 'clarification': 3}
+    80/95  {'full_success': 76, 'clarification': 4}
+    90/95  {'full_success': 85, 'clarification': 5}
+    95/95  {'full_success': 90, 'clarification': 5}
+    finished gemma3:12b/base/local: {'full_success': 90, 'clarification': 5}
+urban data store: {'mode': 'replay', 'root': 'runtime\\urban_data', 'entries': 1121, 'megabytes': 26.0, 'scenarios': 30, 'hits': 0, 'misses': 0, 'writes': 0}

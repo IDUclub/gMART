@@ -1,0 +1,21 @@
+{
+  "run_id": "validated_20260901_001700",
+  "archive": "gmart-validated-20260901.tar.xz",
+  "bytes": 88800320,
+  "entries": 3051,
+  "sha256": "e90bf3c97e7a7ca83e39e626979156c538d0614c12daf8e8174ecbd8027659c1",
+  "release_tag": "experiments-validated-20260901",
+  "contents": [
+    "benchmarks/data/results_validated/validated_20260901_001700",
+    "benchmarks/data/gold/exp_data_restrictions.csv",
+    "benchmarks/data/gold/expanded_catalog.csv",
+    "benchmarks/data/gold/reference",
+    "benchmarks/out/validated_20260901_001700",
+    "runtime/urban_data"
+  ],
+  "limitations": {
+    "private_reference_links_missing": 45,
+    "territories_json_available": false,
+    "unambiguous_geometry_reference_rows": 12
+  }
+}

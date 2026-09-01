@@ -42,7 +42,24 @@ class BufferRule(BaseModel):
 
 class RestrictionRule(BaseModel):
     source_name: str = Field(description="Canonical buffer source entity name.")
-    target_names: list[str] = Field(default_factory=list)
+    # Required, and required to be non-empty, because the pipeline has always
+    # treated it that way: `_canonicalize_restriction_rules` drops any rule whose
+    # targets are empty, which degrades the whole plan to needs_clarification. It
+    # was optional only because that is what `list[str]` defaults to, and no rule
+    # anywhere is meaningful without targets. Models read the schema literally --
+    # gemma3 left it out of 88.7% of its rules and llama3.1 of 99.8%, while naming
+    # the very same entity in `target_entities` and in the rule's own prose -- so
+    # their plans died on a field nothing had asked them to fill. Documenting it
+    # in the prompt moved nothing; only the schema is binding.
+    target_names: list[str] = Field(
+        min_length=1,
+        description=(
+            "Canonical names, taken from target_entities, of the entities this "
+            "rule counts inside the source buffer. Must be non-empty: a rule "
+            "with no targets is dropped and the plan fails. Naming the targets "
+            "in title or description does not substitute for this field."
+        ),
+    )
     title: str
     description: str
     origin: Literal["normgraph", "user"] = "user"

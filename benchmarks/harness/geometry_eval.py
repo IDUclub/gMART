@@ -57,6 +57,10 @@ import pandas as pd
 from shapely.geometry import shape
 from shapely.ops import unary_union
 
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
 sys.path.insert(0, str(Path(__file__).parents[1] / "eval"))
 from gold_parser import load_gold, norm  # noqa: E402
 from shapely.geometry import shape as _shape  # noqa: E402
@@ -492,8 +496,13 @@ def main():
         f"entity {counts['entity']})"
     )
 
-    df = pd.read_csv(args.dataset, sep=";", engine="python")
-    base_of = {i: int(b) for i, b in enumerate(df["base_index"])}
+    df = pd.read_csv(args.dataset, sep=None, engine="python")
+    # Generated/paraphrase datasets carry an explicit base_index. A direct run
+    # on the expert set is already in base order, so identity is the correct map.
+    if "base_index" in df.columns:
+        base_of = {i: int(b) for i, b in enumerate(df["base_index"])}
+    else:
+        base_of = {i: i for i in range(len(df))}
     if args.base_only:
         base_of = {i: b for i, b in base_of.items() if i < len(gold)}
 

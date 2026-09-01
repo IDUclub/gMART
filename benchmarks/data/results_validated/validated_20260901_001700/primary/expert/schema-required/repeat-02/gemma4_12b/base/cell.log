@@ -1,0 +1,18 @@
+
+$ C:\Projects\IDU\IDUclub\ICII\gMART\.venv\Scripts\python.exe benchmarks/harness/inproc_runner.py --dataset benchmarks/data/gold/exp_data_restrictions.csv --out-dir C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\primary\expert\schema-required\repeat-02\gemma4_12b\base --models gemma4:12b --arms base --transports local --urban-data replay --llm-host http://localhost:11434 --urban-api-url https://urban-api.testing.idulab.ru/api --schema-arm required --repeat-id 2 --run-id validated_20260901_001700 --concurrency 1 --timeout 900.0 --fail-fast-after 3 --progress-every 10 --log-level WARNING
+manifest: C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\primary\expert\schema-required\repeat-02\gemma4_12b\base\run_manifest.json
+dataset: 95 rows from benchmarks/data/gold/exp_data_restrictions.csv
+urban data store: {'mode': 'replay', 'root': 'runtime\\urban_data', 'entries': 1121, 'megabytes': 26.0, 'scenarios': 30, 'hits': 0, 'misses': 0, 'writes': 0}
+  gemma4:12b / base / local: 95 rows to run (0 already done) -> C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\primary\expert\schema-required\repeat-02\gemma4_12b\base\gemma4_12b\base--local\results.jsonl
+    10/95  {'full_success': 10}
+    20/95  {'full_success': 20}
+    30/95  {'full_success': 30}
+    40/95  {'full_success': 40}
+    50/95  {'full_success': 50}
+    60/95  {'full_success': 59, 'clarification': 1}
+    70/95  {'full_success': 69, 'clarification': 1}
+    80/95  {'full_success': 79, 'clarification': 1}
+    90/95  {'full_success': 89, 'clarification': 1}
+    95/95  {'full_success': 94, 'clarification': 1}
+    finished gemma4:12b/base/local: {'full_success': 94, 'clarification': 1}
+urban data store: {'mode': 'replay', 'root': 'runtime\\urban_data', 'entries': 1121, 'megabytes': 26.0, 'scenarios': 30, 'hits': 0, 'misses': 0, 'writes': 0}

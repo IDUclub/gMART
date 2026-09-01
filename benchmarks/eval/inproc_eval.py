@@ -55,6 +55,7 @@ END_STATES = [
 ]
 FAILURE_CLASSES = [
     runner.CLS_INVALID_PLAN,
+    runner.CLS_UNEXECUTABLE_PLAN,
     runner.CLS_LLM_BACKEND,
     runner.CLS_TOOL_EXECUTION,
     runner.CLS_URBAN_API,
@@ -65,7 +66,11 @@ FAILURE_CLASSES = [
 ]
 # Which side of the model/infrastructure line each class falls on. The reviewer
 # asks for exactly this split; it is a property of the class, not a guess.
-MODEL_CLASSES = {runner.CLS_INVALID_PLAN, runner.CLS_LLM_BACKEND}
+MODEL_CLASSES = {
+    runner.CLS_INVALID_PLAN,
+    runner.CLS_UNEXECUTABLE_PLAN,
+    runner.CLS_LLM_BACKEND,
+}
 INFRA_CLASSES = {
     runner.CLS_TOOL_EXECUTION,
     runner.CLS_URBAN_API,
@@ -188,6 +193,21 @@ class Tally:
         return f"{self.pct:.1f}% ({self.correct}/{self.comparable})"
 
 
+def model_plan_of(record: dict) -> dict | None:
+    """The plan the *model* produced, which is what these metrics are about.
+
+    ``restriction_plan`` is the plan after the pipeline canonicalised it, and
+    that step is lossy: a plan whose ``restriction_rules`` omit ``target_names``
+    loses every rule, which flips the mode to ``needs_clarification``, which
+    blanks ``target_entities``. Scoring entity accuracy there reports 0 % for a
+    model that named the entity correctly — measured on gemma3:12b, which does
+    exactly this on every row. Runs made before ``model_plan`` was recorded fall
+    back to the old field so their reports still build.
+    """
+
+    return record.get("model_plan") or record.get("restriction_plan")
+
+
 def score_plan(
     paired: list[tuple[dict, GoldRecord]],
 ) -> dict[str, Tally]:
@@ -206,7 +226,7 @@ def score_plan(
         "distance": Tally(),
     }
     for record, gold in paired:
-        plan = record.get("restriction_plan")
+        plan = model_plan_of(record)
         if not plan:
             # No plan means the row failed before or during planning. That is a
             # planning failure in the end states; counting it as a wrong entity
@@ -256,6 +276,74 @@ def scored_rows(records: list[dict]) -> list[dict]:
     ]
 
 
+def schema_loss(records: list[dict]) -> dict[str, int]:
+    """Rows where the model planned a restriction and the pipeline refused it.
+
+    This is the price of the typed schema, and it is a result rather than a bug
+    to be tidied away: the model produced a plan naming both entities and the
+    radius, and the pipeline discarded it because one nested, redundant field was
+    missing. ``missing_target_names`` is the case observed so far — the counted
+    entity is present in ``target_entities`` and absent from
+    ``restriction_rules[].target_names``, which are required to agree.
+    """
+
+    loss = {"downgraded": 0, "missing_target_names": 0}
+    for record in records:
+        model = record.get("model_plan") or {}
+        pipeline = record.get("restriction_plan") or {}
+        if not model or not pipeline:
+            continue
+        if model.get("mode") != "restrictions":
+            continue
+        if pipeline.get("mode") == "restrictions":
+            continue
+        loss["downgraded"] += 1
+        rules = model.get("restriction_rules") or []
+        if rules and not any(rule.get("target_names") for rule in rules):
+            loss["missing_target_names"] += 1
+    return loss
+
+
+# The layer pair a restrictions task must produce, in either naming. Kept here
+# rather than imported from the runner because this is the *gold* criterion:
+# what the task asked for, not what the model decided to attempt.
+RESTRICTION_LAYER_SETS = (
+    {"objects", "generators"},
+    {"Объекты в зоне ограничений", "Источники ограничений"},
+)
+
+
+def produced_restriction_layers(record: dict) -> bool:
+    produced = set(record.get("layer_counts") or {})
+    return any(required <= produced for required in RESTRICTION_LAYER_SETS)
+
+
+def resolved_end_state(record: dict, gold: GoldRecord | None) -> str:
+    """The runner's end state, re-judged against what the gold task asked for.
+
+    ``inproc_runner.end_state`` decides completeness from the mode the *model*
+    declared, because at run time that is the only intent available. That lets a
+    model grade its own exam: declaring ``buffers_only`` on a task that asks for
+    a count reduces the criterion to "some layer exists", which any run that
+    builds a buffer satisfies. It is not a hypothetical — llama3.1:8b declared
+    ``buffers_only`` on 1153 of 1705 restrictions tasks, which the runner scored
+    as 1122 successes against 1 by the criterion the tasks actually set.
+
+    Here the gold intent is known, so the criterion comes from the task. Failures,
+    clarifications and timeouts are left exactly as the runner classified them —
+    only the success/partial judgement is re-decided, and only downwards.
+    """
+
+    state = record.get("end_state")
+    if gold is None or state != runner.STATE_FULL_SUCCESS:
+        return state
+    if gold.intent != "restrictions":
+        return state
+    if produced_restriction_layers(record):
+        return state
+    return runner.STATE_PARTIAL_SPATIAL
+
+
 def evaluate(arm: Arm, gold_index: dict[tuple[int, str], GoldRecord]) -> dict:
     paired_all = join_gold(arm.records, gold_index)
     paired = [
@@ -267,8 +355,16 @@ def evaluate(arm: Arm, gold_index: dict[tuple[int, str], GoldRecord]) -> dict:
     total = len(arm.records)
     gaps = total - len(scored)
 
+    # Every table below reads the state through the gold task, never the mode the
+    # model chose for itself — see `resolved_end_state`.
+    gold_of = {id(record): gold for record, gold in paired_all}
+    state_of = {
+        id(record): resolved_end_state(record, gold_of.get(id(record)))
+        for record in arm.records
+    }
+
     states = {
-        state: sum(1 for record in scored if record.get("end_state") == state)
+        state: sum(1 for record in scored if state_of[id(record)] == state)
         for state in END_STATES
     }
     failures = {
@@ -285,7 +381,7 @@ def evaluate(arm: Arm, gold_index: dict[tuple[int, str], GoldRecord]) -> dict:
         tally = by_task.get(gold.intent)
         if tally is None:
             continue
-        state = record.get("end_state")
+        state = state_of[id(record)]
         if gold.intent == "needs_clarification":
             tally.add(state == runner.STATE_CLARIFICATION)
         else:
@@ -293,11 +389,12 @@ def evaluate(arm: Arm, gold_index: dict[tuple[int, str], GoldRecord]) -> dict:
 
     overall = Tally()
     for record, _ in paired:
-        overall.add(record.get("end_state") == runner.STATE_FULL_SUCCESS)
+        overall.add(state_of[id(record)] == runner.STATE_FULL_SUCCESS)
 
     durations = sorted(float(record.get("duration_sec") or 0.0) for record in scored)
 
     return {
+        "schema_loss": schema_loss(scored),
         "arm": arm,
         "n_total": total,
         "n_scored": len(scored),
@@ -315,6 +412,19 @@ def evaluate(arm: Arm, gold_index: dict[tuple[int, str], GoldRecord]) -> dict:
         ),
         "by_task": by_task,
         "overall": overall,
+        # Both halves of Table 1b: how often the model swapped the task for an
+        # easier one, and what the pre-fix completion test would have reported.
+        "mode_evasion": sum(
+            1
+            for record, gold in paired
+            if gold.intent == "restrictions"
+            and (record.get("restriction_plan") or {}).get("mode") == "buffers_only"
+        ),
+        "naive_success": sum(
+            1
+            for record, _ in paired
+            if record.get("end_state") == runner.STATE_FULL_SUCCESS
+        ),
         "plan": score_plan(paired),
         "median_sec": durations[len(durations) // 2] if durations else 0.0,
     }
@@ -378,7 +488,10 @@ def report(evals: list[dict]) -> str:
         "layer by design and is not penalised for lacking one; a "
         "`needs_clarification` task succeeds by asking. The single universal "
         "completion proxy the previous report used understates the first and "
-        "overstates nothing — which is why it is replaced rather than kept.\n"
+        "overstates nothing — which is why it is replaced rather than kept.\n\n"
+        "The criterion comes from the gold task, never from the mode the model "
+        "declared for itself. Reading it from the model's own mode lets a run "
+        "score by lowering the bar — see Table 1b.\n"
     )
     lines.append(
         md_table(
@@ -396,11 +509,43 @@ def report(evals: list[dict]) -> str:
         )
     )
 
+    lines.append("\n\n## Table 1b. Mode evasion\n")
+    lines.append(
+        "Rows whose gold task asks for a count and where the model declared "
+        "`buffers_only` — it draws the zone and never counts anything inside it. "
+        "The pipeline runs such a plan happily and it produces a layer, so a "
+        "completion test that trusts the declared mode reads it as a success. "
+        "**Reported** is what that test would have said; **actual** is the same "
+        "rows judged by what the task asked for. A large gap between the two "
+        "columns means the model is answering an easier question than the one "
+        "put to it, and any success rate quoted for it is about the substitution "
+        "rather than about the task.\n"
+    )
+    lines.append(
+        md_table(
+            ["Run", "Declared buffers_only", "Reported success", "Actual success"],
+            [
+                [
+                    e["arm"].label,
+                    f"{e['mode_evasion']} ({100 * e['mode_evasion'] / max(e['n_gold'], 1):.1f}%)",
+                    f"{e['naive_success']} ({100 * e['naive_success'] / max(e['n_gold'], 1):.1f}%)",
+                    e["overall"].cell(),
+                ]
+                for e in evals
+            ],
+        )
+    )
+
     lines.append("\n\n## Table 2. Plan correctness (gold set)\n")
     lines.append(
-        "Scored against the `RestrictionPlan` the pipeline executed. Each field is "
-        "scored only on gold rows the parser is confident about, and the "
-        "comparable count is shown next to the percentage. Rows that failed "
+        "Scored against the `RestrictionPlan` **the model emitted** (`model_plan`), "
+        "not the one the pipeline went on to execute. The two differ: "
+        "canonicalisation drops restriction rules that carry no `target_names`, an "
+        "empty rule list flips the mode to `needs_clarification`, and that flip "
+        "blanks `target_entities`. Scoring the executed plan therefore reports a "
+        "missing target entity for a model that named it correctly — see Table 2b. "
+        "Each field is scored only on gold rows the parser is confident about, and "
+        "the comparable count is shown next to the percentage. Rows that failed "
         "before a plan existed are not counted here — they are already counted as "
         "planning failures in Table 3.\n"
     )
@@ -422,6 +567,30 @@ def report(evals: list[dict]) -> str:
                     e["plan"]["buffered_entity"].cell(),
                     e["plan"]["counted_entity"].cell(),
                     e["plan"]["distance"].cell(),
+                ]
+                for e in evals
+            ],
+        )
+    )
+
+    lines.append("\n\n## Table 2b. What the typed schema costs\n")
+    lines.append(
+        "Rows where the model planned `restrictions` and the pipeline refused the "
+        "plan. These are not model errors of intent or of entity choice — Table 2 "
+        "scores those on the model's own plan — but failures to satisfy the "
+        "schema exactly, and the pipeline treats a partial plan as no plan at "
+        "all. `missing target_names` is the observed cause: the counted entity is "
+        "named in `target_entities` and omitted from "
+        "`restriction_rules[].target_names`, which must agree.\n"
+    )
+    lines.append(
+        md_table(
+            ["Run", "Plans downgraded", "of which: missing `target_names`"],
+            [
+                [
+                    e["arm"].label,
+                    e["schema_loss"]["downgraded"],
+                    e["schema_loss"]["missing_target_names"],
                 ]
                 for e in evals
             ],

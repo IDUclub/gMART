@@ -39,8 +39,12 @@ def parse_catalog_prompt(prompt: str) -> list[str]:
 
 
 class RestrictionPlanBuilder:
-    def __init__(self, llm_client):
+    def __init__(self, llm_client, plan_model: type[RestrictionPlan] = RestrictionPlan):
         self.llm_client = llm_client
+        # The default is the production contract.  The benchmark runner can
+        # inject the historical optional-target schema in an isolated process
+        # for a controlled schema ablation without changing production behaviour.
+        self.plan_model = plan_model
         self._plan_cache: dict[str, RestrictionPlan] = {}
 
     @staticmethod
@@ -253,7 +257,7 @@ class RestrictionPlanBuilder:
         response = await self.llm_client.chat(
             model=model,
             think=False,
-            format=RestrictionPlan.model_json_schema(),
+            format=self.plan_model.model_json_schema(),
             options={
                 "temperature": 0,
                 "num_predict": 4096,
@@ -264,7 +268,7 @@ class RestrictionPlanBuilder:
         content = response["message"]["content"]
         logger.debug(f"LLM plan response [{model}]: {content}")
         try:
-            return RestrictionPlan.model_validate_json(strip_json_fence(content))
+            return self.plan_model.model_validate_json(strip_json_fence(content))
         except (ValidationError, json.JSONDecodeError) as e:
             if _retries > 0:
                 logger.warning(
@@ -275,8 +279,11 @@ class RestrictionPlanBuilder:
                     {
                         "role": "user",
                         "content": (
-                            "Твой предыдущий ответ содержит невалидный или неполный JSON. "
+                            "Твой предыдущий ответ не прошёл проверку схемы. "
+                            "Ошибки валидации: "
+                            f"{e}. "
                             "Верни тот же план целиком в виде валидного JSON без markdown и без пояснений. "
+                            "Исправь перечисленные поля, остальное оставь как есть. "
                             "Убедись, что JSON полный — все скобки и кавычки закрыты."
                         ),
                     }
@@ -337,7 +344,7 @@ class RestrictionPlanBuilder:
             "restriction_rules": [
                 {
                     "source_name": "string",
-                    "target_names": ["string"],
+                    "target_names": ["<имя из target_entities, список непустой>"],
                     "title": "string",
                     "description": "string",
                     "origin": "normgraph | user",
@@ -391,6 +398,11 @@ class RestrictionPlanBuilder:
           «лес», цель — «жилой дом», независимо от грамматического порядка слов в норме.
         - buffer_rules должны быть для каждого source_entities.
         - restriction_rules нужны только для mode = "restrictions".
+        - В каждом правиле restriction_rules: source_name — имя из source_entities, от
+          которого построен буфер; target_names — непустой список имён из target_entities,
+          попадание которых в этот буфер нужно посчитать. Правило с пустым target_names
+          отбрасывается, и запрос остаётся невыполненным. Перечисление целей словами в
+          title или description не заменяет target_names — заполни само поле.
         - selection_reasons: коротко объясни, почему выбран режим, источники, цели, радиусы и правила.
         - Пиши selection_reasons простым языком, без технических терминов.
         - Если пользователь не указал тип буфера, используй "round".

@@ -78,6 +78,25 @@ def test_token_expiry_is_classed_separately():
     assert runner.classify(TokenExpiredError("401")) == runner.CLS_TOKEN_EXPIRED
 
 
+def test_a_plan_that_resolves_to_nothing_runnable_is_the_model_s_failure():
+    """The executor's own ValueError must not land in the infrastructure column.
+
+    These two are what remains once `target_names` is required: the plan is valid
+    JSON and valid against the schema, but names entities that resolve to no
+    buildable layer. Filed as `other` they became `tool_infra_failure`, which
+    blames the tools for a plan the model wrote.
+    """
+
+    for message in (
+        "No source layers found for buffer construction",
+        "No valid restriction relations found in the plan",
+    ):
+        assert runner.classify(ValueError(message)) == runner.CLS_UNEXECUTABLE_PLAN
+
+    record = _record(error_class=runner.CLS_UNEXECUTABLE_PLAN)
+    assert runner.end_state(record) == runner.STATE_PLANNING_FAILURE
+
+
 def test_unclassified_failure_falls_back_to_other():
     assert runner.classify(RuntimeError("something new")) == runner.CLS_OTHER
 
@@ -250,6 +269,33 @@ def test_dataset_rows_without_a_scenario_are_dropped(tmp_path):
 
     frame = runner.load_dataset(path, None)
     assert len(frame) == 1
+
+
+def test_schema_ablation_reproduces_the_historical_optional_target_names():
+    required = runner.RestrictionPlan.model_json_schema()["$defs"]["RestrictionRule"]
+    optional = runner.OptionalTargetNamesPlan.model_json_schema()["$defs"][
+        "OptionalTargetNamesRule"
+    ]
+
+    assert "target_names" in required["required"]
+    assert required["properties"]["target_names"]["minItems"] == 1
+    assert "target_names" not in optional["required"]
+    assert "minItems" not in optional["properties"]["target_names"]
+
+
+def test_cluster_balanced_sample_is_deterministic(tmp_path):
+    path = tmp_path / "sample.csv"
+    rows = [f"q-{sid}-{i},{sid}" for sid in (1, 2) for i in range(6)]
+    path.write_text(
+        f"{runner.COL_Q},{runner.COL_SID}\n" + "\n".join(rows), encoding="utf-8"
+    )
+
+    first = runner.load_dataset(path, None, sample_per_scenario=3, sample_seed=17)
+    second = runner.load_dataset(path, None, sample_per_scenario=3, sample_seed=17)
+
+    assert len(first) == 6
+    assert first[runner.COL_Q].tolist() == second[runner.COL_Q].tolist()
+    assert first.groupby(runner.COL_SID).size().to_dict() == {1: 3, 2: 3}
 
 
 # --------------------------------------------------------------------------- #

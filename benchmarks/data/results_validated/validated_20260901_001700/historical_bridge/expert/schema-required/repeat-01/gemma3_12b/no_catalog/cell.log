@@ -1,0 +1,162 @@
+
+$ C:\Projects\IDU\IDUclub\ICII\gMART\.venv\Scripts\python.exe benchmarks/harness/inproc_runner.py --dataset benchmarks/data/gold/exp_data_restrictions.csv --out-dir C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\historical_bridge\expert\schema-required\repeat-01\gemma3_12b\no_catalog --models gemma3:12b --arms no_catalog --transports local --urban-data replay --llm-host http://localhost:11434 --urban-api-url https://urban-api.testing.idulab.ru/api --schema-arm required --repeat-id 1 --run-id validated_20260901_001700 --concurrency 1 --timeout 900.0 --fail-fast-after 3 --progress-every 10 --log-level WARNING
+manifest: C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\historical_bridge\expert\schema-required\repeat-01\gemma3_12b\no_catalog\run_manifest.json
+dataset: 95 rows from benchmarks/data/gold/exp_data_restrictions.csv
+urban data store: {'mode': 'replay', 'root': 'runtime\\urban_data', 'entries': 1121, 'megabytes': 26.0, 'scenarios': 30, 'hits': 0, 'misses': 0, 'writes': 0}
+  gemma3:12b / no_catalog / local: 95 rows to run (0 already done) -> C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\data\results_validated\validated_20260901_001700\historical_bridge\expert\schema-required\repeat-01\gemma3_12b\no_catalog\gemma3_12b\no_catalog--local\results.jsonl
+    10/95  {'clarification': 10}
+    20/95  {'clarification': 20}
+    30/95  {'clarification': 30}
+    40/95  {'clarification': 40}
+    50/95  {'clarification': 50}
+[32m2026-09-01 04:53:23.851[0m | [33m[1mWARNING [0m | [36msrc.agents.services.restriction_catalog[0m:[36m_request_plan[0m:[36m274[0m - [33m[1mLLM returned invalid plan JSON (retries left: 2), asking model to fix it. Error: 1 validation error for RestrictionPlan
+  Invalid JSON: EOF while parsing a string at line 1 column 30122 [type=json_invalid, input_value='{"mode":"needs_clarifica...пермаркеты\',', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/json_invalid[0m
+[32m2026-09-01 04:54:14.761[0m | [33m[1mWARNING [0m | [36msrc.agents.services.restriction_catalog[0m:[36m_request_plan[0m:[36m274[0m - [33m[1mLLM returned invalid plan JSON (retries left: 1), asking model to fix it. Error: 1 validation error for RestrictionPlan
+  Invalid JSON: EOF while parsing a string at line 1 column 30078 [type=json_invalid, input_value='{"mode":"needs_clarifica...ог составить', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/json_invalid[0m
+[32m2026-09-01 04:55:06.491[0m | [31m[1mERROR   [0m | [36msrc.agents.services.restriction_catalog[0m:[36m_request_plan[0m:[36m297[0m - [31m[1m1 validation error for RestrictionPlan
+  Invalid JSON: EOF while parsing a string at line 1 column 30078 [type=json_invalid, input_value='{"mode":"needs_clarifica...ог составить', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/json_invalid[0m
+[33m[1mTraceback (most recent call last):[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\harness\[0m[32m[1minproc_runner.py[0m", line [33m1076[0m, in [35m<module>[0m
+    [1mmain[0m[1m([0m[1m)[0m
+    [36m└ [0m[36m[1m<function main at 0x000001D9E9D11440>[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\harness\[0m[32m[1minproc_runner.py[0m", line [33m1072[0m, in [35mmain[0m
+    [1masyncio[0m[35m[1m.[0m[1mrun[0m[1m([0m[1mmain_async[0m[1m([0m[1margs[0m[1m)[0m[1m)[0m
+    [36m│       │   │          └ [0m[36m[1mNamespace(dataset='benchmarks/data/gold/exp_data_restrictions.csv', out_dir='C:\\Projects\\IDU\\IDUclub\\ICII\\gMART\\benchma...[0m
+    [36m│       │   └ [0m[36m[1m<function main_async at 0x000001D9E9D11300>[0m
+    [36m│       └ [0m[36m[1m<function run at 0x000001D9B29C4FE0>[0m
+    [36m└ [0m[36m[1m<module 'asyncio' from 'C:\\Users\\Leon\\AppData\\Roaming\\uv\\python\\cpython-3.11-windows-x86_64-none\\Lib\\asyncio\\__init...[0m
+
+  File "C:\Users\Leon\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\runners.py", line 190, in run
+    return runner.run(main)
+           │      │   └ <coroutine object main_async at 0x000001D9E86A1930>
+           │      └ <function Runner.run at 0x000001D9B2A2CB80>
+           └ <asyncio.runners.Runner object at 0x000001D9E9D18C90>
+  File "C:\Users\Leon\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           │    │     │                  └ <Task pending name='Task-1' coro=<main_async() running at C:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\harness\inproc_runner...
+           │    │     └ <function BaseEventLoop.run_until_complete at 0x000001D9B2A2A7A0>
+           │    └ <ProactorEventLoop running=True closed=False debug=False>
+           └ <asyncio.runners.Runner object at 0x000001D9E9D18C90>
+  File "C:\Users\Leon\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\base_events.py", line 641, in run_until_complete
+    self.run_forever()
+    │    └ <function ProactorEventLoop.run_forever at 0x000001D9B2B068E0>
+    └ <ProactorEventLoop running=True closed=False debug=False>
+  File "C:\Users\Leon\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\windows_events.py", line 321, in run_forever
+    super().run_forever()
+  File "C:\Users\Leon\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\base_events.py", line 608, in run_forever
+    self._run_once()
+    │    └ <function BaseEventLoop._run_once at 0x000001D9B2A2C540>
+    └ <ProactorEventLoop running=True closed=False debug=False>
+  File "C:\Users\Leon\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\base_events.py", line 1936, in _run_once
+    handle._run()
+    │      └ <function Handle._run at 0x000001D9B134DF80>
+    └ <Handle <TaskStepMethWrapper object at 0x000001D9E9DF2B90>()>
+  File "C:\Users\Leon\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\events.py", line 84, in _run
+    self._context.run(self._callback, *self._args)
+    │    │            │    │           │    └ <member '_args' of 'Handle' objects>
+    │    │            │    │           └ <Handle <TaskStepMethWrapper object at 0x000001D9E9DF2B90>()>
+    │    │            │    └ <member '_callback' of 'Handle' objects>
+    │    │            └ <Handle <TaskStepMethWrapper object at 0x000001D9E9DF2B90>()>
+    │    └ <member '_context' of 'Handle' objects>
+    └ <Handle <TaskStepMethWrapper object at 0x000001D9E9DF2B90>()>
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\harness\[0m[32m[1minproc_runner.py[0m", line [33m473[0m, in [35mdrive[0m
+    [35m[1masync[0m [35m[1mfor[0m [1mevent[0m [35m[1min[0m [1mservice[0m[35m[1m.[0m[1mrun_restriction_execution_pipline[0m[1m([0m
+    [36m          │        │       └ [0m[36m[1m<function RestrictionParserService.run_restriction_execution_pipline at 0x000001D9E9CE9E40>[0m
+    [36m          │        └ [0m[36m[1m<src.agents.services.restriction_parser_service.RestrictionParserService object at 0x000001D9E9D2E6D0>[0m
+    [36m          └ [0m[36m[1m{'type': 'status', 'content': {'status': 'data_retrievement', 'text': 'Получаю каталоги сервисов и физических объектов'}}[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\src\agents\services\[0m[32m[1mrestriction_parser_service.py[0m", line [33m128[0m, in [35mrun_restriction_execution_pipline[0m
+    [35m[1masync[0m [35m[1mfor[0m [1mitem[0m [35m[1min[0m [1mself[0m[35m[1m.[0m[1m_run_restriction_execution_pipline[0m[1m([0m
+    [36m          │       │    └ [0m[36m[1m<function RestrictionParserService._run_restriction_execution_pipline at 0x000001D9E9CE9EE0>[0m
+    [36m          │       └ [0m[36m[1m<src.agents.services.restriction_parser_service.RestrictionParserService object at 0x000001D9E9D2E6D0>[0m
+    [36m          └ [0m[36m[1m{'type': 'status', 'content': {'status': 'data_retrievement', 'text': 'Получаю каталоги сервисов и физических объектов'}}[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\src\agents\services\[0m[32m[1mrestriction_parser_service.py[0m", line [33m340[0m, in [35m_run_restriction_execution_pipline[0m
+    [35m[1masync[0m [35m[1mfor[0m [1mevent[0m [35m[1min[0m [1mself[0m[35m[1m.[0m[1m_retryable_step[0m[1m([0m
+    [36m                   │    └ [0m[36m[1m<function RestrictionParserService._retryable_step at 0x000001D9E9CE9F80>[0m
+    [36m                   └ [0m[36m[1m<src.agents.services.restriction_parser_service.RestrictionParserService object at 0x000001D9E9D2E6D0>[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\src\agents\services\[0m[32m[1mrestriction_parser_service.py[0m", line [33m608[0m, in [35m_retryable_step[0m
+    [1mresult[0m[35m[1m.[0m[1mappend[0m[1m([0m[35m[1mawait[0m [1mstep_fn[0m[1m([0m[1m)[0m[1m)[0m
+    [36m│      │            └ [0m[36m[1m<function RestrictionParserService._run_restriction_execution_pipline.<locals>.<lambda> at 0x000001D9EA03C680>[0m
+    [36m│      └ [0m[36m[1m<method 'append' of 'list' objects>[0m
+    [36m└ [0m[36m[1m[][0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\src\agents\services\[0m[32m[1mrestriction_parser_service.py[0m", line [33m1044[0m, in [35m_build_plan[0m
+    [35m[1mreturn[0m [35m[1mawait[0m [1mself[0m[35m[1m.[0m[1mplan_builder[0m[35m[1m.[0m[1mbuild_plan[0m[1m([0m
+    [36m             │    │            └ [0m[36m[1m<function install_plan_capture.<locals>.capturing at 0x000001D9E9CEBE20>[0m
+    [36m             │    └ [0m[36m[1m<src.agents.services.restriction_catalog.RestrictionPlanBuilder object at 0x000001D9E9D2D950>[0m
+    [36m             └ [0m[36m[1m<src.agents.services.restriction_parser_service.RestrictionParserService object at 0x000001D9E9D2E6D0>[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\harness\[0m[32m[1minproc_runner.py[0m", line [33m348[0m, in [35mcapturing[0m
+    [1mplan[0m [35m[1m=[0m [35m[1mawait[0m [1moriginal[0m[1m([0m[35m[1m*[0m[1margs[0m[1m,[0m [35m[1m**[0m[1mkwargs[0m[1m)[0m
+    [36m             │         │       └ [0m[36m[1m{'history': [], 'normgraph_restrictions': []}[0m
+    [36m             │         └ [0m[36m[1m('gemma3:12b', 'Определи, сколько нежилых зданий расположены в радиусе 300 метров от супермаркетов или магазинов «у дома», та...[0m
+    [36m             └ [0m[36m[1m<bound method RestrictionPlanBuilder.build_plan of <src.agents.services.restriction_catalog.RestrictionPlanBuilder object at ...[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\src\agents\services\[0m[32m[1mrestriction_catalog.py[0m", line [33m134[0m, in [35mbuild_plan[0m
+    [1mraw_plan[0m [35m[1m=[0m [35m[1mawait[0m [1mself[0m[35m[1m.[0m[1m_request_plan[0m[1m([0m
+    [36m                 │    └ [0m[36m[1m<function install_plan_capture.<locals>.capturing_request at 0x000001D9E9CEBD80>[0m
+    [36m                 └ [0m[36m[1m<src.agents.services.restriction_catalog.RestrictionPlanBuilder object at 0x000001D9E9D2D950>[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\harness\[0m[32m[1minproc_runner.py[0m", line [33m363[0m, in [35mcapturing_request[0m
+    [1mplan[0m [35m[1m=[0m [35m[1mawait[0m [1moriginal_request[0m[1m([0m[35m[1m*[0m[1margs[0m[1m,[0m [35m[1m**[0m[1mkwargs[0m[1m)[0m
+    [36m             │                 │       └ [0m[36m[1m{}[0m
+    [36m             │                 └ [0m[36m[1m('gemma3:12b', '\n        Исправь JSON-план GIS-запроса.\n        Верни только валидный JSON той же структуры, без markdown и...[0m
+    [36m             └ [0m[36m[1m<bound method RestrictionPlanBuilder._request_plan of <src.agents.services.restriction_catalog.RestrictionPlanBuilder object ...[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\src\agents\services\[0m[32m[1mrestriction_catalog.py[0m", line [33m291[0m, in [35m_request_plan[0m
+    [35m[1mreturn[0m [35m[1mawait[0m [1mself[0m[35m[1m.[0m[1m_request_plan[0m[1m([0m
+    [36m             │    └ [0m[36m[1m<function install_plan_capture.<locals>.capturing_request at 0x000001D9E9CEBD80>[0m
+    [36m             └ [0m[36m[1m<src.agents.services.restriction_catalog.RestrictionPlanBuilder object at 0x000001D9E9D2D950>[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\harness\[0m[32m[1minproc_runner.py[0m", line [33m363[0m, in [35mcapturing_request[0m
+    [1mplan[0m [35m[1m=[0m [35m[1mawait[0m [1moriginal_request[0m[1m([0m[35m[1m*[0m[1margs[0m[1m,[0m [35m[1m**[0m[1mkwargs[0m[1m)[0m
+    [36m             │                 │       └ [0m[36m[1m{'model': 'gemma3:12b', 'prompt': '\n        Исправь JSON-план GIS-запроса.\n        Верни только валидный JSON той же структ...[0m
+    [36m             │                 └ [0m[36m[1m()[0m
+    [36m             └ [0m[36m[1m<bound method RestrictionPlanBuilder._request_plan of <src.agents.services.restriction_catalog.RestrictionPlanBuilder object ...[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\src\agents\services\[0m[32m[1mrestriction_catalog.py[0m", line [33m291[0m, in [35m_request_plan[0m
+    [35m[1mreturn[0m [35m[1mawait[0m [1mself[0m[35m[1m.[0m[1m_request_plan[0m[1m([0m
+    [36m             │    └ [0m[36m[1m<function install_plan_capture.<locals>.capturing_request at 0x000001D9E9CEBD80>[0m
+    [36m             └ [0m[36m[1m<src.agents.services.restriction_catalog.RestrictionPlanBuilder object at 0x000001D9E9D2D950>[0m
+
+  File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\benchmarks\harness\[0m[32m[1minproc_runner.py[0m", line [33m363[0m, in [35mcapturing_request[0m
+    [1mplan[0m [35m[1m=[0m [35m[1mawait[0m [1moriginal_request[0m[1m([0m[35m[1m*[0m[1margs[0m[1m,[0m [35m[1m**[0m[1mkwargs[0m[1m)[0m
+    [36m             │                 │       └ [0m[36m[1m{'model': 'gemma3:12b', 'prompt': '\n        Исправь JSON-план GIS-запроса.\n        Верни только валидный JSON той же структ...[0m
+    [36m             │                 └ [0m[36m[1m()[0m
+    [36m             └ [0m[36m[1m<bound method RestrictionPlanBuilder._request_plan of <src.agents.services.restriction_catalog.RestrictionPlanBuilder object ...[0m
+
+> File "[32mC:\Projects\IDU\IDUclub\ICII\gMART\src\agents\services\[0m[32m[1mrestriction_catalog.py[0m", line [33m271[0m, in [35m_request_plan[0m
+    [35m[1mreturn[0m [1mself[0m[35m[1m.[0m[1mplan_model[0m[35m[1m.[0m[1mmodel_validate_json[0m[1m([0m[1mstrip_json_fence[0m[1m([0m[1mcontent[0m[1m)[0m[1m)[0m
+    [36m       │    │          │                   │                └ [0m[36m[1m'{"mode":"needs_clarification","original":"Определи, сколько нежилых зданий расположены в радиусе 300 метров от супермаркетов...[0m
+    [36m       │    │          │                   └ [0m[36m[1m<function strip_json_fence at 0x000001D9E9CA68E0>[0m
+    [36m       │    │          └ [0m[36m[1m<classmethod(<function BaseModel.model_validate_json at 0x000001D9E398C680>)>[0m
+    [36m       │    └ [0m[36m[1m<class 'src.agents.services.service_entities.restriction_plan.RestrictionPlan'>[0m
+    [36m       └ [0m[36m[1m<src.agents.services.restriction_catalog.RestrictionPlanBuilder object at 0x000001D9E9D2D950>[0m
+
+  File "C:\Projects\IDU\IDUclub\ICII\gMART\.venv\Lib\site-packages\pydantic\main.py", line 782, in model_validate_json
+    return cls.__pydantic_validator__.validate_json(
+           │   │                      └ <method 'validate_json' of 'pydantic_core._pydantic_core.SchemaValidator' objects>
+           │   └ SchemaValidator(title="RestrictionPlan", validator=Model(
+           │         ModelValidator {
+           │             revalidate: Never,
+           │             validator: ...
+           └ <class 'src.agents.services.service_entities.restriction_plan.RestrictionPlan'>
+
+[31m[1mpydantic_core._pydantic_core.ValidationError[0m:[1m 1 validation error for RestrictionPlan
+  Invalid JSON: EOF while parsing a string at line 1 column 30078 [type=json_invalid, input_value='{"mode":"needs_clarifica...ог составить', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/json_invalid[0m
+    60/95  {'clarification': 59, 'planning_failure': 1}
+    70/95  {'clarification': 69, 'planning_failure': 1}
+    80/95  {'clarification': 79, 'planning_failure': 1}
+    90/95  {'clarification': 89, 'planning_failure': 1}
+    95/95  {'clarification': 94, 'planning_failure': 1}
+    finished gemma3:12b/no_catalog/local: {'clarification': 94, 'planning_failure': 1}
+urban data store: {'mode': 'replay', 'root': 'runtime\\urban_data', 'entries': 1121, 'megabytes': 26.0, 'scenarios': 30, 'hits': 0, 'misses': 0, 'writes': 0}

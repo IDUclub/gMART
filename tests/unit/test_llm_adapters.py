@@ -282,6 +282,46 @@ async def test_ollama_adapter_forwards_the_ollama_only_arguments():
     assert recording.call["options"] == {"num_ctx": 16384}
 
 
+@pytest.mark.asyncio
+async def test_ollama_adapter_pins_context_on_every_benchmark_request(monkeypatch):
+    class Recording:
+        def __init__(self):
+            self.call = None
+
+        async def chat(self, **kwargs):
+            self.call = kwargs
+            return LlmChatResponse()
+
+    monkeypatch.setenv("OLLAMA_REQUEST_NUM_CTX", "16384")
+    adapter = OllamaAdapter(host="http://a.dgx:11434")
+    recording = Recording()
+    adapter.client = recording  # type: ignore[assignment]
+
+    await adapter.chat("m", [], options={"temperature": 0.2, "num_ctx": 262144})
+
+    assert recording.call["options"] == {"temperature": 0.2, "num_ctx": 16384}
+
+
+@pytest.mark.asyncio
+async def test_ollama_adapter_uses_required_gpt_oss_reasoning_level(monkeypatch):
+    class Recording:
+        def __init__(self):
+            self.call = None
+
+        async def chat(self, **kwargs):
+            self.call = kwargs
+            return LlmChatResponse()
+
+    monkeypatch.setenv("OLLAMA_THINK_LEVELS", "gpt-oss:20b=low")
+    adapter = OllamaAdapter(host="http://a.dgx:11434")
+    recording = Recording()
+    adapter.client = recording  # type: ignore[assignment]
+
+    await adapter.chat("gpt-oss:20b", [], think=False)
+
+    assert recording.call["think"] == "low"
+
+
 # --------------------------------------------------------------------------- #
 # vLLM conformance: the protocol details servers disagree on
 # --------------------------------------------------------------------------- #

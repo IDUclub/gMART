@@ -1,0 +1,141 @@
+{
+  "created_at": "2026-09-01T01:45:24.083827+00:00",
+  "run_id": "validated_20260901_001700",
+  "repeat_id": "1",
+  "schema_arm": "required",
+  "command": {
+    "dataset": "benchmarks/data/gold/exp_data_restrictions.csv",
+    "out_dir": "C:\\Projects\\IDU\\IDUclub\\ICII\\gMART\\benchmarks\\data\\results_validated\\validated_20260901_001700\\historical_bridge\\expert\\schema-required\\repeat-01\\gemma3_12b\\no_catalog",
+    "models": [
+      "gemma3:12b"
+    ],
+    "arms": [
+      "no_catalog"
+    ],
+    "transports": [
+      "local"
+    ],
+    "urban_data": "replay",
+    "urban_data_dir": "runtime/urban_data",
+    "llm_host": "http://localhost:11434",
+    "urban_api_url": "https://urban-api.testing.idulab.ru/api",
+    "idu_mcp_url": "http://localhost:8001/mcp",
+    "chat_storage_url": "http://unused.invalid",
+    "token": "",
+    "temperature": 0.0,
+    "timeout": 900.0,
+    "concurrency": 1,
+    "limit": null,
+    "sample_per_scenario": 0,
+    "sample_seed": 20260831,
+    "progress_every": 10,
+    "log_level": "WARNING",
+    "schema_arm": "required",
+    "repeat_id": "1",
+    "run_id": "validated_20260901_001700",
+    "fail_fast_after": 3,
+    "expected_context": 16384,
+    "save_layers": false
+  },
+  "dataset": {
+    "path": "benchmarks\\data\\gold\\exp_data_restrictions.csv",
+    "sha256": "8662f959c297c7d5613057e7f8fd4b284689bfb8bf03a86cdc724ea7ce75828e",
+    "rows": 95
+  },
+  "schema": {
+    "sha256": "5f59b2a55c4043a73c614c8cdd10fdaade0e7904c90d7216de6e9f81e0b4cfb1",
+    "model": "RestrictionPlan"
+  },
+  "git": {
+    "commit": "e13f62ea1357a3d661b56ac5d5e03dc838563257",
+    "status": [
+      "M .gitignore",
+      " M benchmarks/README.md",
+      " M benchmarks/eval/inproc_eval.py",
+      " M benchmarks/harness/fetch_reference.py",
+      " M benchmarks/harness/geometry_eval.py",
+      " M benchmarks/harness/inproc_runner.py",
+      " M src/agents/model_clients/ollama_adapter.py",
+      " M src/agents/services/restriction_catalog.py",
+      " M src/agents/services/service_entities/restriction_plan.py",
+      " M tests/unit/test_inproc_eval.py",
+      " M tests/unit/test_inproc_runner.py",
+      " M tests/unit/test_llm_adapters.py",
+      " M tests/unit/test_restriction_plan_fixes.py",
+      "?? .agents/",
+      "?? .codex/",
+      "?? benchmarks/eval/restrictions_filter.py",
+      "?? benchmarks/eval/validated_statistics.py",
+      "?? benchmarks/harness/expand_catalog_dataset.py",
+      "?? benchmarks/harness/health_check.py",
+      "?? benchmarks/harness/run_extended.sh",
+      "?? benchmarks/harness/run_required_schema.sh",
+      "?? benchmarks/harness/run_rest_models.sh",
+      "?? benchmarks/harness/run_validated_matrix.py",
+      "?? openapi_prod.json",
+      "?? prod_stream.txt",
+      "?? tests/unit/test_expand_catalog_dataset.py",
+      "?? tests/unit/test_restrictions_filter.py",
+      "?? tmp/"
+    ],
+    "working_diff_sha256": "abe04e856c339097b3484b79ea98c5050e1e3941d2bceb88994cda24f26e6ee9"
+  },
+  "source_sha256": {
+    "benchmarks\\harness\\inproc_runner.py": "1c219c50fa9d876465ea2d994c5e9031a90a5aa638503c7d90222bc666fb582f",
+    "benchmarks\\harness\\run_validated_matrix.py": "19eb619769acea12c93d56af4f07f57bfb29d65f16829f982f5920ca61b40aec",
+    "benchmarks\\eval\\validated_statistics.py": "b64095dc1751c4eb5db1048bb57b22589ca0cef24987d90809856892f8466c59",
+    "src\\agents\\model_clients\\ollama_adapter.py": "fe2684c7f732e68109179faa496efe5df92ae71b9f54bd9efc16b4b62925dfb1",
+    "src\\agents\\services\\restriction_catalog.py": "4880b3a47056ff4ef50b4585390ec3f7d3dbd2d76b4ecc99344b6c87a8b7c39a",
+    "src\\agents\\services\\restriction_parser_service.py": "32626817a649910b41a32916ab8b9a9a0ef4c04012f554c4b41cdea362eca718",
+    "src\\agents\\services\\service_entities\\restriction_plan.py": "c3a46ee0f153027dfd307009987ac8ded26fa035f77ba7cfadfbdfd70bfce23e",
+    "src\\agents\\mcp_clients\\local_idu_mcp_client.py": "4d7f6e56952b4de7391100ab1eee19dba4e3558c233d593ceb1026768049fcf4",
+    "src\\idu_mcp\\tools_services\\geometry_tools.py": "c1538dd5a21fad3e4a6c4147c11cb5150a3990729e608513c6ba85145a8c3f33"
+  },
+  "ollama": {
+    "version": "0.33.1",
+    "models": {
+      "gemma3:12b": {
+        "digest": "f4031aab637d1ffa37b42570452ae0e4fad0314754d17ded67322e4b95836f8a",
+        "size": 8149190253,
+        "modified_at": "2026-08-27T20:59:00.1527048+03:00",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "gemma3",
+          "families": [
+            "gemma3"
+          ],
+          "parameter_size": "12.2B",
+          "quantization_level": "Q4_K_M"
+        },
+        "capabilities": [
+          "completion",
+          "vision"
+        ],
+        "parameters": "stop                           \"<end_of_turn>\"\ntemperature                    1\ntop_k                          64\ntop_p                          0.95"
+      }
+    }
+  },
+  "system": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.9 (main, Aug 14 2024, 04:18:20) [MSC v.1929 64 bit (AMD64)]",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti, 610.88, 16303 MiB",
+    "ollama_context_length": "16384",
+    "ollama_max_loaded_models": "1",
+    "ollama_flash_attention": "1",
+    "ollama_kv_cache_type": "q8_0",
+    "ollama_request_num_ctx": "16384",
+    "ollama_think_levels": "gpt-oss:20b=low",
+    "llm_backend": "ollama"
+  },
+  "runtime_verification": {
+    "gemma3:12b": {
+      "name": "gemma3:12b",
+      "digest": "f4031aab637d1ffa37b42570452ae0e4fad0314754d17ded67322e4b95836f8a",
+      "context_length": 16384,
+      "size": 7870212996,
+      "size_vram": 7870212996,
+      "verified_at": "2026-09-01T01:45:34.457171+00:00"
+    }
+  }
+}
