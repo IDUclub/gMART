@@ -1,0 +1,25 @@
+name: Kubernetes dev release
+
+on:
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: IDUclub/urban-assistant-deploy/.github/workflows/reusable-application-release.yaml@main
+    with:
+      service: gmart
+      test-command: |
+        python -m pip install --disable-pip-version-check uv==0.12.10
+        uv python install 3.11
+        uv sync --locked
+        export SERVICE_AUTH_SERVER_URL=http://localhost:9999
+        export SERVICE_AUTH_REALM=test
+        export SERVICE_AUTH_CLIENT_ID=test-client
+        export SERVICE_AUTH_CLIENT_SECRET=test-secret
+        uv run pytest --verbose tests/unit
+    secrets: inherit
