@@ -12,8 +12,29 @@ class SynapseRunResponse(BaseModel):
     chat_id: str | None = None
     synapse_project_id: str | None = None
     run_id: str | None = None
+    workflow_id: str | None = None
+    run_config_id: str | None = None
     status: SynapseRunStatus
     events_url: str
+
+
+class SynapseConfigurationOption(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    is_default: bool = False
+
+
+class SynapseWorkflowOption(SynapseConfigurationOption):
+    display_name: str | None = None
+    execution_mode: str | None = None
+
+
+class SynapseConfigurationOptionsResponse(BaseModel):
+    workflows: list[SynapseWorkflowOption] = Field(default_factory=list)
+    run_configurations: list[SynapseConfigurationOption] = Field(default_factory=list)
+    default_workflow_id: str | None = None
+    default_run_config_id: str | None = None
 
 
 class SynapseRunStateResponse(SynapseRunResponse):

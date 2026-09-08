@@ -46,8 +46,8 @@ class SynapseApiClient:
         email: str,
         password: str,
         *,
-        workflow_id: str,
-        run_config_id: str,
+        workflow_id: str | None = None,
+        run_config_id: str | None = None,
         approval_mode: str = "auto",
         timeout_seconds: float = 30.0,
         client: httpx.AsyncClient | None = None,
@@ -138,7 +138,7 @@ class SynapseApiClient:
             assert self._access_token is not None
             return self._access_token
 
-    async def _request(
+    async def _request_json(
         self,
         method: str,
         path: str,
@@ -146,7 +146,7 @@ class SynapseApiClient:
         operation: str,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         for auth_attempt in range(2):
             token = await self._ensure_access_token(force_refresh=auth_attempt == 1)
             response = None
@@ -175,15 +175,66 @@ class SynapseApiClient:
                 raise SynapseResponseError(response.status_code, operation)
             if response.status_code == 204:
                 return {}
-            payload = response.json()
-            if not isinstance(payload, dict):
-                raise SynapseClientError(
-                    f"Synapse {operation} response is not an object"
-                )
-            return payload
+            return response.json()
         raise SynapseAuthError("Synapse rejected the refreshed technical-user token")
 
-    async def create_project(self, prompt: str) -> dict[str, Any]:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        operation: str,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = await self._request_json(
+            method,
+            path,
+            operation=operation,
+            params=params,
+            json_body=json_body,
+        )
+        if not isinstance(payload, dict):
+            raise SynapseClientError(f"Synapse {operation} response is not an object")
+        return payload
+
+    async def _request_list(
+        self,
+        path: str,
+        *,
+        operation: str,
+    ) -> list[dict[str, Any]]:
+        payload = await self._request_json("GET", path, operation=operation)
+        if not isinstance(payload, list) or not all(
+            isinstance(item, dict) for item in payload
+        ):
+            raise SynapseClientError(f"Synapse {operation} response is not a list")
+        return payload
+
+    async def list_workflows(self) -> list[dict[str, Any]]:
+        return await self._request_list(
+            "/api/configurations/workflows/", operation="workflow listing"
+        )
+
+    async def list_run_configurations(self) -> list[dict[str, Any]]:
+        return await self._request_list(
+            "/api/configurations/run-configurations/",
+            operation="run configuration listing",
+        )
+
+    async def create_project(
+        self,
+        prompt: str,
+        *,
+        workflow_id: str | None = None,
+        run_config_id: str | None = None,
+    ) -> dict[str, Any]:
+        selected_workflow_id = workflow_id or self.workflow_id
+        selected_run_config_id = run_config_id or self.run_config_id
+        if not selected_workflow_id or not selected_run_config_id:
+            raise SynapseClientError(
+                "A workflow_id and run_config_id are required to create a Synapse project"
+            )
         return await self._request(
             "POST",
             "/api/projects",
@@ -191,8 +242,8 @@ class SynapseApiClient:
             json_body={
                 "user_prompt": prompt,
                 "approval_mode": self.approval_mode,
-                "workflow_id": self.workflow_id,
-                "run_config_id": self.run_config_id,
+                "workflow_id": selected_workflow_id,
+                "run_config_id": selected_run_config_id,
             },
         )
 
@@ -201,15 +252,21 @@ class SynapseApiClient:
             "GET", f"/api/projects/{project_id}", operation="project lookup"
         )
 
-    async def find_projects(self, marker: str) -> list[dict[str, Any]]:
+    async def find_projects(
+        self,
+        marker: str,
+        *,
+        workflow_id: str | None = None,
+        run_config_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         payload = await self._request(
             "GET",
             "/api/projects",
             operation="project reconciliation",
             params={
                 "q": marker,
-                "workflow_id": self.workflow_id,
-                "run_config_id": self.run_config_id,
+                "workflow_id": workflow_id or self.workflow_id,
+                "run_config_id": run_config_id or self.run_config_id,
                 "limit": 10,
             },
         )

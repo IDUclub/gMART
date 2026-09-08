@@ -65,3 +65,12 @@ def test_synapse_secrets_are_required_only_when_enabled_and_never_exposed():
     assert public["SYNAPSE_A2A_CLIENT_ID"] == "synapse"
     assert "SYNAPSE_SERVICE_PASSWORD" not in public
     assert "top-secret" not in repr(enabled)
+
+    user_selectable = make_config(
+        synapse_enabled=True,
+        synapse_api_url="http://synapse:8000",
+        synapse_service_email="service@example.test",
+        synapse_service_password="top-secret",
+    )
+    assert user_selectable.SYNAPSE_WORKFLOW_ID is None
+    assert user_selectable.SYNAPSE_RUN_CONFIG_ID is None

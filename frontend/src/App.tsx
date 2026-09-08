@@ -54,6 +54,7 @@ import {
   getChat,
   getChats,
   getModels,
+  getSynapseConfigurations,
   getSynapseRun,
   readSse,
   readSynapseEvents,
@@ -77,6 +78,7 @@ import type {
   Settings,
   StatusEntry,
   StreamEvent,
+  SynapseConfigurationOptions,
   SynapseEvent,
   TableData,
 } from "./types";
@@ -224,6 +226,8 @@ const emptyHistoryWindow: HistoryWindow = {
 const MAX_CACHED_CHAT_WINDOWS = 6;
 const SYNAPSE_RESUME_KEY = "gmart-synapse-active-run";
 const SYNAPSE_PENDING_START_KEY = "gmart-synapse-pending-start";
+const SYNAPSE_WORKFLOW_KEY = "gmart-synapse-workflow";
+const SYNAPSE_RUN_CONFIG_KEY = "gmart-synapse-run-config";
 const spaceForAgent = (id: AgentId) => (id === "synapse" ? "synapse" : "main");
 function load() {
   try {
@@ -279,6 +283,20 @@ export default function App() {
     [loginOpen, setLoginOpen] = useState(false),
     [authApi, setAuthApi] = useState(false),
     [synapseApi, setSynapseApi] = useState(false),
+    [synapseConfigurations, setSynapseConfigurations] =
+      useState<SynapseConfigurationOptions>({
+        workflows: [],
+        run_configurations: [],
+      }),
+    [synapseWorkflowId, setSynapseWorkflowId] = useState(
+      () => localStorage.getItem(SYNAPSE_WORKFLOW_KEY) || "",
+    ),
+    [synapseRunConfigId, setSynapseRunConfigId] = useState(
+      () => localStorage.getItem(SYNAPSE_RUN_CONFIG_KEY) || "",
+    ),
+    [synapseConfigurationsLoading, setSynapseConfigurationsLoading] =
+      useState(false),
+    [synapseConfigurationsError, setSynapseConfigurationsError] = useState(""),
     [systemPassword, setSystemPassword] = useState(""),
     [systemConfig, setSystemConfig] = useState<Record<string, string> | null>(
       null,
@@ -395,6 +413,44 @@ export default function App() {
     void resumeSynapseRun();
   }, [token, agentId]);
   useEffect(() => {
+    if (!token || agentId !== "synapse") return;
+    let cancelled = false;
+    setSynapseConfigurationsLoading(true);
+    setSynapseConfigurationsError("");
+    getSynapseConfigurations(settings, token)
+      .then((options) => {
+        if (cancelled) return;
+        setSynapseConfigurations(options);
+        setSynapseWorkflowId((current) => {
+          const selected = options.workflows.some((item) => item.id === current)
+            ? current
+            : options.default_workflow_id || options.workflows[0]?.id || "";
+          if (selected) localStorage.setItem(SYNAPSE_WORKFLOW_KEY, selected);
+          return selected;
+        });
+        setSynapseRunConfigId((current) => {
+          const selected = options.run_configurations.some(
+            (item) => item.id === current,
+          )
+            ? current
+            : options.default_run_config_id ||
+              options.run_configurations[0]?.id ||
+              "";
+          if (selected) localStorage.setItem(SYNAPSE_RUN_CONFIG_KEY, selected);
+          return selected;
+        });
+      })
+      .catch((error) => {
+        if (!cancelled) setSynapseConfigurationsError(err(error));
+      })
+      .finally(() => {
+        if (!cancelled) setSynapseConfigurationsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, agentId, settings.agentsUrl]);
+  useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: busy ? "smooth" : "auto" });
   }, [answer, busy, pendingQuestion, statusEntries]);
   useEffect(() => {
@@ -441,6 +497,16 @@ export default function App() {
       messagesEnd.current?.scrollIntoView({ behavior: "auto" });
     });
   }
+  function restoreSynapseConfiguration(value: Chat | ChatSummary) {
+    const workflowId = value.metadata?.synapse_workflow_id;
+    const runConfigId = value.metadata?.synapse_run_config_id;
+    if (typeof workflowId === "string" && workflowId) {
+      setSynapseWorkflowId(workflowId);
+    }
+    if (typeof runConfigId === "string" && runConfigId) {
+      setSynapseRunConfigId(runConfigId);
+    }
+  }
   async function openChat(id: string) {
     if (busy || chat?.chat_id === id) return;
     if (chat) rememberChatWindow(chat, historyWindow);
@@ -457,6 +523,7 @@ export default function App() {
       const cachedAgent = String(cached.chat.metadata?.agent_id || "");
       if (AGENTS.some((item) => item.id === cachedAgent))
         setAgentId(cachedAgent as AgentId);
+      if (cachedAgent === "synapse") restoreSynapseConfiguration(cached.chat);
       setAnswer("");
       setPendingQuestion("");
       setStatusEntries([]);
@@ -491,6 +558,7 @@ export default function App() {
       const storedAgent = String(stored.metadata?.agent_id || "");
       if (AGENTS.some((item) => item.id === storedAgent))
         setAgentId(storedAgent as AgentId);
+      if (storedAgent === "synapse") restoreSynapseConfiguration(stored);
       setAnswer("");
       setPendingQuestion("");
       setStatusEntries([]);
@@ -1225,12 +1293,18 @@ export default function App() {
         const projectId = project.trim() ? Number(project) : null;
         if (projectId != null && !Number.isInteger(projectId))
           throw new Error("ID проекта должен быть целым числом");
+        const currentChatId = reusableChatId(chat, agentId) || null;
+        if (!currentChatId && (!synapseWorkflowId || !synapseRunConfigId)) {
+          throw new Error("Выберите workflow и конфигурацию запуска Synapse");
+        }
         const currentToken = await freshToken();
         const startPayload = {
           request: submittedQuery,
-          chat_id: reusableChatId(chat, agentId) || null,
+          chat_id: currentChatId,
           scenario_id: scenarioId,
           project_id: projectId,
+          workflow_id: synapseWorkflowId || null,
+          run_config_id: synapseRunConfigId || null,
           metadata: {},
         };
         const startSignature = JSON.stringify(startPayload);
@@ -1283,6 +1357,9 @@ export default function App() {
                 metadata: {
                   agent_id: "synapse",
                   synapse_project_id: started.synapse_project_id,
+                  synapse_workflow_id: started.workflow_id || synapseWorkflowId,
+                  synapse_run_config_id:
+                    started.run_config_id || synapseRunConfigId,
                 },
                 messages: [],
               },
@@ -1346,6 +1423,7 @@ export default function App() {
     () => normalizeMessages(chat?.messages || []),
     [chat?.messages],
   );
+  const synapseConfigurationLocked = Boolean(reusableChatId(chat, agentId));
   return (
     <div className="app-shell" ref={appRoot}>
       <aside className="sidebar">
@@ -1507,6 +1585,84 @@ export default function App() {
                 )}
               </div>
             </header>
+            {agentId === "synapse" && (
+              <section className="synapse-config-bar">
+                <div>
+                  <span className="context-title">Конфигурация Synapse</span>
+                  <small>
+                    {synapseConfigurationLocked
+                      ? "Закреплена за текущим диалогом"
+                      : "Выберите параметры нового диалога"}
+                  </small>
+                </div>
+                <label>
+                  Workflow
+                  <select
+                    value={synapseWorkflowId}
+                    disabled={busy || synapseConfigurationLocked}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setSynapseWorkflowId(value);
+                      localStorage.setItem(SYNAPSE_WORKFLOW_KEY, value);
+                    }}
+                  >
+                    {!synapseWorkflowId && (
+                      <option value="">Выберите workflow</option>
+                    )}
+                    {synapseWorkflowId &&
+                      !synapseConfigurations.workflows.some(
+                        (item) => item.id === synapseWorkflowId,
+                      ) && (
+                        <option value={synapseWorkflowId}>
+                          {synapseWorkflowId}
+                        </option>
+                      )}
+                    {synapseConfigurations.workflows.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.display_name || item.name}
+                        {item.is_default ? " (по умолчанию)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Run configuration
+                  <select
+                    value={synapseRunConfigId}
+                    disabled={busy || synapseConfigurationLocked}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setSynapseRunConfigId(value);
+                      localStorage.setItem(SYNAPSE_RUN_CONFIG_KEY, value);
+                    }}
+                  >
+                    {!synapseRunConfigId && (
+                      <option value="">Выберите конфигурацию</option>
+                    )}
+                    {synapseRunConfigId &&
+                      !synapseConfigurations.run_configurations.some(
+                        (item) => item.id === synapseRunConfigId,
+                      ) && (
+                        <option value={synapseRunConfigId}>
+                          {synapseRunConfigId}
+                        </option>
+                      )}
+                    {synapseConfigurations.run_configurations.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                        {item.is_default ? " (по умолчанию)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <small className={synapseConfigurationsError ? "error" : ""}>
+                  {synapseConfigurationsLoading
+                    ? "Загружаю доступные варианты…"
+                    : synapseConfigurationsError ||
+                      `${synapseConfigurations.workflows.length} workflow · ${synapseConfigurations.run_configurations.length} конфигураций`}
+                </small>
+              </section>
+            )}
             <div className={`work-grid ${resultOpen ? "result-open" : ""}`}>
               <section className="conversation">
                 <div className="messages" ref={messagesScroller}>
@@ -1605,6 +1761,12 @@ export default function App() {
                         busy ? void cancelActivePipeline() : void submit()
                       }
                       className="send"
+                      disabled={
+                        !busy &&
+                        agentId === "synapse" &&
+                        !synapseConfigurationLocked &&
+                        (!synapseWorkflowId || !synapseRunConfigId)
+                      }
                     >
                       {busy ? <X weight="bold" /> : <ArrowUp weight="bold" />}
                     </button>

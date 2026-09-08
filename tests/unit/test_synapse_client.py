@@ -44,17 +44,45 @@ async def test_client_logs_in_and_uses_configured_project_contract() -> None:
         client=http,
     )
 
-    result = await client.create_project("prompt")
+    result = await client.create_project(
+        "prompt", workflow_id="chosen-workflow", run_config_id="chosen-config"
+    )
 
     assert result["project_id"] == "p1"
     body = json.loads(requests[-1].content)
     assert body == {
         "user_prompt": "prompt",
         "approval_mode": "auto",
-        "workflow_id": "wf-id",
-        "run_config_id": "run-id",
+        "workflow_id": "chosen-workflow",
+        "run_config_id": "chosen-config",
     }
     assert requests[-1].headers["authorization"].startswith("Bearer ")
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_lists_workflows_and_run_configurations() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/login":
+            return httpx.Response(
+                200,
+                json={"access_token": _jwt(), "refresh_token": "refresh"},
+            )
+        if request.url.path == "/api/configurations/workflows/":
+            return httpx.Response(200, json=[{"id": "wf", "name": "Workflow"}])
+        if request.url.path == "/api/configurations/run-configurations/":
+            return httpx.Response(200, json=[{"_id": "rc", "name": "Config"}])
+        raise AssertionError(request.url)
+
+    http = httpx.AsyncClient(
+        base_url="http://synapse.test", transport=httpx.MockTransport(handler)
+    )
+    client = SynapseApiClient(
+        "http://synapse.test", "service@example.test", "secret", client=http
+    )
+
+    assert await client.list_workflows() == [{"id": "wf", "name": "Workflow"}]
+    assert await client.list_run_configurations() == [{"_id": "rc", "name": "Config"}]
     await http.aclose()
 
 

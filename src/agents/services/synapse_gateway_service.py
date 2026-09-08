@@ -39,6 +39,10 @@ class SynapseGatewayConflict(SynapseGatewayError):
     pass
 
 
+class SynapseConfigurationRequired(SynapseGatewayError):
+    pass
+
+
 class SynapseStartUnknownError(SynapseGatewayError):
     pass
 
@@ -60,13 +64,15 @@ class SynapseGatewayService:
         store: SynapseRunStore,
         chat_storage: ChatStorageApiClient,
         *,
-        workflow_id: str,
+        workflow_id: str | None = None,
+        run_config_id: str | None = None,
         reconnect_max_seconds: float = 30.0,
     ) -> None:
         self.client = client
         self.store = store
         self.chat_storage = chat_storage
         self.workflow_id = workflow_id
+        self.run_config_id = run_config_id
         self.reconnect_max_seconds = reconnect_max_seconds
         self._tasks: dict[str, asyncio.Task] = {}
         self._owner = str(uuid4())
@@ -113,6 +119,8 @@ class SynapseGatewayService:
         idempotency_key: str,
         payload: SynapseRunRequestDTO,
     ) -> dict[str, Any]:
+        if not payload.chat_id:
+            payload = self._with_resolved_configuration(payload)
         candidate_request_id = str(uuid4())
         request_id, claimed = await self.store.claim_idempotency(
             user_id=user_id,
@@ -146,6 +154,8 @@ class SynapseGatewayService:
                 "chat_id": payload.chat_id,
                 "synapse_project_id": None,
                 "run_id": None,
+                "workflow_id": payload.workflow_id,
+                "run_config_id": payload.run_config_id,
                 "status": "starting",
                 "started_at": started_at,
                 "finished_at": None,
@@ -201,9 +211,17 @@ class SynapseGatewayService:
         started_at: str,
     ) -> dict[str, Any]:
         try:
-            project = await self.client.create_project(prompt)
+            project = await self.client.create_project(
+                prompt,
+                workflow_id=payload.workflow_id,
+                run_config_id=payload.run_config_id,
+            )
         except (SynapseUnavailableError, SynapseResponseError) as create_exc:
-            matches = await self._reconcile_project(request_id)
+            matches = await self._reconcile_project(
+                request_id,
+                workflow_id=payload.workflow_id,
+                run_config_id=payload.run_config_id,
+            )
             if len(matches) != 1:
                 if isinstance(create_exc, SynapseUnavailableError):
                     raise SynapseStartUnknownError(
@@ -240,7 +258,11 @@ class SynapseGatewayService:
                 state = await self.store.get_state(request_id)
                 assert state is not None
             return state
-        matches = await self._reconcile_project(request_id)
+        matches = await self._reconcile_project(
+            request_id,
+            workflow_id=payload.workflow_id,
+            run_config_id=payload.run_config_id,
+        )
         if len(matches) != 1:
             state = await self.store.get_state(request_id)
             assert state is not None
@@ -287,7 +309,8 @@ class SynapseGatewayService:
             provider="synapse",
             agent_id="synapse",
             synapse_project_id=project_id,
-            synapse_workflow_id=self.workflow_id,
+            synapse_workflow_id=payload.workflow_id,
+            synapse_run_config_id=payload.run_config_id,
         )
         await self.chat_storage.add_single_message(
             None,
@@ -336,6 +359,31 @@ class SynapseGatewayService:
         project_id = metadata.get("synapse_project_id")
         if not project_id:
             raise SynapseGatewayConflict("Chat has no Synapse project mapping")
+        stored_workflow_id = metadata.get("synapse_workflow_id")
+        stored_run_config_id = metadata.get("synapse_run_config_id")
+        if (
+            payload.workflow_id
+            and stored_workflow_id
+            and payload.workflow_id != stored_workflow_id
+        ):
+            raise SynapseGatewayConflict(
+                "Workflow cannot be changed for an existing Synapse chat"
+            )
+        if (
+            payload.run_config_id
+            and stored_run_config_id
+            and payload.run_config_id != stored_run_config_id
+        ):
+            raise SynapseGatewayConflict(
+                "Run configuration cannot be changed for an existing Synapse chat"
+            )
+        workflow_id = str(stored_workflow_id or payload.workflow_id or "") or None
+        run_config_id = str(stored_run_config_id or payload.run_config_id or "") or None
+        await self.store.update_state(
+            request_id,
+            workflow_id=workflow_id,
+            run_config_id=run_config_id,
+        )
         if not await self.store.claim_chat(payload.chat_id, request_id):
             raise SynapseGatewayConflict("Chat already has an active Synapse run")
         try:
@@ -403,11 +451,93 @@ class SynapseGatewayService:
         assert state is not None
         return state
 
-    async def _reconcile_project(self, request_id: str) -> list[dict[str, Any]]:
+    async def _reconcile_project(
+        self,
+        request_id: str,
+        *,
+        workflow_id: str | None,
+        run_config_id: str | None,
+    ) -> list[dict[str, Any]]:
         try:
-            return await self.client.find_projects(request_id)
+            return await self.client.find_projects(
+                request_id,
+                workflow_id=workflow_id,
+                run_config_id=run_config_id,
+            )
         except Exception:
             return []
+
+    def _with_resolved_configuration(
+        self, payload: SynapseRunRequestDTO
+    ) -> SynapseRunRequestDTO:
+        workflow_id = payload.workflow_id or self.workflow_id
+        run_config_id = payload.run_config_id or self.run_config_id
+        if not workflow_id or not run_config_id:
+            raise SynapseConfigurationRequired(
+                "Select a Synapse workflow and run configuration"
+            )
+        return payload.model_copy(
+            update={"workflow_id": workflow_id, "run_config_id": run_config_id}
+        )
+
+    async def get_configuration_options(self) -> dict[str, Any]:
+        workflows, run_configurations = await asyncio.gather(
+            self.client.list_workflows(),
+            self.client.list_run_configurations(),
+        )
+
+        workflow_options = [self._workflow_option(item) for item in workflows]
+        run_config_options = [
+            self._configuration_option(item) for item in run_configurations
+        ]
+        workflow_options = [item for item in workflow_options if item]
+        run_config_options = [item for item in run_config_options if item]
+        return {
+            "workflows": workflow_options,
+            "run_configurations": run_config_options,
+            "default_workflow_id": self._default_option_id(
+                workflow_options, self.workflow_id
+            ),
+            "default_run_config_id": self._default_option_id(
+                run_config_options, self.run_config_id
+            ),
+        }
+
+    @staticmethod
+    def _configuration_option(item: dict[str, Any]) -> dict[str, Any] | None:
+        option_id = item.get("id") or item.get("_id")
+        if not option_id:
+            return None
+        return {
+            "id": str(option_id),
+            "name": str(item.get("name") or option_id),
+            "description": str(
+                item.get("short_description") or item.get("description") or ""
+            ),
+            "is_default": bool(item.get("is_default")),
+        }
+
+    @classmethod
+    def _workflow_option(cls, item: dict[str, Any]) -> dict[str, Any] | None:
+        option = cls._configuration_option(item)
+        if option is None:
+            return None
+        option.update(
+            display_name=item.get("display_name"),
+            execution_mode=item.get("execution_mode"),
+        )
+        return option
+
+    @staticmethod
+    def _default_option_id(
+        options: list[dict[str, Any]], configured_id: str | None
+    ) -> str | None:
+        if configured_id and any(item["id"] == configured_id for item in options):
+            return configured_id
+        default = next((item for item in options if item["is_default"]), None)
+        if default:
+            return str(default["id"])
+        return str(options[0]["id"]) if options else None
 
     async def _wait_for_run_id(self, project_id: str) -> dict[str, Any]:
         state: dict[str, Any] = {}

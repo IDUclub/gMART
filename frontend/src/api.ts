@@ -3,6 +3,7 @@ import type {
   ChatSummary,
   Settings,
   StreamEvent,
+  SynapseConfigurationOptions,
   SynapseEvent,
   SynapseRun,
   UserDocumentDeleteResult,
@@ -156,6 +157,8 @@ export function startSynapseRun(
     chat_id?: string | null;
     scenario_id: number;
     project_id?: number | null;
+    workflow_id?: string | null;
+    run_config_id?: string | null;
     metadata?: Record<string, unknown>;
   },
 ) {
@@ -165,6 +168,13 @@ export function startSynapseRun(
     body: JSON.stringify(payload),
   });
 }
+
+export const getSynapseConfigurations = (settings: Settings, token: string) =>
+  request<SynapseConfigurationOptions>(
+    settings.agentsUrl,
+    "/synapse/configurations",
+    token,
+  );
 
 export const getSynapseRun = (
   settings: Settings,

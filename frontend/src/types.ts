@@ -38,11 +38,29 @@ export type SynapseRun = {
   chat_id: string | null;
   synapse_project_id: string | null;
   run_id: string | null;
+  workflow_id?: string | null;
+  run_config_id?: string | null;
   status: SynapseRunStatus;
   events_url: string;
   last_event_id?: string | null;
   last_stream_id?: string | null;
   error?: string | null;
+};
+export type SynapseConfigurationOption = {
+  id: string;
+  name: string;
+  description: string;
+  is_default: boolean;
+};
+export type SynapseWorkflowOption = SynapseConfigurationOption & {
+  display_name?: string | null;
+  execution_mode?: string | null;
+};
+export type SynapseConfigurationOptions = {
+  workflows: SynapseWorkflowOption[];
+  run_configurations: SynapseConfigurationOption[];
+  default_workflow_id?: string | null;
+  default_run_config_id?: string | null;
 };
 export type SynapseEvent = {
   type: "synapse_event";

@@ -70,6 +70,7 @@ def init_dependencies() -> dict[str, object]:
             synapse_run_store,
             chat_storage_client,
             workflow_id=app_config.SYNAPSE_WORKFLOW_ID,
+            run_config_id=app_config.SYNAPSE_RUN_CONFIG_ID,
             reconnect_max_seconds=app_config.SYNAPSE_SSE_RECONNECT_MAX_SECONDS,
         )
         synapse_caller_verifier = SynapseCallerVerifier(

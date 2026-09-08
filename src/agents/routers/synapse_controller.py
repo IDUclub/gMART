@@ -14,10 +14,12 @@ from src.agents.dependencies.dependencies import (
 )
 from src.agents.dto.synapse_request_dto import SynapseRunRequestDTO
 from src.agents.schema.synapse_response import (
+    SynapseConfigurationOptionsResponse,
     SynapseRunResponse,
     SynapseRunStateResponse,
 )
 from src.agents.services.synapse_gateway_service import (
+    SynapseConfigurationRequired,
     SynapseGatewayConflict,
     SynapseGatewayService,
     SynapseRunNotFound,
@@ -46,9 +48,28 @@ def _response(state: dict) -> SynapseRunResponse:
         chat_id=state.get("chat_id"),
         synapse_project_id=state.get("synapse_project_id"),
         run_id=state.get("run_id"),
+        workflow_id=state.get("workflow_id"),
+        run_config_id=state.get("run_config_id"),
         status=state["status"],
         events_url=f"/synapse/runs/{request_id}/events",
     )
+
+
+@synapse_router.get(
+    "/configurations", response_model=SynapseConfigurationOptionsResponse
+)
+async def get_synapse_configurations(
+    _user_id: str = Depends(get_synapse_user_id),
+    service: SynapseGatewayService = Depends(get_synapse_gateway_service),
+) -> SynapseConfigurationOptionsResponse:
+    try:
+        return SynapseConfigurationOptionsResponse(
+            **await service.get_configuration_options()
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail="Synapse configurations could not be loaded"
+        ) from exc
 
 
 @synapse_router.post(
@@ -68,6 +89,8 @@ async def start_synapse_run(
         )
     except (SynapseIdempotencyConflict, SynapseGatewayConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SynapseConfigurationRequired as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=502, detail="Synapse run could not be started"

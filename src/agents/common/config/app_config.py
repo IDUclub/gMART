@@ -162,8 +162,6 @@ class AgentsAppConfig:
                 "SYNAPSE_API_URL": self.SYNAPSE_API_URL,
                 "SYNAPSE_SERVICE_EMAIL": self.SYNAPSE_SERVICE_EMAIL,
                 "SYNAPSE_SERVICE_PASSWORD": self.SYNAPSE_SERVICE_PASSWORD,
-                "SYNAPSE_WORKFLOW_ID": self.SYNAPSE_WORKFLOW_ID,
-                "SYNAPSE_RUN_CONFIG_ID": self.SYNAPSE_RUN_CONFIG_ID,
             }
             missing_synapse = [
                 name for name, value in required_synapse.items() if not value

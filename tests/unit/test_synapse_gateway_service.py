@@ -7,6 +7,7 @@ from fakeredis.aioredis import FakeRedis
 from src.agents.api_clients.synapse_client import SynapseUnavailableError
 from src.agents.dto.synapse_request_dto import SynapseRunRequestDTO
 from src.agents.services.synapse_gateway_service import (
+    SynapseConfigurationRequired,
     SynapseGatewayService,
     SynapseStartUnknownError,
 )
@@ -30,10 +31,16 @@ async def test_new_run_persists_user_project_and_run_mapping() -> None:
     }
     chat_storage = AsyncMock()
     chat_storage.create_chat.return_value.chat_id = "chat-id"
-    service = SynapseGatewayService(client, store, chat_storage, workflow_id="workflow")
+    service = SynapseGatewayService(
+        client, store, chat_storage, workflow_id="workflow", run_config_id="run-config"
+    )
     service.start_relay = lambda request_id: None
     payload = SynapseRunRequestDTO(
-        request="Проверь ограничения", scenario_id=772, project_id=42
+        request="Проверь ограничения",
+        scenario_id=772,
+        project_id=42,
+        workflow_id="selected-workflow",
+        run_config_id="selected-run-config",
     )
 
     state = await service.start_run(
@@ -48,9 +55,131 @@ async def test_new_run_persists_user_project_and_run_mapping() -> None:
         == "user-id"
     )
     prompt = client.create_project.await_args.args[0]
+    assert client.create_project.await_args.kwargs == {
+        "workflow_id": "selected-workflow",
+        "run_config_id": "selected-run-config",
+    }
+    assert (
+        chat_storage.create_chat.await_args.kwargs["synapse_workflow_id"]
+        == "selected-workflow"
+    )
+    assert (
+        chat_storage.create_chat.await_args.kwargs["synapse_run_config_id"]
+        == "selected-run-config"
+    )
     assert "scenario_id=772" in prompt
     assert "[USER_REQUEST]" in prompt
     assert "Bearer" not in prompt
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_configuration_options_use_visible_synapse_catalog_and_defaults() -> None:
+    client = AsyncMock()
+    client.list_workflows.return_value = [
+        {
+            "id": "workflow-a",
+            "name": "workflow_a",
+            "display_name": "Workflow A",
+            "short_description": "First workflow",
+            "execution_mode": "dynamic",
+            "is_default": True,
+        }
+    ]
+    client.list_run_configurations.return_value = [
+        {
+            "_id": "config-a",
+            "name": "Config A",
+            "description": "First config",
+            "is_default": True,
+        }
+    ]
+    service = SynapseGatewayService(client, AsyncMock(), AsyncMock())
+
+    result = await service.get_configuration_options()
+
+    assert result == {
+        "workflows": [
+            {
+                "id": "workflow-a",
+                "name": "workflow_a",
+                "display_name": "Workflow A",
+                "description": "First workflow",
+                "execution_mode": "dynamic",
+                "is_default": True,
+            }
+        ],
+        "run_configurations": [
+            {
+                "id": "config-a",
+                "name": "Config A",
+                "description": "First config",
+                "is_default": True,
+            }
+        ],
+        "default_workflow_id": "workflow-a",
+        "default_run_config_id": "config-a",
+    }
+
+
+@pytest.mark.asyncio
+async def test_new_run_requires_user_selection_when_no_defaults_exist() -> None:
+    service = SynapseGatewayService(AsyncMock(), AsyncMock(), AsyncMock())
+
+    with pytest.raises(SynapseConfigurationRequired):
+        await service.start_run(
+            user_id="user-id",
+            idempotency_key="missing-config",
+            payload=SynapseRunRequestDTO(request="Запрос", scenario_id=772),
+        )
+
+
+@pytest.mark.asyncio
+async def test_each_new_chat_creates_its_own_synapse_project() -> None:
+    redis = FakeRedis(decode_responses=True)
+    store = SynapseRunStore(redis)
+    client = AsyncMock()
+    client.create_project.side_effect = [
+        {"project_id": "synapse-project-1", "status": "started"},
+        {"project_id": "synapse-project-2", "status": "started"},
+    ]
+    client.get_project.side_effect = [
+        {
+            "project_id": "synapse-project-1",
+            "current_run_id": "synapse-run-1",
+        },
+        {
+            "project_id": "synapse-project-2",
+            "current_run_id": "synapse-run-2",
+        },
+    ]
+    chat_storage = AsyncMock()
+    chat_storage.create_chat.side_effect = [
+        SimpleNamespace(chat_id="chat-1"),
+        SimpleNamespace(chat_id="chat-2"),
+    ]
+    service = SynapseGatewayService(
+        client, store, chat_storage, workflow_id="workflow", run_config_id="run-config"
+    )
+    service.start_relay = lambda request_id: None
+
+    first = await service.start_run(
+        user_id="user-id",
+        idempotency_key="new-chat-1",
+        payload=SynapseRunRequestDTO(request="Первый чат", scenario_id=772),
+    )
+    second = await service.start_run(
+        user_id="user-id",
+        idempotency_key="new-chat-2",
+        payload=SynapseRunRequestDTO(request="Второй чат", scenario_id=772),
+    )
+
+    assert first["chat_id"] == "chat-1"
+    assert first["synapse_project_id"] == "synapse-project-1"
+    assert second["chat_id"] == "chat-2"
+    assert second["synapse_project_id"] == "synapse-project-2"
+    assert client.create_project.await_count == 2
+    assert chat_storage.create_chat.await_count == 2
     await redis.aclose()
 
 
@@ -84,9 +213,15 @@ async def test_follow_up_reuses_project_run_and_chat() -> None:
     }
     chat_storage = AsyncMock()
     chat_storage.get_chat.return_value = SimpleNamespace(
-        metadata={"synapse_project_id": "synapse-project"}
+        metadata={
+            "synapse_project_id": "synapse-project",
+            "synapse_workflow_id": "workflow",
+            "synapse_run_config_id": "run-config",
+        }
     )
-    service = SynapseGatewayService(client, store, chat_storage, workflow_id="workflow")
+    service = SynapseGatewayService(
+        client, store, chat_storage, workflow_id="workflow", run_config_id="run-config"
+    )
     service.start_relay = lambda request_id: None
     payload = SynapseRunRequestDTO(
         request="Продолжи проверку",
@@ -99,7 +234,12 @@ async def test_follow_up_reuses_project_run_and_chat() -> None:
     )
 
     assert state["chat_id"] == "chat-id"
+    assert state["synapse_project_id"] == "synapse-project"
     assert state["run_id"] == "synapse-run"
+    assert state["workflow_id"] == "workflow"
+    assert state["run_config_id"] == "run-config"
+    client.create_project.assert_not_awaited()
+    chat_storage.create_chat.assert_not_awaited()
     client.send_message.assert_awaited_once()
     assert client.send_message.await_args.kwargs == {
         "run_id": "synapse-run",
@@ -122,7 +262,9 @@ async def test_unknown_project_start_is_reconciled_without_second_create() -> No
     }
     chat_storage = AsyncMock()
     chat_storage.create_chat.return_value.chat_id = "chat-id"
-    service = SynapseGatewayService(client, store, chat_storage, workflow_id="workflow")
+    service = SynapseGatewayService(
+        client, store, chat_storage, workflow_id="workflow", run_config_id="run-config"
+    )
     service.start_relay = lambda request_id: None
     payload = SynapseRunRequestDTO(request="Запрос", scenario_id=772)
 

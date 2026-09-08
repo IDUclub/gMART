@@ -8,4 +8,6 @@ class SynapseRunRequestDTO(BaseModel):
     chat_id: str | None = None
     scenario_id: int
     project_id: int | None = None
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=255)
+    run_config_id: str | None = Field(default=None, min_length=1, max_length=255)
     metadata: dict[str, Any] = Field(default_factory=dict)
