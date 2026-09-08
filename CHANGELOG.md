@@ -1,3 +1,9 @@
+## v0.18.1 (2026-09-08)
+
+### Fix
+
+- harden scenario data harness results
+
 ## v0.18.0 (2026-08-21)
 
 ### Feat
