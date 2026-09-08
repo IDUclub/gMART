@@ -15,6 +15,8 @@ class ScenarioDataStatus(BaseModel):
     status: Literal[
         "tool_discovery",
         "planning",
+        "mapping_patterns",
+        "mapping_selection",
         "tool_execution",
         "tool_retry",
         "workspace",

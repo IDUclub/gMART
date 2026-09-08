@@ -16,6 +16,7 @@ from src.agents.mcp_clients.urban_mcp_client import (
 from src.agents.services.restriction_catalog import strip_json_fence
 from src.agents.services.scenario_data_mapping import (
     bind_mapping_arguments,
+    mapped_ids_for_need,
     mapping_need_is_resolved,
 )
 from src.agents.services.service_entities.scenario_data_action import (
@@ -519,6 +520,67 @@ physical_object_type.id — только как physical_object_type_id/physical
                 for need in named_type_needs
             ):
                 continue
+            if named_type_needs:
+                for need in named_type_needs:
+                    mapping_domain = ScenarioDataPlanBuilder._type_mapping_domain(
+                        need
+                    )
+                    if mapping_domain == "physical_object_type":
+                        tool_name = (
+                            "GetScenarioPhysicalObjectsWithGeometry"
+                            if requires_geometry
+                            and "GetScenarioPhysicalObjectsWithGeometry" in available
+                            else "GetScenarioPhysicalObjects"
+                        )
+                    else:
+                        tool_name = (
+                            "GetScenarioServicesWithGeometry"
+                            if requires_geometry
+                            and "GetScenarioServicesWithGeometry" in available
+                            else "GetScenarioServices"
+                        )
+                    tool = available.get(tool_name)
+                    if tool is None:
+                        continue
+                    for value in need.values:
+                        single_need = need.model_copy(update={"values": [value]})
+                        arguments = (
+                            {"scenario_id": scenario_id}
+                            if "scenario_id"
+                            in ((tool.input_schema or {}).get("properties") or {})
+                            else {}
+                        )
+                        arguments = bind_mapping_arguments(
+                            tool,
+                            arguments,
+                            mappings,
+                            str(value),
+                        )
+                        if not ScenarioDataPlanBuilder._arguments_cover_needs(
+                            tool, arguments, [single_need]
+                        ):
+                            continue
+                        call_fingerprint = json.dumps(
+                            [tool.group, tool.name, arguments],
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        )
+                        if call_fingerprint in used:
+                            continue
+                        steps.append(
+                            PlanStep(
+                                step_id=f"scenario_data_{len(steps) + 1}",
+                                purpose=f"{requirement.description}: {value}",
+                                group=tool.group,
+                                tool_name=tool.name,
+                                arguments=arguments,
+                                satisfies=[requirement.requirement_id],
+                                expected_output="scenario records",
+                            )
+                        )
+                        used.add(call_fingerprint)
+                continue
             domain = " ".join(
                 [acquisition.objective, requirement.description]
                 + [need.domain for need in requirement.mapping_needs]
@@ -693,7 +755,17 @@ physical_object_type.id — только как physical_object_type_id/physical
             )
 
         available = {(tool.group, tool.name): tool for tool in tools}
-        grounded: set[str] = set()
+        expected_by_requirement = {
+            requirement_id: {
+                (cls._type_mapping_domain(need), str(identifier))
+                for need in cls._named_type_needs(requirement)
+                for identifier in mapped_ids_for_need(need, mappings)
+            }
+            for requirement_id, requirement in requirements.items()
+        }
+        grounded_by_requirement: dict[str, set[tuple[str | None, str]]] = {
+            requirement_id: set() for requirement_id in requirements
+        }
         bound_steps: list[PlanStep] = []
         for step in plan.steps:
             relevant = [
@@ -728,7 +800,7 @@ physical_object_type.id — только как physical_object_type_id/physical
                 (
                     acquisition.objective,
                     *(requirement.description for requirement in relevant),
-                    *(str(value) for need in needs for value in need.values),
+                    step.purpose,
                 )
             )
             arguments = bind_mapping_arguments(
@@ -739,12 +811,24 @@ physical_object_type.id — только как physical_object_type_id/physical
             )
             step = step.model_copy(update={"arguments": arguments})
             for requirement in relevant:
-                requirement_needs = cls._named_type_needs(requirement)
-                if cls._arguments_cover_needs(tool, arguments, requirement_needs):
-                    grounded.add(requirement.requirement_id)
+                for need in cls._named_type_needs(requirement):
+                    domain = cls._type_mapping_domain(need)
+                    singular = arguments.get(f"{domain}_id")
+                    plural = arguments.get(f"{domain}_ids")
+                    identifiers = plural if isinstance(plural, list) else [singular]
+                    grounded_by_requirement[requirement.requirement_id].update(
+                        (domain, str(identifier))
+                        for identifier in identifiers
+                        if identifier is not None
+                    )
             bound_steps.append(step)
 
-        missing = set(requirements) - grounded
+        missing = {
+            requirement_id
+            for requirement_id, expected in expected_by_requirement.items()
+            if not expected
+            or not expected.issubset(grounded_by_requirement[requirement_id])
+        }
         if missing:
             raise ValueError(
                 "named type requirements have no grounded type-id filter: "

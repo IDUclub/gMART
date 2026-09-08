@@ -97,8 +97,10 @@ def extract_records(result: Any) -> list[dict[str, Any]] | None:
             if isinstance(rows.get(key), list):
                 rows = rows[key]
                 break
-    if not isinstance(rows, list) or not rows:
+    if not isinstance(rows, list):
         return None
+    if not rows:
+        return []
     records = [row for row in rows if isinstance(row, dict)]
     if len(records) != len(rows):
         return None
@@ -269,6 +271,8 @@ def aggregate_result(result: Any) -> dict[str, Any] | None:
     records = extract_records(result)
     if records is None:
         return None
+    if not records:
+        return {"total_records": 0, "breakdown": {}}
     return aggregate_records(records)
 
 
