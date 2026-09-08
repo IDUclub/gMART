@@ -11,6 +11,8 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 )
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
+    TablePartRequest,
+    TablePayload,
     TextPartRequest,
     TextPayload,
 )
@@ -212,6 +214,7 @@ class OrchestratorService(BaseLlmService):
 
         summary_steps: list[dict[str, Any]] = []
         digests: list[tuple[OrchestratorStep, str]] = []
+        table_parts: list[TablePartRequest] = []
         aborted = False
 
         for step_number, step in enumerate(plan.steps, start=1):
@@ -251,6 +254,9 @@ class OrchestratorService(BaseLlmService):
                     if item.get("type") in _SUPPRESSED_INNER_EVENTS:
                         continue
                     self._collect_digest(collected, item)
+                    table_part = self._table_part(item)
+                    if table_part is not None:
+                        table_parts.append(table_part)
                     yield self._buf(
                         request_id,
                         self._step_event(step_number, step, item),
@@ -287,7 +293,13 @@ class OrchestratorService(BaseLlmService):
             request_id, PipelineStatus.FAILED if aborted else PipelineStatus.DONE
         )
         if persist_history:
-            self._schedule_persist_summary(token, chat_id, summary_steps, scenario_id)
+            self._schedule_persist_summary(
+                token,
+                chat_id,
+                summary_steps,
+                scenario_id,
+                table_parts=table_parts,
+            )
 
     # ------------------------------------------------------------------
     # Step dispatch (in-process pipeline invocation)
@@ -437,6 +449,8 @@ class OrchestratorService(BaseLlmService):
         chat_id: str | None,
         summary_steps: list[dict[str, Any]],
         scenario_id: int | None,
+        *,
+        table_parts: list[TablePartRequest] | None = None,
     ) -> None:
         text_blocks = [
             f"Шаг {step['step']} — {self._agent_title(step['agent'])}: "
@@ -452,7 +466,8 @@ class OrchestratorService(BaseLlmService):
             [
                 TextPartRequest(kind="text", payload=TextPayload(text=block))
                 for block in text_blocks
-            ],
+            ]
+            + list(table_parts or []),
             scenario_id,
         )
 
@@ -476,7 +491,7 @@ class OrchestratorService(BaseLlmService):
         self,
         token: str,
         chat_id: str | None,
-        parts: list[TextPartRequest],
+        parts: list[TextPartRequest | TablePartRequest],
         scenario_id: int | None,
     ) -> None:
         if not chat_id:
@@ -487,6 +502,18 @@ class OrchestratorService(BaseLlmService):
             )
         )
         task.add_done_callback(self._log_persist_result)
+
+    @staticmethod
+    def _table_part(item: dict[str, Any]) -> TablePartRequest | None:
+        if item.get("type") != "table" or not isinstance(item.get("content"), dict):
+            return None
+        try:
+            return TablePartRequest(
+                kind="table", payload=TablePayload.model_validate(item["content"])
+            )
+        except Exception as exc:
+            logger.warning(f"Orchestrator: could not persist table event: {exc}")
+            return None
 
     @staticmethod
     def _log_persist_result(task: asyncio.Task) -> None:

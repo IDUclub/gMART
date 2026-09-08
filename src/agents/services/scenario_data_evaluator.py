@@ -63,9 +63,30 @@ _JUDGE_SCHEMA = {
     "type": "object",
     "properties": {
         "sufficient": {"type": "boolean"},
-        "missing": {"type": "string"},
+        "missing_code": {
+            "type": "string",
+            "enum": [
+                "none",
+                "answer_incomplete",
+                "counts_missing",
+                "wrong_scope",
+                "required_table_not_emitted",
+                "required_layer_not_emitted",
+                "other",
+            ],
+        },
+        "details": {"type": "string"},
     },
-    "required": ["sufficient", "missing"],
+    "required": ["sufficient", "missing_code", "details"],
+}
+
+_JUDGE_REASONS = {
+    "answer_incomplete": "Ответ не раскрывает запрошенные данные.",
+    "counts_missing": "В ответе отсутствуют рассчитанные количества.",
+    "wrong_scope": "Ответ относится не к выбранному сценарию.",
+    "required_table_not_emitted": "Требуемая таблица не была сформирована.",
+    "required_layer_not_emitted": "Требуемый географический слой не был сформирован.",
+    "other": "Ответ не прошёл проверку полноты.",
 }
 
 
@@ -93,6 +114,40 @@ def _has_aggregates(observations: list[dict[str, Any]]) -> bool:
 
 def _layer_count(observations: list[dict[str, Any]]) -> int:
     return sum(int(observation.get("layer_count") or 0) for observation in observations)
+
+
+def _required_items(required_output: Any, key: str) -> list[Any]:
+    if required_output is None:
+        return []
+    if isinstance(required_output, dict):
+        value = required_output.get(key)
+    else:
+        value = getattr(required_output, key, None)
+    return value if isinstance(value, list) else []
+
+
+def _has_complete_table(observations: list[dict[str, Any]]) -> bool:
+    return any(
+        int(observation.get("table_count") or 0) > 0
+        and observation.get("table_complete", True) is not False
+        for observation in observations
+    )
+
+
+def required_output_checks(
+    required_output: Any, observations: list[dict[str, Any]]
+) -> list[str]:
+    """Validate machine-observable artifacts without asking an LLM to guess."""
+
+    if _required_items(required_output, "tables") and not _has_complete_table(
+        observations
+    ):
+        if any(int(item.get("table_count") or 0) > 0 for item in observations):
+            return ["Требуемая таблица была сформирована не полностью."]
+        return ["Требуемая таблица не была сформирована."]
+    if _required_items(required_output, "layers") and _layer_count(observations) == 0:
+        return ["Требуемый географический слой не был сформирован."]
+    return []
 
 
 def deterministic_checks(
@@ -179,24 +234,59 @@ class ScenarioDataEvaluator:
         user_query: str,
         observations: list[dict[str, Any]],
         answer: str,
+        *,
+        required_output: Any = None,
     ) -> Verdict:
-        reasons = deterministic_checks(user_query, observations, answer)
+        reasons = [
+            *required_output_checks(required_output, observations),
+            *deterministic_checks(user_query, observations, answer),
+        ]
         if reasons:
             # A rule already found something concrete; spending a judge call to confirm it
             # would only add latency.
             return Verdict(sufficient=False, hint=" ".join(reasons), reasons=reasons)
 
-        judge = await self._judge(model, user_query, observations, answer)
+        judge = await self._judge(
+            model,
+            user_query,
+            observations,
+            answer,
+            required_output=required_output,
+        )
         if judge is None:
             # The judge is an improvement, not a gate: if it fails, keep the answer.
             return Verdict(sufficient=True)
-        sufficient, missing = judge
+        sufficient, missing_code = judge
         if sufficient:
+            return Verdict(sufficient=True)
+        if missing_code == "required_table_not_emitted" and (
+            not _required_items(required_output, "tables")
+            or _has_complete_table(observations)
+        ):
+            logger.warning(
+                "Scenario data: judge claimed a missing table contrary to execution "
+                "evidence; accepting the answer"
+            )
+            return Verdict(sufficient=True)
+        if missing_code == "required_layer_not_emitted" and (
+            not _required_items(required_output, "layers")
+            or _layer_count(observations) > 0
+        ):
+            logger.warning(
+                "Scenario data: judge claimed a missing layer contrary to execution "
+                "evidence; accepting the answer"
+            )
+            return Verdict(sufficient=True)
+        reason = _JUDGE_REASONS.get(missing_code)
+        if reason is None or missing_code == "none":
+            logger.warning(
+                "Scenario data: answer judge returned an unusable missing_code; accepting"
+            )
             return Verdict(sufficient=True)
         return Verdict(
             sufficient=False,
-            hint=missing,
-            reasons=[missing or "Ответ не отвечает на вопрос по существу."],
+            hint=reason,
+            reasons=[reason],
         )
 
     async def _judge(
@@ -205,22 +295,29 @@ class ScenarioDataEvaluator:
         user_query: str,
         observations: list[dict[str, Any]],
         answer: str,
+        *,
+        required_output: Any = None,
     ) -> tuple[bool, str] | None:
         context = bounded_public_observation_context(observations, max_chars=12000)
+        required = {
+            "tables": _required_items(required_output, "tables"),
+            "layers": _required_items(required_output, "layers"),
+        }
         prompt = (
             "Ты проверяешь ответ агента по городским данным. Верни строгий JSON "
-            '{"sufficient": bool, "missing": str}.\n'
+            '{"sufficient": bool, "missing_code": str, "details": str}.\n'
             "sufficient=false, если ответ не отвечает на заданный вопрос, игнорирует "
             "посчитанные количества из наблюдений, подменяет конкретику общими словами "
             "или обещает данные, которых не привёл.\n"
             "sufficient=true, если наблюдения действительно пусты и ответ честно об этом "
             "говорит.\n"
-            "Если наблюдение содержит table_count > 0, полная таблица уже показана "
-            "пользователю отдельной частью ответа. Не требуй перепечатывать её строки "
-            "в тексте: точного количества и ссылки на полную таблицу достаточно. При "
-            "этом проверь, что таблица действительно отфильтрована по запросу.\n"
-            "В missing — что именно должен сделать следующий проход: какой инструмент "
-            "вызвать или какие числа привести. Пиши по-русски, одной-двумя фразами.\n\n"
+            "Наличие обязательной таблицы или слоя проверяет backend. Не отклоняй ответ "
+            "из-за формата представления и не требуй таблицу, если это не указано в "
+            "required_output. Если table_count > 0 и table_complete=true, таблица уже "
+            "показана пользователю. Не требуй перепечатывать её строки.\n"
+            "missing_code выбери только из JSON Schema. details используется лишь в "
+            "диагностических логах и не управляет выполнением.\n"
+            f"required_output: {json.dumps(required, ensure_ascii=False)}\n\n"
             f"Наблюдения:\n{context}"
         )
         messages = [
@@ -247,7 +344,10 @@ class ScenarioDataEvaluator:
                     "Scenario data: answer judge returned no boolean verdict; accepting"
                 )
                 return None
-            return verdict, str(payload.get("missing") or "")
+            missing_code = payload.get("missing_code")
+            if not isinstance(missing_code, str):
+                return None
+            return verdict, missing_code
         except Exception as exc:  # noqa: BLE001 - never fail the run over the judge
             logger.warning(f"Scenario data: answer judge failed: {exc}")
             return None
