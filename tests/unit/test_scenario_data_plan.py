@@ -318,6 +318,30 @@ def test_residential_buildings_recover_when_planner_drops_mapping_needs():
     assert resolved.required_output.layers == ["residential_buildings_layer"]
 
 
+def test_named_type_count_does_not_require_a_table_or_map_layer():
+    acquisition = AcquisitionPlan(
+        objective="Посчитать школы сценария",
+        requirements=[
+            DataRequirement(
+                requirement_id="schools",
+                description="Количество школ",
+                mapping_needs=[
+                    MappingNeed(
+                        domain="service_type",
+                        direction=MappingDirection.NAME_TO_ID,
+                        values=["Школа"],
+                    )
+                ],
+            )
+        ],
+    )
+
+    resolved = ensure_entity_retrieval_outputs(acquisition, "Сколько школ в проекте?")
+
+    assert resolved.required_output.tables == []
+    assert resolved.required_output.layers == []
+
+
 @pytest.mark.asyncio
 async def test_residential_buildings_use_scenario_geometry_tool_with_type_filter():
     class UnexpectedLlm:

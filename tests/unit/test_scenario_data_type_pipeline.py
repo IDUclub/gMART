@@ -285,6 +285,195 @@ async def test_linear_type_count_emits_plan_steps_and_validation(
     assert any(event["type"] == "validation_completed" for event in events)
 
 
+async def test_named_school_count_uses_llm_mapper_and_preserves_exact_zero(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: fake_llm,
+    )
+    service = ScenarioDataService(
+        "http://llm",
+        AsyncMock(),
+        fake_urban,
+        state_store,
+        linear_workflow_enabled=True,
+    )
+    scenario_services = UrbanMcpTool(
+        group="projects",
+        name="GetScenarioServices",
+        title="Получить сервисы сценария",
+        description="Сервисы сценария с фильтром по типу",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scenario_id": {"type": "integer"},
+                "service_type_id": {"type": "integer"},
+            },
+            "required": ["scenario_id"],
+        },
+        tags=(),
+    )
+
+    class NamedTypeUrbanMcp(FakeUrbanMcp):
+        async def load_tools(self):
+            self.load_calls += 1
+            return [
+                scenario_services,
+                GLOBAL_PHYSICAL_TYPES,
+                GLOBAL_SERVICE_TYPES,
+            ]
+
+        def get_tool(self, group, name):
+            if (group, name) == (scenario_services.group, scenario_services.name):
+                return scenario_services
+            raise KeyError((group, name))
+
+    fake_llm.json_responses = [
+        # Logical acquisition plan.
+        """{
+          "objective": "Посчитать школы в выбранном сценарии",
+          "requirements": [{
+            "requirement_id": "cnt_schools_scenario",
+            "description": "Количество школ",
+            "mapping_needs": [{
+              "domain": "physical_object_type",
+              "direction": "name_to_id",
+              "values": ["школы"]
+            }]
+          }],
+          "required_output": {"answer": true, "completeness": "verified"}
+        }""",
+        # Search pattern, candidate choice, and independent semantic assessment.
+        """{"patterns": [{"requirement_id": "cnt_schools_scenario",
+        "requested_value": "школы", "pattern": "школ|общеобразоват"}]}""",
+        '{"candidate_ids": ["candidate_2"], "reason": "верный домен"}',
+        """{"assessments": [{"candidate_id": "candidate_2",
+        "accepted": true, "reason": "общеобразовательная школа"}]}""",
+        # Executable scenario query. The validator injects the verified type ID.
+        """{
+          "revision": 1,
+          "reason": "initial plan",
+          "objective": "Посчитать школы",
+          "steps": [{
+            "step_id": "count_schools",
+            "purpose": "Посчитать Общеобразовательные школы",
+            "group": "projects",
+            "tool_name": "GetScenarioServices",
+            "arguments": {},
+            "satisfies": ["cnt_schools_scenario"],
+            "expected_output": "services"
+          }],
+          "required_output": {"answer": true, "completeness": "verified"}
+        }""",
+        "В проекте 0 школ.",
+        '{"sufficient": true, "missing": ""}',
+    ]
+    mcp = NamedTypeUrbanMcp(
+        {
+            "GetPhysicalObjectTypes": [
+                {"physical_object_type_id": 11, "name": "Школа-интернат"}
+            ],
+            "GetServiceTypes": [
+                {"service_type_id": 21, "name": "Общеобразовательная школа"}
+            ],
+            "GetScenarioServices": [],
+        }
+    )
+
+    events = [
+        event
+        async for event in service.run_scenario_data_pipeline(
+            urban_mcp_client=mcp,
+            token="token",
+            model="model",
+            temperature=0,
+            user_query="Сколько школ в проекте?",
+            scenario_id=772,
+            persist_history=False,
+        )
+    ]
+
+    text = "".join(
+        event["content"]["text"] for event in events if event.get("type") == "chunk"
+    )
+    assert text == "В проекте 0 школ."
+    assert not any(event["type"] == "pipeline_failed" for event in events)
+    assert [call[1] for call in mcp.calls] == [
+        "GetPhysicalObjectTypes",
+        "GetServiceTypes",
+        "GetScenarioServices",
+    ]
+    assert mcp.calls[-1][2] == {"scenario_id": 772, "service_type_id": 21}
+
+
+async def test_semantically_rejected_type_finishes_without_pipeline_failure(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *args, **kwargs: fake_llm,
+    )
+    service = ScenarioDataService(
+        "http://llm",
+        AsyncMock(),
+        fake_urban,
+        state_store,
+        linear_workflow_enabled=True,
+    )
+    fake_llm.json_responses = [
+        """{
+          "objective": "Посчитать общеобразовательные школы",
+          "requirements": [{
+            "requirement_id": "schools",
+            "description": "Количество общеобразовательных школ",
+            "mapping_needs": [{
+              "domain": "physical_object_type",
+              "direction": "name_to_id",
+              "values": ["общеобразовательные школы"]
+            }]
+          }]
+        }""",
+        """{"patterns": [{"requirement_id": "schools",
+        "requested_value": "общеобразовательные школы", "pattern": "школ"}]}""",
+        '{"candidate_ids": ["candidate_1"], "reason": "лексически близко"}',
+        """{"assessments": [{"candidate_id": "candidate_1",
+        "accepted": false, "reason": "это школа искусств"}]}""",
+    ]
+    mcp = FakeUrbanMcp(
+        {
+            "GetPhysicalObjectTypes": [
+                {"physical_object_type_id": 11, "name": "Школа искусств"}
+            ],
+            "GetServiceTypes": [],
+        }
+    )
+
+    events = [
+        event
+        async for event in service.run_scenario_data_pipeline(
+            urban_mcp_client=mcp,
+            token="token",
+            model="model",
+            temperature=0,
+            user_query="Сколько общеобразовательных школ в проекте?",
+            scenario_id=772,
+            persist_history=False,
+        )
+    ]
+
+    text = "".join(
+        event["content"]["text"] for event in events if event.get("type") == "chunk"
+    )
+    assert "не найден подходящий тип" in text
+    assert "общеобразовательные школы" in text
+    assert not any(event["type"] == "pipeline_failed" for event in events)
+    assert [call[1] for call in mcp.calls] == [
+        "GetPhysicalObjectTypes",
+        "GetServiceTypes",
+    ]
+
+
 async def test_unknown_project_type_is_resolved_from_global_dictionary(
     monkeypatch, fake_llm, fake_urban, state_store
 ):

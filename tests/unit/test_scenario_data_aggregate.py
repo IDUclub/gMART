@@ -141,10 +141,15 @@ class TestExtractRecords:
     def test_non_record_payloads_are_declined(self):
         assert extract_records({"total": 5}) is None
         assert extract_records([1, 2, 3]) is None
-        assert extract_records([]) is None
+
+    def test_empty_record_list_is_valid_evidence(self):
+        assert extract_records([]) == []
 
 
 class TestAggregateResult:
+    def test_empty_record_list_has_an_exact_zero_count(self):
+        assert aggregate_result([]) == {"total_records": 0, "breakdown": {}}
+
     def test_geometry_never_reaches_the_breakdown(self):
         collection = {
             "type": "FeatureCollection",

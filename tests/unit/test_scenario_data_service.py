@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 from src.agents.dto.scenario_data_request_dto import ScenarioDataRequestDTO
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services import scenario_data_linear as scenario_data_linear_module
 from src.agents.services import scenario_data_service as scenario_data_service_module
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.scenario_data_plan_builder import (
@@ -569,8 +570,18 @@ def test_every_status_the_service_emits_is_in_the_sse_contract():
 
     from src.agents.schema.scenario_data_response import ScenarioDataStatus
 
-    source = Path(scenario_data_service_module.__file__).read_text(encoding="utf-8")
+    source = "\n".join(
+        Path(module.__file__).read_text(encoding="utf-8")
+        for module in (scenario_data_service_module, scenario_data_linear_module)
+    )
     emitted = set(_re.findall(r'self\._status\(\s*"([a-z_]+)"', source))
+    emitted.update(
+        _re.findall(
+            r'self\._event\(\s*request_id,\s*"status",\s*\{\s*'
+            r'"status":\s*"([a-z_]+)"',
+            source,
+        )
+    )
     declared = set(get_args(ScenarioDataStatus.model_fields["status"].annotation))
 
     assert emitted, "no statuses found — did _status change shape?"
