@@ -42,6 +42,13 @@ from src.agents.services.scenario_data_mapping import (
     ensure_entity_retrieval_outputs,
     mapping_snapshot,
 )
+from src.agents.services.scenario_data_type_mapper import (
+    UrbanTypeMapper,
+    apply_verified_type_mappings,
+    collect_type_mapping_candidates,
+    pending_type_mapping_requests,
+    verified_mapping_snapshots,
+)
 from src.agents.services.service_entities.scenario_data_plan import (
     ExecutionLedger,
     ExecutionRecord,
@@ -77,6 +84,7 @@ class ScenarioDataLinearWorkflow:
         self.idu_mcp_url = idu_mcp_url
         self.service_auth = service_auth
         self.mapping_resolver = UrbanMappingResolver()
+        self.type_mapper = UrbanTypeMapper(owner.llm_client)
 
     async def run(
         self,
@@ -167,13 +175,45 @@ class ScenarioDataLinearWorkflow:
             )
             return
 
+        type_requests = pending_type_mapping_requests(acquisition, mappings)
+        search_plan = None
+        if type_requests:
+            yield self._event(
+                request_id,
+                "status",
+                {
+                    "status": "mapping_patterns",
+                    "text": "Формирую паттерны поиска типов объектов…",
+                },
+            )
+            search_plan = await self._bounded_llm(
+                request_id,
+                started,
+                self.type_mapper.build_search_plan(
+                    model,
+                    user_query,
+                    acquisition,
+                    type_requests,
+                ),
+            )
+
         mapping_calls = self.mapping_resolver.plan_calls(
             acquisition,
             tools,
             scenario_id,
             project_id=project_id,
             known_mappings=mappings,
+            include_named_types=not bool(type_requests),
         )
+        type_catalog_calls = []
+        if type_requests:
+            type_catalog_calls = self.mapping_resolver.plan_type_catalog_calls(
+                acquisition,
+                tools,
+                scenario_id,
+                project_id=project_id,
+            )
+            mapping_calls.extend(type_catalog_calls)
         if not mapping_calls:
             mapping_calls = self.mapping_resolver.plan_entity_discovery_calls(
                 acquisition,
@@ -191,6 +231,8 @@ class ScenarioDataLinearWorkflow:
                     "text": "Получаю актуальные справочники…",
                 },
             )
+        type_catalog_call_ids = {id(call) for call in type_catalog_calls}
+        type_catalog_results = []
         for call in mapping_calls:
             if ledger.urban_calls >= MAX_URBAN_CALLS:
                 break
@@ -270,9 +312,11 @@ class ScenarioDataLinearWorkflow:
                     mapping_attempt.model_dump(mode="json"),
                 )
                 continue
-            snapshot = mapping_snapshot(call, result)
+            is_type_catalog = id(call) in type_catalog_call_ids
+            snapshot = None if is_type_catalog else mapping_snapshot(call, result)
             if (
-                self.workspace_enabled
+                not is_type_catalog
+                and self.workspace_enabled
                 and chat_id
                 and ledger.workspace_calls < MAX_WORKSPACE_CALLS
             ):
@@ -311,7 +355,23 @@ class ScenarioDataLinearWorkflow:
                     call_fingerprint=mapping_fingerprint,
                 )
             )
+            if is_type_catalog:
+                type_catalog_results.append((call, result))
+                catalog_observation = {
+                    "context": "Справочник кандидатов для маппинга",
+                    "summary": (
+                        f"Кандидаты получены из " f"{call.tool.group}.{call.tool.name}"
+                    ),
+                    "resolved_reference_domain": call.need.domain,
+                }
+                execution_context.complete_attempt(mapping_attempt, catalog_observation)
+                catalog_observation["step_context"] = mapping_attempt.model_dump(
+                    mode="json"
+                )
+                observations.append(catalog_observation)
+                continue
             bootstrap_satisfied.add(call.requirement_id)
+            assert snapshot is not None
             mappings.append(snapshot)
             mapping_observation = {
                 "context": "Актуальный маппинг",
@@ -324,11 +384,102 @@ class ScenarioDataLinearWorkflow:
                 mode="json"
             )
             observations.append(mapping_observation)
+        if type_requests and search_plan is not None:
+            candidates = collect_type_mapping_candidates(
+                search_plan, type_catalog_results
+            )
+            yield self._event(
+                request_id,
+                "status",
+                {
+                    "status": "mapping_selection",
+                    "text": "Выбираю наиболее подходящие типы…",
+                },
+            )
+            resolution = await self._bounded_llm(
+                request_id,
+                started,
+                self.type_mapper.resolve_candidates(
+                    model,
+                    user_query,
+                    acquisition,
+                    type_requests,
+                    candidates,
+                ),
+            )
+            resolution_payload = {
+                "accepted": [
+                    {
+                        "requested_value": candidate.requested_value,
+                        "name": candidate.name,
+                        "domain": candidate.domain,
+                    }
+                    for candidate in resolution.accepted
+                ],
+                "missing_values": resolution.missing_values,
+            }
+            parts.append(
+                StructuredPartRequest(
+                    kind="requirement_resolution", payload=resolution_payload
+                )
+            )
+            if not resolution.complete:
+                missing = ", ".join(f"«{value}»" for value in resolution.missing_values)
+                answer = (
+                    "В справочниках Urban API не найден подходящий тип объектов "
+                    f"или сервисов для: {missing}."
+                )
+                yield self._event(
+                    request_id,
+                    "mapping_completed",
+                    {
+                        "count": 0,
+                        "text": "Подходящие типы не найдены",
+                    },
+                )
+                for event in self.owner._answer_events(answer):
+                    yield self.owner._buf(request_id, event)
+                parts.append(
+                    TextPartRequest(kind="text", payload=TextPayload(text=answer))
+                )
+                await self.owner._complete_pipeline(
+                    request_id,
+                    token_ref[0],
+                    chat_id,
+                    parts,
+                    scenario_id=scenario_id,
+                    persist_history=persist_history,
+                    context_model=model,
+                )
+                return
+
+            verified_snapshots = verified_mapping_snapshots(resolution.accepted)
+            mappings.extend(verified_snapshots)
+            acquisition = apply_verified_type_mappings(acquisition, resolution.accepted)
+            for snapshot in verified_snapshots:
+                observations.append(
+                    {
+                        "context": "Подтверждённый LLM маппинг типа",
+                        "mapping": snapshot,
+                        "summary": (
+                            "Тип выбран по справочнику и прошёл независимую "
+                            "семантическую проверку"
+                        ),
+                        "resolved_reference_domain": snapshot["domain"],
+                    }
+                )
+            bootstrap_satisfied.update(
+                candidate.requirement_id for candidate in resolution.accepted
+            )
+
         if mapping_calls:
             yield self._event(
                 request_id,
                 "mapping_completed",
-                {"count": len(mappings), "text": "Актуальные справочники получены"},
+                {
+                    "count": len(mappings),
+                    "text": "Актуальные маппинги подтверждены",
+                },
             )
             acquisition = enrich_acquisition_mappings(acquisition, user_query, mappings)
             acquisition = ensure_entity_retrieval_outputs(acquisition, user_query)
@@ -1011,7 +1162,7 @@ class ScenarioDataLinearWorkflow:
             (collection for _, collection in self.owner._feature_collections(result)),
             None,
         )
-        if records is None and feature_collection is None:
+        if not records and feature_collection is None:
             return None, []
         arguments: dict[str, Any] = {"chat_id": chat_id}
         if feature_collection is not None:

@@ -37,6 +37,7 @@ class UrbanMappingResolver:
         scenario_id: int | None,
         project_id: int | None = None,
         known_mappings: list[dict[str, Any]] | None = None,
+        include_named_types: bool = True,
     ) -> list[MappingCall]:
         needs = [
             (requirement, need)
@@ -46,6 +47,12 @@ class UrbanMappingResolver:
         calls: list[MappingCall] = []
         seen: set[tuple[str, str, str]] = set()
         for requirement, need in needs:
+            if (
+                not include_named_types
+                and need.direction == MappingDirection.NAME_TO_ID
+                and _canonical_domain(need.domain) in _TYPE_DOMAINS
+            ):
+                continue
             if mapping_need_is_resolved(need, known_mappings or []):
                 continue
             for lookup_need in _lookup_needs(need):
@@ -74,6 +81,43 @@ class UrbanMappingResolver:
                 if len(calls) >= self.MAX_BOOTSTRAP_CALLS:
                     break
             if len(calls) >= self.MAX_BOOTSTRAP_CALLS:
+                break
+        return calls
+
+    def plan_type_catalog_calls(
+        self,
+        acquisition: AcquisitionPlan,
+        tools: list[UrbanMcpTool],
+        scenario_id: int | None,
+        project_id: int | None = None,
+    ) -> list[MappingCall]:
+        """Fetch each complete type dictionary once for local regex matching."""
+
+        requirement_id = (
+            acquisition.requirements[0].requirement_id
+            if acquisition.requirements
+            else "type_mapping"
+        )
+        calls: list[MappingCall] = []
+        for domain in _TYPE_DOMAINS:
+            need = MappingNeed(
+                domain=domain,
+                direction=MappingDirection.NAME_TO_ID,
+                values=[],
+            )
+            for tool in self._rank(need, tools):
+                arguments = self._arguments(need, tool, scenario_id, project_id)
+                if arguments is None:
+                    continue
+                calls.append(
+                    MappingCall(
+                        requirement_id=requirement_id,
+                        need=need,
+                        tool=tool,
+                        arguments=arguments,
+                        intent_text=acquisition.objective,
+                    )
+                )
                 break
         return calls
 
@@ -523,7 +567,17 @@ def ensure_entity_retrieval_outputs(
         marker in query
         for marker in ("сло", "карт", "геометр", "geojson", "map", "layer")
     )
-    default_both = not table_requested and not layer_requested
+    count_requested = any(
+        marker in query
+        for marker in (
+            "сколько",
+            "количеств",
+            "число",
+            "count",
+            "how many",
+        )
+    )
+    default_both = not table_requested and not layer_requested and not count_requested
     required_output = acquisition.required_output
     tables = list(required_output.tables)
     layers = list(required_output.layers)
@@ -578,6 +632,31 @@ def mapping_need_is_resolved(
     return all(
         any(str(value) == str(match.get("id")) for match in matches)
         for value in need.values
+    )
+
+
+def mapped_ids_for_need(
+    need: MappingNeed, known_mappings: list[dict[str, Any]]
+) -> list[Any]:
+    """Return the verified IDs matching the named values of one mapping need."""
+
+    if need.direction != MappingDirection.NAME_TO_ID:
+        return []
+    domain = _canonical_domain(need.domain)
+    matches = [
+        match
+        for snapshot in known_mappings
+        if _canonical_domain(str(snapshot.get("domain") or "")) == domain
+        for match in snapshot.get("matches") or []
+        if isinstance(match, dict) and match.get("id") is not None and match.get("name")
+    ]
+    return list(
+        dict.fromkeys(
+            match["id"]
+            for value in need.values
+            for match in matches
+            if _same_name(str(value), str(match["name"]))
+        )
     )
 
 
