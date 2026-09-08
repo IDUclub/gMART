@@ -1,5 +1,9 @@
 # Интеграция Synapse как альтернативного оркестратора
 
+Практический контракт для frontend, включая выбор workflow/run configuration,
+idempotency, SSE reconnect и ChatStorage history, вынесен в
+[integrations/synapse-front.md](integrations/synapse-front.md).
+
 ## 1. Цель и ограничения
 
 Добавить в gMART альтернативную точку входа, через которую frontend:
@@ -164,6 +168,8 @@ Content-Type: application/json
   "chat_id": null,
   "scenario_id": 772,
   "project_id": 42,
+  "workflow_id": "01991d22-workflow",
+  "run_config_id": "01991d22-run-config",
   "metadata": {
     "selected_object_ids": [1001, 1002],
     "selected_layer_ids": [15]
@@ -178,6 +184,8 @@ Content-Type: application/json
   "request_id": "74cd1ed4-64a5-41c7-b29c-83a90a4d7c2e",
   "chat_id": "e98ea3f9-9c75-40ba-86cf-26655f16cd8e",
   "synapse_project_id": "synapse-project-id",
+  "workflow_id": "01991d22-workflow",
+  "run_config_id": "01991d22-run-config",
   "status": "running",
   "events_url": "/synapse/runs/74cd1ed4-64a5-41c7-b29c-83a90a4d7c2e/events"
 }
@@ -185,13 +193,32 @@ Content-Type: application/json
 
 Правила:
 
+- инвариант интеграции: один ChatStorage chat в `space=synapse` связан ровно с
+  одним Synapse project; разные новые чаты всегда создают разные projects;
 - `chat_id == null`: создать новый Synapse project, затем создать ChatStorage chat с
-  `space=synapse` и metadata, содержащей `synapse_project_id`;
+  `space=synapse` и metadata, содержащей `synapse_project_id`, `synapse_workflow_id`
+  и `synapse_run_config_id`;
 - `chat_id != null`: загрузить chat из `space=synapse`, получить
   `metadata.synapse_project_id` и отправить follow-up через Synapse messages API;
 - существующий chat без `synapse_project_id` возвращает `409 synapse_mapping_missing`;
 - одновременно допускается только один активный run на chat;
+- workflow и run configuration выбираются при создании chat и не могут быть изменены
+  для follow-up того же Synapse project;
 - повторный запрос с тем же idempotency key не создаёт второй проект/run.
+
+В актуальном Synapse проекты и workflow изолированы по tenant. Технический
+пользователь gMART должен принадлежать тому же tenant, что и выбранные значения;
+иначе Synapse отклонит создание project до запуска workflow. Каталог, доступный
+пользователю gMART, проксируется без секретов технической учётной записи:
+
+```http
+GET /synapse/configurations
+Authorization: Bearer <user-token>
+```
+
+Ответ содержит `workflows`, `run_configurations` и рекомендуемые default ID. Frontend
+сохраняет выбор пользователя локально, а после создания chat восстанавливает его из
+ChatStorage metadata.
 
 ### 4.2. Поток событий
 
@@ -395,7 +422,8 @@ POST /api/v1/chat_history/{chat_id}/message?space=synapse
   "metadata": {
     "provider": "synapse",
     "synapse_project_id": "project-id",
-    "synapse_workflow_id": "configured-workflow"
+    "synapse_workflow_id": "selected-workflow",
+    "synapse_run_config_id": "selected-run-config"
   }
 }
 ```
@@ -492,6 +520,7 @@ SYNAPSE_ENABLED=true
 SYNAPSE_API_URL=http://synapse:8000
 SYNAPSE_SERVICE_EMAIL=gmart@service.local
 SYNAPSE_SERVICE_PASSWORD=change-via-secret-manager
+# Необязательные defaults; пользователь может переопределить их при создании chat.
 SYNAPSE_WORKFLOW_ID=idu-orchestrator
 SYNAPSE_RUN_CONFIG_ID=idu-default
 SYNAPSE_APPROVAL_MODE=auto
@@ -565,9 +594,11 @@ SYNAPSE_AUTH_AUDIENCE=
 5. Расширить ChatStorage client для `space` и явного `user_id`.
 6. Добавить `/synapse/runs` и events/status endpoints.
 7. Добавить frontend переключатель и reconnect.
-8. Прогнать unit/integration tests.
-9. Включить `SYNAPSE_ENABLED` только в testing environment.
-10. После smoke test включить feature flag для ограниченной группы пользователей.
+8. Добавить пользовательский выбор workflow/run configuration через
+   `/synapse/configurations`.
+9. Прогнать unit/integration tests.
+10. Включить `SYNAPSE_ENABLED` только в testing environment.
+11. После smoke test включить feature flag для ограниченной группы пользователей.
 
 Откат выполняется выключением `SYNAPSE_ENABLED`; существующие gMART endpoints и данные
 `space=main` не затрагиваются.
@@ -581,6 +612,7 @@ SYNAPSE_AUTH_AUDIENCE=
 - reconnect не дублирует события;
 - новый chat создаётся в `space=synapse` и связан с одним Synapse project;
 - follow-up продолжает тот же Synapse project;
+- пользователь выбирает доступные workflow и run configuration перед созданием chat;
 - события появляются на frontend в исходном порядке;
 - terminal status одинаков в Synapse, Redis, frontend и ChatStorage;
 - существующий `/orchestrator/route/stream` продолжает работать без изменений.
