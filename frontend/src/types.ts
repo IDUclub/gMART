@@ -20,6 +20,8 @@ export type TableData = {
   title?: string;
   columns: Array<{ key: string; label: string }>;
   rows: Array<Record<string, unknown>>;
+  total_rows?: number;
+  complete?: boolean;
 };
 export type LayerData = {
   id: string;

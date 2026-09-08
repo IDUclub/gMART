@@ -35,6 +35,34 @@ MAX_MAPPING_CANDIDATES = 120
 MAX_CANDIDATES_PER_REQUEST = 40
 MAPPING_LLM_RETRIES = 2
 
+_FALLBACK_SUFFIXES = (
+    "иями",
+    "ами",
+    "ями",
+    "ого",
+    "ему",
+    "ому",
+    "ыми",
+    "ими",
+    "ая",
+    "яя",
+    "ое",
+    "ее",
+    "ые",
+    "ие",
+    "ий",
+    "ый",
+    "ой",
+    "а",
+    "я",
+    "ы",
+    "и",
+    "у",
+    "ю",
+    "е",
+    "о",
+)
+
 
 class TypeMappingRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -75,6 +103,21 @@ class TypeSearchPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     patterns: list[TypeSearchPattern] = Field(min_length=1, max_length=30)
+
+
+def _fallback_search_pattern(value: str) -> str:
+    """Build a conservative, regex-safe token pattern without calling the LLM."""
+
+    tokens = re.findall(r"[0-9a-zа-яё]+", value.casefold())
+    stems = []
+    for token in tokens:
+        stem = token
+        for suffix in _FALLBACK_SUFFIXES:
+            if stem.endswith(suffix) and len(stem) - len(suffix) >= 3:
+                stem = stem[: -len(suffix)]
+                break
+        stems.append(re.escape(stem))
+    return ".*".join(stems) or re.escape(value.strip()) or r"$^"
 
 
 class TypeMappingCandidate(BaseModel):
@@ -320,13 +363,29 @@ Requests: {json.dumps(request_payload, ensure_ascii=False)}"""
                 )
             return plan
 
-        return await self._request_json(
-            model,
-            [{"role": "system", "content": prompt}],
-            TypeSearchPlan,
-            "type search patterns",
-            post_validate=validate,
-        )
+        try:
+            return await self._request_json(
+                model,
+                [{"role": "system", "content": prompt}],
+                TypeSearchPlan,
+                "type search patterns",
+                post_validate=validate,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Scenario-data type search planner failed; using safe local "
+                f"patterns: {exc}"
+            )
+            return TypeSearchPlan(
+                patterns=[
+                    TypeSearchPattern(
+                        requirement_id=request.requirement_id,
+                        requested_value=request.requested_value,
+                        pattern=_fallback_search_pattern(request.requested_value),
+                    )
+                    for request in requests
+                ]
+            )
 
     async def resolve_candidates(
         self,
@@ -469,12 +528,13 @@ Candidates: {candidate_payload}"""
                 "model": model,
                 "messages": messages,
                 "think": False,
-                "format": schema.model_json_schema(),
                 "options": {
                     "temperature": 0,
                     "num_predict": 1800 if attempt == 0 else 3000,
                 },
             }
+            if attempt < MAPPING_LLM_RETRIES:
+                call["format"] = schema.model_json_schema()
             if attempt:
                 call["reasoning_effort"] = "medium"
                 call["messages"] = messages + [
@@ -485,6 +545,13 @@ Candidates: {candidate_payload}"""
                 ]
             response = await self.llm_client.chat(**call)
             raw = (response.get("message") or {}).get("content") or ""
+            if not raw.strip():
+                done_reason = response.get("done_reason") or "unknown"
+                error = f"empty model response (done_reason={done_reason})"
+                logger.warning(
+                    f"Invalid scenario-data {label}, attempt {attempt + 1}: {error}"
+                )
+                continue
             try:
                 parsed = schema.model_validate(json.loads(strip_json_fence(raw)))
                 return post_validate(parsed) if post_validate else parsed

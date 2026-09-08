@@ -224,6 +224,9 @@ required_output перечисляет ожидаемые таблицы, сло
 внутренние ID: бери их только из актуальных маппингов ниже. Сохраняй домен пары name/id:
 service_type.id можно передавать только как service_type_id/service_type_ids, а
 physical_object_type.id — только как physical_object_type_id/physical_object_type_ids.
+Аргументы Urban MCP должны содержать уже готовые JSON-значения. Не создавай отдельные
+шаги для получения ID и не используй шаблоны ссылок на результаты вроде {{{{step.id}}}}:
+исполнитель их не подставляет. Нужные ID бери непосредственно из актуальных маппингов.
 Проект — контейнер сценариев и не владеет физическими объектами или сервисами. Поэтому
 слово «проект» в запросе о территории, расположении, объектах, сервисах или их параметрах
 трактуй как выбранный сценарий и используй scenario-инструмент. Project-инструмент выбирай
@@ -1035,6 +1038,7 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                 raise ValueError(
                     f"unknown arguments for {step.tool_name}: {sorted(unknown)}"
                 )
+            tool.validate_arguments(step.arguments)
             known.add(step.step_id)
             canonical_steps.append(step)
         return plan.model_copy(update={"steps": canonical_steps})

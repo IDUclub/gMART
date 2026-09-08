@@ -38,6 +38,40 @@ class UrbanMcpTool:
     input_schema: dict[str, Any]
     tags: tuple[str, ...]
 
+    def validate_arguments(
+        self, arguments: dict[str, Any], *, require_all: bool = False
+    ) -> None:
+        """Reject unresolved references and obvious JSON Schema type mismatches."""
+
+        properties = self.input_schema.get("properties") or {}
+        unknown = set(arguments) - set(properties)
+        if unknown:
+            raise ValueError(
+                f"Tool {self.group}.{self.name} received unknown arguments: "
+                f"{sorted(unknown)}"
+            )
+        if require_all:
+            missing = set(self.input_schema.get("required") or []) - set(arguments)
+            if missing:
+                raise ValueError(
+                    f"Tool {self.group}.{self.name} requires arguments: "
+                    f"{sorted(missing)}"
+                )
+        for name, value in arguments.items():
+            if value is None:
+                continue
+            if _is_unresolved_plan_reference(value):
+                raise ValueError(
+                    f"Tool {self.group}.{self.name} argument {name} contains an "
+                    "unresolved plan reference"
+                )
+            schema = properties.get(name)
+            if isinstance(schema, dict) and not _matches_declared_type(value, schema):
+                raise ValueError(
+                    f"Tool {self.group}.{self.name} argument {name} must have type "
+                    f"{_schema_type(schema)}, got {type(value).__name__}"
+                )
+
     def compact_prompt_entry(self) -> dict[str, Any]:
         properties = self.input_schema.get("properties") or {}
         required = set(self.input_schema.get("required") or [])
@@ -67,6 +101,55 @@ def _schema_type(schema: dict[str, Any]) -> str:
     variants = schema.get("anyOf") or schema.get("oneOf") or []
     types = [str(item.get("type")) for item in variants if item.get("type")]
     return " | ".join(types) or "any"
+
+
+def _is_unresolved_plan_reference(value: Any) -> bool:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped.startswith("{{") and stripped.endswith("}}")
+    if isinstance(value, list):
+        return any(_is_unresolved_plan_reference(item) for item in value)
+    if isinstance(value, dict):
+        return any(_is_unresolved_plan_reference(item) for item in value.values())
+    return False
+
+
+def _matches_declared_type(value: Any, schema: dict[str, Any]) -> bool:
+    variants = schema.get("anyOf") or schema.get("oneOf") or []
+    if variants:
+        return any(
+            _matches_declared_type(value, variant)
+            for variant in variants
+            if isinstance(variant, dict)
+        )
+
+    expected = schema.get("type")
+    if isinstance(expected, list):
+        return any(
+            _matches_declared_type(value, {**schema, "type": item}) for item in expected
+        )
+    if expected is None:
+        return True
+    if expected == "null":
+        return value is None
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        if not isinstance(value, list):
+            return False
+        items = schema.get("items")
+        return not isinstance(items, dict) or all(
+            _matches_declared_type(item, items) for item in value
+        )
+    return True
 
 
 def _plain(value: Any) -> Any:

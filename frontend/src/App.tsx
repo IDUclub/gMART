@@ -1915,7 +1915,10 @@ function StoredTablePart({
       <div>
         <strong>{table.title || table.name || "Сохранённая таблица"}</strong>
         <small>
-          {rows} {pluralize(rows, "строка", "строки", "строк")}
+          {table.complete === false && table.total_rows != null
+            ? `${rows} из ${table.total_rows}`
+            : rows}{" "}
+          {pluralize(rows, "строка", "строки", "строк")}
           {columns > 0 && ` · ${columns} столбцов`}
         </small>
       </div>
@@ -2399,8 +2402,10 @@ function Tables({ tables }: { tables: TableData[] }) {
                   <div>
                     <h3>{title}</h3>
                     <small>
-                      {table.rows?.length || 0} строк ·{" "}
-                      {table.columns?.length || 0} столбцов
+                      {table.complete === false && table.total_rows != null
+                        ? `${table.rows?.length || 0} из ${table.total_rows}`
+                        : table.rows?.length || 0}{" "}
+                      строк · {table.columns?.length || 0} столбцов
                     </small>
                   </div>
                   <button
@@ -2442,8 +2447,10 @@ function Tables({ tables }: { tables: TableData[] }) {
                   <span className="context-title">Таблица результатов</span>
                   <h2>{expanded.title || expanded.name || "Результаты"}</h2>
                   <small>
-                    {expanded.rows?.length || 0} строк ·{" "}
-                    {expanded.columns?.length || 0} столбцов
+                    {expanded.complete === false && expanded.total_rows != null
+                      ? `${expanded.rows?.length || 0} из ${expanded.total_rows}`
+                      : expanded.rows?.length || 0}{" "}
+                    строк · {expanded.columns?.length || 0} столбцов
                   </small>
                 </div>
                 <button

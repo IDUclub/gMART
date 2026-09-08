@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pytest
+
 from src.agents.dto.scenario_data_request_dto import ScenarioDataRequestDTO
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
 from src.agents.services import scenario_data_linear as scenario_data_linear_module
@@ -36,6 +38,31 @@ def test_scenario_id_is_enforced_over_model_arguments():
     assert ScenarioDataService._prepare_arguments(
         tool, {"scenario_id": 999, "injected": "ignored"}, 42
     ) == {"scenario_id": 42}
+
+
+def test_unresolved_plan_placeholder_is_rejected_before_mcp_call():
+    tool = UrbanMcpTool(
+        group="projects",
+        name="GetScenarioPhysicalObjects",
+        title="Physical objects",
+        description="",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scenario_id": {"type": "integer"},
+                "physical_object_type_id": {"type": "integer"},
+            },
+            "required": ["scenario_id", "physical_object_type_id"],
+        },
+        tags=(),
+    )
+
+    with pytest.raises(ValueError, match="unresolved plan reference"):
+        ScenarioDataService._prepare_arguments(
+            tool,
+            {"physical_object_type_id": "{{get_type_id_1.id}}"},
+            848,
+        )
 
 
 def test_global_dictionary_does_not_receive_scenario_or_project_ids():
@@ -254,7 +281,51 @@ def test_list_result_becomes_strict_table():
             {"key": "name", "label": "name"},
         ],
         "rows": [{"id": 1, "name": "Школа"}],
+        "total_rows": 1,
+        "complete": True,
     }
+
+
+def test_scenario_object_table_keeps_all_788_rows():
+    table = ScenarioDataService._table_from_result(
+        [{"id": index, "name": f"Объект {index}"} for index in range(788)],
+        name="scenario objects",
+        title="Объекты",
+    )
+
+    assert table is not None
+    assert len(table["rows"]) == 788
+    assert table["total_rows"] == 788
+    assert table["complete"] is True
+
+
+def test_oversized_table_is_explicitly_marked_as_partial():
+    table = ScenarioDataService._table_from_result(
+        [{"id": index} for index in range(1001)],
+        name="scenario objects",
+        title="Объекты",
+    )
+
+    assert table is not None
+    assert len(table["rows"]) == 1000
+    assert table["total_rows"] == 1001
+    assert table["complete"] is False
+
+
+def test_paginated_table_uses_reported_total_to_mark_a_partial_page():
+    table = ScenarioDataService._table_from_result(
+        {
+            "items": [{"id": index} for index in range(100)],
+            "total": 788,
+        },
+        name="scenario objects",
+        title="Объекты",
+    )
+
+    assert table is not None
+    assert len(table["rows"]) == 100
+    assert table["total_rows"] == 788
+    assert table["complete"] is False
 
 
 def test_table_keeps_domain_fields_when_properties_is_metadata():

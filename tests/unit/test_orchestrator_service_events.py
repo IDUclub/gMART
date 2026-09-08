@@ -164,6 +164,43 @@ async def test_single_step_event_order(orchestrator, fake_llm):
 
 
 @pytest.mark.asyncio
+async def test_table_event_is_persisted_with_the_orchestrator_answer(
+    orchestrator, fake_llm
+):
+    fake_llm.json_responses = [
+        orchestration_plan_json([{"agent": "scenario_data", "task": "Объекты"}])
+    ]
+    table = {
+        "name": "objects",
+        "title": "Объекты",
+        "columns": [{"key": "name", "label": "Название"}],
+        "rows": [{"name": "Школа"}],
+        "total_rows": 1,
+        "complete": True,
+    }
+    orchestrator.scenario_data_service = SimpleNamespace(
+        run_scenario_data_pipeline=FakePipeline(
+            [
+                {"type": "table", "content": table},
+                {
+                    "type": "chunk",
+                    "content": {"text": "Полный перечень в таблице.", "done": True},
+                },
+            ]
+        )
+    )
+
+    await run_pipeline(orchestrator, urban_mcp_client=Mock())
+    await asyncio.sleep(0)
+
+    orchestrator.add_complex_message.assert_awaited_once()
+    parts = orchestrator.add_complex_message.await_args.args[3]
+    assert any(
+        part.kind == "table" and part.payload.name == "objects" for part in parts
+    )
+
+
+@pytest.mark.asyncio
 async def test_sub_agents_run_without_persistence_and_own_request_ids(
     orchestrator, fake_llm
 ):

@@ -847,7 +847,11 @@ class ScenarioDataLinearWorkflow:
                         request_id,
                         started,
                         self.owner.evaluator.evaluate(
-                            model, user_query, observations, answer
+                            model,
+                            user_query,
+                            observations,
+                            answer,
+                            required_output=plan.required_output,
                         ),
                     )
                     validation_reasons = verdict.reasons
@@ -1112,6 +1116,9 @@ class ScenarioDataLinearWorkflow:
             "arguments": step.arguments,
             "layer_count": layer_count,
             "table_count": int(table is not None),
+            "table_complete": bool(table and table["complete"]),
+            "table_rows": len(table["rows"]) if table else 0,
+            "table_total_rows": table["total_rows"] if table else 0,
             "summary": self.owner._result_summary(result),
             "satisfies": step.satisfies,
         }
@@ -1283,6 +1290,9 @@ class ScenarioDataLinearWorkflow:
             "satisfies": step.satisfies,
             "layer_count": layer_count,
             "table_count": int(table is not None),
+            "table_complete": bool(table and table["complete"]),
+            "table_rows": len(table["rows"]) if table else 0,
+            "table_total_rows": table["total_rows"] if table else 0,
         }
         if isinstance(result, dict) and isinstance(result.get("handle"), str):
             artifact = {
@@ -1384,6 +1394,12 @@ class ScenarioDataLinearWorkflow:
                 "требуется таблица, но ни один выполненный шаг не вернул табличные "
                 "данные"
             ]
+        if plan.required_output.tables and not any(
+            int(item.get("table_count") or 0) > 0
+            and item.get("table_complete", True) is not False
+            for item in observations
+        ):
+            return ["требуемая таблица была сформирована не полностью"]
         return []
 
     async def _bounded_llm(self, request_id: str, started: float, awaitable):
