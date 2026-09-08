@@ -75,6 +75,8 @@ class TablePayload(BaseModel):
     title: str
     columns: list[TableColumn]
     rows: list[dict[str, Any]]
+    total_rows: int | None = None
+    complete: bool = True
 
 
 class TablePartRequest(BaseModel):

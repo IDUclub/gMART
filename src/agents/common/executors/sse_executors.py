@@ -1,5 +1,4 @@
 import asyncio
-import traceback
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -73,7 +72,8 @@ async def stream_with_error_handling(
     Args:
         generator: Function that returns an async iterator/generator.
         request: Current FastAPI Request object.
-        llm_client (BaseLlmClient): BaseLlmClient object for generating responses via llm.
+        llm_client (BaseLlmClient): Kept in the shared wrapper contract for callers;
+            internal errors are never sent back to the model for explanation.
         model (str): Model to run generation on.
         rerun (bool): Weather try to rerun pipeline if raised error or not.
         *args: Positional arguments passed to the generator.
@@ -116,50 +116,30 @@ async def stream_with_error_handling(
                         return
 
                     yield item
+                return
             except Exception as retry_exc:
                 logger.opt(exception=retry_exc).error(
                     "Couldn't re-run pipeline on retry, needs manual check"
                 )
-                exc = retry_exc
 
-        tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        logger.info("Streaming user-facing error explanation to the client")
-        # TODO pass all history of generated prompts and messages.
-        messages = [
-            {
-                "role": "system",
-                "content": f"""
-                В ходе выполнения пайплайна извлечения нормативных требований произошла следующая
-                ошибка\n:
-                {tb_str}
-
-                Объясни пользователю что случилось простым языком, не вдаваясь в технические детали.
-                Если проблема может быть исправлена более точным запросом, укажи на это и скажи, как его можно
-                переформулировать.
-                """,
+        # Never ask the same model that may have caused the failure to explain it.
+        # The full exception is already in server logs; clients receive neither a
+        # speculative diagnosis nor internal paths and stack frames.
+        yield {
+            "type": "chunk",
+            "content": {
+                "text": (
+                    "Не удалось выполнить запрос из-за внутренней ошибки сервера. "
+                    "Повторите попытку позже."
+                ),
+                "done": False,
             },
-        ]
-        try:
-            async for chunk in llm_client.execute_request(model, messages):
-                content = chunk.get("content") or {}
-                if not content.get("text") and not content.get("done"):
-                    continue
-                if chunk["content"]["done"]:
-                    chunk["content"]["done"] = False
-                yield chunk
-        except Exception as explain_exc:
-            # The fallback explanation itself failed — commonly the LLM backend
-            # is the root cause and is unreachable. Log the full traceback and
-            # still close the stream cleanly below, instead of letting the
-            # exception escape the generator and silently drop the connection.
-            logger.opt(exception=explain_exc).error(
-                "Failed to generate user-facing error explanation via LLM"
-            )
+        }
         yield {
             "type": "error",
             "content": {
                 "message": "Internal stream exception",
-                "traceback": tb_str,
+                "traceback": "",
             },
         }
         yield {

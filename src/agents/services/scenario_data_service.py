@@ -73,6 +73,8 @@ _TRANSIENT_TOOL_ERROR_MARKERS = (
     "status 504",
 )
 
+MAX_INLINE_TABLE_ROWS = 1000
+
 
 def _is_transient_tool_error(error: Exception) -> bool:
     """Classify only failures that are safe to retry for read-only Urban calls."""
@@ -598,6 +600,10 @@ class ScenarioDataService(BaseLlmService):
                     "tool": f"{action.group}.{action.tool_name}",
                     "arguments": arguments,
                     "layer_count": layer_count,
+                    "table_count": int(table is not None),
+                    "table_complete": bool(table and table["complete"]),
+                    "table_rows": len(table["rows"]) if table else 0,
+                    "table_total_rows": table["total_rows"] if table else 0,
                     "summary": self._result_summary(result),
                 }
                 # Exact counts, computed here rather than left to the model: the summary above
@@ -708,12 +714,7 @@ class ScenarioDataService(BaseLlmService):
             prepared["scenario_id"] = scenario_id
         if "project_id" in properties and project_id is not None:
             prepared["project_id"] = project_id
-        required = set(tool.input_schema.get("required") or [])
-        missing = required - set(prepared)
-        if missing:
-            raise ValueError(
-                f"Tool {tool.group}.{tool.name} requires arguments: {sorted(missing)}"
-            )
+        tool.validate_arguments(prepared, require_all=True)
         return prepared
 
     @staticmethod
@@ -1255,10 +1256,11 @@ service_type_id, physical_object_type_id, ID маппингов и числов�
 или проекта. Пользователю нужны названия, количества и содержательный результат; ID
 остаются только во внутренних вызовах инструментов.
 
-Если наблюдение содержит table_count > 0, полная таблица уже отправлена пользователю
-отдельной частью ответа. Не перепечатывай все её строки в тексте: укажи точное общее
-количество, кратко опиши результат и скажи, что полный перечень находится в таблице.
-Это считается полным ответом даже для просьб «выведи все».
+Если наблюдение содержит table_count > 0 и table_complete=true, полная таблица уже
+отправлена пользователю отдельной частью ответа. Не перепечатывай все её строки в тексте:
+укажи точное общее количество, кратко опиши результат и скажи, что полный перечень
+находится в таблице. Если table_complete=false, называй таблицу выборкой и указывай
+table_rows и table_total_rows; не утверждай, что полный перечень был отправлен.
 
 В наблюдениях поле "aggregate" содержит ТОЧНЫЕ количества, посчитанные по всем
 записям, а не по образцу: total_records — сколько всего записей, breakdown — сколько
@@ -1335,7 +1337,17 @@ service_type_id, physical_object_type_id, ID маппингов и числов�
         cls, result: Any, *, name: str, title: str
     ) -> dict[str, Any] | None:
         rows = result
+        reported_total: int | None = None
         if isinstance(rows, dict):
+            for total_key in ("total", "total_count", "totalCount", "count"):
+                total_value = rows.get(total_key)
+                if (
+                    isinstance(total_value, int)
+                    and not isinstance(total_value, bool)
+                    and total_value >= 0
+                ):
+                    reported_total = total_value
+                    break
             for key in ("result", "results", "rows", "items", "data", "features"):
                 if isinstance(rows.get(key), list):
                     rows = rows[key]
@@ -1364,8 +1376,10 @@ service_type_id, physical_object_type_id, ID маппингов и числов�
                     keys.append(str(key))
                 if len(keys) >= 12:
                     break
+        available_rows = len(rows)
+        total_rows = max(available_rows, reported_total or 0)
         normalized_rows = []
-        for row in rows[:100]:
+        for row in rows[:MAX_INLINE_TABLE_ROWS]:
             normalized_rows.append(
                 {key: cls._table_value(row.get(key)) for key in keys}
             )
@@ -1374,6 +1388,10 @@ service_type_id, physical_object_type_id, ID маппингов и числов�
             "title": title,
             "columns": [{"key": key, "label": key} for key in keys],
             "rows": normalized_rows,
+            "total_rows": total_rows,
+            "complete": (
+                available_rows >= total_rows and total_rows <= MAX_INLINE_TABLE_ROWS
+            ),
         }
 
     @staticmethod
@@ -1391,6 +1409,8 @@ service_type_id, physical_object_type_id, ID маппингов и числов�
                 title=table["title"],
                 columns=[TableColumn(**column) for column in table["columns"]],
                 rows=table["rows"],
+                total_rows=table.get("total_rows"),
+                complete=table.get("complete", True),
             ),
         )
 

@@ -121,7 +121,7 @@ class TestWantsLayers:
 class TestEvaluator:
     @pytest.mark.asyncio
     async def test_a_rule_rejection_skips_the_judge(self):
-        llm = FakeLlm({"sufficient": True, "missing": ""})
+        llm = FakeLlm({"sufficient": True, "missing_code": "none", "details": ""})
         evaluator = ScenarioDataEvaluator(llm)
 
         verdict = await evaluator.evaluate(
@@ -134,7 +134,11 @@ class TestEvaluator:
     @pytest.mark.asyncio
     async def test_the_judge_can_reject_an_otherwise_clean_answer(self):
         llm = FakeLlm(
-            {"sufficient": False, "missing": "Не назван ни один тип объекта."}
+            {
+                "sufficient": False,
+                "missing_code": "answer_incomplete",
+                "details": "Не назван ни один тип объекта.",
+            }
         )
         evaluator = ScenarioDataEvaluator(llm)
 
@@ -143,11 +147,51 @@ class TestEvaluator:
         )
 
         assert verdict.sufficient is False
-        assert verdict.hint == "Не назван ни один тип объекта."
+        assert verdict.hint == "Ответ не раскрывает запрошенные данные."
+        assert "Не назван ни один тип объекта" not in " ".join(verdict.reasons)
+
+    @pytest.mark.asyncio
+    async def test_the_judge_cannot_invent_a_missing_table_when_one_was_emitted(self):
+        llm = FakeLlm(
+            {
+                "sufficient": False,
+                "missing_code": "required_table_not_emitted",
+                "details": "показать полный перечень объектов (таблицу)",
+            }
+        )
+        evaluator = ScenarioDataEvaluator(llm)
+
+        verdict = await evaluator.evaluate(
+            "m",
+            "Какие объекты есть в проекте?",
+            [{"table_count": 1, "table_complete": True}],
+            "Всего 788 объектов. Полный перечень находится в таблице.",
+            required_output={"tables": ["objects"]},
+        )
+
+        assert verdict.sufficient is True
+        assert "показать полный перечень" not in " ".join(verdict.reasons)
+
+    @pytest.mark.asyncio
+    async def test_a_required_table_is_checked_without_asking_the_judge(self):
+        llm = FakeLlm({"sufficient": True, "missing_code": "none", "details": ""})
+        evaluator = ScenarioDataEvaluator(llm)
+
+        verdict = await evaluator.evaluate(
+            "m",
+            "Выведи все объекты",
+            [{"table_count": 0}],
+            "Всего 788 объектов.",
+            required_output={"tables": ["objects"]},
+        )
+
+        assert verdict.sufficient is False
+        assert verdict.reasons == ["Требуемая таблица не была сформирована."]
+        assert llm.calls == 0
 
     @pytest.mark.asyncio
     async def test_the_judge_can_accept(self):
-        llm = FakeLlm({"sufficient": True, "missing": ""})
+        llm = FakeLlm({"sufficient": True, "missing_code": "none", "details": ""})
         evaluator = ScenarioDataEvaluator(llm)
 
         verdict = await evaluator.evaluate(
@@ -158,7 +202,7 @@ class TestEvaluator:
 
     @pytest.mark.asyncio
     async def test_the_judge_knows_the_full_table_is_already_visible(self):
-        llm = FakeLlm({"sufficient": True, "missing": ""})
+        llm = FakeLlm({"sufficient": True, "missing_code": "none", "details": ""})
         evaluator = ScenarioDataEvaluator(llm)
         observations = [
             {

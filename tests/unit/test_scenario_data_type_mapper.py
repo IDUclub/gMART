@@ -106,6 +106,36 @@ async def test_model_builds_one_safe_search_pattern_for_each_requested_type():
     assert len(llm.chat_calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_empty_search_pattern_replies_use_safe_local_fallback():
+    class EmptyLlm:
+        def __init__(self):
+            self.calls = []
+
+        async def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return {
+                "message": {"content": "", "thinking": ""},
+                "done_reason": "length",
+            }
+
+    llm = EmptyLlm()
+    mapper = UrbanTypeMapper(llm)
+
+    plan = await mapper.build_search_plan(
+        "model",
+        "Сколько школ в проекте?",
+        _acquisition(["школы"]),
+        [TypeMappingRequest(requirement_id="counts", requested_value="школы")],
+    )
+
+    assert plan.patterns[0].pattern == "школ"
+    assert len(llm.calls) == 3
+    assert "format" in llm.calls[0]
+    assert "format" in llm.calls[1]
+    assert "format" not in llm.calls[2]
+
+
 def test_generated_patterns_are_applied_locally_to_both_type_domains():
     plan = TypeSearchPlan(
         patterns=[

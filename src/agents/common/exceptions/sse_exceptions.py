@@ -9,7 +9,8 @@ class SseBaseError(BaseModel):
     """
     Class describes base error entity in sse streaming endpoints.
     Attributes:
-        traceback (str): Exception traceback in server code base.
+        traceback (str): Legacy field kept for response compatibility. The generic
+            public stream wrapper leaves it empty; full tracebacks belong in logs.
         message (str): Natural language description of error.
     """
 

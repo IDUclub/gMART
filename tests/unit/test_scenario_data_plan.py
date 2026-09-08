@@ -53,6 +53,41 @@ def test_execution_plan_rejects_forward_dependency():
         )
 
 
+def test_canonical_plan_rejects_unresolved_urban_argument_reference():
+    tool = UrbanMcpTool(
+        group="projects",
+        name="GetScenarioPhysicalObjects",
+        title="Physical objects",
+        description="",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scenario_id": {"type": "integer"},
+                "physical_object_type_id": {"type": "integer"},
+            },
+        },
+        tags=(),
+    )
+    plan = ExecutionPlanRevision(
+        revision=1,
+        reason="initial",
+        objective="count schools",
+        steps=[
+            PlanStep(
+                step_id="schools",
+                purpose="count schools",
+                group="projects",
+                tool_name=tool.name,
+                arguments={"physical_object_type_id": "{{get_type_id_1.id}}"},
+                expected_output="objects",
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="unresolved plan reference"):
+        ScenarioDataPlanBuilder._canonicalize_plan(plan, [tool])
+
+
 def test_mapping_resolver_never_invents_required_arguments():
     resolver = UrbanMappingResolver()
     plan = AcquisitionPlan(
@@ -1260,9 +1295,14 @@ def test_required_table_cannot_validate_without_observed_rows():
         plan, [{"table_count": 0}]
     ) == ["требуется таблица, но ни один выполненный шаг не вернул табличные данные"]
     assert (
-        ScenarioDataLinearWorkflow._required_output_reasons(plan, [{"table_count": 1}])
+        ScenarioDataLinearWorkflow._required_output_reasons(
+            plan, [{"table_count": 1, "table_complete": True}]
+        )
         == []
     )
+    assert ScenarioDataLinearWorkflow._required_output_reasons(
+        plan, [{"table_count": 1, "table_complete": False}]
+    ) == ["требуемая таблица была сформирована не полностью"]
 
 
 def test_mapping_uses_the_user_language_when_the_model_translates_a_type_name():
