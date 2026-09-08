@@ -480,9 +480,7 @@ Candidates: {candidate_payload}"""
                 call["messages"] = messages + [
                     {
                         "role": "user",
-                        "content": (
-                            f"Исправь JSON: {error}. Верни только JSON."
-                        ),
+                        "content": (f"Исправь JSON: {error}. Верни только JSON."),
                     }
                 ]
             response = await self.llm_client.chat(**call)

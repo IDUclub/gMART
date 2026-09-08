@@ -648,9 +648,7 @@ def mapped_ids_for_need(
         for snapshot in known_mappings
         if _canonical_domain(str(snapshot.get("domain") or "")) == domain
         for match in snapshot.get("matches") or []
-        if isinstance(match, dict)
-        and match.get("id") is not None
-        and match.get("name")
+        if isinstance(match, dict) and match.get("id") is not None and match.get("name")
     ]
     return list(
         dict.fromkeys(

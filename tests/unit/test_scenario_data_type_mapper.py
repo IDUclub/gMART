@@ -89,9 +89,7 @@ async def test_model_builds_one_safe_search_pattern_for_each_requested_type():
     mapper = UrbanTypeMapper(llm)
     requests = [
         TypeMappingRequest(requirement_id="counts", requested_value="школы"),
-        TypeMappingRequest(
-            requirement_id="counts", requested_value="детские сады"
-        ),
+        TypeMappingRequest(requirement_id="counts", requested_value="детские сады"),
     ]
 
     plan = await mapper.build_search_plan(
@@ -210,9 +208,7 @@ async def test_selection_supports_multiple_types_and_independent_assessment():
     ]
     requests = [
         TypeMappingRequest(requirement_id="counts", requested_value="школы"),
-        TypeMappingRequest(
-            requirement_id="counts", requested_value="детские сады"
-        ),
+        TypeMappingRequest(requirement_id="counts", requested_value="детские сады"),
     ]
 
     resolution = await UrbanTypeMapper(llm).resolve_candidates(
@@ -240,8 +236,7 @@ async def test_rejected_candidate_is_reported_as_missing():
                         "candidate_id": "candidate_1",
                         "accepted": False,
                         "reason": (
-                            "это школа искусств, а не "
-                            "общеобразовательная школа"
+                            "это школа искусств, а не " "общеобразовательная школа"
                         ),
                     }
                 ]

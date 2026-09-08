@@ -522,9 +522,7 @@ physical_object_type.id — только как physical_object_type_id/physical
                 continue
             if named_type_needs:
                 for need in named_type_needs:
-                    mapping_domain = ScenarioDataPlanBuilder._type_mapping_domain(
-                        need
-                    )
+                    mapping_domain = ScenarioDataPlanBuilder._type_mapping_domain(need)
                     if mapping_domain == "physical_object_type":
                         tool_name = (
                             "GetScenarioPhysicalObjectsWithGeometry"

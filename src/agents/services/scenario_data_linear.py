@@ -360,14 +360,11 @@ class ScenarioDataLinearWorkflow:
                 catalog_observation = {
                     "context": "Справочник кандидатов для маппинга",
                     "summary": (
-                        f"Кандидаты получены из "
-                        f"{call.tool.group}.{call.tool.name}"
+                        f"Кандидаты получены из " f"{call.tool.group}.{call.tool.name}"
                     ),
                     "resolved_reference_domain": call.need.domain,
                 }
-                execution_context.complete_attempt(
-                    mapping_attempt, catalog_observation
-                )
+                execution_context.complete_attempt(mapping_attempt, catalog_observation)
                 catalog_observation["step_context"] = mapping_attempt.model_dump(
                     mode="json"
                 )
@@ -427,9 +424,7 @@ class ScenarioDataLinearWorkflow:
                 )
             )
             if not resolution.complete:
-                missing = ", ".join(
-                    f"«{value}»" for value in resolution.missing_values
-                )
+                missing = ", ".join(f"«{value}»" for value in resolution.missing_values)
                 answer = (
                     "В справочниках Urban API не найден подходящий тип объектов "
                     f"или сервисов для: {missing}."

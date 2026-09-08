@@ -395,9 +395,7 @@ async def test_named_school_count_uses_llm_mapper_and_preserves_exact_zero(
     ]
 
     text = "".join(
-        event["content"]["text"]
-        for event in events
-        if event.get("type") == "chunk"
+        event["content"]["text"] for event in events if event.get("type") == "chunk"
     )
     assert text == "В проекте 0 школ."
     assert not any(event["type"] == "pipeline_failed" for event in events)
@@ -465,9 +463,7 @@ async def test_semantically_rejected_type_finishes_without_pipeline_failure(
     ]
 
     text = "".join(
-        event["content"]["text"]
-        for event in events
-        if event.get("type") == "chunk"
+        event["content"]["text"] for event in events if event.get("type") == "chunk"
     )
     assert "не найден подходящий тип" in text
     assert "общеобразовательные школы" in text

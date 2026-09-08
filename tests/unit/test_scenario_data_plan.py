@@ -336,9 +336,7 @@ def test_named_type_count_does_not_require_a_table_or_map_layer():
         ],
     )
 
-    resolved = ensure_entity_retrieval_outputs(
-        acquisition, "Сколько школ в проекте?"
-    )
+    resolved = ensure_entity_retrieval_outputs(acquisition, "Сколько школ в проекте?")
 
     assert resolved.required_output.tables == []
     assert resolved.required_output.layers == []
