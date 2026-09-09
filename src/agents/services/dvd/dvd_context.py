@@ -11,8 +11,6 @@ class DvdContextBuilder:
     so the answering model can ground its response and cite sources by number and clause.
     """
 
-    MAX_FRAGMENT_CHARS = 1500
-
     def build_context(self, hits: list[dict[str, Any]]) -> str:
         if not hits:
             return ""
@@ -27,6 +25,10 @@ class DvdContextBuilder:
             header_bits.append(f"ред. {version}")
         if numbering := hit.get("numbering"):
             header_bits.append(f"п. {numbering}")
+        if fragment_name := hit.get("fragment_name"):
+            header_bits.append(fragment_name)
+        if node_id := hit.get("id"):
+            header_bits.append(f"node_id={node_id}")
         header = ", ".join(header_bits)
         if breadcrumb := hit.get("breadcrumb"):
             header += f" — {breadcrumb}"
@@ -34,6 +36,9 @@ class DvdContextBuilder:
         body = (
             hit.get("table_html") or hit.get("context") or hit.get("text") or ""
         ).strip()
-        if len(body) > self.MAX_FRAGMENT_CHARS:
-            body = body[: self.MAX_FRAGMENT_CHARS].rstrip() + " […]"
+        # Never truncate a target or its descendants. Oversized contexts are processed
+        # by DvdContextReducer in bounded parallel requests, retaining source labels.
+        target = (hit.get("text") or "").strip()
+        if target and target not in body and not hit.get("table_html"):
+            body = target + "\n" + body
         return f"{header}\n{body}" if body else header

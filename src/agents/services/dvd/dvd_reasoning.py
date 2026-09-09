@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from typing import TypeVar
 
 from loguru import logger
@@ -10,6 +12,7 @@ from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.dvd_plan import (
     CriticVerdict,
     RetrievalPlan,
+    SearchKind,
 )
 
 T = TypeVar("T", bound=BaseModel)
@@ -50,7 +53,11 @@ async def _request_json(
     for attempt in range(retries + 1):
         response = await llm_client.chat(
             model=model,
-            options={"temperature": 0, "num_predict": 512},
+            options={
+                "temperature": 0,
+                "num_predict": 512,
+                "num_ctx": int(os.getenv("DVD_CONTEXT_WINDOW_TOKENS", "8192")),
+            },
             messages=messages,
         )
         content = response["message"]["content"]
@@ -110,6 +117,44 @@ class RetrievalPlanner:
         block = (plan.block or "").strip().lower() or None
         if block not in _VALID_BLOCKS:
             block = None
+        # A concrete address is an identifier, not a semantic search phrase. The
+        # explicit user token wins over an LLM paraphrase (and over later critiques).
+        address = re.search(
+            r"(?:пункт[а-я]*|подпункт[а-я]*|п\.|раздел[а-я]*|section|clause)\s*"
+            r"([А-ЯA-Zа-яa-z]?\d+(?:\.[\d*?]+)*(?:\s*[–—-]\s*\d+(?:\.\d+)*)?)",
+            user_query,
+            re.I,
+        )
+        designations = [
+            m[1]
+            for m in re.finditer(
+                r"\b([A-ZА-ЯЁ]{2,10}\s*\d+(?:[.\-]\d+){1,5})", user_query, re.I
+            )
+            if not (address and m.start() < address.end() and m.end() > address.start())
+        ]
+        pattern = address[1] if address else (plan.pattern or "").strip() or None
+        if address and plan.pattern and "/" in plan.pattern:
+            if plan.pattern.rsplit("/", 1)[-1].strip() == address[1].strip():
+                pattern = plan.pattern.strip()
+        mode = (
+            "structure"
+            if pattern
+            else "name" if plan.name_query else plan.retrieval_mode
+        )
+        if mode == "structure" and not pattern:
+            raise ValueError("structural retrieval requires pattern")
+        if mode == "name" and not plan.name_query:
+            raise ValueError("name retrieval requires name_query")
+        updates = {
+            "pattern": pattern,
+            "retrieval_mode": mode,
+            "types": (
+                None if mode != "semantic" else _clean_str_list(plan.types, lower=True)
+            ),
+            "kind": SearchKind.ALL if mode != "semantic" else plan.kind,
+        }
+        if designations:
+            updates["document_names"] = list(dict.fromkeys(designations))
         return plan.model_copy(
             update={
                 "search_query": (plan.search_query or "").strip() or user_query,
@@ -120,12 +165,22 @@ class RetrievalPlanner:
                 "document_names": _clean_str_list(plan.document_names),
                 "block": block,
                 "types": _clean_str_list(plan.types, lower=True),
+                **updates,
             }
         )
 
     @staticmethod
     def _prompt(prev_critique: str | None, prev_query: str | None) -> str:
         structure = {
+            "retrieval_mode": "semantic | structure | name",
+            "pattern": 'null | "3.3" | "3.*" | "3.3–3.5" | "А / 2"',
+            "name_query": "null | собственное наименование фрагмента",
+            "name_mode": "strict | expanded",
+            "name_scope": "self | path",
+            "doc_id": "null | известный ID документа",
+            "version": "null | явно запрошенная редакция",
+            "include_children": True,
+            "allow_multiple": False,
             "search_query": "строка для векторного поиска",
             "kind": "text | table | all",
             "limit": 10,
@@ -141,6 +196,26 @@ class RetrievalPlanner:
 {json.dumps(structure, ensure_ascii=False)}
 
 Правила:
+- Выбери retrieval_mode="structure", если пользователь указал структурную ссылку.
+  Сохрани её в pattern: "3.3" точно, "3.*" все уровни ниже 3, "3.3–3.5" диапазон
+  соседних элементов, "А / 2" элемент 2 внутри А. Тип документа не важен.
+  Никогда не преобразуй номер пункта в семантический запрос и не ставь types по
+  слову «пункт»: номер может принадлежать definition, section, table и любому типу.
+- retrieval_mode="name" для поиска по наименованию фрагмента. name_query — заголовок,
+  определяемый термин или подпись, а document_names — название исходного документа.
+  name_mode="strict" ищет совпадение/часть/маску; expanded дополнительно словоформы,
+  опечатки и смысл названия. name_scope="path" для «в разделе с названием ...»;
+  self для собственного названия. pattern и name_query можно совмещать (AND).
+- include_children=true: получаем также дочерние пункты. allow_multiple=true только
+  для явно множественного/обзорного/сравнительного вопроса или маски/диапазона.
+  Иначе несколько кандидатов требуют уточнения документа, редакции или пути.
+- Пример «что в пункте 3.3 СП 2.13130.2020»: structure, pattern="3.3",
+  document_names=["СП 2.13130.2020"], types=null, include_children=true.
+  Пример «покажи определения огнезащитного покрытия»: name,
+  name_query="огнезащитное покрытие", name_mode="expanded", name_scope="self".
+- Для обычного смыслового вопроса без адреса/наименования используй semantic.
+- Никогда не снимай явно названные документ, редакцию, структуру или наименование
+  ради получения непустого ответа. Идентификаторы не придумывай.
 - search_query — краткий поисковый запрос на русском, отражающий суть вопроса \
 (ключевые термины, нормативная лексика). Не копируй вопрос дословно — выдели суть.
 - kind = "table" если вопрос про числовые нормативы, показатели или таблицы; \
@@ -172,8 +247,9 @@ class RetrievalPlanner:
 Замечание критика: {prev_critique}
 Предыдущий поисковый запрос: «{prev_query}».
 Сформируй ИНОЙ, улучшенный поисковый запрос (синонимы, иные формулировки, \
-официальная терминология); при необходимости измени kind, limit, context_height или \
-ослабь фильтры (document_names, block, types), если они могли отсечь нужное."""
+официальная терминология); при необходимости измени kind, limit, context_height. \
+Сохрани явно заданные документ, редакцию, структуру и наименование: ограничения \
+нельзя снимать ради получения совпадений."""
         return prompt
 
 

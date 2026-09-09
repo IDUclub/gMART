@@ -3279,6 +3279,7 @@ function labelStatus(s: string) {
         answer_review: "Проверяю результат",
         answer_retry: "Дополняю данные",
         retrieval_planning: "Планирую поиск",
+        context_processing: "Обрабатываю источники частями",
         searching: "Ищу источники",
         executing: "Выполняю инструменты",
         conflict_check: "Проверяю противоречия",

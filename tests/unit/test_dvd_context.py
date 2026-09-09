@@ -50,18 +50,26 @@ def test_table_html_preferred_over_text():
     assert "txt" not in ctx
 
 
-def test_context_preferred_over_text_when_no_table():
+def test_context_keeps_target_even_if_upstream_context_omits_it():
     ctx = DvdContextBuilder().build_context(
         [{"name": "A", "context": "expanded", "text": "raw"}]
     )
-    assert "expanded" in ctx and "raw" not in ctx
+    assert "expanded" in ctx and "raw" in ctx
 
 
-def test_long_body_is_truncated():
-    long = "ё" * (DvdContextBuilder.MAX_FRAGMENT_CHARS + 500)
+def test_long_body_is_preserved_for_bounded_context_processing():
+    long = "ё" * 2000
     ctx = DvdContextBuilder().build_context([{"name": "A", "text": long}])
-    assert "[…]" in ctx
-    assert len(ctx) < len(long)
+    assert long in ctx
+
+
+def test_long_preceding_context_cannot_hide_target():
+    target = "3.3 Полный текст определения."
+    context = "Предыдущий пункт. " * 200 + target
+    result = DvdContextBuilder().build_context(
+        [{"name": "СП", "numbering": "3.3", "text": target, "context": context}]
+    )
+    assert target in result
 
 
 def test_missing_name_has_fallback():
