@@ -17,9 +17,9 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import Point
 
-from src.agents.services.restriction_catalog import RestrictionPlanBuilder
-from src.agents.services.restriction_context import RestrictionContextBuilder
-from src.agents.services.restriction_parser_service import (
+from agents.services.restriction.restriction_catalog import RestrictionPlanBuilder
+from agents.services.restriction.restriction_context import RestrictionContextBuilder
+from agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
     _ablation_no_catalog,
 )

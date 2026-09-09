@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from fastapi.sse import EventSourceResponse
 
+from agents.services.scenario_data.scenario_data_service import ScenarioDataService
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.executors.sse_executors import stream_with_error_handling
 from src.agents.dependencies.dependencies import (
@@ -13,7 +14,6 @@ from src.agents.dependencies.dependencies import (
 from src.agents.dto.scenario_data_request_dto import ScenarioDataRequestDTO
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 from src.agents.schema.scenario_data_response import ScenarioDataResponse
-from src.agents.services.scenario_data_service import ScenarioDataService
 
 scenario_data_router = APIRouter(prefix="/scenario-data", tags=["scenario-data"])
 

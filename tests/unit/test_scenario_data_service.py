@@ -5,16 +5,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.agents.dto.scenario_data_request_dto import ScenarioDataRequestDTO
-from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
-from src.agents.services import scenario_data_linear as scenario_data_linear_module
-from src.agents.services import scenario_data_service as scenario_data_service_module
-from src.agents.services.pipeline_state import PipelineStateStore
-from src.agents.services.scenario_data_plan_builder import (
+from agents.services.scenario_data import (
+    scenario_data_linear as scenario_data_linear_module,
+)
+from agents.services.scenario_data import (
+    scenario_data_service as scenario_data_service_module,
+)
+from agents.services.scenario_data.scenario_data_plan_builder import (
     ScenarioDataPlanBuilder,
     _off_topic_penalty,
 )
-from src.agents.services.scenario_data_service import ScenarioDataService
+from agents.services.scenario_data.scenario_data_service import ScenarioDataService
+from src.agents.dto.scenario_data_request_dto import ScenarioDataRequestDTO
+from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.service_entities.scenario_data_action import (
     ScenarioDataAction,
     ScenarioDataActionKind,
@@ -587,6 +591,9 @@ async def test_a_rejected_answer_buys_a_second_pass_with_the_hint(
     }
 
     drafts = ["Типы объектов неизвестны.", "Всего 924 объекта: домов 900, банков 24."]
+    fake_llm.json_responses = [
+        '{"sufficient": true, "missing_code": "none", "details": ""}'
+    ]
     seen_observations: list[list[dict]] = []
 
     async def draft_answer(model, user_query, observations, temperature, history):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.agents.services.orchestrator_catalog import available_agents
+from agents.services.orchestrator.orchestrator_catalog import available_agents
 from src.agents.services.service_entities.orchestrator_plan import OrchestratorAgent
 
 

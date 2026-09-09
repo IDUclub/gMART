@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 from src.agents.common.auth.auth import optional_bearer_token, verify_bearer_token
 from src.agents.common.middlewares.exception_handler import ExceptionHandlerMiddleware
 from src.agents.dependencies.dependencies import (
@@ -22,7 +23,6 @@ from src.agents.dependencies.dependencies import (
 )
 from src.agents.routers.dvd_a2a_controller import dvd_a2a_router
 from src.agents.routers.dvd_controller import dvd_router
-from src.agents.services.dvd_a2a_service import DocumentQaA2AService
 
 
 class FakeStateStore:

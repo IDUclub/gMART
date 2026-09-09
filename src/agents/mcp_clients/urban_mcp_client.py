@@ -115,6 +115,8 @@ def _is_unresolved_plan_reference(value: Any) -> bool:
 
 
 def _matches_declared_type(value: Any, schema: dict[str, Any]) -> bool:
+    if "enum" in schema and value not in schema["enum"]:
+        return False
     variants = schema.get("anyOf") or schema.get("oneOf") or []
     if variants:
         return any(

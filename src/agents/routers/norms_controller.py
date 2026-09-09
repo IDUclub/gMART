@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from fastapi.sse import EventSourceResponse
 
+from agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.executors.sse_executors import stream_with_error_handling
 from src.agents.dependencies.dependencies import (
@@ -13,7 +14,6 @@ from src.agents.dependencies.dependencies import (
 from src.agents.dto.norms_request_dto import NormsQaRequestDTO
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 from src.agents.schema.norms_response import NormsResponse
-from src.agents.services.normgraph_rag_service import NormGraphRagService
 
 norms_router = APIRouter(prefix="/norms", tags=["norms"])
 

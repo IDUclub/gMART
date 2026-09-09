@@ -5,6 +5,13 @@ import json
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
+from agents.services.synapse.synapse_gateway_service import (
+    SynapseConfigurationRequired,
+    SynapseGatewayConflict,
+    SynapseGatewayService,
+    SynapseRunNotFound,
+)
+from agents.services.synapse.synapse_run_store import SynapseIdempotencyConflict
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.auth.synapse_auth import SynapseCallerVerifier
 from src.agents.dependencies.dependencies import (
@@ -18,13 +25,6 @@ from src.agents.schema.synapse_response import (
     SynapseRunResponse,
     SynapseRunStateResponse,
 )
-from src.agents.services.synapse_gateway_service import (
-    SynapseConfigurationRequired,
-    SynapseGatewayConflict,
-    SynapseGatewayService,
-    SynapseRunNotFound,
-)
-from src.agents.services.synapse_run_store import SynapseIdempotencyConflict
 
 synapse_router = APIRouter(prefix="/synapse", tags=["synapse"])
 

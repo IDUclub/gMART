@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from src.agents.services.provision_plan_builder import ProvisionPlanBuilder
+from agents.services.provision.provision_plan_builder import ProvisionPlanBuilder
 from src.agents.services.service_entities.provision_plan import (
     ProvisionPlan,
     ProvisionPlanMode,

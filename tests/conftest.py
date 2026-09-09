@@ -63,7 +63,7 @@ def service(monkeypatch, fake_llm, fake_urban, state_store):
         "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
-    from src.agents.services.dvd_rag_service import DvdRagService
+    from agents.services.dvd.dvd_rag_service import DvdRagService
 
     svc = DvdRagService("http://ollama", Mock(), fake_urban, state_store)
     svc.create_chat = AsyncMock(return_value=("chat-xyz", "Тестовый чат"))

@@ -12,9 +12,9 @@ from idu_service_auth import KeycloakTokenClient
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
 
+from agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
 from src.agents.model_clients.factory import build_llm_adapter
-from src.agents.services.restriction_catalog import strip_json_fence
 from src.common.service_auth import build_service_auth, service_auth_lifespan
 
 

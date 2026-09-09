@@ -3,12 +3,14 @@ from __future__ import annotations
 import pytest
 from python_a2a.models.task import TaskState
 
+from agents.services.scenario_data.scenario_data_a2a_service import (
+    ScenarioDataA2AService,
+)
 from src.agents.a2a.a2a_format import SCENARIO_CONTEXT_EXTENSION_URI
 from src.agents.a2a.scenario_data_agent import ScenarioDataA2AAgent
 from src.agents.a2a.scenario_data_executor import ScenarioDataAgentExecutor
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
-from src.agents.services.scenario_data_a2a_service import ScenarioDataA2AService
 
 FEATURE_COLLECTION = {
     "type": "FeatureCollection",

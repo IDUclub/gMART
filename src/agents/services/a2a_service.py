@@ -6,6 +6,9 @@ from uuid import uuid4
 
 from python_a2a.models.task import TaskState
 
+from agents.services.restriction.restriction_parser_service import (
+    RestrictionParserService,
+)
 from src.agents.a2a.a2a_format import (
     apply_history_length,
     normalize_response,
@@ -23,9 +26,6 @@ from src.agents.common.exceptions.a2a_exceptions import (
     A2ATaskNotFoundError,
 )
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
-from src.agents.services.restriction_parser_service import (
-    RestrictionParserService,
-)
 
 A2AData = dict[str, Any]
 A2AResponse = A2AData | list[A2AData]

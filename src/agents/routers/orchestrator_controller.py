@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from fastapi.sse import EventSourceResponse
 
+from agents.services.orchestrator.orchestrator_service import OrchestratorService
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.executors.sse_executors import stream_with_error_handling
 from src.agents.dependencies.dependencies import (
@@ -21,7 +22,6 @@ from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 from src.agents.schema.orchestrator_response import OrchestratorResponse
-from src.agents.services.orchestrator_service import OrchestratorService
 
 orchestrator_router = APIRouter(prefix="/orchestrator", tags=["orchestrator"])
 

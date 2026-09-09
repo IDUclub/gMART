@@ -6,12 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from agents.services.provision.provision_tool_executor import ProvisionToolExecutor
+from agents.services.provision.provsion_service import POPULATION_HINT, ProvisionService
 from src.agents.api_clients.chat_storage_client.request_models import (
     TablePartRequest,
 )
 from src.agents.schema.provision_response import ProvisionResponse
-from src.agents.services.provision_tool_executor import ProvisionToolExecutor
-from src.agents.services.provsion_service import POPULATION_HINT, ProvisionService
 
 TABLE_EVENT = {
     "type": "table",

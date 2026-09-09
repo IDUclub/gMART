@@ -1,7 +1,7 @@
 """Contract integration: NormGraph-shaped CheckPlan → gMART → IDU geometry."""
 
+from agents.services.compilance.compliance_executor import ComplianceTemplateExecutor
 from src.agents.schema.restrictions_response import RestrictionsResponse
-from src.agents.services.compliance_executor import ComplianceTemplateExecutor
 from src.idu_mcp.tools_services.compliance_geometry import ComplianceGeometryTools
 
 

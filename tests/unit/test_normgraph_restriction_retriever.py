@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.agents.services.normgraph_restriction_retriever import (
+from agents.services.normgraph.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,
 )
 from src.agents.services.service_entities.normgraph_plan import PrimaryTool

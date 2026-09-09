@@ -17,7 +17,7 @@ def orchestrator(monkeypatch, fake_llm, fake_urban, state_store):
         "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
-    from src.agents.services.orchestrator_service import OrchestratorService
+    from agents.services.orchestrator.orchestrator_service import OrchestratorService
 
     app_config = SimpleNamespace(
         DVD_MCP_URL="http://dvd",

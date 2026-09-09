@@ -4,6 +4,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from fastapi.sse import EventSourceResponse
 
+from agents.services.restriction.restriction_parser_service import (
+    RestrictionParserService,
+)
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.executors.sse_executors import (
     stream_with_error_handling,
@@ -15,9 +18,6 @@ from src.agents.dependencies.dependencies import (
 from src.agents.dto.restriction_request_dto import RestrictionRequestDTO
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.schema.restrictions_response import RestrictionsResponse
-from src.agents.services.restriction_parser_service import (
-    RestrictionParserService,
-)
 
 restriction_router = APIRouter(prefix="/restrictions", tags=["restrictions"])
 

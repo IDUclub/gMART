@@ -20,7 +20,7 @@ pytestmark = pytest.mark.integration
 
 
 async def test_live_qa_end_to_end(require_redis, require_ollama, require_dvd_mcp):
-    from src.agents.services.dvd_rag_service import DvdRagService
+    from agents.services.dvd.dvd_rag_service import DvdRagService
     from src.agents.services.pipeline_state import PipelineStateStore
 
     store = PipelineStateStore(require_redis)

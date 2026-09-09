@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.agents.services.provision_context import ProvisionContextBuilder
+from agents.services.provision.provision_context import ProvisionContextBuilder
 
 SUMMARY_SCHOOLS = {
     "services_count": 3,

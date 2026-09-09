@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from src.agents.services.scenario_data_evaluator import (
+from agents.services.scenario_data.scenario_data_evaluator import (
     ScenarioDataEvaluator,
     Verdict,
     deterministic_checks,
@@ -151,7 +151,7 @@ class TestEvaluator:
         assert "Не назван ни один тип объекта" not in " ".join(verdict.reasons)
 
     @pytest.mark.asyncio
-    async def test_the_judge_cannot_invent_a_missing_table_when_one_was_emitted(self):
+    async def test_conflicting_table_judgement_requires_rechecking_the_content(self):
         llm = FakeLlm(
             {
                 "sufficient": False,
@@ -169,7 +169,7 @@ class TestEvaluator:
             required_output={"tables": ["objects"]},
         )
 
-        assert verdict.sufficient is True
+        assert verdict.sufficient is False
         assert "показать полный перечень" not in " ".join(verdict.reasons)
 
     @pytest.mark.asyncio
@@ -180,7 +180,7 @@ class TestEvaluator:
         verdict = await evaluator.evaluate(
             "m",
             "Выведи все объекты",
-            [{"table_count": 0}],
+            [{"table_count": 0, "retrieved": True}],
             "Всего 788 объектов.",
             required_output={"tables": ["objects"]},
         )
@@ -232,32 +232,68 @@ class TestEvaluator:
         assert '"table_count": 1' in system_prompt
 
     @pytest.mark.asyncio
-    async def test_a_broken_judge_never_blocks_the_answer(self):
-        """The judge is an improvement, not a gate."""
+    async def test_a_broken_judge_cannot_approve_the_answer(self):
         evaluator = ScenarioDataEvaluator(FakeLlm("not json at all"))
 
         verdict = await evaluator.evaluate(
             "m", "Какие объекты?", WITH_AGGREGATE, "Всего 924: домов 900."
         )
 
-        assert verdict.sufficient is True
+        assert verdict.sufficient is False
 
     @pytest.mark.asyncio
-    async def test_a_verdict_without_a_boolean_is_treated_as_no_opinion(self):
-        """Otherwise a malformed reply would burn the retry budget on a fine answer."""
+    async def test_a_verdict_without_a_boolean_cannot_approve_the_answer(self):
         evaluator = ScenarioDataEvaluator(FakeLlm({"missing": "что-то"}))
 
         verdict = await evaluator.evaluate(
             "m", "Какие объекты?", WITH_AGGREGATE, "Всего 924: домов 900."
         )
 
-        assert verdict.sufficient is True
+        assert verdict.sufficient is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "observations",
+    [
+        [],
+        [{"context": "nothing fetched"}],
+        [{"tool": "projects.GetScenarioServices", "retrieved": False}],
+        [
+            {
+                "tool": "dictionaries.GetServiceTypes",
+                "retrieved": True,
+                "source_role": "справочник типов",
+                "aggregate": {"total_records": 1},
+            }
+        ],
+    ],
+)
+async def test_missing_entity_evidence_cannot_be_approved_by_model(observations):
+    llm = FakeLlm({"sufficient": True, "missing_code": "none", "details": ""})
+    verdict = await ScenarioDataEvaluator(llm).evaluate(
+        "model", "Сколько школ в сценарии?", observations, "В сценарии 1 школа."
+    )
+    assert not verdict.sufficient
+    assert llm.calls == 0
 
 
 class TestVerdict:
     def test_defaults(self):
         assert Verdict(sufficient=True).hint == ""
         assert Verdict(sufficient=True).reasons == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sufficient,code", [(False, "none"), (False, "invented"), (True, "invented")]
+)
+async def test_invalid_judge_reason_cannot_approve_a_draft(sufficient, code):
+    llm = FakeLlm({"sufficient": sufficient, "missing_code": code, "details": ""})
+    verdict = await ScenarioDataEvaluator(llm).evaluate(
+        "m", "Какие объекты?", WITH_AGGREGATE, "Всего 924 объекта."
+    )
+    assert not verdict.sufficient
 
 
 UNRESOLVED = [

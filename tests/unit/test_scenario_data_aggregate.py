@@ -6,7 +6,7 @@ shown eight of them plus "… ещё 916", and answered that the types were unkn
 
 from __future__ import annotations
 
-from src.agents.services.scenario_data_aggregate import (
+from agents.services.scenario_data.scenario_data_aggregate import (
     aggregate_records,
     aggregate_result,
     answer_records,
@@ -32,6 +32,29 @@ def _objects(counts: dict[str, int]) -> list[dict]:
                 }
             )
     return rows
+
+
+def test_public_context_retains_source_role_scope_and_table_completeness():
+    import json
+
+    evidence = {
+        "tool": "projects.GetScenarioServices",
+        "arguments": {"scenario_id": 772, "service_type_id": 22},
+        "source_role": "данные сущностей",
+        "source_scope": "выбранный сценарий",
+        "retrieved": True,
+        "table_count": 1,
+        "table_complete": False,
+        "table_rows": 1000,
+        "table_total_rows": 1200,
+    }
+    payload = json.loads(bounded_public_observation_context([evidence], max_chars=3000))
+    item = payload["observations"][0]
+    assert item == {
+        key: value
+        for key, value in evidence.items()
+        if key not in {"tool", "arguments"}
+    }
 
 
 class TestAggregateRecords:

@@ -6,8 +6,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.schema.dvd_response import DvdResponse
-from src.agents.services.dvd_rag_service import DvdRagService
 
 
 def test_status_event_validates():

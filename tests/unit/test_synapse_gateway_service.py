@@ -4,14 +4,14 @@ from unittest.mock import AsyncMock
 import pytest
 from fakeredis.aioredis import FakeRedis
 
-from src.agents.api_clients.synapse_client import SynapseUnavailableError
-from src.agents.dto.synapse_request_dto import SynapseRunRequestDTO
-from src.agents.services.synapse_gateway_service import (
+from agents.services.synapse.synapse_gateway_service import (
     SynapseConfigurationRequired,
     SynapseGatewayService,
     SynapseStartUnknownError,
 )
-from src.agents.services.synapse_run_store import SynapseRunStore
+from agents.services.synapse.synapse_run_store import SynapseRunStore
+from src.agents.api_clients.synapse_client import SynapseUnavailableError
+from src.agents.dto.synapse_request_dto import SynapseRunRequestDTO
 
 
 @pytest.mark.asyncio

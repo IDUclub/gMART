@@ -1,4 +1,4 @@
-from src.agents.services.compliance_executor import ComplianceTemplateExecutor
+from agents.services.compilance.compliance_executor import ComplianceTemplateExecutor
 from src.idu_mcp.tools_services.compliance_geometry import ComplianceGeometryTools
 
 
