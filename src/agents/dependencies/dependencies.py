@@ -1,10 +1,15 @@
+from dataclasses import dataclass
+from typing import Any
+
 from fastapi import Depends
 from idu_service_auth import KeycloakTokenClient
 
 from src.agents.api_clients.dvd_api_client import DvdApiClient
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.auth.auth import optional_bearer_token, verify_bearer_token
+from src.agents.common.auth.synapse_auth import SynapseCallerVerifier
 from src.agents.common.config.app_config import AgentsAppConfig
+from src.agents.common.exceptions.base_exceptions import AgentsNotFound
 from src.agents.dependencies.init_dependencies import init_dependencies
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
@@ -27,15 +32,111 @@ from src.agents.services.restriction_parser_service import (
 from src.agents.services.scenario_data_a2a_service import ScenarioDataA2AService
 from src.agents.services.scenario_data_service import ScenarioDataService
 from src.agents.services.simple_llm_service import SimpleLlmService
+from src.agents.services.synapse_gateway_service import SynapseGatewayService
+from src.agents.services.synapse_run_store import SynapseRunStore
 from src.agents.services.system_service import SystemService
 from src.common.service_auth import (
     ANONYMOUS_USER_ID,
     ServiceTokenAuth,
+    internal_user_context_jwt,
     service_mcp_client,
     user_id_from_jwt,
 )
 
 app_deps: dict[str, object] = init_dependencies()
+
+
+@dataclass(frozen=True)
+class A2ACallerContext:
+    user_id: str
+    pipeline_token: str
+    is_synapse: bool
+
+
+async def resolve_a2a_caller(payload: Any, token: str) -> A2ACallerContext:
+    """Verify Synapse service identity and recover the original user mapping."""
+
+    config = get_app_config()
+    if not config.SYNAPSE_ENABLED:
+        return A2ACallerContext("", token, False)
+
+    claims = await get_synapse_caller_verifier().verify_claims(token)
+    client_id = claims.get("azp") or claims.get("client_id")
+    if client_id != config.SYNAPSE_A2A_CLIENT_ID:
+        subject = claims.get("sub")
+        if not isinstance(subject, str) or not subject:
+            from src.agents.common.exceptions.base_exceptions import (
+                AgentsUnauthorizedException,
+            )
+
+            raise AgentsUnauthorizedException("JWT subject is missing")
+        return A2ACallerContext(subject, token, False)
+
+    if hasattr(payload, "model_dump"):
+        payload = payload.model_dump(mode="json", exclude_none=True)
+    if isinstance(payload, list):
+        payload = payload[0] if payload else {}
+    params = payload.get("params") if isinstance(payload, dict) else {}
+    params = params if isinstance(params, dict) else {}
+    message = params.get("message")
+    message = message if isinstance(message, dict) else {}
+    metadata = params.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    project_id = metadata.get("project_id")
+    run_id = (
+        params.get("contextId")
+        or params.get("context_id")
+        or message.get("contextId")
+        or message.get("context_id")
+    )
+    user_id = await get_synapse_run_store().resolve_a2a_user(
+        project_id=str(project_id) if project_id else None,
+        run_id=str(run_id) if run_id else None,
+    )
+    if not user_id:
+        from src.agents.common.exceptions.base_exceptions import (
+            AgentsUnauthorizedException,
+        )
+
+        raise AgentsUnauthorizedException("Unknown Synapse project/run correlation")
+    return A2ACallerContext(user_id, internal_user_context_jwt(user_id), True)
+
+
+async def a2a_idu_mcp_client(user_id: str) -> IduMcpClient:
+    client = await service_mcp_client(
+        get_app_config().IDU_MCP_URL, get_idu_mcp_service_auth(), user_id
+    )
+    return IduMcpClient(client)
+
+
+async def a2a_effects_mcp_client(user_id: str) -> EffectsMcpClient:
+    client = await service_mcp_client(
+        get_app_config().EFFECTS_MCP_URL, get_service_auth(), user_id
+    )
+    return EffectsMcpClient(client)
+
+
+async def a2a_dvd_mcp_client(user_id: str) -> DvdMcpClient:
+    mcp_url = get_app_config().DVD_MCP_URL
+    if not mcp_url:
+        raise ValueError("DVD_MCP_SERVER is not configured")
+    client = await service_mcp_client(mcp_url, get_service_auth(), user_id)
+    return DvdMcpClient(client, mcp_url=mcp_url)
+
+
+async def a2a_normgraph_mcp_client(user_id: str) -> NormGraphMcpClient:
+    mcp_url = get_app_config().NORM_GRAPH_MCP_URL
+    if not mcp_url:
+        raise ValueError("NORM_GRAPH_MCP_SERVER is not configured")
+    client = await service_mcp_client(mcp_url, get_service_auth(), user_id)
+    return NormGraphMcpClient(client, mcp_url=mcp_url)
+
+
+async def a2a_urban_mcp_client(user_id: str) -> UrbanMcpClient:
+    mcp_url = get_app_config().URBAN_MCP_URL
+    if not mcp_url:
+        raise ValueError("URBAN_MCP_SERVER is not configured")
+    return UrbanMcpClient(mcp_url, ServiceTokenAuth(get_service_auth(), user_id))
 
 
 async def get_mcp_diagnostics_service(
@@ -61,6 +162,15 @@ def get_app_config() -> AgentsAppConfig:
 
 def get_service_auth() -> KeycloakTokenClient:
     auth = app_deps["service_auth"]
+    if not isinstance(auth, KeycloakTokenClient):
+        raise TypeError(f"Expected KeycloakTokenClient, got {type(auth)}")
+    return auth
+
+
+def get_idu_mcp_service_auth() -> KeycloakTokenClient:
+    """Return the identity dedicated to the internal gMART IDU MCP boundary."""
+
+    auth = app_deps["idu_mcp_service_auth"]
     if not isinstance(auth, KeycloakTokenClient):
         raise TypeError(f"Expected KeycloakTokenClient, got {type(auth)}")
     return auth
@@ -100,6 +210,27 @@ def get_pipeline_state_store() -> PipelineStateStore:
     return store
 
 
+def get_synapse_run_store() -> SynapseRunStore:
+    store = app_deps["synapse_run_store"]
+    if not isinstance(store, SynapseRunStore):
+        raise TypeError(f"Expected SynapseRunStore, got {type(store)}")
+    return store
+
+
+def get_synapse_gateway_service() -> SynapseGatewayService:
+    service = app_deps.get("synapse_gateway_service")
+    if not isinstance(service, SynapseGatewayService):
+        raise AgentsNotFound("Synapse integration is disabled")
+    return service
+
+
+def get_synapse_caller_verifier() -> SynapseCallerVerifier:
+    verifier = app_deps.get("synapse_caller_verifier")
+    if not isinstance(verifier, SynapseCallerVerifier):
+        raise AgentsNotFound("Synapse integration is disabled")
+    return verifier
+
+
 async def get_idu_mcp_client(
     token: str = Depends(verify_bearer_token),
 ) -> IduMcpClient:
@@ -113,7 +244,7 @@ async def get_idu_mcp_client(
 
     mcp_url: str = app_deps["app_config"].IDU_MCP_URL
     client = await service_mcp_client(
-        mcp_url, get_service_auth(), user_id_from_jwt(token)
+        mcp_url, get_idu_mcp_service_auth(), user_id_from_jwt(token)
     )
     return IduMcpClient(client)
 

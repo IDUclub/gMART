@@ -6,7 +6,10 @@ from python_a2a.models.agent import AgentCard, AgentSkill
 from python_a2a.server.a2a_server import A2AServer
 
 from src.agents.__version__ import APP_DESCRIPTION, APP_VERSION
-from src.agents.a2a.a2a_format import scenario_context_extension
+from src.agents.a2a.a2a_format import (
+    scenario_context_extension,
+    synapse_compatible_agent_card,
+)
 
 
 class RestrictionA2AAgent(A2AServer):
@@ -35,7 +38,7 @@ class RestrictionA2AAgent(A2AServer):
             dict[str, Any]: A2A agent card representation.
         """
 
-        return self._build_agent_card(base_url).to_dict()
+        return synapse_compatible_agent_card(self._build_agent_card(base_url).to_dict())
 
     @staticmethod
     def _build_agent_card(base_url: str) -> AgentCard:

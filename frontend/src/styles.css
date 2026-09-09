@@ -402,6 +402,43 @@ p {
   width: 98px;
   margin-top: 3px;
 }
+.synapse-config-bar {
+  margin: 0 8px 10px;
+  padding: 9px 12px;
+  display: grid;
+  grid-template-columns: minmax(170px, 0.8fr) minmax(220px, 1fr) minmax(
+      220px,
+      1fr
+    ) auto;
+  align-items: end;
+  gap: 10px;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface2);
+}
+.synapse-config-bar > div small,
+.synapse-config-bar > div span,
+.synapse-config-bar label {
+  display: block;
+}
+.synapse-config-bar > div small,
+.synapse-config-bar > small,
+.synapse-config-bar label {
+  color: var(--muted);
+  font-size: 10px;
+}
+.synapse-config-bar select {
+  width: 100%;
+  margin-top: 3px;
+}
+.synapse-config-bar > small {
+  padding-bottom: 10px;
+  white-space: nowrap;
+}
+.synapse-config-bar > small.error {
+  color: var(--danger);
+}
 .connection {
   max-width: 220px;
   min-height: 38px;
@@ -3016,6 +3053,15 @@ select:focus {
   .context label:nth-child(2) {
     display: none;
   }
+  .synapse-config-bar {
+    grid-template-columns: minmax(170px, 0.7fr) minmax(190px, 1fr) minmax(
+        190px,
+        1fr
+      );
+  }
+  .synapse-config-bar > small {
+    display: none;
+  }
   .mcp-layout {
     grid-template-columns: 230px minmax(480px, 1fr);
   }
@@ -3048,6 +3094,12 @@ select:focus {
     padding: 0 2px 8px;
   }
   .context label {
+    display: none;
+  }
+  .synapse-config-bar {
+    grid-template-columns: 1fr 1fr;
+  }
+  .synapse-config-bar > div {
     display: none;
   }
   .connection {

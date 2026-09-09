@@ -20,6 +20,7 @@ class ChatCreated:
 
     chat_id: str
     title: str
+    metadata: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class ChatHistory:
     scenario_id: str | None = None
     project_id: str | int | None = None
     metadata: dict | None = None
+    space: str = "main"
 
     @classmethod
     def from_response(cls, data: dict) -> "ChatHistory":
