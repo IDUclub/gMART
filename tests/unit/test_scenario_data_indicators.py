@@ -5,8 +5,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agents.services.scenario_data.scenario_data_evaluator import ScenarioDataEvaluator
-from agents.services.scenario_data.scenario_data_indicators import (
+from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services.scenario_data.scenario_data_evaluator import (
+    ScenarioDataEvaluator,
+)
+from src.agents.services.scenario_data.scenario_data_indicators import (
     IndicatorRequest,
     calculation_request,
     normalize_indicators,
@@ -14,8 +17,7 @@ from agents.services.scenario_data.scenario_data_indicators import (
     scenario_scope,
     validate_request,
 )
-from agents.services.scenario_data.scenario_data_service import ScenarioDataService
-from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 
 
 def indicator(iid=4, value=5.95, name="Площадь территории", unit="км2", sid=772):

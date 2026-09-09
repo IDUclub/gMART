@@ -3,10 +3,11 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from agents.services.scenario_data.scenario_data_linear import (
+from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services.scenario_data.scenario_data_linear import (
     ScenarioDataLinearWorkflow,
 )
-from agents.services.scenario_data.scenario_data_mapping import (
+from src.agents.services.scenario_data.scenario_data_mapping import (
     MappingCall,
     UrbanMappingResolver,
     bind_mapping_arguments,
@@ -16,10 +17,9 @@ from agents.services.scenario_data.scenario_data_mapping import (
     mapping_need_is_resolved,
     mapping_snapshot,
 )
-from agents.services.scenario_data.scenario_data_plan_builder import (
+from src.agents.services.scenario_data.scenario_data_plan_builder import (
     ScenarioDataPlanBuilder,
 )
-from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
 from src.agents.services.service_entities.scenario_data_plan import (
     AcquisitionPlan,
     DataRequirement,

@@ -6,7 +6,6 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.sse import EventSourceResponse
 
-from agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.dependencies import (
     a2a_dvd_mcp_client,
@@ -16,6 +15,7 @@ from src.agents.dependencies.dependencies import (
 )
 from src.agents.dto.a2a_dto import A2AJsonRpcPayloadDTO
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
+from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 
 dvd_a2a_router = APIRouter(prefix="/documents", tags=["documents", "a2a"])
 

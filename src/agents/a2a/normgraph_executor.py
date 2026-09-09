@@ -6,10 +6,10 @@ from uuid import uuid4
 
 from python_a2a.models.task import TaskState
 
-from agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 from src.agents.a2a.a2a_format import sanitized_user_message
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
+from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient

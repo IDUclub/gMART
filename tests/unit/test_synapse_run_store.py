@@ -2,7 +2,7 @@ import pytest
 from fakeredis.aioredis import FakeRedis
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
-from agents.services.synapse.synapse_run_store import (
+from src.agents.services.synapse.synapse_run_store import (
     SynapseIdempotencyConflict,
     SynapseRunStore,
 )

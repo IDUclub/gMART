@@ -14,8 +14,6 @@ from typing import Literal
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
-from agents.services.scenario_data.scenario_data_evaluator import wants_layers
-from agents.services.scenario_data.scenario_data_type_mapper import UrbanTypeMapper
 from src.agents.api_clients.chat_storage_client.request_models import (
     TextPartRequest,
     TextPayload,
@@ -24,6 +22,8 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.common.exceptions.token_exceptions import TokenExpiredError
+from src.agents.services.scenario_data.scenario_data_evaluator import wants_layers
+from src.agents.services.scenario_data.scenario_data_type_mapper import UrbanTypeMapper
 
 
 def broad_data_query(query: str) -> bool:

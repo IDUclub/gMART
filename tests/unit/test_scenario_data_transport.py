@@ -4,8 +4,8 @@ import anyio
 import httpx
 import pytest
 
-from agents.services.scenario_data import scenario_data_service as service_module
-from agents.services.scenario_data.scenario_data_service import ScenarioDataService
+from src.agents.services.scenario_data import scenario_data_service as service_module
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 
 
 @pytest.mark.parametrize(

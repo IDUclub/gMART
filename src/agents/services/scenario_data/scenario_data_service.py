@@ -11,48 +11,6 @@ import httpx
 from idu_service_auth import KeycloakTokenClient
 from loguru import logger
 
-from agents.services.scenario_data.scenario_data_aggregate import (
-    aggregate_result,
-    bounded_public_observation_context,
-    sanitize_public_answer,
-    unresolved_references,
-)
-from agents.services.scenario_data.scenario_data_analytics import ScenarioAnalytics
-from agents.services.scenario_data.scenario_data_evaluator import (
-    MAX_ANSWER_ATTEMPTS,
-    ScenarioDataEvaluator,
-    wants_layers,
-)
-from agents.services.scenario_data.scenario_data_indicators import (
-    indicator_query,
-    is_comparison,
-    normalize_indicators,
-)
-from agents.services.scenario_data.scenario_data_linear import (
-    ScenarioDataLinearWorkflow,
-)
-from agents.services.scenario_data.scenario_data_plan_builder import (
-    MAX_SCENARIO_TOOL_CALLS,
-    ScenarioDataPlanBuilder,
-)
-from agents.services.scenario_data.scenario_data_read import (
-    UrbanReadWorkflow,
-    broad_data_query,
-)
-from agents.services.scenario_data.scenario_data_selection import (
-    may_select_entities,
-    selection_candidates,
-    verified_entity_records,
-)
-from agents.services.scenario_data.scenario_data_type_mapper import UrbanTypeMapper
-from agents.services.scenario_data.scenario_data_types import (
-    ScenarioEntityKind,
-    ScenarioTypeIntent,
-    build_type_distribution,
-    classify_type_query,
-    distribution_answer,
-    distribution_table,
-)
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
     StructuredPartRequest,
@@ -68,6 +26,48 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient, UrbanMcpTool
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
+from src.agents.services.scenario_data.scenario_data_aggregate import (
+    aggregate_result,
+    bounded_public_observation_context,
+    sanitize_public_answer,
+    unresolved_references,
+)
+from src.agents.services.scenario_data.scenario_data_analytics import ScenarioAnalytics
+from src.agents.services.scenario_data.scenario_data_evaluator import (
+    MAX_ANSWER_ATTEMPTS,
+    ScenarioDataEvaluator,
+    wants_layers,
+)
+from src.agents.services.scenario_data.scenario_data_indicators import (
+    indicator_query,
+    is_comparison,
+    normalize_indicators,
+)
+from src.agents.services.scenario_data.scenario_data_linear import (
+    ScenarioDataLinearWorkflow,
+)
+from src.agents.services.scenario_data.scenario_data_plan_builder import (
+    MAX_SCENARIO_TOOL_CALLS,
+    ScenarioDataPlanBuilder,
+)
+from src.agents.services.scenario_data.scenario_data_read import (
+    UrbanReadWorkflow,
+    broad_data_query,
+)
+from src.agents.services.scenario_data.scenario_data_selection import (
+    may_select_entities,
+    selection_candidates,
+    verified_entity_records,
+)
+from src.agents.services.scenario_data.scenario_data_type_mapper import UrbanTypeMapper
+from src.agents.services.scenario_data.scenario_data_types import (
+    ScenarioEntityKind,
+    ScenarioTypeIntent,
+    build_type_distribution,
+    classify_type_query,
+    distribution_answer,
+    distribution_table,
+)
 from src.agents.services.service_entities.scenario_data_action import (
     ScenarioDataActionKind,
 )

@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from fastapi.sse import EventSourceResponse
 
-from agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.api_clients.dvd_api_client import DvdApiClient
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.auth.auth import optional_bearer_token, verify_bearer_token
@@ -25,6 +24,7 @@ from src.agents.dependencies.dependencies import (
 from src.agents.dto.dvd_request_dto import DocumentQaRequestDTO
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.schema.dvd_response import DvdResponse
+from src.agents.services.dvd.dvd_rag_service import DvdRagService
 
 dvd_router = APIRouter(prefix="/documents", tags=["documents"])
 

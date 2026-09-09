@@ -3,12 +3,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from agents.services.compilance.compliance_result_harness import ComplianceResultHarness
-from agents.services.restriction.restriction_parser_service import (
+from src.agents.schema.restrictions_response import RestrictionsResponse
+from src.agents.services.compilance.compliance_result_harness import (
+    ComplianceResultHarness,
+)
+from src.agents.services.pipeline_state import PipelineStatus
+from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
-from src.agents.schema.restrictions_response import RestrictionsResponse
-from src.agents.services.pipeline_state import PipelineStatus
 from tests.helpers import FakeLlmClient
 
 

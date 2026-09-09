@@ -3,7 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from agents.services.compilance.compliance_registry import DEFAULT_COMPLIANCE_REGISTRY
+from src.agents.services.compilance.compliance_registry import (
+    DEFAULT_COMPLIANCE_REGISTRY,
+)
 
 CASES = json.loads(
     (Path(__file__).parents[1] / "contract" / "check_plan_cases.json").read_text()

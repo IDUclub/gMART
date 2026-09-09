@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from agents.services.compilance.compliance_registry import (
+from src.agents.services.compilance.compliance_registry import (
     UnsupportedSchemaError,
     UnsupportedTemplateError,
     build_default_registry,

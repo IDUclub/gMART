@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from agents.services.restriction.restriction_catalog import normalize_name
+from src.agents.services.restriction.restriction_catalog import normalize_name
 from src.agents.services.service_entities import GeometryToolCallResult
 from src.agents.services.service_entities.restriction_plan import (
     EntityRef,

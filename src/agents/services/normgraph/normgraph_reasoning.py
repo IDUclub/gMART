@@ -6,7 +6,7 @@ from typing import TypeVar
 from loguru import logger
 from pydantic import BaseModel, ValidationError
 
-from agents.services.restriction.restriction_catalog import strip_json_fence
+from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.normgraph_plan import (
     NormGraphCriticVerdict,
     NormGraphPlan,

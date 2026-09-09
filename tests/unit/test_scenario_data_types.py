@@ -1,4 +1,4 @@
-from agents.services.scenario_data.scenario_data_types import (
+from src.agents.services.scenario_data.scenario_data_types import (
     ScenarioEntityKind,
     build_type_distribution,
     classify_type_query,

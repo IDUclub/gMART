@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
+from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
 from src.agents.services.service_entities.dvd_plan import SearchKind
 from tests.helpers import plan_json, verdict_json
 

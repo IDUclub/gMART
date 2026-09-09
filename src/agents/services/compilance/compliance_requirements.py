@@ -8,7 +8,7 @@ import math
 from copy import deepcopy
 from typing import Any
 
-from agents.services.restriction.restriction_catalog import normalize_name
+from src.agents.services.restriction.restriction_catalog import normalize_name
 from src.agents.services.service_entities.compliance import (
     AttributeCandidate,
     CheckPlan,

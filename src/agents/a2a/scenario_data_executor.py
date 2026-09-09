@@ -7,12 +7,12 @@ from uuid import uuid4
 
 from python_a2a.models.task import TaskState
 
-from agents.services.scenario_data.scenario_data_service import ScenarioDataService
 from src.agents.a2a.a2a_format import sanitized_user_message
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 
 A2AData = dict[str, Any]
 A2AEventData = dict[str, Any]

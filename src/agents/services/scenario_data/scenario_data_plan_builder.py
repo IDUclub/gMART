@@ -8,16 +8,16 @@ from typing import Any
 from loguru import logger
 from pydantic import ValidationError
 
-from agents.services.restriction.restriction_catalog import strip_json_fence
-from agents.services.scenario_data.scenario_data_mapping import (
-    bind_mapping_arguments,
-    mapped_ids_for_need,
-    mapping_need_is_resolved,
-)
 from src.agents.mcp_clients.urban_mcp_client import (
     URBAN_MCP_GROUP_DESCRIPTIONS,
     URBAN_MCP_GROUPS,
     UrbanMcpTool,
+)
+from src.agents.services.restriction.restriction_catalog import strip_json_fence
+from src.agents.services.scenario_data.scenario_data_mapping import (
+    bind_mapping_arguments,
+    mapped_ids_for_need,
+    mapping_need_is_resolved,
 )
 from src.agents.services.service_entities.scenario_data_action import (
     ScenarioDataAction,

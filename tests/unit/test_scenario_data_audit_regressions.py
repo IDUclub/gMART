@@ -4,13 +4,15 @@ import json
 
 import pytest
 
-from agents.services.scenario_data.scenario_data_evaluator import wants_layers
-from agents.services.scenario_data.scenario_data_indicators import (
+from src.agents.services.scenario_data.scenario_data_evaluator import wants_layers
+from src.agents.services.scenario_data.scenario_data_indicators import (
     IndicatorRequest,
     validate_request,
 )
-from agents.services.scenario_data.scenario_data_selection import may_select_entities
-from agents.services.scenario_data.scenario_data_service import ScenarioDataService
+from src.agents.services.scenario_data.scenario_data_selection import (
+    may_select_entities,
+)
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 
 
 def test_literal_indicator_pair_cannot_be_substituted():

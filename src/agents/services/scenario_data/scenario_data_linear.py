@@ -12,31 +12,6 @@ from fastmcp import Client
 from idu_service_auth import KeycloakTokenClient
 from loguru import logger
 
-from agents.services.scenario_data.scenario_data_aggregate import (
-    aggregate_result,
-    answer_records,
-    extract_records,
-    sanitize_public_answer,
-    unresolved_references,
-)
-from agents.services.scenario_data.scenario_data_execution_context import (
-    ScenarioExecutionContext,
-)
-from agents.services.scenario_data.scenario_data_mapping import (
-    UrbanMappingResolver,
-    bind_mapping_arguments,
-    context_mapping_snapshots,
-    enrich_acquisition_mappings,
-    ensure_entity_retrieval_outputs,
-    mapping_snapshot,
-)
-from agents.services.scenario_data.scenario_data_type_mapper import (
-    UrbanTypeMapper,
-    apply_verified_type_mappings,
-    collect_type_mapping_candidates,
-    pending_type_mapping_requests,
-    verified_mapping_snapshots,
-)
 from src.agents.api_clients.chat_storage_client.request_models import (
     StructuredPartRequest,
     TextPartRequest,
@@ -48,6 +23,31 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient, UrbanMcpTool
+from src.agents.services.scenario_data.scenario_data_aggregate import (
+    aggregate_result,
+    answer_records,
+    extract_records,
+    sanitize_public_answer,
+    unresolved_references,
+)
+from src.agents.services.scenario_data.scenario_data_execution_context import (
+    ScenarioExecutionContext,
+)
+from src.agents.services.scenario_data.scenario_data_mapping import (
+    UrbanMappingResolver,
+    bind_mapping_arguments,
+    context_mapping_snapshots,
+    enrich_acquisition_mappings,
+    ensure_entity_retrieval_outputs,
+    mapping_snapshot,
+)
+from src.agents.services.scenario_data.scenario_data_type_mapper import (
+    UrbanTypeMapper,
+    apply_verified_type_mappings,
+    collect_type_mapping_candidates,
+    pending_type_mapping_requests,
+    verified_mapping_snapshots,
+)
 from src.agents.services.service_entities.scenario_data_plan import (
     ExecutionLedger,
     ExecutionRecord,
@@ -58,7 +58,9 @@ from src.agents.services.service_entities.scenario_data_plan import (
 from src.common.service_auth import ServiceTokenAuth, user_id_from_jwt
 
 if TYPE_CHECKING:
-    from agents.services.scenario_data.scenario_data_service import ScenarioDataService
+    from src.agents.services.scenario_data.scenario_data_service import (
+        ScenarioDataService,
+    )
 
 MAX_URBAN_CALLS = 10
 MAX_WORKSPACE_CALLS = 20

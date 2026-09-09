@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from agents.services.scenario_data.scenario_data_evaluator import (
+from src.agents.services.scenario_data.scenario_data_evaluator import (
     ScenarioDataEvaluator,
     Verdict,
     deterministic_checks,

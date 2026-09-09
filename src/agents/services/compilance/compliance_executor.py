@@ -10,15 +10,15 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from agents.services.compilance.compliance_catalog import ComplianceCatalogResolver
-from agents.services.compilance.compliance_registry import (
+from src.agents.services.compilance.compliance_catalog import ComplianceCatalogResolver
+from src.agents.services.compilance.compliance_registry import (
     DEFAULT_COMPLIANCE_REGISTRY,
     TemplateRegistry,
     UnsupportedSchemaError,
     UnsupportedTemplateError,
 )
-from agents.services.compilance.compliance_requirements import ComplianceDataGate
-from agents.services.restriction.restriction_tool_executor import (
+from src.agents.services.compilance.compliance_requirements import ComplianceDataGate
+from src.agents.services.restriction.restriction_tool_executor import (
     RestrictionToolExecutor,
 )
 from src.agents.services.service_entities.compliance import (

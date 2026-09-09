@@ -6,7 +6,6 @@ from uuid import uuid4
 
 from python_a2a.models.task import TaskState
 
-from agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.a2a.a2a_format import (
     apply_history_length,
     normalize_response,
@@ -23,6 +22,7 @@ from src.agents.common.exceptions.a2a_exceptions import (
     A2AStreamingEndpointRequiredError,
     A2ATaskNotFoundError,
 )
+from src.agents.services.dvd.dvd_rag_service import DvdRagService
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient

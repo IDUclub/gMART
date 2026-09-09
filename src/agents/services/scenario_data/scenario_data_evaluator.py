@@ -26,8 +26,8 @@ from typing import Any
 
 from loguru import logger
 
-from agents.services.restriction.restriction_catalog import strip_json_fence
-from agents.services.scenario_data.scenario_data_aggregate import (
+from src.agents.services.restriction.restriction_catalog import strip_json_fence
+from src.agents.services.scenario_data.scenario_data_aggregate import (
     bounded_public_observation_context,
 )
 

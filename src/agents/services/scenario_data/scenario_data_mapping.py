@@ -6,8 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from agents.services.scenario_data.scenario_data_aggregate import extract_records
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services.scenario_data.scenario_data_aggregate import extract_records
 from src.agents.services.service_entities.scenario_data_plan import (
     AcquisitionPlan,
     DataRequirement,

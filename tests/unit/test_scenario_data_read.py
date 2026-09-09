@@ -3,14 +3,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agents.services.scenario_data.scenario_data_read import (
+from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services.scenario_data.scenario_data_read import (
     UrbanReadPlan,
     broad_data_query,
     data_layers,
     validate_read_plan,
 )
-from agents.services.scenario_data.scenario_data_service import ScenarioDataService
-from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 
 
 def make_tool(name="GetMeasurementUnits", group="dictionaries", properties=None):
@@ -126,7 +126,7 @@ def test_sorting_enum_is_validated_before_source_request():
 
 
 def test_scope_family_excludes_scenario_from_territory_normatives():
-    from agents.services.scenario_data.scenario_data_read import scoped_tools
+    from src.agents.services.scenario_data.scenario_data_read import scoped_tools
 
     scenario = make_tool("GetScenarioFunctionalZones", "projects")
     normatives = make_tool("GetTerritoryNormatives", "territories")
@@ -139,7 +139,7 @@ def test_scope_family_excludes_scenario_from_territory_normatives():
 
 
 def test_flat_catalogue_cannot_be_replaced_by_hierarchy():
-    from agents.services.scenario_data.scenario_data_read import scoped_tools
+    from src.agents.services.scenario_data.scenario_data_read import scoped_tools
 
     flat = make_tool("GetPhysicalObjectTypes")
     tree = make_tool("GetPhysicalObjectTypesHierarchy")
@@ -149,7 +149,7 @@ def test_flat_catalogue_cannot_be_replaced_by_hierarchy():
 
 
 def test_indicator_definitions_cannot_be_replaced_by_groups():
-    from agents.services.scenario_data.scenario_data_read import scoped_tools
+    from src.agents.services.scenario_data.scenario_data_read import scoped_tools
 
     definitions = make_tool("GetIndicatorsByParent", "indicators")
     groups = make_tool("GetIndicatorsGroups")
@@ -267,7 +267,7 @@ async def test_all_records_follow_cursor_without_changing_scope(
 
 
 def test_complete_large_result_emits_every_record():
-    from agents.services.scenario_data.scenario_data_read import output_tables
+    from src.agents.services.scenario_data.scenario_data_read import output_tables
 
     rows = [{"id": i, "name": str(i)} for i in range(2301)]
     tables = output_tables(ScenarioDataService, rows, "Объекты", "objects")
@@ -315,7 +315,7 @@ async def test_single_unambiguous_source_is_read_when_model_abstains(
 
 
 def test_permanent_regional_limitation_is_explained():
-    from agents.services.scenario_data.scenario_data_read import source_error_answer
+    from src.agents.services.scenario_data.scenario_data_read import source_error_answer
 
     answer = source_error_answer(
         ValueError(

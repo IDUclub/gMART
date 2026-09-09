@@ -6,21 +6,6 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from agents.services.dvd.dvd_rag_service import DvdRagService
-from agents.services.normgraph.normgraph_rag_service import NormGraphRagService
-from agents.services.orchestrator.orchestrator_catalog import (
-    AGENT_CATALOG,
-    AgentCatalogEntry,
-    available_agents,
-)
-from agents.services.orchestrator.orchestrator_plan_builder import (
-    OrchestratorPlanBuilder,
-)
-from agents.services.provision.provsion_service import ProvisionService
-from agents.services.restriction.restriction_parser_service import (
-    RestrictionParserService,
-)
-from agents.services.scenario_data.scenario_data_service import ScenarioDataService
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
@@ -35,7 +20,22 @@ from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiCli
 from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.dvd.dvd_rag_service import DvdRagService
+from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
+from src.agents.services.orchestrator.orchestrator_catalog import (
+    AGENT_CATALOG,
+    AgentCatalogEntry,
+    available_agents,
+)
+from src.agents.services.orchestrator.orchestrator_plan_builder import (
+    OrchestratorPlanBuilder,
+)
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
+from src.agents.services.provision.provsion_service import ProvisionService
+from src.agents.services.restriction.restriction_parser_service import (
+    RestrictionParserService,
+)
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 from src.agents.services.service_entities.orchestrator_plan import (
     OrchestratorAgent,
     OrchestratorPlan,

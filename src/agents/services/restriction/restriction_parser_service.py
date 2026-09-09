@@ -8,20 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from agents.services.compilance.compliance_executor import ComplianceTemplateExecutor
-from agents.services.compilance.compliance_metrics import COMPLIANCE_METRICS
-from agents.services.compilance.compliance_result_harness import (
-    ComplianceResultHarness,
-    PreparedComplianceFollowUp,
-)
-from agents.services.normgraph.normgraph_restriction_retriever import (
-    NormGraphRestrictionRetriever,
-)
-from agents.services.restriction.restriction_catalog import RestrictionPlanBuilder
-from agents.services.restriction.restriction_context import RestrictionContextBuilder
-from agents.services.restriction.restriction_tool_executor import (
-    RestrictionToolExecutor,
-)
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
@@ -40,10 +26,28 @@ from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiCli
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.compilance.compliance_executor import (
+    ComplianceTemplateExecutor,
+)
+from src.agents.services.compilance.compliance_metrics import COMPLIANCE_METRICS
+from src.agents.services.compilance.compliance_result_harness import (
+    ComplianceResultHarness,
+    PreparedComplianceFollowUp,
+)
+from src.agents.services.normgraph.normgraph_restriction_retriever import (
+    NormGraphRestrictionRetriever,
+)
 from src.agents.services.pipeline_state import (
     PipelineStateStore,
     PipelineStatus,
     PipelineStep,
+)
+from src.agents.services.restriction.restriction_catalog import RestrictionPlanBuilder
+from src.agents.services.restriction.restriction_context import (
+    RestrictionContextBuilder,
+)
+from src.agents.services.restriction.restriction_tool_executor import (
+    RestrictionToolExecutor,
 )
 from src.agents.services.service_entities.compliance import (
     ComplianceResult,

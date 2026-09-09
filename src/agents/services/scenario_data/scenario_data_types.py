@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from agents.services.scenario_data.scenario_data_aggregate import extract_records
+from src.agents.services.scenario_data.scenario_data_aggregate import extract_records
 
 
 class ScenarioEntityKind(StrEnum):

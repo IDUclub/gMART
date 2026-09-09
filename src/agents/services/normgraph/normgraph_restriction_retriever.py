@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from agents.services.normgraph.normgraph_reasoning import NormGraphRetrievalPlanner
+from src.agents.services.normgraph.normgraph_reasoning import NormGraphRetrievalPlanner
 from src.agents.services.service_entities.normgraph_plan import PrimaryTool
 
 if TYPE_CHECKING:

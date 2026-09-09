@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from agents.services.scenario_data.scenario_data_aggregate import extract_records
+from src.agents.services.scenario_data.scenario_data_aggregate import extract_records
 
 
 class ScenarioEntitySelection(BaseModel):

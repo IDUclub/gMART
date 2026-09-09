@@ -4,23 +4,6 @@ from typing import Any
 from fastapi import Depends
 from idu_service_auth import KeycloakTokenClient
 
-from agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
-from agents.services.dvd.dvd_rag_service import DvdRagService
-from agents.services.normgraph.normgraph_a2a_service import NormGraphA2AService
-from agents.services.normgraph.normgraph_rag_service import NormGraphRagService
-from agents.services.orchestrator.orchestrator_service import OrchestratorService
-from agents.services.provision.provision_a2a_service import ProvisionA2AService
-from agents.services.provision.provsion_service import ProvisionService
-from agents.services.restriction.restriction_parser_service import (
-    RestrictionParserService,
-)
-from agents.services.scenario_data.scenario_data_a2a_service import (
-    ScenarioDataA2AService,
-)
-from agents.services.scenario_data.scenario_data_service import ScenarioDataService
-from agents.services.synapse.synapse_gateway_service import SynapseGatewayService
-from agents.services.synapse.synapse_run_store import SynapseRunStore
-from agents.services.synapse.system_service import SystemService
 from src.agents.api_clients.dvd_api_client import DvdApiClient
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.auth.auth import optional_bearer_token, verify_bearer_token
@@ -34,9 +17,26 @@ from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 from src.agents.services.a2a_service import A2AService
+from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
+from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.mcp_diagnostics_service import McpDiagnosticsService
+from src.agents.services.normgraph.normgraph_a2a_service import NormGraphA2AService
+from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
+from src.agents.services.orchestrator.orchestrator_service import OrchestratorService
 from src.agents.services.pipeline_state import PipelineStateStore
+from src.agents.services.provision.provision_a2a_service import ProvisionA2AService
+from src.agents.services.provision.provsion_service import ProvisionService
+from src.agents.services.restriction.restriction_parser_service import (
+    RestrictionParserService,
+)
+from src.agents.services.scenario_data.scenario_data_a2a_service import (
+    ScenarioDataA2AService,
+)
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 from src.agents.services.simple_llm_service import SimpleLlmService
+from src.agents.services.synapse.synapse_gateway_service import SynapseGatewayService
+from src.agents.services.synapse.synapse_run_store import SynapseRunStore
+from src.agents.services.synapse.system_service import SystemService
 from src.common.service_auth import (
     ANONYMOUS_USER_ID,
     ServiceTokenAuth,

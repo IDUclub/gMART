@@ -16,9 +16,9 @@ from pydantic import (
     field_validator,
 )
 
-from agents.services.restriction.restriction_catalog import strip_json_fence
-from agents.services.scenario_data.scenario_data_aggregate import extract_records
-from agents.services.scenario_data.scenario_data_mapping import (
+from src.agents.services.restriction.restriction_catalog import strip_json_fence
+from src.agents.services.scenario_data.scenario_data_aggregate import extract_records
+from src.agents.services.scenario_data.scenario_data_mapping import (
     MappingCall,
     _canonical_domain,
     mapping_need_is_resolved,
@@ -334,7 +334,7 @@ class UrbanTypeMapper:
     async def select_scenario_entities(
         self, model, query, candidates, *, requested_type=None
     ):
-        from agents.services.scenario_data.scenario_data_selection import (
+        from src.agents.services.scenario_data.scenario_data_selection import (
             ScenarioEntitySelection,
             exact_type_candidate,
             explicit_entity_domain,
@@ -369,7 +369,7 @@ class UrbanTypeMapper:
         )
 
     async def classify_scenario_entity_request(self, model, query):
-        from agents.services.scenario_data.scenario_data_selection import (
+        from src.agents.services.scenario_data.scenario_data_selection import (
             ScenarioEntityRequest,
             entity_request_messages,
             quoted_type,
@@ -377,7 +377,7 @@ class UrbanTypeMapper:
 
         literal = quoted_type(query)
         if literal:
-            from agents.services.scenario_data.scenario_data_evaluator import (
+            from src.agents.services.scenario_data.scenario_data_evaluator import (
                 wants_layers,
             )
 

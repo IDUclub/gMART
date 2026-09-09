@@ -1,12 +1,41 @@
 """Contract integration: NormGraph-shaped CheckPlan → gMART → IDU geometry."""
 
-from agents.services.compilance.compliance_executor import ComplianceTemplateExecutor
+import pytest
+
 from src.agents.schema.restrictions_response import RestrictionsResponse
+from src.agents.services.compilance.compliance_executor import (
+    ComplianceTemplateExecutor,
+)
 from src.idu_mcp.tools_services.compliance_geometry import ComplianceGeometryTools
+
+pytestmark = pytest.mark.integration
 
 
 class InMemoryIduMcp:
+    def __init__(self):
+        self.calls = []
+
+    async def resolve_urban_entity_types(self, *, service_names, physical_object_names):
+        assert service_names == ["Школа"]
+        assert physical_object_names == ["Жилой дом"]
+        self.calls.append("ResolveUrbanEntityTypes")
+        return {
+            "service": {
+                "Школа": {"found": True, "canonical_name": "Школа", "type_id": 1}
+            },
+            "physical_object": {
+                "Жилой дом": {
+                    "found": True,
+                    "canonical_name": "Жилой дом",
+                    "type_id": 4,
+                }
+            },
+        }
+
     async def execute_tool(self, name, arguments, meta=None):
+        self.calls.append(name)
+        if name in {"GetServices", "GetPhysicalObjects"}:
+            assert arguments["scenario_id"] == 772
         if name == "GetServices":
             return {"Школа": _fc(30.0, service_id=1)}
         if name == "GetPhysicalObjects":
@@ -90,8 +119,9 @@ async def test_normgraph_plan_executes_as_structured_t1_result():
             "planner_status": "reviewed",
         },
     }
+    client = InMemoryIduMcp()
     execution = await ComplianceTemplateExecutor().execute(
-        InMemoryIduMcp(), normgraph_hit["check_plan"], 772
+        client, normgraph_hit["check_plan"], 772
     )
     result = execution.result
     assert result.verification_status == "complete"
@@ -101,6 +131,12 @@ async def test_normgraph_plan_executes_as_structured_t1_result():
         "passed_objects": 1,
     }
     assert result.evidence[0].input_revision.startswith("sha256:")
+    assert client.calls == [
+        "ResolveUrbanEntityTypes",
+        "GetServices",
+        "GetPhysicalObjects",
+        "CheckDistanceFromSource",
+    ]
     RestrictionsResponse.model_validate(
         {"type": "compliance_result", "content": result.model_dump(mode="json")}
     )

@@ -4,7 +4,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from fastapi.sse import EventSourceResponse
 
-from agents.services.provision.provsion_service import ProvisionService
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.executors.sse_executors import stream_with_error_handling
 from src.agents.dependencies.dependencies import (
@@ -16,6 +15,7 @@ from src.agents.dto.provision_request_dto import ProvisionRequestDTO
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.schema.provision_response import ProvisionResponse
+from src.agents.services.provision.provsion_service import ProvisionService
 
 provision_router = APIRouter(prefix="/provision", tags=["provision"])
 

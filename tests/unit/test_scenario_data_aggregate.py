@@ -6,7 +6,7 @@ shown eight of them plus "… ещё 916", and answered that the types were unkn
 
 from __future__ import annotations
 
-from agents.services.scenario_data.scenario_data_aggregate import (
+from src.agents.services.scenario_data.scenario_data_aggregate import (
     aggregate_records,
     aggregate_result,
     answer_records,

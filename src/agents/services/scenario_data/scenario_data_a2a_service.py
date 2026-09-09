@@ -6,7 +6,6 @@ from uuid import uuid4
 
 from python_a2a.models.task import TaskState
 
-from agents.services.scenario_data.scenario_data_service import ScenarioDataService
 from src.agents.a2a.a2a_format import (
     apply_history_length,
     normalize_response,
@@ -24,6 +23,7 @@ from src.agents.common.exceptions.a2a_exceptions import (
     A2ATaskNotFoundError,
 )
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 
 A2AData = dict[str, Any]
 A2AResponse = A2AData | list[A2AData]

@@ -1,7 +1,7 @@
 from unittest.mock import AsyncMock
 
-from agents.services.scenario_data.scenario_data_service import ScenarioDataService
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 
 
 def _tool(group: str, name: str, title: str, *, scenario: bool) -> UrbanMcpTool:

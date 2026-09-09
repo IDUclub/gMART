@@ -10,7 +10,6 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from loguru import logger
 
-from agents.services.synapse.synapse_run_store import SynapseRunStore
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
@@ -29,6 +28,7 @@ from src.agents.api_clients.synapse_client import (
     SynapseUnavailableError,
 )
 from src.agents.dto.synapse_request_dto import SynapseRunRequestDTO
+from src.agents.services.synapse.synapse_run_store import SynapseRunStore
 
 
 class SynapseGatewayError(RuntimeError):

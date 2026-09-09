@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from pydantic import ValidationError
 
-from agents.services.restriction.restriction_catalog import (
+from src.agents.services.restriction.restriction_catalog import (
     parse_catalog_prompt,
     strip_json_fence,
 )

@@ -27,7 +27,7 @@ def _build_service(monkeypatch, fake_llm, state_store):
         "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
-    from agents.services.dvd.dvd_rag_service import DvdRagService
+    from src.agents.services.dvd.dvd_rag_service import DvdRagService
 
     svc = DvdRagService("http://ollama", Mock(), FakeUrbanApiClient(), state_store)
     svc.create_chat = AsyncMock(return_value=("chat-1", "Тест"))
@@ -92,10 +92,10 @@ async def test_reconnect_replays_against_real_redis(require_redis, monkeypatch):
 async def test_compliance_structured_events_and_checkpoints_survive_redis(
     require_redis,
 ):
-    from agents.services.restriction.restriction_parser_service import (
+    from src.agents.services.pipeline_state import PipelineStateStore, PipelineStep
+    from src.agents.services.restriction.restriction_parser_service import (
         RestrictionParserService,
     )
-    from src.agents.services.pipeline_state import PipelineStateStore, PipelineStep
     from src.agents.services.service_entities.compliance import (
         ComplianceResult,
         ComplianceSummary,

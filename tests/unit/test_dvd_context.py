@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents.services.dvd.dvd_context import DvdContextBuilder
+from src.agents.services.dvd.dvd_context import DvdContextBuilder
 
 
 def test_empty_hits_returns_empty_string():

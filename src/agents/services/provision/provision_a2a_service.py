@@ -6,7 +6,6 @@ from uuid import uuid4
 
 from python_a2a.models.task import TaskState
 
-from agents.services.provision.provsion_service import ProvisionService
 from src.agents.a2a.a2a_format import (
     apply_history_length,
     normalize_response,
@@ -25,6 +24,7 @@ from src.agents.common.exceptions.a2a_exceptions import (
 )
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
+from src.agents.services.provision.provsion_service import ProvisionService
 
 A2AData = dict[str, Any]
 A2AResponse = A2AData | list[A2AData]

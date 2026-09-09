@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from agents.services.scenario_data.scenario_data_selection import (
+from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services.scenario_data.scenario_data_selection import (
     ScenarioEntitySelection,
     exact_type_candidate,
     may_select_entities,
@@ -10,9 +11,8 @@ from agents.services.scenario_data.scenario_data_selection import (
     validate_selection,
     verified_entity_records,
 )
-from agents.services.scenario_data.scenario_data_service import ScenarioDataService
-from agents.services.scenario_data.scenario_data_types import classify_type_query
-from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
+from src.agents.services.scenario_data.scenario_data_types import classify_type_query
 
 
 def record(identifier, *, domain="service_type", type_id=92, name="Библиотека"):
@@ -245,7 +245,9 @@ def test_exact_matching_requires_one_candidate_across_both_domains():
 async def test_literal_type_mapping_cannot_be_overruled_by_a_bad_model():
     from unittest.mock import AsyncMock
 
-    from agents.services.scenario_data.scenario_data_type_mapper import UrbanTypeMapper
+    from src.agents.services.scenario_data.scenario_data_type_mapper import (
+        UrbanTypeMapper,
+    )
 
     llm = AsyncMock()
     candidates = {"a": {"name": "Школа", "domain": "service_type"}}
@@ -334,7 +336,9 @@ async def test_general_pipeline_does_not_publish_rejected_draft_or_layers(
 
 
 def test_entity_type_survives_many_constant_address_fields():
-    from agents.services.scenario_data.scenario_data_aggregate import aggregate_result
+    from src.agents.services.scenario_data.scenario_data_aggregate import (
+        aggregate_result,
+    )
 
     rows = [
         record(i, domain="physical_object_type", type_id=48, name="Жилой дом")

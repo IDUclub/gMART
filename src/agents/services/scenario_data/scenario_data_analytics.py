@@ -6,7 +6,14 @@ import re
 
 from loguru import logger
 
-from agents.services.scenario_data.scenario_data_indicators import (
+from src.agents.api_clients.chat_storage_client.request_models import (
+    TextPartRequest,
+    TextPayload,
+    ToolCall,
+    ToolCallPartRequest,
+    ToolCallPayload,
+)
+from src.agents.services.scenario_data.scenario_data_indicators import (
     IndicatorRequest,
     calculation_request,
     comparison_entities,
@@ -19,14 +26,7 @@ from agents.services.scenario_data.scenario_data_indicators import (
     selection_messages,
     validate_request,
 )
-from agents.services.scenario_data.scenario_data_type_mapper import UrbanTypeMapper
-from src.agents.api_clients.chat_storage_client.request_models import (
-    TextPartRequest,
-    TextPayload,
-    ToolCall,
-    ToolCallPartRequest,
-    ToolCallPayload,
-)
+from src.agents.services.scenario_data.scenario_data_type_mapper import UrbanTypeMapper
 
 
 class ScenarioAnalytics:
