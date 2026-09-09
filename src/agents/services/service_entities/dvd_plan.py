@@ -1,4 +1,5 @@
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -35,6 +36,15 @@ class RetrievalPlan(BaseModel):
     document_names: list[str] | None = None
     block: str | None = None
     types: list[str] | None = None
+    retrieval_mode: Literal["semantic", "structure", "name"] = "semantic"
+    pattern: str | None = None
+    name_query: str | None = None
+    name_mode: Literal["strict", "expanded"] = "strict"
+    name_scope: Literal["self", "path"] = "self"
+    doc_id: str | None = None
+    version: str | None = None
+    include_children: bool = True
+    allow_multiple: bool = False
 
 
 class CriticVerdict(BaseModel):

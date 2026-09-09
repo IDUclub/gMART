@@ -45,6 +45,7 @@ class DvdMcpClient(BaseMcpClient):
         limit: int = 10,
         context_height: int = 0,
         name: str | None = None,
+        doc_id: str | None = None,
         version: str | None = None,
         tags: list[str] | None = None,
         document_names: list[str] | None = None,
@@ -82,6 +83,8 @@ class DvdMcpClient(BaseMcpClient):
         }
         if name:
             arguments["name"] = name
+        if doc_id:
+            arguments["doc_id"] = doc_id
         if version:
             arguments["version"] = version
         if tags:
@@ -125,6 +128,18 @@ class DvdMcpClient(BaseMcpClient):
         if hasattr(obj, "__dict__"):
             return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
         return obj
+
+    async def search_fragments(
+        self, request: dict[str, Any], *, mode: str = "structure"
+    ) -> dict[str, Any]:
+        """One page; caller must consume next_cursor without changing the selectors."""
+        tool = "search_structure" if mode == "structure" else "search_fragment_names"
+        result = await self.execute_tool(tool, {"request": request})
+        normalized = self._normalize(result)
+        normalized["candidates"] = [
+            self._to_dict(x) for x in normalized.get("candidates", [])
+        ]
+        return normalized
 
     @classmethod
     def _normalize(cls, result: Any) -> dict[str, Any]:

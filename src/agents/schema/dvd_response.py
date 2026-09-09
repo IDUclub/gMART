@@ -11,6 +11,7 @@ class DvdStatusResponse(BaseModel):
     status: Literal[
         "retrieval_planning",
         "searching",
+        "context_processing",
         "answer_drafting",
         "self_review",
         "finalizing",
@@ -71,6 +72,7 @@ class WarningContent(BaseModel):
     code: str
     message: str
     scenario_id: int | None = None
+    failed_parts: list[str] | None = None
 
 
 class DvdResponse(BaseModel):

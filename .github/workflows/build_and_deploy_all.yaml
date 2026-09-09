@@ -70,6 +70,10 @@ jobs:
           URBAN_API_URL: ${{ vars.URBAN_API_URL }}
           DVD_MCP_SERVER: ${{ vars.DVD_MCP_SERVER }}
           DVD_API_URL: ${{ vars.DVD_API_URL }}
+          DVD_CONTEXT_WINDOW_TOKENS: ${{ vars.DVD_CONTEXT_WINDOW_TOKENS }}
+          DVD_ANSWER_MAX_TOKENS: ${{ vars.DVD_ANSWER_MAX_TOKENS }}
+          DVD_CONTEXT_CONCURRENCY: ${{ vars.DVD_CONTEXT_CONCURRENCY }}
+          DVD_RETRIEVAL_MAX_PAGES: ${{ vars.DVD_RETRIEVAL_MAX_PAGES }}
           NORM_GRAPH_MCP_SERVER: ${{ vars.NORM_GRAPH_MCP_SERVER }}
           URBAN_MCP_SERVER: ${{ vars.URBAN_MCP_SERVER }}
           LLM_BACKEND: ${{ vars.LLM_BACKEND }}
