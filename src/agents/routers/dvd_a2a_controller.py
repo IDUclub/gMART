@@ -15,7 +15,7 @@ from src.agents.dependencies.dependencies import (
 )
 from src.agents.dto.a2a_dto import A2AJsonRpcPayloadDTO
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
-from src.agents.services.dvd_a2a_service import DocumentQaA2AService
+from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 
 dvd_a2a_router = APIRouter(prefix="/documents", tags=["documents", "a2a"])
 

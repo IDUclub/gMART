@@ -489,7 +489,7 @@ async def test_persist_answer_builds_toolcall_and_text_parts(
         "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
-    from src.agents.services.dvd_rag_service import DvdRagService
+    from src.agents.services.dvd.dvd_rag_service import DvdRagService
 
     svc = DvdRagService("http://x", Mock(), fake_urban, state_store)
     svc.add_complex_message = AsyncMock()

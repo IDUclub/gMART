@@ -13,7 +13,7 @@ from src.agents.dependencies.dependencies import (
 from src.agents.dto.scenario_data_request_dto import ScenarioDataRequestDTO
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 from src.agents.schema.scenario_data_response import ScenarioDataResponse
-from src.agents.services.scenario_data_service import ScenarioDataService
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 
 scenario_data_router = APIRouter(prefix="/scenario-data", tags=["scenario-data"])
 

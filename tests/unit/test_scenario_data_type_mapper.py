@@ -5,9 +5,14 @@ import json
 import pytest
 
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
-from src.agents.services.scenario_data_mapping import MappingCall, UrbanMappingResolver
-from src.agents.services.scenario_data_plan_builder import ScenarioDataPlanBuilder
-from src.agents.services.scenario_data_type_mapper import (
+from src.agents.services.scenario_data.scenario_data_mapping import (
+    MappingCall,
+    UrbanMappingResolver,
+)
+from src.agents.services.scenario_data.scenario_data_plan_builder import (
+    ScenarioDataPlanBuilder,
+)
+from src.agents.services.scenario_data.scenario_data_type_mapper import (
     TypeMappingCandidate,
     TypeMappingRequest,
     TypeSearchPattern,

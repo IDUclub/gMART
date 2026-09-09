@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from src.agents.services.normgraph_reasoning import NormGraphRetrievalPlanner
+from src.agents.services.normgraph.normgraph_reasoning import NormGraphRetrievalPlanner
 
 
 class RecordingLlmClient:

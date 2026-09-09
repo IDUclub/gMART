@@ -1,7 +1,6 @@
 import os
 
 import redis.asyncio as aioredis
-from idu_service_auth import KeycloakTokenClient
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
@@ -14,23 +13,25 @@ from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.common.config.app_config_loader import load_config
 from src.agents.common.logging.log_config import config_logger
 from src.agents.services.a2a_service import A2AService
-from src.agents.services.dvd_a2a_service import DocumentQaA2AService
-from src.agents.services.dvd_rag_service import DvdRagService
-from src.agents.services.normgraph_a2a_service import NormGraphA2AService
-from src.agents.services.normgraph_rag_service import NormGraphRagService
-from src.agents.services.orchestrator_service import OrchestratorService
+from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
+from src.agents.services.dvd.dvd_rag_service import DvdRagService
+from src.agents.services.normgraph.normgraph_a2a_service import NormGraphA2AService
+from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
+from src.agents.services.orchestrator.orchestrator_service import OrchestratorService
 from src.agents.services.pipeline_state import PipelineStateStore
-from src.agents.services.provision_a2a_service import ProvisionA2AService
-from src.agents.services.provsion_service import ProvisionService
-from src.agents.services.restriction_parser_service import (
+from src.agents.services.provision.provision_a2a_service import ProvisionA2AService
+from src.agents.services.provision.provsion_service import ProvisionService
+from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
-from src.agents.services.scenario_data_a2a_service import ScenarioDataA2AService
-from src.agents.services.scenario_data_service import ScenarioDataService
+from src.agents.services.scenario_data.scenario_data_a2a_service import (
+    ScenarioDataA2AService,
+)
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 from src.agents.services.simple_llm_service import SimpleLlmService
-from src.agents.services.synapse_gateway_service import SynapseGatewayService
-from src.agents.services.synapse_run_store import SynapseRunStore
-from src.agents.services.system_service import SystemService
+from src.agents.services.synapse.synapse_gateway_service import SynapseGatewayService
+from src.agents.services.synapse.synapse_run_store import SynapseRunStore
+from src.agents.services.synapse.system_service import SystemService
 from src.common.service_auth import build_optional_service_auth, build_service_auth
 
 

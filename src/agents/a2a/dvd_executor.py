@@ -9,7 +9,7 @@ from python_a2a.models.task import TaskState
 from src.agents.a2a.a2a_format import sanitized_user_message
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
-from src.agents.services.dvd_rag_service import DvdRagService
+from src.agents.services.dvd.dvd_rag_service import DvdRagService
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient

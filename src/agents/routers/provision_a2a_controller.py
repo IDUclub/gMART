@@ -19,7 +19,7 @@ from src.agents.dependencies.dependencies import (
 from src.agents.dto.a2a_dto import A2AJsonRpcPayloadDTO
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
-from src.agents.services.provision_a2a_service import ProvisionA2AService
+from src.agents.services.provision.provision_a2a_service import ProvisionA2AService
 
 provision_a2a_router = APIRouter(prefix="/provision", tags=["provision", "a2a"])
 

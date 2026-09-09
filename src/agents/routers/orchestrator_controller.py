@@ -21,7 +21,7 @@ from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 from src.agents.schema.orchestrator_response import OrchestratorResponse
-from src.agents.services.orchestrator_service import OrchestratorService
+from src.agents.services.orchestrator.orchestrator_service import OrchestratorService
 
 orchestrator_router = APIRouter(prefix="/orchestrator", tags=["orchestrator"])
 

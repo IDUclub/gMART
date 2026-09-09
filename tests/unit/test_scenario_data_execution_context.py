@@ -3,11 +3,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpTool
-from src.agents.services.scenario_data_execution_context import (
+from src.agents.services.scenario_data.scenario_data_execution_context import (
     ScenarioExecutionContext,
 )
-from src.agents.services.scenario_data_plan_builder import ScenarioDataPlanBuilder
-from src.agents.services.scenario_data_service import _is_transient_tool_error
+from src.agents.services.scenario_data.scenario_data_plan_builder import (
+    ScenarioDataPlanBuilder,
+)
+from src.agents.services.scenario_data.scenario_data_service import (
+    _is_transient_tool_error,
+)
 from src.agents.services.service_entities.scenario_data_plan import (
     AcquisitionPlan,
     DataRequirement,
@@ -240,7 +244,9 @@ def test_only_transient_tool_errors_are_retried():
 
 @pytest.mark.asyncio
 async def test_read_only_operation_retries_a_transient_failure():
-    from src.agents.services.scenario_data_service import ScenarioDataService
+    from src.agents.services.scenario_data.scenario_data_service import (
+        ScenarioDataService,
+    )
 
     class StateStore:
         async def is_cancelled(self, request_id):
@@ -283,7 +289,9 @@ async def test_read_only_operation_retries_a_transient_failure():
 
 @pytest.mark.asyncio
 async def test_transient_retry_is_opt_in_for_mutating_operations():
-    from src.agents.services.scenario_data_service import ScenarioDataService
+    from src.agents.services.scenario_data.scenario_data_service import (
+        ScenarioDataService,
+    )
 
     class StateStore:
         async def is_cancelled(self, request_id):

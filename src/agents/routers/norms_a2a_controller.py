@@ -15,7 +15,7 @@ from src.agents.dependencies.dependencies import (
 )
 from src.agents.dto.a2a_dto import A2AJsonRpcPayloadDTO
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
-from src.agents.services.normgraph_a2a_service import NormGraphA2AService
+from src.agents.services.normgraph.normgraph_a2a_service import NormGraphA2AService
 
 norms_a2a_router = APIRouter(prefix="/norms", tags=["norms", "a2a"])
 

@@ -15,7 +15,9 @@ from src.agents.dependencies.dependencies import (
 )
 from src.agents.dto.a2a_dto import A2AJsonRpcPayloadDTO
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
-from src.agents.services.scenario_data_a2a_service import ScenarioDataA2AService
+from src.agents.services.scenario_data.scenario_data_a2a_service import (
+    ScenarioDataA2AService,
+)
 
 scenario_data_a2a_router = APIRouter(
     prefix="/scenario-data", tags=["scenario-data", "a2a"]

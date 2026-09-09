@@ -22,7 +22,7 @@ from src.agents.dependencies.dependencies import (
 )
 from src.agents.routers.dvd_a2a_controller import dvd_a2a_router
 from src.agents.routers.dvd_controller import dvd_router
-from src.agents.services.dvd_a2a_service import DocumentQaA2AService
+from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 
 
 class FakeStateStore:

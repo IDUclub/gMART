@@ -6,8 +6,10 @@ import json
 
 import pytest
 
-from src.agents.services.orchestrator_catalog import AGENT_CATALOG
-from src.agents.services.orchestrator_plan_builder import OrchestratorPlanBuilder
+from src.agents.services.orchestrator.orchestrator_catalog import AGENT_CATALOG
+from src.agents.services.orchestrator.orchestrator_plan_builder import (
+    OrchestratorPlanBuilder,
+)
 from src.agents.services.service_entities.orchestrator_plan import (
     MAX_PLAN_STEPS,
     OrchestratorAgent,

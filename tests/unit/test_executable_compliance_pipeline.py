@@ -4,7 +4,9 @@ from unittest.mock import AsyncMock
 
 from src.agents.schema.restrictions_response import RestrictionsResponse
 from src.agents.services.pipeline_state import PipelineStep
-from src.agents.services.restriction_parser_service import RestrictionParserService
+from src.agents.services.restriction.restriction_parser_service import (
+    RestrictionParserService,
+)
 from src.agents.services.service_entities.compliance import (
     ComplianceResult,
     ComplianceSummary,

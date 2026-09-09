@@ -1,4 +1,4 @@
-from src.agents.services.compliance_requirements import (
+from src.agents.services.compilance.compliance_requirements import (
     ComplianceDataGate,
     describe_scenario_layer,
 )

@@ -16,7 +16,9 @@ from src.agents.dto.restriction_request_dto import RestrictionRequestDTO
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 from src.agents.schema.restrictions_response import RestrictionsResponse
-from src.agents.services.restriction_parser_service import RestrictionParserService
+from src.agents.services.restriction.restriction_parser_service import (
+    RestrictionParserService,
+)
 
 compliance_router = APIRouter(prefix="/compliance", tags=["compliance"])
 

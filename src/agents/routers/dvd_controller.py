@@ -24,7 +24,7 @@ from src.agents.dependencies.dependencies import (
 from src.agents.dto.dvd_request_dto import DocumentQaRequestDTO
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.schema.dvd_response import DvdResponse
-from src.agents.services.dvd_rag_service import DvdRagService
+from src.agents.services.dvd.dvd_rag_service import DvdRagService
 
 dvd_router = APIRouter(prefix="/documents", tags=["documents"])
 

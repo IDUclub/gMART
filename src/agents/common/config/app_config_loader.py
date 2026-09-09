@@ -7,12 +7,12 @@ from src.agents.common.config.app_config import AgentsAppConfig
 
 ENV_EXTENSIONS = [
     "agents",
-    "agents.dev",
-    "agents.develop",
-    "agents.development",
-    "agents.prod",
-    "agents.production",
-    "agents.example",
+    "src.agents.dev",
+    "src.agents.develop",
+    "src.agents.development",
+    "src.agents.prod",
+    "src.agents.production",
+    "src.agents.example",
 ]
 
 

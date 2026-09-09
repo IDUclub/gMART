@@ -5,7 +5,9 @@ import pytest
 
 from src.agents.dto.restriction_request_dto import RestrictionRequestDTO
 from src.agents.routers import restriction_parser_controller as controller
-from src.agents.services.restriction_parser_service import RestrictionParserService
+from src.agents.services.restriction.restriction_parser_service import (
+    RestrictionParserService,
+)
 
 
 def test_standard_restriction_pipeline_cannot_accept_normgraph_client():
