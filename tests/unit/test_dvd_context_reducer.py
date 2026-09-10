@@ -19,21 +19,24 @@ class Summarizer:
         self.calls.append(messages)
         try:
             await asyncio.sleep(0.002)
-            source = (
-                messages[1]["content"]
-                .split("Текст:\n", 1)[1]
-                .split("\nПроверь черновую", 1)[0]
-            )
-            if self.fail and "FAIL_SOURCE" in source:
+            sources = json.loads(messages[1]["content"].split("\nПроверь", 1)[0])[
+                "sources"
+            ]
+            if self.fail and any("FAIL_SOURCE" in part["text"] for part in sources):
                 raise RuntimeError("temporary failure")
-            ids = sorted(set(re.findall(r"\[\d+\]", source)))
-            facts = sorted(set(re.findall(r"FACT\d+", source)))
             return {
                 "message": {
                     "content": json.dumps(
                         {
-                            "summary": " ".join(ids + facts),
-                            "covered_sources": ids,
+                            "evidence": [
+                                {
+                                    "source_id": part["source_id"],
+                                    "quotes": sorted(
+                                        set(re.findall(r"FACT\d+", part["text"]))
+                                    ),
+                                }
+                                for part in sources
+                            ],
                             "complete": True,
                         }
                     )
@@ -102,8 +105,7 @@ async def test_fabricated_coverage_is_rejected():
                 "message": {
                     "content": json.dumps(
                         {
-                            "summary": "[99] fake",
-                            "covered_sources": ["[99]"],
+                            "evidence": [{"source_id": "[99]", "quotes": ["fake"]}],
                             "complete": True,
                         }
                     )
@@ -131,14 +133,17 @@ async def test_summary_requests_structured_output_and_reasoning_budget():
     llm.chat.return_value = {
         "message": {
             "content": json.dumps(
-                {"summary": "[1] FACT1", "covered_sources": ["[1]"], "complete": True}
+                {
+                    "evidence": [{"source_id": "[1]", "quotes": ["FACT1"]}],
+                    "complete": True,
+                }
             )
         }
     }
     reducer = DvdContextReducer(llm)
-    assert await reducer._summarize("m", "q", "[1] Doc\nFACT1", 800) == "[1] FACT1"
+    assert "[1] Doc\nFACT1" in await reducer._summarize("m", "q", "[1] Doc\nFACT1", 800)
     call = llm.chat.call_args.kwargs
-    assert call["format"]["properties"]["summary"]["type"] == "string"
+    assert call["format"]["properties"]["evidence"]["type"] == "array"
     assert call["options"]["num_predict"] >= 4096
     assert call["think"] is False
 
@@ -194,8 +199,12 @@ async def test_reducer_and_openai_adapter_recover_reasoning_only_completion(
                     message=_Delta(
                         json.dumps(
                             {
-                                "summary": "[1] School distance: 500 m.",
-                                "covered_sources": ["[1]"],
+                                "evidence": [
+                                    {
+                                        "source_id": "[1]",
+                                        "quotes": ["School distance: 500 m."],
+                                    }
+                                ],
                                 "complete": True,
                             }
                         )
@@ -209,5 +218,5 @@ async def test_reducer_and_openai_adapter_recover_reasoning_only_completion(
     summary = await DvdContextReducer(adapter)._summarize(
         "gpt-oss-20b", "School distance?", "[1] Standard\nSchool distance: 500 m.", 1200
     )
-    assert summary == "[1] School distance: 500 m."
+    assert "[1] Standard\nSchool distance: 500 m." in summary
     assert len(calls) == 2 and calls[1]["max_tokens"] > calls[0]["max_tokens"]

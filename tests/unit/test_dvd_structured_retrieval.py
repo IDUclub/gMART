@@ -77,6 +77,7 @@ async def test_all_pages_and_descendants_reach_answer(service, fake_llm):
     events = await run(service, client)
     assert answer_text(events) == "Полный ответ [1] [2]."
     assert len(client.calls) == 2
+    assert client.calls[0][1]["context_height"] == 1
     assert client.calls[0][1] == {
         k: v for k, v in client.calls[1][1].items() if k != "cursor"
     }
