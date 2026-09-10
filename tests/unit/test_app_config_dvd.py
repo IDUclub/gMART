@@ -15,6 +15,21 @@ def make_config(**kwargs):
     return AgentsAppConfig(**values)
 
 
+@pytest.mark.parametrize(
+    "redis_url",
+    [
+        "redis://:private-password@redis:6379/0",
+        "rediss://private-user:private%40password@redis:6379/1",
+        "redis://redis:6379/0?password=private-password",
+    ],
+)
+def test_redis_credentials_are_hidden_in_public_config_and_startup_repr(redis_url):
+    config = make_config(redis_url=redis_url)
+    assert config.REDIS_URL == redis_url
+    assert config.to_dict()["REDIS_URL"] == "[REDACTED]"
+    assert "private" not in repr({"app_config": config})
+
+
 def test_dvd_api_url_is_derived_from_mcp_url():
     config = make_config(dvd_mcp_url="http://dvd:8100/mcp/")
 

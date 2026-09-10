@@ -190,7 +190,9 @@ class AgentsAppConfig:
             "URBAN_MCP_URL": self.URBAN_MCP_URL or "",
             "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,
             "URBAN_API_URL": self.URBAN_API_URL,
-            "REDIS_URL": self.REDIS_URL,
+            # This view feeds startup logs and /system/config. Connection URLs
+            # may embed credentials in userinfo or query parameters.
+            "REDIS_URL": "[REDACTED]",
             # AUTH_HELPER_API_KEY is deliberately omitted: to_dict feeds
             # /system/config and __repr__, and the key must not leak there.
             "AUTH_HELPER_URL": self.AUTH_HELPER_URL or "",
