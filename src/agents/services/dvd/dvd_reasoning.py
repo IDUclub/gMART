@@ -53,9 +53,11 @@ async def _request_json(
     for attempt in range(retries + 1):
         response = await llm_client.chat(
             model=model,
+            think=False,
+            format=model_cls.model_json_schema(),
             options={
                 "temperature": 0,
-                "num_predict": 512,
+                "num_predict": 1024,
                 "num_ctx": int(os.getenv("DVD_CONTEXT_WINDOW_TOKENS", "8192")),
             },
             messages=messages,
@@ -275,10 +277,10 @@ class AnswerCritic:
                 self.llm_client, model, messages, CriticVerdict
             )
         except ValueError:
-            # If the critic itself fails to produce valid JSON, accept the draft
-            # rather than loop forever.
-            logger.warning("Critic produced invalid JSON, accepting draft by default")
-            return CriticVerdict(satisfied=True)
+            logger.warning("Critic produced invalid JSON; draft remains unverified")
+            return CriticVerdict(
+                satisfied=False, critique="Не удалось проверить обоснованность ответа."
+            )
         logger.info(
             f"DVD critic verdict: {verdict.model_dump_json(ensure_ascii=False)}"
         )

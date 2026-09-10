@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Upper bound on the number of agent steps in a single orchestration plan.
 MAX_PLAN_STEPS = 3
@@ -8,6 +8,7 @@ MAX_PLAN_STEPS = 3
 
 class OrchestratorAgent(StrEnum):
     RESTRICTION = "restriction"
+    COMPLIANCE = "compliance"
     PROVISION = "provision"
     SCENARIO_DATA = "scenario_data"
     DOCUMENTS = "documents"
@@ -23,10 +24,18 @@ class OrchestratorStep(BaseModel):
     agent: OrchestratorAgent
     task: str
 
+    @field_validator("task")
+    @classmethod
+    def task_must_be_nonempty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("step task must not be blank")
+        return value
+
 
 class OrchestratorPlan(BaseModel):
     mode: OrchestratorPlanMode
-    steps: list[OrchestratorStep] = []
+    steps: list[OrchestratorStep] = Field(default_factory=list)
     clarification_question: str | None = None
 
     @model_validator(mode="after")

@@ -1060,14 +1060,29 @@ export default function App() {
             current +
             `\n\n> Шаг ${event.content.step} не выполнен: ${event.content.summary || "ошибка агента"}\n\n`,
         );
-      updateStatus(`Шаг ${event.content?.step} завершён`);
+      updateStatus(
+        event.content?.status === "needs_clarification"
+          ? `Шаг ${event.content?.step}: нужно уточнение`
+          : `Шаг ${event.content?.step}: ${event.content?.status === "completed" ? "завершён" : "не выполнен"}`,
+        event.content?.status === "completed" ? "done" : "warning",
+      );
     }
     if (event.type === "clarification") {
       updateSseAnswer((current) => current + (event.content?.question || ""));
       updateStatus("Нужно уточнение", "warning");
     }
     if (event.type === "orchestrator_final") {
-      updateStatus("Ответ готов", "done");
+      const steps = Array.isArray(event.content?.steps) ? event.content.steps : [];
+      const needsClarification = steps.some(
+        (step: { status?: string }) => step.status === "needs_clarification",
+      );
+      const complete = steps.length > 0 && steps.every(
+        (step: { status?: string }) => step.status === "completed",
+      );
+      updateStatus(
+        needsClarification ? "Нужно уточнение" : complete ? "Ответ готов" : "Запрос выполнен не полностью",
+        complete ? "done" : "warning",
+      );
       finalizeActiveExchange();
     }
     if (event.type === "feature_collection") {

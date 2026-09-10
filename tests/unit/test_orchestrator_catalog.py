@@ -25,6 +25,7 @@ def keys(agents) -> set[OrchestratorAgent]:
 def test_all_agents_available_with_scenario_and_urls():
     assert keys(available_agents(config(), scenario_id=772)) == {
         OrchestratorAgent.RESTRICTION,
+        OrchestratorAgent.COMPLIANCE,
         OrchestratorAgent.PROVISION,
         OrchestratorAgent.SCENARIO_DATA,
         OrchestratorAgent.DOCUMENTS,

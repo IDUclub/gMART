@@ -108,7 +108,7 @@ async def test_tool_executor_omits_absent_target_population():
 class FakeStreamingLlm:
     """Yields two chunks; the second is the terminal one (done=True)."""
 
-    async def chat(self, model, messages, options=None, stream=True):
+    async def chat(self, model, messages, options=None, stream=True, **kwargs):
         async def stream_parts():
             yield SimpleNamespace(
                 message=SimpleNamespace(content="Анализ. "), done=False

@@ -119,6 +119,82 @@ async def run_pipeline(svc, **overrides) -> list[dict]:
     return [event async for event in svc.run_orchestration_pipeline(**kwargs)]
 
 
+@pytest.mark.asyncio
+async def test_compliance_dispatches_normative_pipeline(orchestrator, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [
+                {
+                    "agent": "compliance",
+                    "task": "Проверь нарушения отступов домов от дорог",
+                }
+            ]
+        )
+    ]
+    pipeline = FakePipeline(RESTRICTION_EVENTS)
+    orchestrator.restriction_service.run_compliance_pipeline = pipeline
+    normgraph = Mock()
+    events = await run_pipeline(orchestrator, normgraph_mcp_client=normgraph)
+    assert pipeline.calls[0]["normgraph_mcp_client"] is normgraph
+    assert pipeline.calls[0]["scenario_id"] == 772
+    assert pipeline.calls[0]["persist_history"] is False
+    assert (
+        events_of_type(events, "step_finished")[0]["content"]["status"] == "completed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_inner_clarification_is_not_success_or_downstream_evidence(
+    orchestrator, fake_llm
+):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [
+                {"agent": "provision", "task": "Обеспеченность"},
+                {"agent": "documents", "task": "Объясни результат"},
+            ]
+        )
+    ]
+    orchestrator.provision_service.run_provision_pipeline = FakePipeline(
+        [{"type": "clarification", "content": {"question": "Какой сервис рассчитать?"}}]
+    )
+    downstream = FakePipeline([])
+    orchestrator.dvd_service.run_document_qa_pipeline = downstream
+    events = await run_pipeline(orchestrator)
+    final = events_of_type(events, "orchestrator_final")[0]["content"]
+    assert [s["status"] for s in final["steps"]] == ["needs_clarification", "skipped"]
+    assert "Какой сервис" in final["steps"][0]["summary"]
+    assert not downstream.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ["error", "pipeline_failed"])
+async def test_failed_draft_is_not_persisted_as_answer(
+    orchestrator, fake_llm, terminal
+):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [{"agent": "documents", "task": "Найди подтверждённую норму"}]
+        )
+    ]
+    orchestrator.dvd_service.run_document_qa_pipeline = FakePipeline(
+        [
+            {
+                "type": "chunk",
+                "content": {"text": "Выдуманная норма 999 м", "done": False},
+            },
+            {"type": terminal, "content": {"message": "Источник не получен"}},
+        ]
+    )
+    events = await run_pipeline(orchestrator)
+    await asyncio.sleep(0)
+    finished = events_of_type(events, "step_finished")[0]["content"]
+    assert finished["status"] == "failed"
+    assert "Выдуманная" not in finished["summary"]
+    parts = orchestrator.add_complex_message.await_args.args[3]
+    assert all("Выдуманная" not in part.payload.text for part in parts)
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------

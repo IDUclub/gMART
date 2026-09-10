@@ -206,6 +206,7 @@ class DvdContextReducer:
             raise ValueError("summary request exceeds configured context window")
         response = await self.llm_client.chat(
             model=model,
+            think=False,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

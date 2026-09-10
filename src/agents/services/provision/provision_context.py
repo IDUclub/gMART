@@ -239,6 +239,44 @@ class ProvisionContextBuilder:
             )
         return "\n".join(lines)
 
+    def build_provision_answer(self, summary: dict, service_name: str) -> str:
+        """Report typed calculation metrics without model-authored interpretations."""
+        lines = [f"Текущая обеспеченность сервисом «{service_name}»:"]
+        labels = {
+            "services_count": "Объектов сервиса в расчёте",
+            "average_provision_value": "Средняя обеспеченность по зданиям",
+            "median_provision_value": "Медианная обеспеченность по зданиям",
+        }
+        for key, label in self._PROVISION_METRIC_LABELS:
+            value = summary.get(key)
+            if value is not None:
+                lines.append(f"- {labels.get(key, label)}: {self._round(value)}")
+        demand = summary.get("total_demand")
+        within = summary.get("satisfied_demand_within")
+        if (
+            isinstance(demand, (int, float))
+            and demand > 0
+            and isinstance(within, (int, float))
+        ):
+            lines.append(
+                f"Доля суммарного спроса, удовлетворённого в нормативной доступности: {within / demand * 100:.1f}%."
+            )
+        if len(lines) == 1:
+            lines.append("Расчётные показатели отсутствуют.")
+        return "\n".join(lines)
+
+    def build_summary_answer(self, services_result: dict) -> str:
+        parts = []
+        for service in (services_result.get("services") or {}).values():
+            name = service.get("name", "Сервис")
+            if service.get("summary"):
+                parts.append(self.build_provision_answer(service["summary"], name))
+            else:
+                parts.append(
+                    f"{name}: расчёт не выполнен ({service.get('error') or 'нет данных'})."
+                )
+        return "\n\n".join(parts) or "Нет результатов расчёта обеспеченности."
+
     @staticmethod
     def _round(value):
         if isinstance(value, float):

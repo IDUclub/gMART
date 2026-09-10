@@ -124,7 +124,7 @@ class ScenarioDataLinearWorkflow:
                 }
             )
 
-        yield self._event(
+        yield await self._event(
             request_id,
             "status",
             {"status": "planning", "text": "Составляю план получения данных…"},
@@ -151,17 +151,17 @@ class ScenarioDataLinearWorkflow:
         )
         execution_context.update_mappings(mappings)
         plan_payload = acquisition.model_dump(mode="json")
-        yield self._event(request_id, "plan_created", plan_payload)
+        yield await self._event(request_id, "plan_created", plan_payload)
         parts.append(StructuredPartRequest(kind="plan", payload=plan_payload))
         if acquisition.clarification:
             clarification = sanitize_public_answer(acquisition.clarification)
-            yield self._event(
+            yield await self._event(
                 request_id,
                 "clarification_required",
                 {"text": clarification},
             )
             for event in self.owner._answer_events(clarification):
-                yield self.owner._buf(request_id, event)
+                yield await self.owner._buf(request_id, event)
             parts.append(
                 TextPartRequest(kind="text", payload=TextPayload(text=clarification))
             )
@@ -179,7 +179,7 @@ class ScenarioDataLinearWorkflow:
         type_requests = pending_type_mapping_requests(acquisition, mappings)
         search_plan = None
         if type_requests:
-            yield self._event(
+            yield await self._event(
                 request_id,
                 "status",
                 {
@@ -224,7 +224,7 @@ class ScenarioDataLinearWorkflow:
                 project_id=project_id,
             )
         if mapping_calls:
-            yield self._event(
+            yield await self._event(
                 request_id,
                 "mapping_started",
                 {
@@ -266,7 +266,7 @@ class ScenarioDataLinearWorkflow:
                 arguments=mapping_arguments,
                 satisfies=[],
             )
-            yield self._event(
+            yield await self._event(
                 request_id,
                 "step_context",
                 mapping_attempt.model_dump(mode="json"),
@@ -307,7 +307,7 @@ class ScenarioDataLinearWorkflow:
                         error=str(exc),
                     )
                 )
-                yield self._event(
+                yield await self._event(
                     request_id,
                     "step_failed",
                     mapping_attempt.model_dump(mode="json"),
@@ -389,7 +389,7 @@ class ScenarioDataLinearWorkflow:
             candidates = collect_type_mapping_candidates(
                 search_plan, type_catalog_results
             )
-            yield self._event(
+            yield await self._event(
                 request_id,
                 "status",
                 {
@@ -430,7 +430,7 @@ class ScenarioDataLinearWorkflow:
                     "В справочниках Urban API не найден подходящий тип объектов "
                     f"или сервисов для: {missing}."
                 )
-                yield self._event(
+                yield await self._event(
                     request_id,
                     "mapping_completed",
                     {
@@ -439,7 +439,7 @@ class ScenarioDataLinearWorkflow:
                     },
                 )
                 for event in self.owner._answer_events(answer):
-                    yield self.owner._buf(request_id, event)
+                    yield await self.owner._buf(request_id, event)
                 parts.append(
                     TextPartRequest(kind="text", payload=TextPayload(text=answer))
                 )
@@ -474,7 +474,7 @@ class ScenarioDataLinearWorkflow:
             )
 
         if mapping_calls:
-            yield self._event(
+            yield await self._event(
                 request_id,
                 "mapping_completed",
                 {
@@ -529,11 +529,11 @@ class ScenarioDataLinearWorkflow:
                 "replans": ledger.replans,
                 "execution_context": execution_snapshot,
             }
-            yield self._event(request_id, "pipeline_failed", failure)
+            yield await self._event(request_id, "pipeline_failed", failure)
             parts.append(StructuredPartRequest(kind="failure", payload=failure))
             answer = sanitize_public_answer(answer)
             for event in self.owner._answer_events(answer):
-                yield self.owner._buf(request_id, event)
+                yield await self.owner._buf(request_id, event)
             parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
             await self.owner._complete_pipeline(
                 request_id,
@@ -557,7 +557,9 @@ class ScenarioDataLinearWorkflow:
                     replans=ledger.replans,
                 ),
             }
-            yield self._event(request_id, "plan_revision_created", revision_payload)
+            yield await self._event(
+                request_id, "plan_revision_created", revision_payload
+            )
             parts.append(
                 StructuredPartRequest(kind="plan_revision", payload=revision_payload)
             )
@@ -593,7 +595,7 @@ class ScenarioDataLinearWorkflow:
                 attempt = execution_context.start_step(
                     plan.revision, step, dict(step.arguments)
                 )
-                yield self._event(
+                yield await self._event(
                     request_id,
                     "step_context",
                     attempt.model_dump(mode="json"),
@@ -620,7 +622,7 @@ class ScenarioDataLinearWorkflow:
                             error=str(exc),
                         )
                     )
-                    yield self._event(
+                    yield await self._event(
                         request_id,
                         "step_failed",
                         attempt.model_dump(mode="json"),
@@ -647,7 +649,7 @@ class ScenarioDataLinearWorkflow:
                             error=str(error),
                         )
                     )
-                    yield self._event(
+                    yield await self._event(
                         request_id,
                         "step_failed",
                         attempt.model_dump(mode="json"),
@@ -671,8 +673,10 @@ class ScenarioDataLinearWorkflow:
                             yield event
                             if value is not None:
                                 result = value
-                        observation, result_events = self._consume_workspace_result(
-                            request_id, step, result, parts
+                        observation, result_events = (
+                            await self._consume_workspace_result(
+                                request_id, step, result, parts
+                            )
                         )
                     else:
                         tool = urban_mcp_client.get_tool(
@@ -709,7 +713,7 @@ class ScenarioDataLinearWorkflow:
                                 )
                             fingerprints.add(effective_fingerprint)
                             fingerprint = effective_fingerprint
-                        yield self._event(
+                        yield await self._event(
                             request_id,
                             "step_context",
                             attempt.model_dump(mode="json"),
@@ -759,7 +763,7 @@ class ScenarioDataLinearWorkflow:
                             observation_index=len(observations) - 1,
                         )
                     )
-                    yield self._event(
+                    yield await self._event(
                         request_id,
                         "step_completed",
                         {"step_id": step.step_id, "revision": plan.revision},
@@ -784,7 +788,7 @@ class ScenarioDataLinearWorkflow:
                             )
                         )
                         observations.append(skipped_observation)
-                        yield self._event(
+                        yield await self._event(
                             request_id,
                             "step_completed",
                             {
@@ -807,7 +811,7 @@ class ScenarioDataLinearWorkflow:
                         )
                     )
                     observations.append(failed_observation)
-                    yield self._event(
+                    yield await self._event(
                         request_id,
                         "step_failed",
                         attempt.model_dump(mode="json"),
@@ -816,7 +820,7 @@ class ScenarioDataLinearWorkflow:
                     plan_failed = True
                     break
 
-            yield self._event(
+            yield await self._event(
                 request_id,
                 "validation_started",
                 {"revision": plan.revision, "text": "Проверяю полноту результата…"},
@@ -868,7 +872,7 @@ class ScenarioDataLinearWorkflow:
                             replans=ledger.replans,
                         ),
                     }
-                    yield self._event(
+                    yield await self._event(
                         request_id, "validation_completed", validation_payload
                     )
                     parts.append(
@@ -921,13 +925,13 @@ class ScenarioDataLinearWorkflow:
                     "replans": ledger.replans,
                     "execution_context": execution_snapshot,
                 }
-                yield self._event(request_id, "pipeline_failed", failure)
+                yield await self._event(request_id, "pipeline_failed", failure)
                 parts.append(StructuredPartRequest(kind="failure", payload=failure))
                 break
 
             ledger.replans += 1
             revision += 1
-            yield self._event(
+            yield await self._event(
                 request_id,
                 "replanning",
                 {"revision": revision, "reasons": validation_reasons},
@@ -981,13 +985,13 @@ class ScenarioDataLinearWorkflow:
                     "replans": ledger.replans,
                     "execution_context": execution_snapshot,
                 }
-                yield self._event(request_id, "pipeline_failed", failure)
+                yield await self._event(request_id, "pipeline_failed", failure)
                 parts.append(StructuredPartRequest(kind="failure", payload=failure))
                 break
 
         answer = sanitize_public_answer(answer)
         for event in self.owner._answer_events(answer):
-            yield self.owner._buf(request_id, event)
+            yield await self.owner._buf(request_id, event)
         if answer.strip():
             parts.append(
                 TextPartRequest(kind="text", payload=TextPayload(text=answer.strip()))
@@ -1019,7 +1023,7 @@ class ScenarioDataLinearWorkflow:
         fingerprint: str | None = None,
     ):
         source = f"URBAN_MCP/{tool.group}"
-        yield self._event(
+        yield await self._event(
             request_id,
             "step_started",
             {
@@ -1029,7 +1033,7 @@ class ScenarioDataLinearWorkflow:
             },
         ), None
         call = {"tool_name": tool.name, "arguments": arguments, "group": tool.group}
-        yield self.owner._buf(
+        yield await self.owner._buf(
             request_id, self.owner._tool_call_event(call, source)
         ), None
         parts.append(
@@ -1068,11 +1072,11 @@ class ScenarioDataLinearWorkflow:
                 result_box,
                 retry_transient=True,
             ):
-                yield self.owner._buf(request_id, event), None
+                yield await self.owner._buf(request_id, event), None
         finally:
             # Failed read-only calls are attempts too and must consume the bounded budget.
             ledger.urban_calls += 1
-        yield self._event(
+        yield await self._event(
             request_id,
             "status",
             {"status": "tool_execution", "text": f"Получены данные: {tool.title}"},
@@ -1097,7 +1101,7 @@ class ScenarioDataLinearWorkflow:
                 name = f"{name} · {path}"
             # Raw geometry is SSE truth for the active browser, never a chat/context part.
             events.append(
-                self._event(
+                await self._event(
                     request_id,
                     "feature_collection",
                     {"name": name, "feature_collection": feature_collection},
@@ -1109,7 +1113,7 @@ class ScenarioDataLinearWorkflow:
             title=step.purpose,
         )
         if table is not None:
-            events.append(self._event(request_id, "table", table))
+            events.append(await self._event(request_id, "table", table))
             parts.append(self.owner._table_part(table))
 
         observation: dict[str, Any] = {
@@ -1149,7 +1153,9 @@ class ScenarioDataLinearWorkflow:
                     parts.append(
                         StructuredPartRequest(kind="artifact_ref", payload=artifact)
                     )
-                    events.append(self._event(request_id, "artifact_created", artifact))
+                    events.append(
+                        await self._event(request_id, "artifact_created", artifact)
+                    )
             except PipelineSuspendedError:
                 raise
             except Exception as exc:
@@ -1187,7 +1193,7 @@ class ScenarioDataLinearWorkflow:
             lambda: client.execute_tool("WorkspaceCreate", arguments),
             result_box,
         ):
-            events.append(self.owner._buf(request_id, event))
+            events.append(await self.owner._buf(request_id, event))
         artifact = self.owner._unwrap_result(result_box[0])
         if not isinstance(artifact, dict):
             return None, events
@@ -1209,7 +1215,7 @@ class ScenarioDataLinearWorkflow:
         ledger: ExecutionLedger,
         parts: list,
     ):
-        yield self._event(
+        yield await self._event(
             request_id,
             "step_started",
             {
@@ -1219,7 +1225,7 @@ class ScenarioDataLinearWorkflow:
             },
         ), None
         call = {"tool_name": step.tool_name, "arguments": arguments}
-        yield self.owner._buf(
+        yield await self.owner._buf(
             request_id, self.owner._tool_call_event(call, "IDU_MCP/workspace")
         ), None
         parts.append(
@@ -1247,15 +1253,15 @@ class ScenarioDataLinearWorkflow:
             lambda: client.execute_tool(step.tool_name, arguments),
             result_box,
         ):
-            yield self.owner._buf(request_id, event), None
+            yield await self.owner._buf(request_id, event), None
         ledger.workspace_calls += 1
-        yield self._event(
+        yield await self._event(
             request_id,
             "status",
             {"status": "workspace", "text": f"Обработан набор: {step.purpose}"},
         ), self.owner._unwrap_result(result_box[0])
 
-    def _consume_workspace_result(
+    async def _consume_workspace_result(
         self,
         request_id: str,
         step: PlanStep,
@@ -1269,7 +1275,7 @@ class ScenarioDataLinearWorkflow:
             if isinstance(collection, dict):
                 layer_count = 1
                 events.append(
-                    self._event(
+                    await self._event(
                         request_id,
                         "feature_collection",
                         {
@@ -1282,7 +1288,7 @@ class ScenarioDataLinearWorkflow:
             result, name=f"workspace_{step.tool_name}", title=step.purpose
         )
         if table is not None:
-            events.append(self._event(request_id, "table", table))
+            events.append(await self._event(request_id, "table", table))
             parts.append(self.owner._table_part(table))
         observation: dict[str, Any] = {
             "tool": f"workspace.{step.tool_name}",
@@ -1303,7 +1309,7 @@ class ScenarioDataLinearWorkflow:
             }
             observation["artifact"] = artifact
             parts.append(StructuredPartRequest(kind="artifact_ref", payload=artifact))
-            events.append(self._event(request_id, "artifact_created", artifact))
+            events.append(await self._event(request_id, "artifact_created", artifact))
         return observation, events
 
     def _workspace_client(self, token: str) -> IduMcpClient:
@@ -1338,10 +1344,12 @@ class ScenarioDataLinearWorkflow:
             }
         return value
 
-    def _event(
+    async def _event(
         self, request_id: str, event_type: str, content: dict[str, Any]
     ) -> dict[str, Any]:
-        return self.owner._buf(request_id, {"type": event_type, "content": content})
+        return await self.owner._buf(
+            request_id, {"type": event_type, "content": content}
+        )
 
     async def _deadline_exceeded(self, request_id: str, started: float) -> bool:
         state = await self.owner.state_store.get_state(request_id) or {}

@@ -7,25 +7,23 @@ from src.agents.common.config.app_config import AgentsAppConfig
 
 ENV_EXTENSIONS = [
     "agents",
-    "src.agents.dev",
-    "src.agents.develop",
-    "src.agents.development",
-    "src.agents.prod",
-    "src.agents.production",
-    "src.agents.example",
+    "agents.dev",
+    "agents.develop",
+    "agents.development",
+    "agents.prod",
+    "agents.production",
+    "agents.example",
 ]
 
 
 def try_load(env_file_extension: str):
-
-    before = dict(os.environ)
     find_res = find_dotenv(f".env.{env_file_extension}")
-    load_dotenv(find_res, override=True)
-    return {
-        k: (before.get(k), os.environ.get(k))
-        for k in os.environ
-        if before.get(k) != os.environ.get(k)
-    }
+    if not find_res:
+        return False
+    # Container environment is authoritative. Finding an unchanged file still
+    # counts as finding configuration, and must not fall through to another file.
+    load_dotenv(find_res, override=False)
+    return True
 
 
 def load_config() -> AgentsAppConfig:
@@ -79,7 +77,7 @@ def load_config() -> AgentsAppConfig:
                 in {"1", "true", "yes", "on"},
                 **synapse_settings(),
             )
-    logger.warning("No config file found from: {}".format(", ".join(ENV_EXTENSIONS)))
+    logger.info("No .env file found; loading configuration from process environment")
     try:
         return AgentsAppConfig(
             ollama_api_url=os.getenv("OLLAMA_API_URL"),

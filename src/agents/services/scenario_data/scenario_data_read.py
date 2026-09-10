@@ -492,7 +492,7 @@ class UrbanReadWorkflow:
             tool = named[call.tool_name]
             arguments = json.loads(call.arguments_json)
             source = f"URBAN_MCP/{tool.group}"
-            yield host._buf(
+            yield await host._buf(
                 request_id,
                 host._tool_call_event(
                     {
@@ -538,7 +538,7 @@ class UrbanReadWorkflow:
                     box,
                     retry_transient=True,
                 ):
-                    yield host._buf(request_id, event)
+                    yield await host._buf(request_id, event)
                 result = host._unwrap_result(box[0])
                 # A first-page request stays a page. Otherwise follow authenticated
                 # cursors without allowing the model to change scope between pages.
@@ -557,7 +557,7 @@ class UrbanReadWorkflow:
                         raise ValueError("Pagination failed to terminate")
                     seen_cursors.add(cursor)
                     next_arguments = {**arguments, "cursor": cursor}
-                    yield host._buf(
+                    yield await host._buf(
                         request_id,
                         host._tool_call_event(
                             {
@@ -602,7 +602,7 @@ class UrbanReadWorkflow:
                         page_box,
                         retry_transient=True,
                     ):
-                        yield host._buf(request_id, event)
+                        yield await host._buf(request_id, event)
                     result = host._unwrap_result(page_box[0])
                     combined.extend(data_rows(result))
                 if seen_cursors:
@@ -629,11 +629,11 @@ class UrbanReadWorkflow:
             # Only source fields and values reach the user; no second LLM prose pass.
             tables = output_tables(host, result, tool.title, f"urban_{tool.name}")
             for table in tables:
-                yield host._buf(request_id, {"type": "table", "content": table})
+                yield await host._buf(request_id, {"type": "table", "content": table})
                 parts.append(host._table_part(table))
             layers = data_layers(result)
             for layer in layers:
-                yield host._buf(
+                yield await host._buf(
                     request_id,
                     {
                         "type": "feature_collection",
@@ -678,7 +678,7 @@ class UrbanReadWorkflow:
             answers.append(text)
         answer = "\n\n".join(answers)
         for event in host._answer_events(answer):
-            yield host._buf(request_id, event)
+            yield await host._buf(request_id, event)
         parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
         await host._complete_pipeline(
             request_id,

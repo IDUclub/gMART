@@ -461,7 +461,9 @@ async def test_draft_answer_strips_technical_metadata_ids(
 
 
 async def test_pipeline_replay_buffer_serializes_geojson_datetimes():
-    redis = AsyncMock()
+    from fakeredis.aioredis import FakeRedis
+
+    redis = FakeRedis(decode_responses=True)
     store = PipelineStateStore(redis)
     event = {
         "type": "feature_collection",
@@ -485,7 +487,7 @@ async def test_pipeline_replay_buffer_serializes_geojson_datetimes():
 
     await store.buffer_event("request-1", event)
 
-    payload = redis.rpush.await_args.args[1]
+    payload = (await redis.lrange("pipeline:request-1:events", 0, -1))[0]
     assert (
         json.loads(payload)["content"]["feature_collection"]["features"][0][
             "properties"

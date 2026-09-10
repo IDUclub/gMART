@@ -131,7 +131,7 @@ class NormGraphRagService(BaseLlmService):
         original_chat_id = chat_id
 
         if not is_reconnect:
-            yield self._buf(request_id, self._pipeline_started_event(request_id))
+            yield await self._buf(request_id, self._pipeline_started_event(request_id))
 
             # No chat_id supplied → create a new chat tagged with scenario_id. The
             # project_id is resolved from scenario_id; if that lookup fails we warn the
@@ -152,7 +152,7 @@ class NormGraphRagService(BaseLlmService):
                             f"NormGraph QA: failed to resolve project_id for "
                             f"scenario_id={scenario_id}: {exc}"
                         )
-                        yield self._buf(
+                        yield await self._buf(
                             request_id,
                             self._project_lookup_failed_event(scenario_id),
                         )
@@ -170,7 +170,7 @@ class NormGraphRagService(BaseLlmService):
                         resolve_project_id=False,
                         agent_id="norms",
                     )
-                    yield self._buf(
+                    yield await self._buf(
                         request_id, self._chat_created_event(chat_id, title)
                     )
                 except Exception as exc:  # chat storage must not break the stream
@@ -265,7 +265,7 @@ class NormGraphRagService(BaseLlmService):
             is_last = iteration == self.MAX_ITERATIONS
 
             # ── Step 1: plan the query (LLM chooses tool + filters) ────────
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "retrieval_planning",
@@ -277,7 +277,7 @@ class NormGraphRagService(BaseLlmService):
             )
 
             # ── Step 2: execute the primary NormGraph tool ──────────────────
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "executing",
@@ -289,7 +289,7 @@ class NormGraphRagService(BaseLlmService):
                 normgraph_mcp_client, plan
             )
             collected["tool_calls"].append(tool_call)
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._tool_call(_EXECUTION_MODE, [tool_call], mcp_source=_MCP_SOURCE),
             )
@@ -301,7 +301,7 @@ class NormGraphRagService(BaseLlmService):
             # ── Step 3: optional conflict check over the top hits ───────────
             conflicts: list[dict[str, Any]] = []
             if plan.check_conflicts and hits:
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._status(
                         "conflict_check",
@@ -313,7 +313,7 @@ class NormGraphRagService(BaseLlmService):
                 )
                 collected["tool_calls"].extend(conflict_calls)
                 if conflict_calls:
-                    yield self._buf(
+                    yield await self._buf(
                         request_id,
                         self._tool_call(
                             _EXECUTION_MODE, conflict_calls, mcp_source=_MCP_SOURCE
@@ -321,7 +321,7 @@ class NormGraphRagService(BaseLlmService):
                     )
 
             if not hits and not dvd_fallback and not is_last:
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._status(
                         "executing",
@@ -348,12 +348,30 @@ class NormGraphRagService(BaseLlmService):
                 )
                 continue
 
+            if not hits and not dvd_fallback:
+                answer = "В доступном графе и поисковой выдаче не найдены правила по этому запросу. Это не доказывает отсутствие нормативных требований. Значения и ссылки на документы подтвердить не удалось."
+                collected["final_answer"] = answer
+                collected["newly_completed"] = True
+                yield await self._buf(
+                    request_id, self._chunk(answer, done=True, iteration=iteration)
+                )
+                await self._save_progress(
+                    request_id,
+                    collected,
+                    completed_iterations=iteration,
+                    accepted=True,
+                    final_answer=answer,
+                    final_iteration=iteration,
+                )
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
+
             context = self.context_builder.build_context(
                 hits, neighbors, dvd_fallback, conflicts
             )
 
             # ── Step 4: draft the answer (streamed) ───────────────────────
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "answer_drafting", f"Формирую ответ (попытка {iteration})…"
@@ -372,31 +390,27 @@ class NormGraphRagService(BaseLlmService):
             ):
                 if text := chunk_event["content"]["text"]:
                     draft_parts.append(text)
-                yield self._buf(request_id, chunk_event)
+                yield await self._buf(request_id, chunk_event)
             draft = "".join(draft_parts).strip()
 
-            # ── Step 5: critique (last round is always accepted) ──────────
-            if not is_last:
-                yield self._buf(
-                    request_id,
-                    self._status(
-                        "self_review",
-                        "Проверяю ответ на полноту, обоснованность и наличие ссылок на источники…",
-                    ),
-                )
-                verdict = await self.critic.review(model, user_query, context, draft)
-            else:
-                verdict = None
+            yield await self._buf(
+                request_id,
+                self._status(
+                    "self_review",
+                    "Проверяю ответ на полноту и соответствие источникам…",
+                ),
+            )
+            verdict = await self.critic.review(model, user_query, context, draft)
 
-            if is_last or (verdict is not None and verdict.satisfied):
+            if verdict.satisfied:
                 collected["final_answer"] = draft
                 collected["newly_completed"] = True
                 # Emit terminal events BEFORE checkpointing "accepted" so a reconnect that
                 # sees accepted=True always has the done chunk in the replay buffer.
-                yield self._buf(
+                yield await self._buf(
                     request_id, self._status("finalizing", "Ответ сформирован")
                 )
-                yield self._buf(
+                yield await self._buf(
                     request_id, self._chunk("", done=True, iteration=iteration)
                 )
                 await self._save_progress(
@@ -410,8 +424,12 @@ class NormGraphRagService(BaseLlmService):
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
 
+            if is_last:
+                raise ValueError(
+                    "Ответ не прошёл проверку по источникам за допустимое число попыток."
+                )
             critique_text = (verdict.critique or "ответ недостаточно обоснован").strip()
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "self_review",
@@ -435,8 +453,10 @@ class NormGraphRagService(BaseLlmService):
         # Defensive: the last iteration always accepts above, so this is normally unreachable
         # (covers an empty resume range).
         collected["newly_completed"] = True
-        yield self._buf(request_id, self._status("finalizing", "Ответ сформирован"))
-        yield self._buf(
+        yield await self._buf(
+            request_id, self._status("finalizing", "Ответ сформирован")
+        )
+        yield await self._buf(
             request_id, self._chunk("", done=True, iteration=final_iteration)
         )
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
@@ -568,6 +588,7 @@ class NormGraphRagService(BaseLlmService):
         async for part in await self.llm_client.chat(
             model,
             messages,
+            think=False,
             options={"temperature": temperature},
             stream=True,
         ):
@@ -587,9 +608,9 @@ class NormGraphRagService(BaseLlmService):
     # Redis state helpers (event buffering + resume checkpoint)
     # ------------------------------------------------------------------
 
-    def _buf(self, request_id: str, event: dict) -> dict:
-        """Fire-and-forget buffer the event for reconnect replay, then return it."""
-        asyncio.create_task(self.state_store.buffer_event(request_id, event))
+    async def _buf(self, request_id: str, event: dict) -> dict:
+        """Persist the event for reconnect replay before returning it."""
+        await self.state_store.buffer_event(request_id, event)
         return event
 
     async def _save_progress(

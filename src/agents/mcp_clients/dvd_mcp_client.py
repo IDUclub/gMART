@@ -29,9 +29,12 @@ class DvdMcpClient(BaseMcpClient):
     pipeline.
     """
 
-    def __init__(self, mcp_client: McpClient, mcp_url: str = "") -> None:
+    def __init__(
+        self, mcp_client: McpClient, mcp_url: str = "", *, user_id: str | None = None
+    ) -> None:
         super().__init__(mcp_client)
         self._mcp_url = mcp_url
+        self._user_id = user_id
 
     @staticmethod
     def tool_name_for_kind(kind: str) -> str:
@@ -100,6 +103,10 @@ class DvdMcpClient(BaseMcpClient):
         if scenario_id is not None:
             arguments["scenario_id"] = str(scenario_id)
         if project_id is not None or scenario_id is not None:
+            if self._user_id is not None:
+                # Trusted identity resolved by DI, never an LLM-supplied ID.
+                # Older DVD search contracts require it alongside scenario_id.
+                arguments["user_id"] = self._user_id
             arguments["include_shared"] = include_shared
             arguments["include_inherited"] = include_inherited
         result = await self.execute_tool(tool_name, arguments)
