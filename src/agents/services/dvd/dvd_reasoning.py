@@ -6,8 +6,9 @@ import re
 from typing import TypeVar
 
 from loguru import logger
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.dvd_plan import (
     CriticVerdict,
@@ -15,7 +16,33 @@ from src.agents.services.service_entities.dvd_plan import (
     SearchKind,
 )
 
+from .context_reducer import cost, current_context_window
+
 T = TypeVar("T", bound=BaseModel)
+
+
+class EvidenceAudit(BaseModel):
+    """List evidence defects before deciding acceptance, avoiding an early verdict."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "required": [
+                "unsupported_claims",
+                "missing_requirements",
+                "satisfied",
+                "critique",
+                "refined_search_query",
+            ]
+        }
+    )
+    # Defaults also accept older adapter/test payloads; the generation schema
+    # requires these fields and places the evidence audit before the verdict.
+    unsupported_claims: list[str] = Field(default_factory=list)
+    missing_requirements: list[str] = Field(default_factory=list)
+    satisfied: bool
+    critique: str = ""
+    refined_search_query: str | None = None
+
 
 _LIMIT_MIN, _LIMIT_MAX = 1, 20
 _CONTEXT_HEIGHT_MIN, _CONTEXT_HEIGHT_MAX = 0, 5
@@ -43,6 +70,8 @@ async def _request_json(
     messages: list[dict],
     model_cls: type[T],
     retries: int = 2,
+    max_tokens: int = 1024,
+    reasoning_effort: str | None = None,
 ) -> T:
     """
     Ask the LLM for a JSON object and parse it into ``model_cls``.
@@ -51,16 +80,25 @@ async def _request_json(
     strip markdown fences, retry by feeding the invalid response back to the model.
     """
     for attempt in range(retries + 1):
+        schema = model_cls.model_json_schema()
+        # The schema is a decoding constraint, not another message. Reserving its
+        # serialized UTF-8 size rejected the existing planner even with no history.
+        available = (
+            current_context_window() - sum(cost(m["content"]) for m in messages) - 256
+        )
+        if available < 128:
+            raise ValueError("structured request exceeds configured context window")
         response = await llm_client.chat(
             model=model,
             think=False,
-            format=model_cls.model_json_schema(),
+            format=schema,
             options={
                 "temperature": 0,
-                "num_predict": 1024,
-                "num_ctx": int(os.getenv("DVD_CONTEXT_WINDOW_TOKENS", "8192")),
+                "num_predict": min(max_tokens, available),
+                "num_ctx": current_context_window(),
             },
             messages=messages,
+            **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
         )
         content = response["message"]["content"]
         logger.debug(f"LLM {model_cls.__name__} response [{model}]: {content}")
@@ -268,13 +306,31 @@ class AnswerCritic:
         context: str,
         answer: str,
     ) -> CriticVerdict:
+        if defects := self._literal_defects(context, answer):
+            return CriticVerdict(satisfied=False, critique="; ".join(defects))
         messages: list[dict] = [
             {"role": "system", "content": self._prompt()},
             {"role": "user", "content": self._payload(user_query, context, answer)},
         ]
         try:
-            verdict = await _request_json(
-                self.llm_client, model, messages, CriticVerdict
+            audit = await _request_json(
+                self.llm_client,
+                model,
+                messages,
+                EvidenceAudit,
+                max_tokens=int(os.getenv("DVD_REVIEW_MAX_TOKENS", "4096")),
+                reasoning_effort=(
+                    "medium"
+                    if isinstance(self.llm_client, OpenAiCompatAdapter)
+                    and "gpt-oss" in model.lower()
+                    else None
+                ),
+            )
+            defects = audit.unsupported_claims + audit.missing_requirements
+            verdict = CriticVerdict(
+                satisfied=audit.satisfied and not defects,
+                critique=audit.critique or "; ".join(defects),
+                refined_search_query=audit.refined_search_query,
             )
         except ValueError:
             logger.warning("Critic produced invalid JSON; draft remains unverified")
@@ -287,26 +343,91 @@ class AnswerCritic:
         return verdict
 
     @staticmethod
+    def _literal_defects(context: str, answer: str) -> list[str]:
+        """Verify explicit expansions and table identifiers against literal evidence.
+
+        These narrow, checkable assertions were repeatedly approved incorrectly by
+        the live critic. Other semantic claims still require the model's audit.
+        """
+
+        def normalize(text):
+            return " ".join(re.sub(r"[‐‑–—]", "-", text).lower().split())
+
+        source = normalize(context)
+        defects = []
+        for acronym, expansion in re.findall(
+            r"\b([А-ЯЁA-Z]{2,})\s*\(([^()\n]+)\)", answer
+        ):
+            # Numeric editions/units and simple cross references are not expansions.
+            if (
+                len(re.findall(r"[а-яёa-z]{3,}", expansion)) >= 2
+                and normalize(expansion) not in source
+            ):
+                defects.append(
+                    f"Расшифровка {acronym} «{expansion}» не подтверждена исходным текстом. Убери её или приведи дословно из источника."
+                )
+        table_pattern = r"(?:\bтабл(?:иц[а-яё]*|\.)|\bт\s+а\s+б\s+л\s+и\s+ц\s+а)\s*([а-яa-z]?\.?\s*\d+(?:\.\d+)*)"
+        known_tables = {m.replace(" ", "") for m in re.findall(table_pattern, source)}
+        # Keep decimal identifiers intact while separating sentences/paragraphs.
+        for sentence in re.split(r"\n|(?<=[.!?])\s+(?=[А-ЯЁA-Z])", answer):
+            lowered = normalize(sentence)
+            # An explicit statement that a referenced table is absent is not a citation.
+            if re.search(
+                r"не (?:найден\w*|приведен\w*|приведён\w*|представлен\w*)|отсутств\w*|нет (?:текста |данных .*?о )?таблиц",
+                lowered,
+            ):
+                continue
+            for table in re.findall(table_pattern, lowered):
+                if table.replace(" ", "") not in known_tables:
+                    defects.append(
+                        f"Таблица {table} не подтверждена фрагментами. Не подменяй номер пункта номером таблицы; исправь ссылку или убери её."
+                    )
+        return defects
+
+    @staticmethod
     def _prompt() -> str:
         structure = {
+            "unsupported_claims": [
+                "unsupported statements, including definitions and citation metadata; [] if none"
+            ],
+            "missing_requirements": [
+                "directly relevant requirements omitted from the answer; [] if none"
+            ],
             "satisfied": "true | false",
             "critique": "кратко: что не так с ответом (пусто, если всё хорошо)",
             "refined_search_query": "улучшенный поисковый запрос или null",
         }
-        return f"""Ты — строгий рецензент ответов ассистента по нормативной документации.
-Оцени, полностью ли ответ обоснован приведёнными фрагментами и отвечает ли на вопрос. \
-Верни только валидный JSON без markdown:
-{json.dumps(structure, ensure_ascii=False)}
+        return f"""Audit a Russian answer against the supplied document EXCERPTS, not your prior knowledge.
+Return JSON only: {json.dumps(structure, ensure_ascii=False)}
+First inspect every assertion and list evidence defects; only then decide satisfied.
+Do not approve a mostly correct answer that contains even one unsupported assertion.
+For example, if a source only uses an acronym, an invented parenthetical expansion
+in the answer is an unsupported claim even when its main conclusion is correct.
+If the source says clause 27.3 and table 31.3, citing TABLE 27.3 is unsupported.
 
-Критерии отказа (satisfied = false):
-- В ответе есть утверждения, не подтверждённые фрагментами (галлюцинации).
-- Ответ неполный или не отвечает на вопрос пользователя.
-- Не указаны источники (документ, редакция, номер пункта), хотя они есть во фрагментах.
-- Во фрагментах недостаточно данных — тогда обязательно предложи refined_search_query \
-для нового поиска.
+Hard rejection rules:
+1. A rule for one building type MUST NOT be transferred to another type. A house,
+   hotel, prison or prison school rule does NOT establish a rule for an ordinary
+   school. Calling it a general principle, analogy or useful guideline is STILL
+   an unsupported claim. References to other standards do not establish their text.
+2. Every statement, including acronym expansions, definitions, source attribution,
+   clause/table numbers, obligations, conditions and exceptions must be supported by
+   the supplied text and retain its explicit scope. Do not fill gaps from memory.
+3. A table of contents or section TITLE only proves that the topic is mentioned;
+   it does NOT provide the requirements inside that section.
+4. Reject invented applicability, invented facts, or omissions of directly relevant
+   requirements actually present in the excerpts. Request a refined search.
 
-Если ответ корректен, полон и обоснован — satisfied = true, critique пустой, \
-refined_search_query = null. Будь требователен по сути, но не придирайся к стилю."""
+Accept an honest statement that THESE EXCERPTS do not contain enough applicable
+information when this is true. Lack of evidence is not a reason to force an answer.
+An honest limited answer must not claim the entire document or corpus has no rules.
+Do not reject it merely because a contents page mentions schools or because other
+building types have placement requirements. If only special-scope rules are present,
+accept a clearly scoped quotation or explanation that ordinary schools need other sources.
+
+When rejecting, write a short Russian critique identifying the unsupported claim
+or the specific omitted passage. When accepting, satisfied=true, critique="",
+refined_search_query=null. Never reward an answer just because it sounds helpful."""
 
     @staticmethod
     def _payload(user_query: str, context: str, answer: str) -> str:

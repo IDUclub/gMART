@@ -71,6 +71,10 @@ class BaseLlmAdapter(ABC):
     Ollama client and must be preserved by every implementation.
     """
 
+    async def model_context_window(self, model: str) -> int | None:
+        """Deployed server limit, when exposed; unknown backends return None."""
+        return None
+
     @abstractmethod
     async def chat(
         self,

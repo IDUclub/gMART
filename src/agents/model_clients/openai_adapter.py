@@ -112,6 +112,19 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
     # ------------------------------------------------------------------ #
     # translation helpers
     # ------------------------------------------------------------------ #
+    async def model_context_window(self, model: str) -> int | None:
+        try:
+            models = await self.client.models.list(timeout=5)
+        except OpenAIError as exc:
+            logger.warning("Model context metadata unavailable: {}", type(exc).__name__)
+            return None
+        for item in models.data:
+            if item.id == model:
+                window = getattr(item, "max_model_len", None)
+                if type(window) is int and window >= 4096:
+                    return window
+        return None
+
     @staticmethod
     def _reasoning(part: Any) -> str | None:
         """The reasoning trace, whichever name the server gives it.

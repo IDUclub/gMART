@@ -82,6 +82,23 @@ async def test_incomplete_review_is_controlled_failure(service, fake_llm, fake_m
 
 
 class TestLoop:
+    async def test_later_draft_retains_all_previous_corrections(
+        self, service, fake_llm, fake_mcp
+    ):
+        fake_llm.json_responses = [
+            plan_json(),
+            verdict_json(satisfied=False, critique="Исправь ссылку на таблицу"),
+            plan_json(),
+            verdict_json(satisfied=False, critique="Сохрани область применения"),
+            plan_json(),
+            verdict_json(satisfied=True),
+        ]
+        fake_llm.answer_texts = ["d1", "d2", "d3"]
+        await _run(service, fake_mcp)
+        third_draft = [c for c in fake_llm.chat_calls if c.stream][2]
+        assert "Исправь ссылку на таблицу" in third_draft.messages[0]["content"]
+        assert "Сохрани область применения" in third_draft.messages[0]["content"]
+
     async def test_accept_on_first_iteration(self, service, fake_llm, fake_mcp):
         fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
         fake_llm.answer_texts = ["Ответ со ссылкой [1]."]
