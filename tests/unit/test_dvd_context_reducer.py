@@ -11,12 +11,14 @@ class Summarizer:
     def __init__(self, fail=False):
         self.active = self.peak = 0
         self.calls = []
+        self.output_budgets = []
         self.fail = fail
 
     async def chat(self, model, messages, **kwargs):
         self.active += 1
         self.peak = max(self.peak, self.active)
         self.calls.append(messages)
+        self.output_budgets.append(kwargs["options"]["num_predict"])
         try:
             await asyncio.sleep(0.002)
             sources = json.loads(messages[1]["content"].split("\nПроверь", 1)[0])[
@@ -68,9 +70,8 @@ async def test_parallel_map_and_audit_keep_late_facts_and_sources():
     )
     assert cost(result.text) <= reducer.budget("question")
     assert all(
-        sum(cost(m["content"]) for m in call) + reducer.output_tokens + 128
-        <= reducer.window
-        for call in llm.calls
+        sum(cost(m["content"]) for m in call) + output_budget + 128 <= reducer.window
+        for call, output_budget in zip(llm.calls, llm.output_budgets)
     )
 
 
