@@ -1137,8 +1137,7 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                         if trace
                         else " (пустой ответ без следа рассуждений)"
                     )
-                    + "; на gpt-oss через Harmony это даёт reasoning_effort=low — "
-                    "поднимите OPENAI_THINK_EFFORT до medium"
+                    + "; проверьте лимит выходных токенов и поддерживаемый режим рассуждений"
                 )
                 logger.warning(
                     f"Empty scenario-data action, attempt {attempt + 1} "

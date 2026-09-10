@@ -123,7 +123,7 @@ async def a2a_dvd_mcp_client(user_id: str) -> DvdMcpClient:
     if not mcp_url:
         raise ValueError("DVD_MCP_SERVER is not configured")
     client = await service_mcp_client(mcp_url, get_service_auth(), user_id)
-    return DvdMcpClient(client, mcp_url=mcp_url)
+    return DvdMcpClient(client, mcp_url=mcp_url, user_id=user_id)
 
 
 async def a2a_normgraph_mcp_client(user_id: str) -> NormGraphMcpClient:
@@ -298,7 +298,9 @@ async def get_dvd_mcp_client(
         get_service_auth(),
         user_id_from_jwt(token) if token else ANONYMOUS_USER_ID,
     )
-    return DvdMcpClient(client, mcp_url=mcp_url)
+    return DvdMcpClient(
+        client, mcp_url=mcp_url, user_id=user_id_from_jwt(token) if token else None
+    )
 
 
 async def get_dvd_api_client(
@@ -382,7 +384,7 @@ async def get_optional_dvd_mcp_client(
     client = await service_mcp_client(
         mcp_url, get_service_auth(), user_id_from_jwt(token)
     )
-    return DvdMcpClient(client, mcp_url=mcp_url)
+    return DvdMcpClient(client, mcp_url=mcp_url, user_id=user_id_from_jwt(token))
 
 
 async def get_optional_normgraph_mcp_client(

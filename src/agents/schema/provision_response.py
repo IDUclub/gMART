@@ -20,6 +20,10 @@ class TextResponse(BaseModel):
     done: bool
 
 
+class ClarificationContent(BaseModel):
+    question: str
+
+
 class FeatureCollectionResponse(BaseModel):
     name: str
     feature_collection: FeatureCollection
@@ -68,6 +72,7 @@ class ProvisionResponse(BaseModel):
     type: Literal[
         "status",
         "chunk",
+        "clarification",
         "feature_collection",
         "table",
         "error",
@@ -80,6 +85,7 @@ class ProvisionResponse(BaseModel):
     content: (
         ProvisionStatusResponse
         | TextResponse
+        | ClarificationContent
         | FeatureCollectionResponse
         | TableContent
         | SseBaseError

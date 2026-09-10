@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+
 from tests.helpers import (
     FakeDvdMcpClient,
     answer_text,
@@ -89,7 +91,7 @@ class TestLoop:
         collected = service._schedule_persist_answer.call_args.args[2]
         assert collected["final_answer"] == "Черновик 2 [1]"
 
-    async def test_max_iterations_accepts_last_without_critic(
+    async def test_max_iterations_does_not_accept_rejected_final_draft(
         self, service, fake_llm, fake_mcp
     ):
         fake_llm.json_responses = [
@@ -97,19 +99,17 @@ class TestLoop:
             verdict_json(satisfied=False, critique="ещё", refined_search_query="r1"),
             plan_json(),
             verdict_json(satisfied=False, critique="ещё", refined_search_query="r2"),
-            plan_json(),  # 3rd iteration: no critic call, accepted unconditionally
+            plan_json(),
+            verdict_json(satisfied=False, critique="Нет доказательств"),
         ]
         fake_llm.answer_texts = ["d1", "d2", "d3"]
 
-        events = await _run(service, fake_mcp)
-
+        with pytest.raises(ValueError, match="не прошёл проверку"):
+            await _run(service, fake_mcp)
         assert len(fake_mcp.search_calls) == 3
-        assert final_chunk(events)["iteration"] == 3
-        collected = service._schedule_persist_answer.call_args.args[2]
-        assert collected["final_answer"] == "d3"
-        # 3 plans + 2 verdicts = 5 non-stream LLM calls (critic skipped on the last round)
+        service._schedule_persist_answer.assert_not_called()
         non_stream = [c for c in fake_llm.chat_calls if not c.stream]
-        assert len(non_stream) == 5
+        assert len(non_stream) == 6
 
     async def test_no_hits_triggers_requery(self, service, fake_llm):
         mcp = FakeDvdMcpClient(hits_per_call=[[], [{"name": "A", "text": "норма"}]])

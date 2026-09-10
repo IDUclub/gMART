@@ -57,7 +57,7 @@ class ScenarioAnalytics:
             # Each target comes from the explicit user scope, not model arguments.
             arguments = host._prepare_arguments(tool, {}, sid)
             source = f"URBAN_MCP/{group}"
-            yield host._buf(
+            yield await host._buf(
                 request_id,
                 host._tool_call_event(
                     {"group": group, "tool_name": name, "arguments": arguments}, source
@@ -87,7 +87,7 @@ class ScenarioAnalytics:
                 box,
                 retry_transient=True,
             ):
-                yield host._buf(request_id, event)
+                yield await host._buf(request_id, event)
 
         rows = []
         try:
@@ -195,10 +195,10 @@ class ScenarioAnalytics:
                 title="Показатели и сравнение сценариев",
             )
             if table:
-                yield host._buf(request_id, {"type": "table", "content": table})
+                yield await host._buf(request_id, {"type": "table", "content": table})
                 parts.append(host._table_part(table))
         for event in host._answer_events(answer):
-            yield host._buf(request_id, event)
+            yield await host._buf(request_id, event)
         parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
         await host._complete_pipeline(
             request_id,

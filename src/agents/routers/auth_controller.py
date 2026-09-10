@@ -1,8 +1,16 @@
+import json
+
 from fastapi import APIRouter, Depends
 
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
 from src.agents.common.config.app_config import AgentsAppConfig
-from src.agents.common.exceptions.base_exceptions import AgentsNotFound
+from src.agents.common.exceptions.api_exceptions import DownstreamServiceError
+from src.agents.common.exceptions.base_exceptions import (
+    AgentsBaseException,
+    AgentsInputException,
+    AgentsNotFound,
+    AgentsUnauthorizedException,
+)
 from src.agents.dependencies.dependencies import get_app_config
 from src.agents.dto.auth_dto import LoginRequestDTO
 
@@ -55,12 +63,35 @@ async def issue_token(
             "AUTH_HELPER_API_KEY to enable /auth/token"
         )
     handler = JsonApiHandler(app_config.AUTH_HELPER_URL)
-    return await handler.post(
-        "/api/token",
-        headers={"X-Auth-Helper-Api-Key": app_config.AUTH_HELPER_API_KEY},
-        data={
-            "username": request.username,
-            "password": request.password,
-            "scope": "openid profile email",
-        },
-    )
+    try:
+        return await handler.post(
+            "/api/token",
+            headers={"X-Auth-Helper-Api-Key": app_config.AUTH_HELPER_API_KEY},
+            data={
+                "username": request.username,
+                "password": request.password,
+                "scope": "openid profile email",
+            },
+        )
+    except AgentsBaseException as exc:
+        payload = exc.error_input
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (ValueError, TypeError):
+                payload = None
+        detail = payload.get("detail", payload) if isinstance(payload, dict) else None
+        if (
+            isinstance(exc, AgentsInputException)
+            and isinstance(detail, dict)
+            and detail.get("error") == "invalid_grant"
+        ):
+            raise AgentsUnauthorizedException(
+                "Неверный логин или пароль. Проверьте данные для входа."
+            ) from None
+        # A helper key/realm/configuration failure must not be blamed on the user.
+        raise DownstreamServiceError(
+            "auth-helper",
+            exc.status_code,
+            "Сервис входа временно недоступен. Повторите попытку позже.",
+        ) from None

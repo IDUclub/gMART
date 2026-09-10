@@ -79,9 +79,9 @@ async def test_critic_parses_rejection(fake_llm):
     assert verdict.refined_search_query == "новый"
 
 
-async def test_critic_fails_open_on_invalid_json(fake_llm):
-    # 3 attempts (retries=2) all invalid → critic returns satisfied to avoid an infinite loop
+async def test_critic_does_not_approve_on_invalid_json(fake_llm):
+    # Three bounded attempts cannot establish support for the draft.
     fake_llm.json_responses = ["garbage", "garbage", "garbage"]
     verdict = await AnswerCritic(fake_llm).review("m", "q", "ctx", "answer")
-    assert verdict.satisfied is True
+    assert verdict.satisfied is False
     assert len(fake_llm.chat_calls) == 3

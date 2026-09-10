@@ -38,6 +38,11 @@ class ProvisionPlanBuilder:
         services_catalog: list[str],
         history: list[dict] | None = None,
     ) -> ProvisionPlan:
+        if not services_catalog:
+            return ProvisionPlan(
+                mode=ProvisionPlanMode.NEEDS_CLARIFICATION,
+                clarification_question="В выбранном сценарии нет доступных сервисов для расчёта обеспеченности. Выберите сценарий с нужными сервисами.",
+            )
         raw = await self._request_plan(model, user_query, services_catalog, history)
         raw = self._canonicalize_plan(raw, services_catalog)
         if (
@@ -112,10 +117,16 @@ class ProvisionPlanBuilder:
             *(history or []),
             {"role": "user", "content": user_query},
         ]
+        schema = ProvisionPlan.model_json_schema()
+        schema["properties"]["service_name"]["enum"] = [*services_catalog, None]
+        for key in ("service_names", "layer_service_names"):
+            schema["properties"][key]["items"]["enum"] = services_catalog
         for attempt in range(_retries + 1):
             response = await self.llm_client.chat(
                 model=model,
-                options={"temperature": 0, "num_predict": 512},
+                options={"temperature": 0, "num_predict": 1024},
+                think=False,
+                format=schema,
                 messages=messages,
             )
             content = response["message"]["content"]
@@ -180,7 +191,7 @@ class ProvisionPlanBuilder:
 Правила заполнения полей:
 - service_name — только для "effects" и "provision": ТОЧНОЕ название, скопированное дословно \
 из списка доступных сервисов. Не используй форму слова из запроса пользователя. \
-Пример: пользователь написал «школами» или «школ», в каталоге есть «Школы» — верни "Школы".
+Склонения и множественное число из запроса замени точной формой из каталога выше.
 - service_names — только для "summary": список точных названий из доступных, если пользователь \
 ограничил сводку конкретными сервисами; иначе пустой список (значит — по всем доступным).
 - layer_service_names — только для "summary": точные названия сервисов, для которых пользователь \

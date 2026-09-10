@@ -72,6 +72,15 @@ async def test_search_includes_user_index_scope():
     assert args["include_inherited"] is True
 
 
+async def test_scoped_search_forwards_only_constructor_identity():
+    c = DvdMcpClient(Mock(), user_id="verified-user")
+    c.execute_tool = AsyncMock(return_value={"hits": []})
+    await c.search("q", scenario_id=772)
+    assert c.execute_tool.await_args.args[1]["user_id"] == "verified-user"
+    await c.search("shared-only query")
+    assert "user_id" not in c.execute_tool.await_args.args[1]
+
+
 async def test_search_omits_empty_filters():
     c = _client()
     c.execute_tool = AsyncMock(return_value={"hits": []})

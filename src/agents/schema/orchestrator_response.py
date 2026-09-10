@@ -10,7 +10,7 @@ from src.agents.schema.dvd_response import (
     WarningContent,
 )
 
-StepStatus = Literal["completed", "failed", "suspended"]
+StepStatus = Literal["completed", "failed", "suspended", "needs_clarification"]
 
 
 class OrchestratorStatusResponse(BaseModel):

@@ -7,7 +7,7 @@ Translates the Ollama-shaped calls the agents make into ``/v1/chat/completions``
   ``options={"num_predict": ...}``  -> ``max_tokens``
   ``options={"num_ctx": ...}``      -> dropped; the context length is a server-side
                                        setting there (vLLM's ``--max-model-len``)
-  ``think=False``                   -> ``reasoning_effort="none"``
+  ``think=False``                   -> ``reasoning_effort="none"`` (``low`` for gpt-oss)
 
 Dropping ``think=False`` would not be cosmetic on a reasoning model: the trace is
 then generated as part of the completion and eats the ``num_predict`` budget, which
@@ -20,11 +20,12 @@ Ollama's own ``/v1`` — so it is the default and needs no configuration.
   ``reasoning_effort`` (default) — ``reasoning_effort=OPENAI_THINK_EFFORT`` (``"none"`` unless
                                   overridden; a Harmony-served gpt-oss rejects ``"none"`` *and*
                                   ``"minimal"`` with a 400 and accepts only high/medium/low, so
-                                  set ``"low"`` there)
+                                  automatically use ``"low"`` there for think=False)
   ``chat_template``             — ``chat_template_kwargs={"enable_thinking": False}``,
                                   which vLLM honours but Ollama ignores; the variable
                                   name comes from OPENAI_THINK_CHAT_TEMPLATE_KWARG
-  ``off``                       — send nothing, and warn once
+  ``off``                       — send nothing, and warn once; legacy gpt-oss calls
+                                  with think=False still receive a supported effort
 
 Whatever is dropped is logged once per process so a silent behaviour change cannot
 hide: structured output and the reasoning toggle are what keep the restriction
@@ -198,7 +199,21 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             **self._sampling(options),
             **extra,
         }
-        if think is not None:
+        if (
+            think is False
+            and "gpt-oss" in model.lower()
+            and self.think_mode != THINK_CHAT_TEMPLATE
+        ):
+            # Legacy "off" only stopped forwarding think=False. Harmony then
+            # generated unrestricted reasoning and exhausted small JSON budgets.
+            effort = (
+                self.think_effort
+                if self.think_effort in {"low", "medium", "high"}
+                else "low"
+            )
+            if call.get("reasoning_effort") in (None, "none", "minimal"):
+                call["reasoning_effort"] = effort
+        elif think is not None:
             self._apply_think(call, think)
         response_format = self._response_format(format)
         if response_format:
@@ -217,8 +232,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             # model, inside the trace. vLLM's reasoning parser only fills the field
             # once it sees the closing tag, so truncation mid-thought leaves both
             # content and the trace empty; the warning must not depend on the trace.
-            # Callers only see an empty string, so say it out loud: the fix is more
-            # max_tokens or disabling thinking, not a retry.
+            # Structured calls retry once with a larger output budget below.
             logger.warning(
                 "empty content with finish_reason=length"
                 + (
@@ -226,8 +240,8 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                     if reasoning
                     else ""
                 )
-                + ": the whole num_predict budget was spent before an answer. Raise "
-                "it, or disable thinking via OPENAI_THINK_CHAT_TEMPLATE_KWARG"
+                + ": output budget exhausted before content. Increase max_tokens "
+                "or select a supported lower reasoning effort; context size is separate."
             )
         return LlmChatResponse(
             model=getattr(completion, "model", "") or "",
@@ -293,6 +307,31 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         call = self._build(model, messages, stream, think, format, options, kwargs)
         try:
             result = await self.client.chat.completions.create(**call)
+            if not stream and call.get("response_format"):
+                response = self._as_response(result)
+                if (
+                    response.done_reason == "length"
+                    or not response.message.content.strip()
+                ):
+                    # Retry only this read-only JSON completion, once. Discard a
+                    # truncated response, even if its prefix happens to parse.
+                    budget = call.get("max_tokens") or 2048
+                    call["max_tokens"] = max(budget, min(8192, max(4096, budget * 2)))
+                    logger.warning(
+                        "Retrying incomplete structured LLM response with max_tokens={}",
+                        call["max_tokens"],
+                    )
+                    result = await self.client.chat.completions.create(**call)
+                    response = self._as_response(result)
+                    if (
+                        response.done_reason == "length"
+                        or not response.message.content.strip()
+                    ):
+                        raise LlmResponseError(
+                            "Model did not produce a complete structured answer after a bounded retry",
+                            502,
+                        )
+                return response
         except APIStatusError as exc:
             raise LlmResponseError(str(exc), exc.status_code) from exc
         except OpenAIError as exc:

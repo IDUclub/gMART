@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class SearchKind(StrEnum):
@@ -45,6 +45,17 @@ class RetrievalPlan(BaseModel):
     version: str | None = None
     include_children: bool = True
     allow_multiple: bool = False
+
+    @field_validator(
+        "pattern", "name_query", "doc_id", "version", "block", mode="before"
+    )
+    @classmethod
+    def normalize_absent_filter(cls, value):
+        # Some compatible LLMs encode an absent optional filter as the string
+        # "null". Never use it as an actual document/fragment identifier.
+        if isinstance(value, str) and value.strip().casefold() in {"", "null", "none"}:
+            return None
+        return value
 
 
 class CriticVerdict(BaseModel):

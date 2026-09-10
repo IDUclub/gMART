@@ -139,7 +139,7 @@ class OrchestratorService(BaseLlmService):
         request_id = request_id or self.state_store.new_request_id()
 
         original_chat_id = chat_id
-        yield self._buf(request_id, self._pipeline_started_event(request_id))
+        yield await self._buf(request_id, self._pipeline_started_event(request_id))
 
         # No chat_id supplied → create a new chat. Chat storage failures must not
         # break the stream: the pipeline keeps going without persistence.
@@ -156,7 +156,9 @@ class OrchestratorService(BaseLlmService):
                     scenario_id=scenario_id,
                     agent_id="orchestrator",
                 )
-                yield self._buf(request_id, self._chat_created_event(chat_id, title))
+                yield await self._buf(
+                    request_id, self._chat_created_event(chat_id, title)
+                )
             except Exception as exc:
                 logger.warning(f"Orchestrator: failed to create chat: {exc}")
                 chat_id = None
@@ -196,23 +198,25 @@ class OrchestratorService(BaseLlmService):
                 logger.warning(f"Orchestrator: failed to persist user question: {exc}")
 
         # ── Planning ───────────────────────────────────────────────────
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status("planning", "Определяю, какие агенты нужны для запроса…"),
         )
         agents = available_agents(self.app_config, scenario_id)
-        plan = await self.plan_builder.build_plan(model, user_query, agents, history)
+        plan = await self.plan_builder.build_plan(
+            model, user_query, agents, history, scenario_id=scenario_id
+        )
 
         if plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION:
             question = plan.clarification_question or ""
-            yield self._buf(request_id, self._clarification_event(question))
+            yield await self._buf(request_id, self._clarification_event(question))
             if persist_history:
                 self._schedule_persist_text(token, chat_id, question, scenario_id)
             await self.state_store.set_status(request_id, PipelineStatus.DONE)
             return
 
         # ── Execution ──────────────────────────────────────────────────
-        yield self._buf(request_id, self._plan_event(plan))
+        yield await self._buf(request_id, self._plan_event(plan))
 
         summary_steps: list[dict[str, Any]] = []
         digests: list[tuple[OrchestratorStep, str]] = []
@@ -228,7 +232,7 @@ class OrchestratorService(BaseLlmService):
 
             effective_query = self._compose_step_query(step, digests)
             step_request_id = self.state_store.new_request_id()
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._step_started_event(
                     step_number, step, step_request_id, effective_query
@@ -237,6 +241,7 @@ class OrchestratorService(BaseLlmService):
 
             status = "completed"
             collected: dict[str, Any] = {"chunks": {}, "notes": []}
+            step_tables: list[TablePartRequest] = []
             try:
                 pipeline = self._build_step_pipeline(
                     step,
@@ -258,13 +263,25 @@ class OrchestratorService(BaseLlmService):
                     self._collect_digest(collected, item)
                     table_part = self._table_part(item)
                     if table_part is not None:
-                        table_parts.append(table_part)
-                    yield self._buf(
+                        step_tables.append(table_part)
+                    yield await self._buf(
                         request_id,
                         self._step_event(step_number, step, item),
                     )
-                    if item.get("type") == "error":
+                    if item.get("type") in {"error", "pipeline_failed"}:
                         status = "failed"
+                        break
+                    if item.get("type") == "clarification":
+                        status = "needs_clarification"
+                        content = item.get("content") or {}
+                        collected = {
+                            "chunks": {},
+                            "notes": [
+                                content.get("question")
+                                or content.get("text")
+                                or "Для выполнения шага требуется уточнение пользователя."
+                            ],
+                        }
                         break
                     if item.get("type") == "pipeline_suspended":
                         status = "suspended"
@@ -278,19 +295,28 @@ class OrchestratorService(BaseLlmService):
                 status = "failed"
 
             digest = self._digest_from_collected(collected)
-            yield self._buf(
+            if status in {"failed", "suspended"}:
+                # Streamed text can be an unverified draft. Never turn a failed
+                # draft into a saved answer or evidence for a later step.
+                digest = (
+                    "Шаг не выполнен: агент сообщил об ошибке. Результат не подтверждён."
+                    if status == "failed"
+                    else "Шаг приостановлен. Результат ещё не подтверждён."
+                )
+            yield await self._buf(
                 request_id,
                 self._step_finished_event(step_number, step, status, digest),
             )
             summary_steps.append(self._summary_step(step_number, step, status, digest))
             if status == "completed":
                 digests.append((step, digest))
+                table_parts.extend(step_tables)
             else:
                 # Later steps consume earlier digests; running them after a
                 # failure would produce misleading results — abort the plan.
                 aborted = True
 
-        yield self._buf(request_id, self._final_event(summary_steps))
+        yield await self._buf(request_id, self._final_event(summary_steps))
         await self.state_store.set_status(
             request_id, PipelineStatus.FAILED if aborted else PipelineStatus.DONE
         )
@@ -322,6 +348,20 @@ class OrchestratorService(BaseLlmService):
         temperature: float,
         scenario_id: int | None,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        if step.agent == OrchestratorAgent.COMPLIANCE:
+            if scenario_id is None:
+                raise ValueError("compliance step requires scenario_id")
+            return self.restriction_service.run_compliance_pipeline(
+                mcp_client=idu_mcp_client,
+                normgraph_mcp_client=normgraph_mcp_client,
+                token=token,
+                temperature=temperature,
+                model=model,
+                user_query=user_query,
+                scenario_id=scenario_id,
+                request_id=step_request_id,
+                persist_history=False,
+            )
         if step.agent == OrchestratorAgent.RESTRICTION:
             if scenario_id is None:
                 raise ValueError("restriction step requires scenario_id")
@@ -528,9 +568,9 @@ class OrchestratorService(BaseLlmService):
     # Event helpers
     # ------------------------------------------------------------------
 
-    def _buf(self, request_id: str, event: dict) -> dict:
-        """Fire-and-forget buffer the event for reconnect replay, then return it."""
-        asyncio.create_task(self.state_store.buffer_event(request_id, event))
+    async def _buf(self, request_id: str, event: dict) -> dict:
+        """Persist the event for reconnect replay before returning it."""
+        await self.state_store.buffer_event(request_id, event)
         return event
 
     @staticmethod

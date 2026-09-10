@@ -123,7 +123,7 @@ class DvdRagService(BaseLlmService):
         original_chat_id = chat_id
 
         if not is_reconnect:
-            yield self._buf(request_id, self._pipeline_started_event(request_id))
+            yield await self._buf(request_id, self._pipeline_started_event(request_id))
 
             # No chat_id supplied → create a new chat tagged with scenario_id. The
             # project_id is resolved from scenario_id; if that lookup fails we warn the
@@ -145,7 +145,7 @@ class DvdRagService(BaseLlmService):
                             f"DVD QA: failed to resolve project_id for "
                             f"scenario_id={scenario_id}: {exc}"
                         )
-                        yield self._buf(
+                        yield await self._buf(
                             request_id,
                             self._project_lookup_failed_event(scenario_id),
                         )
@@ -163,7 +163,7 @@ class DvdRagService(BaseLlmService):
                         resolve_project_id=False,
                         agent_id="documents",
                     )
-                    yield self._buf(
+                    yield await self._buf(
                         request_id, self._chat_created_event(chat_id, title)
                     )
                 except Exception as exc:  # chat storage must not break the stream
@@ -259,7 +259,7 @@ class DvdRagService(BaseLlmService):
             is_last = iteration == self.MAX_ITERATIONS
 
             # ── Step 1: plan retrieval (LLM chooses query + context size) ──
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "retrieval_planning",
@@ -300,7 +300,7 @@ class DvdRagService(BaseLlmService):
                 collected["retrieval_constraints"] = locked
 
             if plan.retrieval_mode != "semantic":
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._status(
                         "searching",
@@ -311,7 +311,7 @@ class DvdRagService(BaseLlmService):
                     dvd_mcp_client, plan, scenario_id, collected
                 )
                 for call in search_result.pop("recorded_calls"):
-                    yield self._buf(
+                    yield await self._buf(
                         request_id,
                         self._tool_call(
                             _EXECUTION_MODE, [call], mcp_source=_MCP_SOURCE
@@ -352,7 +352,7 @@ class DvdRagService(BaseLlmService):
                 context = None
 
             if context is None:
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._status(
                         "searching",
@@ -398,7 +398,7 @@ class DvdRagService(BaseLlmService):
                     dvd_mcp_client.tool_name_for_kind(plan.kind), search_args
                 )
                 collected["tool_calls"].append(tool_call)
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._tool_call(
                         _EXECUTION_MODE, [tool_call], mcp_source=_MCP_SOURCE
@@ -406,7 +406,7 @@ class DvdRagService(BaseLlmService):
                 )
 
             if not hits and not is_last:
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._status(
                         "searching",
@@ -430,8 +430,26 @@ class DvdRagService(BaseLlmService):
                 )
                 continue
 
+            if not hits:
+                answer = "В доступной базе документов не найдены фрагменты по этому запросу. Подтвердить требование или привести цитату не удалось; отсутствие результатов поиска не означает отсутствие нормативного требования."
+                collected["final_answer"] = answer
+                collected["newly_completed"] = True
+                yield await self._buf(
+                    request_id, self._chunk(answer, done=True, iteration=iteration)
+                )
+                await self._save_progress(
+                    request_id,
+                    collected,
+                    completed_iterations=iteration,
+                    accepted=True,
+                    final_answer=answer,
+                    final_iteration=iteration,
+                )
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
+
             context = self.context_builder.build_context(hits)
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "context_processing",
@@ -449,7 +467,7 @@ class DvdRagService(BaseLlmService):
                 "complete": not prepared.failed_parts,
             }
             if prepared.failed_parts:
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     {
                         "type": "warning",
@@ -462,7 +480,7 @@ class DvdRagService(BaseLlmService):
                 )
 
             # ── Step 3: draft the answer (streamed) ───────────────────────
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "answer_drafting", f"Формирую ответ (попытка {iteration})…"
@@ -477,7 +495,7 @@ class DvdRagService(BaseLlmService):
                     + ".\n\n"
                 )
                 draft_parts.append(prefix)
-                yield self._buf(
+                yield await self._buf(
                     request_id, self._chunk(prefix, done=False, iteration=iteration)
                 )
                 revision_note = (
@@ -495,37 +513,32 @@ class DvdRagService(BaseLlmService):
             ):
                 if text := chunk_event["content"]["text"]:
                     draft_parts.append(text)
-                yield self._buf(request_id, chunk_event)
+                yield await self._buf(request_id, chunk_event)
             draft = "".join(draft_parts).strip()
 
-            # ── Step 4: critique (last round is always accepted) ──────────
-            if not is_last:
-                yield self._buf(
-                    request_id,
-                    self._status(
-                        "self_review",
-                        "Проверяю ответ на полноту и соответствие источникам…",
-                    ),
-                )
-                review_context = await self.context_reducer.prepare(
-                    model, user_query + "\n" + draft, context
-                )
-                if review_context.failed_parts:
-                    raise ValueError(
-                        "cannot review the answer: some evidence parts failed"
-                    )
-                verdict = await self.critic.review(
-                    model, user_query, review_context.text, draft
-                )
-            else:
-                verdict = None
+            # A retry budget bounds cost, not the evidence required for acceptance.
+            yield await self._buf(
+                request_id,
+                self._status(
+                    "self_review",
+                    "Проверяю ответ на полноту и соответствие источникам…",
+                ),
+            )
+            review_context = await self.context_reducer.prepare(
+                model, user_query + "\n" + draft, context
+            )
+            if review_context.failed_parts:
+                raise ValueError("cannot review the answer: some evidence parts failed")
+            verdict = await self.critic.review(
+                model, user_query, review_context.text, draft
+            )
 
-            if is_last or (verdict is not None and verdict.satisfied):
+            if verdict.satisfied:
                 collected["final_answer"] = draft
                 collected["newly_completed"] = True
                 # Emit terminal events BEFORE checkpointing "accepted" so a reconnect that
                 # sees accepted=True always has the done chunk in the replay buffer.
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._status(
                         "finalizing",
@@ -536,7 +549,7 @@ class DvdRagService(BaseLlmService):
                         ),
                     ),
                 )
-                yield self._buf(
+                yield await self._buf(
                     request_id, self._chunk("", done=True, iteration=iteration)
                 )
                 await self._save_progress(
@@ -550,8 +563,12 @@ class DvdRagService(BaseLlmService):
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
 
+            if is_last:
+                raise ValueError(
+                    "Ответ не прошёл проверку по источникам за допустимое число попыток."
+                )
             critique_text = (verdict.critique or "ответ недостаточно обоснован").strip()
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "self_review",
@@ -573,8 +590,10 @@ class DvdRagService(BaseLlmService):
         # Defensive: the last iteration always accepts above, so this is normally unreachable
         # (covers an empty resume range).
         collected["newly_completed"] = True
-        yield self._buf(request_id, self._status("finalizing", "Ответ сформирован"))
-        yield self._buf(
+        yield await self._buf(
+            request_id, self._status("finalizing", "Ответ сформирован")
+        )
+        yield await self._buf(
             request_id, self._chunk("", done=True, iteration=final_iteration)
         )
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
@@ -631,6 +650,7 @@ class DvdRagService(BaseLlmService):
         async for part in await self.llm_client.chat(
             model,
             messages,
+            think=False,
             options={
                 "temperature": temperature,
                 "num_predict": self.context_reducer.output_tokens,
@@ -719,10 +739,12 @@ class DvdRagService(BaseLlmService):
     async def _finish_retrieval(self, request_id, collected, answer, iteration):
         """Grounded not-found / clarification; no model invents an alternative answer."""
         collected.update(final_answer=answer, newly_completed=True)
-        yield self._buf(
+        yield await self._buf(
             request_id, self._chunk(answer, done=False, iteration=iteration)
         )
-        yield self._buf(request_id, self._chunk("", done=True, iteration=iteration))
+        yield await self._buf(
+            request_id, self._chunk("", done=True, iteration=iteration)
+        )
         await self._save_progress(
             request_id,
             collected,
@@ -737,9 +759,9 @@ class DvdRagService(BaseLlmService):
     # Redis state helpers (event buffering + resume checkpoint)
     # ------------------------------------------------------------------
 
-    def _buf(self, request_id: str, event: dict) -> dict:
-        """Fire-and-forget buffer the event for reconnect replay, then return it."""
-        asyncio.create_task(self.state_store.buffer_event(request_id, event))
+    async def _buf(self, request_id: str, event: dict) -> dict:
+        """Persist the event for reconnect replay before returning it."""
+        await self.state_store.buffer_event(request_id, event)
         return event
 
     async def _save_progress(

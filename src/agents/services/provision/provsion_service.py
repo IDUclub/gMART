@@ -216,7 +216,7 @@ class ProvisionService(BaseLlmService):
 
         original_chat_id = chat_id
         if not is_reconnect:
-            yield self._buf(request_id, self._pipeline_started_event(request_id))
+            yield await self._buf(request_id, self._pipeline_started_event(request_id))
 
             # A2A runs pass persist_history=False: no chat is created and nothing
             # is written to ChatStorage (history stays read-only).
@@ -241,11 +241,13 @@ class ProvisionService(BaseLlmService):
                         ),
                         chat_result,
                     ):
-                        yield self._buf(request_id, event)
+                        yield await self._buf(request_id, event)
                 except PipelineSuspendedError:
                     return
                 chat_id, title = chat_result[0]
-                yield self._buf(request_id, self._chat_created_event(chat_id, title))
+                yield await self._buf(
+                    request_id, self._chat_created_event(chat_id, title)
+                )
 
             await self.state_store.create(
                 request_id,
@@ -288,7 +290,7 @@ class ProvisionService(BaseLlmService):
         checkpoint = await self.state_store.get_checkpoint(request_id)
 
         # ── Step 0: RESOLVE_SERVICE ───────────────────────────────────
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status("service_lookup", "Определяю тип запроса и параметры"),
         )
@@ -305,7 +307,7 @@ class ProvisionService(BaseLlmService):
                     ),
                     resolve_out,
                 ):
-                    yield self._buf(request_id, event)
+                    yield await self._buf(request_id, event)
             except PipelineSuspendedError:
                 return
             plan, service_types = resolve_out[0]
@@ -323,19 +325,21 @@ class ProvisionService(BaseLlmService):
             )
 
         if plan.mode == ProvisionPlanMode.NEEDS_CLARIFICATION:
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "service_lookup", "Не удалось определить тип запроса из сообщения"
                 ),
             )
-            yield self._buf(
+            yield await self._buf(
                 request_id,
-                self._chunk(
-                    plan.clarification_question
-                    or "Уточните, какой анализ обеспеченности сервисами нужен.",
-                    done=True,
-                ),
+                {
+                    "type": "clarification",
+                    "content": {
+                        "question": plan.clarification_question
+                        or "Уточните, какой анализ обеспеченности сервисами нужен."
+                    },
+                },
             )
             await self.state_store.set_status(request_id, PipelineStatus.DONE)
             return
@@ -406,7 +410,7 @@ class ProvisionService(BaseLlmService):
         request_id: str,
         service_types: dict[str, int],
     ) -> AsyncGenerator:
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status("service_lookup", "Собираю список доступных сервисов"),
         )
@@ -421,7 +425,7 @@ class ProvisionService(BaseLlmService):
             )
         else:
             text = "В сценарии нет доступных для анализа сервисов."
-        yield self._buf(request_id, self._chunk(text, done=True))
+        yield await self._buf(request_id, self._chunk(text, done=True))
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
 
     # ------------------------------------------------------------------
@@ -453,7 +457,7 @@ class ProvisionService(BaseLlmService):
             if name in service_types
         }
         if not services_args:
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._chunk(
                     "В сценарии нет доступных сервисов для расчёта сводки.", done=True
@@ -462,7 +466,7 @@ class ProvisionService(BaseLlmService):
             await self.state_store.set_status(request_id, PipelineStatus.DONE)
             return
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status(
                 "effects_calculation",
@@ -486,7 +490,7 @@ class ProvisionService(BaseLlmService):
             return
         prov_result = prov_out[0]
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._tool_call(
                 "effects_calculation",
@@ -494,51 +498,45 @@ class ProvisionService(BaseLlmService):
                 mcp_source="OBJECTS_EFFECTS_MCP_URL",
             ),
         )
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status("effects_calculation", "Расчёт обеспеченности завершён"),
         )
         for item in self._provision_feature_collections(prov_result.data):
-            yield self._buf(request_id, item)
+            yield await self._buf(request_id, item)
 
         table = self.context_builder.build_summary_table(prov_result.data)
         if table["rows"]:
-            yield self._buf(request_id, self._table(table))
+            yield await self._buf(request_id, self._table(table))
         else:
             failed = [
                 f"{svc.get('name', '')}: {svc.get('error', 'нет данных')}"
                 for svc in (prov_result.data.get("services") or {}).values()
             ]
-            yield self._buf(
+            await self.state_store.set_status(request_id, PipelineStatus.FAILED)
+            yield await self._buf(
                 request_id,
-                self._chunk(
-                    "Не удалось рассчитать обеспеченность ни для одного сервиса.\n"
-                    + "\n".join(failed),
-                    done=True,
-                ),
+                {
+                    "type": "error",
+                    "content": {
+                        "traceback": "",
+                        "message": "Не удалось рассчитать обеспеченность ни для одного сервиса.\n"
+                        + "\n".join(failed),
+                    },
+                },
             )
-            await self.state_store.set_status(request_id, PipelineStatus.DONE)
             return
 
         if PipelineStep.FINAL_RESPONSE not in checkpoint:
-            context = self.context_builder.build_summary_context(prov_result.data)
+            context = self.context_builder.build_summary_answer(prov_result.data)
             if plan.target_population is not None:
                 context += (
                     f"\n\nРасчёт выполнен для заданной пользователем численности "
                     f"населения: {plan.target_population} человек."
                 )
-            async for chunk in self._generate_analysis(
-                model,
-                user_query,
-                context,
-                temperature,
-                history=llm_history,
-                instructions=SUMMARY_ANALYSIS_INSTRUCTIONS,
-                trailing_note=(
-                    POPULATION_HINT if plan.target_population is None else None
-                ),
-            ):
-                yield self._buf(request_id, chunk)
+            if plan.target_population is None:
+                context += POPULATION_HINT
+            yield await self._buf(request_id, self._chunk(context, done=True))
             await self.state_store.save_checkpoint(
                 request_id, PipelineStep.FINAL_RESPONSE, True
             )
@@ -584,14 +582,14 @@ class ProvisionService(BaseLlmService):
                 return
             svc_result = svc_out[0]
             service_type_id = svc_result.data["service_type_id"]
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._tool_call(
                     "service_lookup", svc_result.tool_calls, mcp_source="IDU_MCP_URL"
                 ),
             )
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status(
                 "effects_calculation",
@@ -618,7 +616,7 @@ class ProvisionService(BaseLlmService):
             return
         prov_result = prov_out[0]
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._tool_call(
                 "effects_calculation",
@@ -626,54 +624,45 @@ class ProvisionService(BaseLlmService):
                 mcp_source="OBJECTS_EFFECTS_MCP_URL",
             ),
         )
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status("effects_calculation", "Расчёт обеспеченности завершён"),
         )
         for item in self._provision_feature_collections(prov_result.data):
-            yield self._buf(request_id, item)
+            yield await self._buf(request_id, item)
 
         service_result = self._single_service_result(prov_result.data, service_type_id)
         summary = (service_result or {}).get("summary")
         if not summary:
             error = (service_result or {}).get("error") or "нет данных"
-            yield self._buf(
+            await self.state_store.set_status(request_id, PipelineStatus.FAILED)
+            yield await self._buf(
                 request_id,
-                self._chunk(
-                    f"Не удалось рассчитать обеспеченность сервисом «{service_name}»: "
-                    f"{error}",
-                    done=True,
-                ),
+                {
+                    "type": "error",
+                    "content": {
+                        "traceback": "",
+                        "message": f"Не удалось рассчитать обеспеченность сервисом «{service_name}»: {error}",
+                    },
+                },
             )
-            await self.state_store.set_status(request_id, PipelineStatus.DONE)
             return
 
         table = self.context_builder.build_provision_metrics_table(
             summary, service_name
         )
-        yield self._buf(request_id, self._table(table))
+        yield await self._buf(request_id, self._table(table))
 
         if PipelineStep.FINAL_RESPONSE not in checkpoint:
-            context = self.context_builder.build_provision_context(
-                summary, service_name
-            )
+            context = self.context_builder.build_provision_answer(summary, service_name)
             if plan.target_population is not None:
                 context += (
                     f"\n\nРасчёт выполнен для заданной пользователем численности "
                     f"населения: {plan.target_population} человек."
                 )
-            async for chunk in self._generate_analysis(
-                model,
-                user_query,
-                context,
-                temperature,
-                history=llm_history,
-                instructions=PROVISION_ANALYSIS_INSTRUCTIONS,
-                trailing_note=(
-                    POPULATION_HINT if plan.target_population is None else None
-                ),
-            ):
-                yield self._buf(request_id, chunk)
+            if plan.target_population is None:
+                context += POPULATION_HINT
+            yield await self._buf(request_id, self._chunk(context, done=True))
             await self.state_store.save_checkpoint(
                 request_id, PipelineStep.FINAL_RESPONSE, True
             )
@@ -702,7 +691,7 @@ class ProvisionService(BaseLlmService):
         target_population: int | None = plan.target_population
 
         # ── Step 1: GET_SERVICE_ID ────────────────────────────────────
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status("service_lookup", f"Ищу сервис «{service_name}» в каталоге"),
         )
@@ -722,19 +711,19 @@ class ProvisionService(BaseLlmService):
         svc_result = svc_out[0]
 
         service_type_id: int = svc_result.data["service_type_id"]
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._tool_call(
                 "service_lookup", svc_result.tool_calls, mcp_source="IDU_MCP_URL"
             ),
         )
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status("service_lookup", f"Сервис найден: id={service_type_id}"),
         )
 
         # ── Step 2: CALCULATE_EFFECTS ─────────────────────────────────
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status(
                 "effects_calculation",
@@ -757,7 +746,7 @@ class ProvisionService(BaseLlmService):
                     ),
                     eff_out,
                 ):
-                    yield self._buf(request_id, event)
+                    yield await self._buf(request_id, event)
             except PipelineSuspendedError:
                 return
             eff_result = eff_out[0]
@@ -770,7 +759,7 @@ class ProvisionService(BaseLlmService):
             )
 
         effects_data: dict = eff_result.data
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._tool_call(
                 "effects_calculation",
@@ -778,18 +767,18 @@ class ProvisionService(BaseLlmService):
                 mcp_source="OBJECTS_EFFECTS_MCP_URL",
             ),
         )
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status("effects_calculation", "Расчёт эффектов завершён"),
         )
         for item in self._effects_feature_collections(effects_data):
-            yield self._buf(request_id, item)
+            yield await self._buf(request_id, item)
 
         table = self.context_builder.build_effects_pivot_table(
             effects_data, service_name
         )
         if table is not None:
-            yield self._buf(request_id, self._table(table))
+            yield await self._buf(request_id, self._table(table))
 
         # ── Step 3: FINAL_RESPONSE ────────────────────────────────────
         if PipelineStep.FINAL_RESPONSE not in checkpoint:
@@ -802,7 +791,7 @@ class ProvisionService(BaseLlmService):
                 history=llm_history,
                 instructions=EFFECTS_ANALYSIS_INSTRUCTIONS,
             ):
-                yield self._buf(request_id, chunk)
+                yield await self._buf(request_id, chunk)
             await self.state_store.save_checkpoint(
                 request_id, PipelineStep.FINAL_RESPONSE, True
             )
@@ -837,7 +826,7 @@ class ProvisionService(BaseLlmService):
                     ),
                     svc_out,
                 ):
-                    yield self._buf(request_id, event)
+                    yield await self._buf(request_id, event)
             except PipelineSuspendedError:
                 return
             svc_result = svc_out[0]
@@ -879,7 +868,7 @@ class ProvisionService(BaseLlmService):
                     ),
                     prov_out,
                 ):
-                    yield self._buf(request_id, event)
+                    yield await self._buf(request_id, event)
             except PipelineSuspendedError:
                 return
             prov_result = prov_out[0]
@@ -919,8 +908,8 @@ class ProvisionService(BaseLlmService):
         if False:  # pragma: no cover
             yield {}
 
-    def _buf(self, request_id: str, event: dict) -> dict:
-        asyncio.create_task(self.state_store.buffer_event(request_id, event))
+    async def _buf(self, request_id: str, event: dict) -> dict:
+        await self.state_store.buffer_event(request_id, event)
         return event
 
     # ------------------------------------------------------------------
@@ -973,7 +962,14 @@ class ProvisionService(BaseLlmService):
         messages = [
             {
                 "role": "system",
-                "content": f"{instructions}\n\nКонтекст расчёта:\n{context}",
+                "content": f"{instructions}\n"
+                "Средняя и медианная обеспеченность вычислены по зданиям, не по объектам сервиса. "
+                "Среднее значение не равно доле суммарного удовлетворённого спроса: эту долю можно "
+                "считать только как удовлетворённый спрос / общий спрос. Медиана 1 не означает, "
+                "что половина школ имеет свободные места. Различай дефицит вместимости и "
+                "неудовлетворённый спрос. Не называй количество объектов расчётного окружения "
+                "количеством объектов внутри границ сценария.\n\n"
+                f"Контекст расчёта:\n{context}",
             },
             *(history or []),
             {"role": "user", "content": user_query},
@@ -982,6 +978,7 @@ class ProvisionService(BaseLlmService):
         async for part in await self.llm_client.chat(
             model,
             messages,
+            think=False,
             options={"temperature": temperature},
             stream=True,
         ):
@@ -1100,6 +1097,13 @@ class ProvisionService(BaseLlmService):
                 TextPartRequest(kind="text", payload=TextPayload(text=text))
                 if text
                 else None
+            )
+        if item_type == "clarification":
+            return TextPartRequest(
+                kind="text",
+                payload=TextPayload(
+                    text=content.get("question") or "Уточните параметры запроса."
+                ),
             )
         return None
 

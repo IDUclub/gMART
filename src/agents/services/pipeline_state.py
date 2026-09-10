@@ -9,6 +9,14 @@ from typing import Any
 
 import redis.asyncio as aioredis
 from loguru import logger
+from redis.exceptions import (
+    AuthenticationError,
+    ConnectionError,
+    TimeoutError,
+    WatchError,
+)
+
+from src.agents.common.exceptions.base_exceptions import PipelineStorageUnavailable
 
 TOKEN_REFRESH_TIMEOUT: float = 60.0
 PIPELINE_TTL: int = 15 * 60  # absolute reconnect/token-refresh window
@@ -56,12 +64,36 @@ class PipelineStateStore:
     def _key(self, request_id: str, suffix: str) -> str:
         return f"{self._PREFIX}:{request_id}:{suffix}"
 
+    async def _retry(self, operation, *args, **kwargs):
+        """Retry a caller-selected idempotent operation, never an entire pipeline."""
+        for attempt in range(3):
+            try:
+                return await operation(*args, **kwargs)
+            except AuthenticationError as exc:
+                raise PipelineStorageUnavailable() from exc
+            except (
+                ConnectionError,
+                TimeoutError,
+                ConnectionResetError,
+                WatchError,
+            ) as exc:
+                if attempt == 2:
+                    raise PipelineStorageUnavailable() from exc
+                logger.warning(
+                    "Pipeline storage operation retry {}/3 ({})",
+                    attempt + 1,
+                    type(exc).__name__,
+                )
+                await asyncio.sleep(0.1 * (2**attempt))
+
     @staticmethod
     def new_request_id() -> str:
         return str(uuid.uuid4())
 
     async def exists(self, request_id: str) -> bool:
-        return bool(await self._redis.exists(self._key(request_id, "state")))
+        return bool(
+            await self._retry(self._redis.exists, self._key(request_id, "state"))
+        )
 
     async def create(
         self,
@@ -83,40 +115,43 @@ class PipelineStateStore:
             "token_wait_seconds": 0.0,
             "started_at": time.time(),
         }
-        await self._redis.setex(
+        await self._retry(
+            self._redis.setex,
             self._key(request_id, "state"),
             PIPELINE_TTL,
             json.dumps(state, ensure_ascii=False),
         )
 
     async def get_state(self, request_id: str) -> dict | None:
-        raw = await self._redis.get(self._key(request_id, "state"))
+        raw = await self._retry(self._redis.get, self._key(request_id, "state"))
         return json.loads(raw) if raw else None
 
     async def set_status(self, request_id: str, status: PipelineStatus) -> None:
-        raw = await self._redis.get(self._key(request_id, "state"))
+        raw = await self._retry(self._redis.get, self._key(request_id, "state"))
         if not raw:
             return
         state = json.loads(raw)
         state["status"] = status
-        await self._redis.set(
+        await self._retry(
+            self._redis.set,
             self._key(request_id, "state"),
             json.dumps(state, ensure_ascii=False),
             keepttl=True,
         )
 
     async def save_checkpoint(self, request_id: str, step: str, data: Any) -> None:
-        raw = await self._redis.get(self._key(request_id, "checkpoint"))
+        raw = await self._retry(self._redis.get, self._key(request_id, "checkpoint"))
         checkpoint: dict = json.loads(raw) if raw else {}
         checkpoint[step] = data
-        await self._redis.setex(
+        await self._retry(
+            self._redis.setex,
             self._key(request_id, "checkpoint"),
             PIPELINE_TTL,
             json.dumps(checkpoint, ensure_ascii=False),
         )
 
     async def get_checkpoint(self, request_id: str) -> dict:
-        raw = await self._redis.get(self._key(request_id, "checkpoint"))
+        raw = await self._retry(self._redis.get, self._key(request_id, "checkpoint"))
         return json.loads(raw) if raw else {}
 
     async def buffer_event(self, request_id: str, event: dict) -> None:
@@ -124,11 +159,32 @@ class PipelineStateStore:
         # Urban API properties may contain Pydantic-coerced datetime values.
         # SSE serialization handles those values, and the replay buffer must
         # preserve the same event instead of failing in a background task.
-        await self._redis.rpush(key, json.dumps(event, ensure_ascii=False, default=str))
-        await self._redis.expire(key, PIPELINE_TTL)
+        payload = json.dumps(event, ensure_ascii=False, default=str)
+        event_id = str(
+            uuid.uuid4()
+        )  # stable across retries, distinct for identical chunks
+        seen_key = self._key(request_id, "event_ids")
+
+        async def append_once():
+            # MULTI commits the event, deduplication marker and TTLs together.
+            # After a lost EXEC acknowledgement the next attempt sees the marker.
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(key, seen_key)
+                if await pipe.sismember(seen_key, event_id):
+                    return
+                pipe.multi()
+                pipe.rpush(key, payload)
+                pipe.sadd(seen_key, event_id)
+                pipe.expire(key, PIPELINE_TTL)
+                pipe.expire(seen_key, PIPELINE_TTL)
+                await pipe.execute()
+
+        await self._retry(append_once)
 
     async def get_buffered_events(self, request_id: str) -> list[dict]:
-        raw_list = await self._redis.lrange(self._key(request_id, "events"), 0, -1)
+        raw_list = await self._retry(
+            self._redis.lrange, self._key(request_id, "events"), 0, -1
+        )
         return [json.loads(r) for r in raw_list]
 
     async def wait_for_token(self, request_id: str) -> str:
@@ -169,23 +225,36 @@ class PipelineStateStore:
 
     async def acquire_chat(self, chat_id: str, request_id: str) -> bool:
         """Allow only one active pipeline per chat across all agents workers."""
+        key = self._key(chat_id, "active_request")
 
-        return bool(
-            await self._redis.set(
-                self._key(chat_id, "active_request"),
-                request_id,
-                ex=PIPELINE_TTL,
-                nx=True,
-            )
-        )
+        async def acquire_once():
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(key)
+                owner = await pipe.get(key)
+                if owner:
+                    return owner == request_id
+                pipe.multi()
+                pipe.set(key, request_id, ex=PIPELINE_TTL)
+                await pipe.execute()
+                return True
+
+        return await self._retry(acquire_once)
 
     async def release_chat(self, chat_id: str, request_id: str) -> None:
         """Release a chat lock only when this pipeline still owns it."""
 
         key = self._key(chat_id, "active_request")
-        owner = await self._redis.get(key)
-        if owner == request_id:
-            await self._redis.delete(key)
+
+        async def release_once():
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(key)
+                if await pipe.get(key) != request_id:
+                    return
+                pipe.multi()
+                pipe.delete(key)
+                await pipe.execute()
+
+        await self._retry(release_once)
 
     async def cancel(self, request_id: str) -> bool:
         """Mark a pipeline cancelled and release its single-flight chat lock."""
@@ -212,7 +281,8 @@ class PipelineStateStore:
         state["token_wait_seconds"] = (
             float(state.get("token_wait_seconds", 0)) + seconds
         )
-        await self._redis.set(
+        await self._retry(
+            self._redis.set,
             self._key(request_id, "state"),
             json.dumps(state, ensure_ascii=False),
             keepttl=True,

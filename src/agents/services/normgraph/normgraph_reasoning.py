@@ -205,10 +205,10 @@ class NormGraphAnswerCritic:
                 self.llm_client, model, messages, NormGraphCriticVerdict
             )
         except ValueError:
-            # If the critic itself fails to produce valid JSON, accept the draft
-            # rather than loop forever.
-            logger.warning("Critic produced invalid JSON, accepting draft by default")
-            return NormGraphCriticVerdict(satisfied=True)
+            logger.warning("Critic produced invalid JSON; draft remains unverified")
+            return NormGraphCriticVerdict(
+                satisfied=False, critique="Не удалось проверить обоснованность ответа."
+            )
         logger.info(
             f"NormGraph critic verdict: {verdict.model_dump_json(ensure_ascii=False)}"
         )

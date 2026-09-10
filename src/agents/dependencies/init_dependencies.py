@@ -1,6 +1,8 @@
 import os
 
 import redis.asyncio as aioredis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
@@ -49,7 +51,17 @@ def init_dependencies() -> dict[str, object]:
         app_config.URBAN_API_URL, service_auth=service_auth
     )
     urban_api_client = UrbanApiClient(urban_api_json_handler)
-    redis_client = aioredis.from_url(app_config.REDIS_URL, decode_responses=True)
+    # Retry only idempotent operations in PipelineStateStore. A global retry
+    # could duplicate RPUSH/PUBLISH or change the outcome of SET NX locks.
+    redis_client = aioredis.from_url(
+        app_config.REDIS_URL,
+        decode_responses=True,
+        health_check_interval=30,
+        socket_connect_timeout=5,
+        socket_timeout=5,
+        socket_keepalive=True,
+        retry=Retry(NoBackoff(), 0),
+    )
     pipeline_state_store = PipelineStateStore(redis_client)
     synapse_run_store = SynapseRunStore(
         redis_client, ttl_seconds=app_config.SYNAPSE_RUN_TTL_SECONDS

@@ -234,7 +234,7 @@ class ScenarioDataService(BaseLlmService):
                     "Scenario data: failed to resolve project for "
                     f"scenario {scenario_id}: {exc}"
                 )
-        yield self._buf(request_id, self._pipeline_started(request_id))
+        yield await self._buf(request_id, self._pipeline_started(request_id))
 
         if not chat_id and persist_history:
             try:
@@ -250,7 +250,7 @@ class ScenarioDataService(BaseLlmService):
                     resolve_project_id=False,
                     agent_id="scenario_data",
                 )
-                yield self._buf(request_id, self._chat_created(chat_id, title))
+                yield await self._buf(request_id, self._chat_created(chat_id, title))
             except Exception as exc:  # ChatStorage must not break analysis
                 logger.warning(f"Scenario data: failed to create chat: {exc}")
                 chat_id = None
@@ -332,12 +332,12 @@ class ScenarioDataService(BaseLlmService):
             clarification = type_intent.clarification
         if clarification:
             clarification = sanitize_public_answer(clarification)
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status("planning", "Уточняю параметры запроса…"),
             )
             for event in self._answer_events(clarification):
-                yield self._buf(request_id, event)
+                yield await self._buf(request_id, event)
             parts.append(
                 TextPartRequest(kind="text", payload=TextPayload(text=clarification))
             )
@@ -381,7 +381,7 @@ class ScenarioDataService(BaseLlmService):
             )
         executed: set[str] = set()
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status("tool_discovery", "Загружаю инструменты Urban MCP…"),
         )
@@ -394,7 +394,7 @@ class ScenarioDataService(BaseLlmService):
             tools_box,
             retry_transient=True,
         ):
-            yield self._buf(request_id, event)
+            yield await self._buf(request_id, event)
         loaded_tools: list[UrbanMcpTool] = tools_box[0]
         if not loaded_tools:
             raise ValueError("Urban MCP returned no read-only tools")
@@ -439,7 +439,7 @@ class ScenarioDataService(BaseLlmService):
             )
             answer = "Выберите сценарий, чтобы получить данные по запросу."
             for event in self._answer_events(answer):
-                yield self._buf(request_id, event)
+                yield await self._buf(request_id, event)
             parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
             await self._complete_pipeline(
                 request_id,
@@ -478,7 +478,7 @@ class ScenarioDataService(BaseLlmService):
                             "completeness": "verified",
                         },
                     }
-                    yield self._buf(
+                    yield await self._buf(
                         request_id,
                         {"type": "plan_created", "content": type_plan},
                     )
@@ -564,7 +564,7 @@ class ScenarioDataService(BaseLlmService):
             successful_calls = 0
             asked_to_fetch = False
             for _ in range(MAX_SCENARIO_TOOL_CALLS + 3 if tools else 0):
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._status("planning", "Выбираю следующий источник данных…"),
                 )
@@ -643,7 +643,7 @@ class ScenarioDataService(BaseLlmService):
                     "group": action.group,
                 }
                 source = f"URBAN_MCP/{action.group}"
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._tool_call_event(tool_call, source),
                 )
@@ -663,7 +663,7 @@ class ScenarioDataService(BaseLlmService):
                         mcp_source=source,
                     )
                 )
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._status("tool_execution", f"Получаю данные: {tool.title}…"),
                 )
@@ -686,7 +686,7 @@ class ScenarioDataService(BaseLlmService):
                     result_box,
                     retry_transient=True,
                 ):
-                    yield self._buf(request_id, event)
+                    yield await self._buf(request_id, event)
                 result = self._unwrap_result(result_box[0])
                 successful_calls += 1
 
@@ -759,7 +759,7 @@ class ScenarioDataService(BaseLlmService):
                         )
                 observations.append(observation)
 
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "response_analysis", "Формирую ответ по полученным данным…"
@@ -771,7 +771,7 @@ class ScenarioDataService(BaseLlmService):
                 model, user_query, observations, temperature, history
             )
 
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status("answer_review", "Проверяю полноту ответа…"),
             )
@@ -794,7 +794,7 @@ class ScenarioDataService(BaseLlmService):
                 pending_artifacts.clear()
                 break
 
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "answer_retry", "Ответ неполный, собираю недостающие данные…"
@@ -820,11 +820,11 @@ class ScenarioDataService(BaseLlmService):
                 )
 
         for event in pending_artifacts:
-            yield self._buf(request_id, event)
+            yield await self._buf(request_id, event)
             if event["type"] == "table":
                 parts.append(self._table_part(event["content"]))
         for event in self._answer_events(answer):
-            yield self._buf(request_id, event)
+            yield await self._buf(request_id, event)
         answer = sanitize_public_answer(answer)
         if answer:
             parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
@@ -879,7 +879,7 @@ class ScenarioDataService(BaseLlmService):
         async def execute(tool, arguments, box):
             prepared = self._prepare_arguments(tool, arguments, scenario_id)
             source = f"URBAN_MCP/{tool.group}"
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._tool_call_event(
                     {
@@ -916,7 +916,7 @@ class ScenarioDataService(BaseLlmService):
                 box,
                 retry_transient=True,
             ):
-                yield self._buf(request_id, event)
+                yield await self._buf(request_id, event)
 
         answer = "Не удалось однозначно определить тип данных. Уточните название типа и условия выборки."
         artifacts = []
@@ -933,7 +933,7 @@ class ScenarioDataService(BaseLlmService):
                 ):
                     yield event
                 catalogues[domain] = self._unwrap_result(box[0])
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status("planning", "Сопоставляю запрос с типами сценария…"),
             )
@@ -1056,11 +1056,11 @@ class ScenarioDataService(BaseLlmService):
             )
         handled.append(True)
         for event in artifacts:
-            yield self._buf(request_id, event)
+            yield await self._buf(request_id, event)
             if event["type"] == "table":
                 parts.append(self._table_part(event["content"]))
         for event in self._answer_events(answer):
-            yield self._buf(request_id, event)
+            yield await self._buf(request_id, event)
         parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
         await self._complete_pipeline(
             request_id,
@@ -1252,7 +1252,7 @@ class ScenarioDataService(BaseLlmService):
                 arguments = self._prepare_arguments(tool, {}, scenario_id)
                 source = f"URBAN_MCP/{tool.group}"
                 if context_model:
-                    yield self._buf(
+                    yield await self._buf(
                         request_id,
                         {
                             "type": "step_started",
@@ -1268,7 +1268,9 @@ class ScenarioDataService(BaseLlmService):
                     "arguments": arguments,
                     "group": tool.group,
                 }
-                yield self._buf(request_id, self._tool_call_event(tool_call, source))
+                yield await self._buf(
+                    request_id, self._tool_call_event(tool_call, source)
+                )
                 parts.append(
                     ToolCallPartRequest(
                         kind="tool_call",
@@ -1285,7 +1287,7 @@ class ScenarioDataService(BaseLlmService):
                         mcp_source=source,
                     )
                 )
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._status("tool_execution", status_text),
                 )
@@ -1303,10 +1305,10 @@ class ScenarioDataService(BaseLlmService):
                     result_box,
                     retry_transient=True,
                 ):
-                    yield self._buf(request_id, event)
+                    yield await self._buf(request_id, event)
                 results.append(self._unwrap_result(result_box[0]))
                 if context_model:
-                    yield self._buf(
+                    yield await self._buf(
                         request_id,
                         {
                             "type": "step_completed",
@@ -1314,7 +1316,7 @@ class ScenarioDataService(BaseLlmService):
                         },
                     )
 
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "response_analysis", f"Считаю уникальные сущности: {noun}…"
@@ -1328,7 +1330,7 @@ class ScenarioDataService(BaseLlmService):
             )
             if needs_fallback and fallback_tool is not None:
                 if context_model:
-                    yield self._buf(
+                    yield await self._buf(
                         request_id,
                         {
                             "type": "mapping_started",
@@ -1346,7 +1348,9 @@ class ScenarioDataService(BaseLlmService):
                     "arguments": arguments,
                     "group": fallback_tool.group,
                 }
-                yield self._buf(request_id, self._tool_call_event(tool_call, source))
+                yield await self._buf(
+                    request_id, self._tool_call_event(tool_call, source)
+                )
                 parts.append(
                     ToolCallPartRequest(
                         kind="tool_call",
@@ -1363,7 +1367,7 @@ class ScenarioDataService(BaseLlmService):
                         mcp_source=source,
                     )
                 )
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._status(
                         "tool_execution",
@@ -1384,7 +1388,7 @@ class ScenarioDataService(BaseLlmService):
                     fallback_box,
                     retry_transient=True,
                 ):
-                    yield self._buf(request_id, event)
+                    yield await self._buf(request_id, event)
                 distribution = build_type_distribution(
                     results[0],
                     results[1],
@@ -1392,7 +1396,7 @@ class ScenarioDataService(BaseLlmService):
                     fallback_catalog_result=self._unwrap_result(fallback_box[0]),
                 )
                 if context_model:
-                    yield self._buf(
+                    yield await self._buf(
                         request_id,
                         {
                             "type": "mapping_completed",
@@ -1402,15 +1406,15 @@ class ScenarioDataService(BaseLlmService):
             distributions.append(distribution)
 
             table = distribution_table(distribution)
-            yield self._buf(request_id, {"type": "table", "content": table})
+            yield await self._buf(request_id, {"type": "table", "content": table})
             parts.append(self._table_part(table))
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status("answer_review", "Проверяю итоговые количества…"),
         )
         if context_model:
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 {
                     "type": "validation_started",
@@ -1427,13 +1431,13 @@ class ScenarioDataService(BaseLlmService):
                     "all_present_types_named": True,
                 },
             }
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 {"type": "validation_completed", "content": validation},
             )
             parts.append(StructuredPartRequest(kind="validation", payload=validation))
         for event in self._answer_events(answer):
-            yield self._buf(request_id, event)
+            yield await self._buf(request_id, event)
         parts.append(TextPartRequest(kind="text", payload=TextPayload(text=answer)))
         await self._complete_pipeline(
             request_id,
@@ -1808,8 +1812,8 @@ table_rows и table_total_rows; не утверждай, что полный п�
             ),
         )
 
-    def _buf(self, request_id: str, event: dict[str, Any]) -> dict[str, Any]:
-        asyncio.create_task(self.state_store.buffer_event(request_id, event))
+    async def _buf(self, request_id: str, event: dict[str, Any]) -> dict[str, Any]:
+        await self.state_store.buffer_event(request_id, event)
         return event
 
     @staticmethod

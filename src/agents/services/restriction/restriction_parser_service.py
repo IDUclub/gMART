@@ -281,7 +281,7 @@ class RestrictionParserService(BaseLlmService):
 
         original_chat_id = chat_id
         if not is_reconnect:
-            yield self._buf(request_id, self._pipeline_started_event(request_id))
+            yield await self._buf(request_id, self._pipeline_started_event(request_id))
 
             # A2A runs pass persist_history=False: no chat is created and nothing
             # is written to ChatStorage (history stays read-only).
@@ -305,11 +305,13 @@ class RestrictionParserService(BaseLlmService):
                         ),
                         chat_result,
                     ):
-                        yield self._buf(request_id, event)
+                        yield await self._buf(request_id, event)
                 except PipelineSuspendedError:
                     return
                 chat_id, title = chat_result[0]
-                yield self._buf(request_id, self._chat_created_event(chat_id, title))
+                yield await self._buf(
+                    request_id, self._chat_created_event(chat_id, title)
+                )
 
             await self.state_store.create(
                 request_id,
@@ -361,7 +363,7 @@ class RestrictionParserService(BaseLlmService):
                 user_query, chat_messages, llm_history
             )
             if prepared_follow_up is not None:
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._status(
                         "compliance_result_analysis",
@@ -373,7 +375,7 @@ class RestrictionParserService(BaseLlmService):
                     prepared_follow_up,
                     temperature,
                 ):
-                    yield self._buf(request_id, chunk)
+                    yield await self._buf(request_id, chunk)
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
 
@@ -381,7 +383,7 @@ class RestrictionParserService(BaseLlmService):
 
         normgraph_restrictions: list[dict[str, Any]] = []
         if normgraph_mcp_client is not None:
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "norm_retrieval",
@@ -406,7 +408,7 @@ class RestrictionParserService(BaseLlmService):
                 await self.state_store.save_checkpoint(
                     request_id, PipelineStep.NORMGRAPH, checkpoint_data
                 )
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._tool_call(
                         "norm_retrieval",
@@ -419,7 +421,18 @@ class RestrictionParserService(BaseLlmService):
                     "restrictions", []
                 )
 
-        if history_agent == "compliance" and normgraph_mcp_client is not None:
+        # A current distance condition must go through the request-scoped plan:
+        # the canonical-plan audit below cannot represent a user's temporary rule.
+        explicit_distance = re.search(
+            r"\d+(?:[.,]\d+)?\s*[-–]?\s*(?:км\b|м\b|метр|километр)",
+            user_query.split("\n\nКонтекст — результаты предыдущих шагов:", 1)[0],
+            re.IGNORECASE,
+        )
+        if (
+            history_agent == "compliance"
+            and normgraph_mcp_client is not None
+            and not explicit_distance
+        ):
             async for event in self._run_executable_compliance(
                 mcp_client=mcp_client,
                 request_id=request_id,
@@ -430,7 +443,7 @@ class RestrictionParserService(BaseLlmService):
                 yield event
             return
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status(
                 "data_retrievement", "Получаю каталоги сервисов и физических объектов"
@@ -453,7 +466,7 @@ class RestrictionParserService(BaseLlmService):
                     ),
                     plan_out,
                 ):
-                    yield self._buf(request_id, event)
+                    yield await self._buf(request_id, event)
             except PipelineSuspendedError:
                 return
             plan = plan_out[0]
@@ -464,24 +477,27 @@ class RestrictionParserService(BaseLlmService):
             plan = RestrictionPlan.model_validate(checkpoint[PipelineStep.PLAN])
 
         if plan.mode == RestrictionTaskMode.NEEDS_CLARIFICATION:
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "context_preparation", "Нужно уточнение параметров запроса."
                 ),
             )
-            yield self._buf(
+            yield await self._buf(
                 request_id,
-                self._chunk(
-                    plan.clarification_question or "Уточните параметры запроса.",
-                    done=True,
-                ),
+                {
+                    "type": "clarification",
+                    "content": {
+                        "question": plan.clarification_question
+                        or "Уточните параметры запроса."
+                    },
+                },
             )
             await self.state_store.set_status(request_id, PipelineStatus.DONE)
             return
 
         if PipelineStep.PLAN_EXPLANATION not in checkpoint:
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "plan_explanation", "Объясняю, почему выбраны эти параметры"
@@ -490,13 +506,13 @@ class RestrictionParserService(BaseLlmService):
             async for chunk in self.generate_plan_explanation(
                 model, user_query, plan, temperature, history=llm_history
             ):
-                yield self._buf(request_id, chunk)
-            yield self._buf(request_id, self._chunk("\n\n", done=False))
+                yield await self._buf(request_id, chunk)
+            yield await self._buf(request_id, self._chunk("\n\n", done=False))
             await self.state_store.save_checkpoint(
                 request_id, PipelineStep.PLAN_EXPLANATION, True
             )
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status(
                 "data_retrievement", "Получаю необходимые слои по утверждённому плану"
@@ -514,7 +530,7 @@ class RestrictionParserService(BaseLlmService):
                     ),
                     layers_out,
                 ):
-                    yield self._buf(request_id, event)
+                    yield await self._buf(request_id, event)
             except PipelineSuspendedError:
                 return
             layers_result = layers_out[0]
@@ -532,17 +548,17 @@ class RestrictionParserService(BaseLlmService):
                 messages=[],
             )
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._tool_call(
                 "data_retrievement", layers_result.tool_calls, mcp_source="IDU_MCP_URL"
             ),
         )
         for item in self._feature_collections(layers_result.tool_result):
-            yield self._buf(request_id, item)
+            yield await self._buf(request_id, item)
         layers = layers_result.tool_result
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status(
                 "buffer_creation", "Начинаю построение буферов зон с ограничениями"
@@ -560,7 +576,7 @@ class RestrictionParserService(BaseLlmService):
                     ),
                     buffers_out,
                 ):
-                    yield self._buf(request_id, event)
+                    yield await self._buf(request_id, event)
             except PipelineSuspendedError:
                 return
             buffers_result = buffers_out[0]
@@ -578,27 +594,44 @@ class RestrictionParserService(BaseLlmService):
                 messages=[],
             )
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._tool_call(
                 "buffer_creation", buffers_result.tool_calls, mcp_source="IDU_MCP_URL"
             ),
         )
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status(
                 "buffer_creation", "Построил необходимые буферы с ограничениями."
             ),
         )
         for item in self._feature_collections(buffers_result.tool_result):
-            yield self._buf(request_id, item)
+            yield await self._buf(request_id, item)
 
         if plan.mode == RestrictionTaskMode.BUFFERS_ONLY:
-            context = await self.context_builder.generate_buffers_context(
-                buffers_result.tool_result
+            # A buffer count is not a count of affected objects. Report the
+            # actual returned layers directly, including empty collections.
+            counts = [
+                f"«{name}»: {len(layer.get('features', []))}"
+                for name, layer in buffers_result.tool_result.items()
+            ]
+            yield await self._buf(
+                request_id,
+                self._chunk(
+                    "Построены буферы. Количество геометрий по слоям: "
+                    + "; ".join(counts)
+                    + ". Пересечения с целевыми объектами в этом расчёте не проверялись.",
+                    done=True,
+                ),
             )
+            await self.state_store.save_checkpoint(
+                request_id, PipelineStep.FINAL_RESPONSE, True
+            )
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
         else:
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "restriction_formation",
@@ -617,7 +650,7 @@ class RestrictionParserService(BaseLlmService):
                         ),
                         restr_out,
                     ):
-                        yield self._buf(request_id, event)
+                        yield await self._buf(request_id, event)
                 except PipelineSuspendedError:
                     return
                 restriction_result = restr_out[0]
@@ -637,7 +670,7 @@ class RestrictionParserService(BaseLlmService):
                     messages=[],
                 )
 
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._tool_call(
                     "restriction_formation",
@@ -645,7 +678,7 @@ class RestrictionParserService(BaseLlmService):
                     mcp_source="IDU_MCP_URL",
                 ),
             )
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "restriction_formation",
@@ -653,7 +686,7 @@ class RestrictionParserService(BaseLlmService):
                 ),
             )
             for item in self._feature_collections(restriction_result.tool_result):
-                yield self._buf(request_id, item)
+                yield await self._buf(request_id, item)
             context = await self.context_builder.generate_restrictions_context(
                 restriction_result.tool_result["generators"],
                 restriction_result.tool_result["objects"],
@@ -663,7 +696,7 @@ class RestrictionParserService(BaseLlmService):
             async for chunk in self.generate_final_response(
                 model, user_query, context, temperature, history=llm_history
             ):
-                yield self._buf(request_id, chunk)
+                yield await self._buf(request_id, chunk)
             await self.state_store.save_checkpoint(
                 request_id, PipelineStep.FINAL_RESPONSE, True
             )
@@ -685,7 +718,7 @@ class RestrictionParserService(BaseLlmService):
             await self.state_store.set_status(request_id, PipelineStatus.DONE)
             return
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status(
                 "check_plan_validation",
@@ -710,7 +743,7 @@ class RestrictionParserService(BaseLlmService):
                     "planner_status": "unsupported",
                 }
             plans.append(raw_plan)
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 {
                     "type": "check_plan",
@@ -724,7 +757,7 @@ class RestrictionParserService(BaseLlmService):
             request_id, PipelineStep.CHECK_PLAN_VALIDATION, plans
         )
 
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status(
                 "requirements_resolution",
@@ -733,7 +766,7 @@ class RestrictionParserService(BaseLlmService):
         )
         results: list[ComplianceResult] = []
         resolution_events: list[dict[str, Any]] = []
-        yield self._buf(
+        yield await self._buf(
             request_id,
             {
                 "type": "compliance_progress",
@@ -794,11 +827,11 @@ class RestrictionParserService(BaseLlmService):
                 "missing_requirements": result.missing_requirements,
             }
             resolution_events.append(resolution_content)
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 {"type": "requirement_resolution", "content": resolution_content},
             )
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "template_execution",
@@ -806,13 +839,13 @@ class RestrictionParserService(BaseLlmService):
                 ),
             )
             if execution_calls:
-                yield self._buf(
+                yield await self._buf(
                     request_id,
                     self._tool_call(
                         "template_execution", execution_calls, "IDU_MCP_URL"
                     ),
                 )
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 {
                     "type": "compliance_result",
@@ -820,11 +853,11 @@ class RestrictionParserService(BaseLlmService):
                 },
             )
             progress = self._compliance_progress(results, len(plans))
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 {"type": "compliance_progress", "content": progress},
             )
-            yield self._buf(
+            yield await self._buf(
                 request_id,
                 self._status(
                     "template_execution",
@@ -841,7 +874,7 @@ class RestrictionParserService(BaseLlmService):
                     result.passed_features
                 )
             for item in self._feature_collections(feature_layers):
-                yield self._buf(request_id, item)
+                yield await self._buf(request_id, item)
 
         await self.state_store.save_checkpoint(
             request_id, PipelineStep.REQUIREMENTS_RESOLUTION, resolution_events
@@ -851,7 +884,7 @@ class RestrictionParserService(BaseLlmService):
             PipelineStep.TEMPLATE_EXECUTION,
             [item.model_dump(mode="json") for item in results],
         )
-        yield self._buf(
+        yield await self._buf(
             request_id,
             self._status("verdict_aggregation", "Собираю итог по всем нормам"),
         )
@@ -859,8 +892,10 @@ class RestrictionParserService(BaseLlmService):
         await self.state_store.save_checkpoint(
             request_id, PipelineStep.VERDICT_AGGREGATION, summary
         )
-        yield self._buf(request_id, {"type": "compliance_summary", "content": summary})
-        yield self._buf(
+        yield await self._buf(
+            request_id, {"type": "compliance_summary", "content": summary}
+        )
+        yield await self._buf(
             request_id,
             self._chunk(self._compliance_summary_text(summary), done=True),
         )
@@ -939,7 +974,7 @@ class RestrictionParserService(BaseLlmService):
     @staticmethod
     def _compliance_summary_text(summary: dict[str, Any]) -> str:
         if summary["total_norms"] == 0:
-            return "Применимые нормы не найдены."
+            return "Применимые нормы не найдены. Проверка соответствия не выполнена: отсутствие норм в источнике не подтверждает отсутствие нарушений."
         parts = [
             f"Проверка завершена для {summary['total_norms']} норм.",
             f"Нарушено: {summary['violated_norms']}.",
@@ -973,9 +1008,9 @@ class RestrictionParserService(BaseLlmService):
         if False:  # pragma: no cover
             yield {}
 
-    def _buf(self, request_id: str, event: dict) -> dict:
-        """Fire-and-forget: buffer the event to Redis and return it for yielding."""
-        asyncio.create_task(self.state_store.buffer_event(request_id, event))
+    async def _buf(self, request_id: str, event: dict) -> dict:
+        """Persist before emitting: buffer the event to Redis and return it for yielding."""
+        await self.state_store.buffer_event(request_id, event)
         return event
 
     async def generate_plan_explanation(
@@ -1229,6 +1264,13 @@ class RestrictionParserService(BaseLlmService):
             if not text:
                 return None
             return TextPartRequest(kind="text", payload=TextPayload(text=text))
+        if item_type == "clarification":
+            return TextPartRequest(
+                kind="text",
+                payload=TextPayload(
+                    text=content.get("question") or "Уточните параметры запроса."
+                ),
+            )
         if item_type in {
             "check_plan",
             "requirement_resolution",
