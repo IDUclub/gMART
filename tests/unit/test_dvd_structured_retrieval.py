@@ -218,7 +218,7 @@ async def test_truncated_final_generation_cannot_be_accepted(service):
         return stream()
 
     service.llm_client = SimpleNamespace(chat=chat)
-    with pytest.raises(ValueError, match="before completion"):
+    with pytest.raises(ValueError, match="answer_generation_incomplete"):
         [
             e
             async for e in service._generate_answer(

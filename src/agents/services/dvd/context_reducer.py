@@ -91,7 +91,7 @@ class DvdContextReducer:
         self.llm_client = llm_client
         configured = window_tokens or os.getenv("DVD_CONTEXT_WINDOW_TOKENS")
         self.configured_window = int(configured) if configured else None
-        self.output_tokens = int(os.getenv("DVD_ANSWER_MAX_TOKENS", "1536"))
+        self.output_tokens = int(os.getenv("DVD_ANSWER_MAX_TOKENS", "16384"))
         # Reasoning consumes completion tokens too. A short summary is not a small
         # generation budget; keep this independent of the final answer length.
         self.summary_output_tokens = int(os.getenv("DVD_SUMMARY_MAX_TOKENS", "4096"))
@@ -129,7 +129,10 @@ class DvdContextReducer:
 
     def budget(self, user_query: str, history: list[dict] | None = None) -> int:
         # Reserve answer tokens, chat framing and the drafting/review system prompt.
-        available = self.window - self.output_tokens - 2300 - cost(user_query)
+        # Preliminary reduction; drafting reserves its dynamically selected
+        # budget against the actual messages and may reduce again if necessary.
+        reserve = min(self.output_tokens, self.window // 4)
+        available = self.window - reserve - 2300 - cost(user_query)
         available -= cost(json.dumps(history or [], ensure_ascii=False))
         if available < 512:
             raise ValueError(
@@ -174,8 +177,14 @@ class DvdContextReducer:
         user_query: str,
         context: str,
         history: list[dict] | None = None,
+        *,
+        budget_limit: int | None = None,
     ) -> PreparedContext:
-        budget = self.budget(user_query, history)
+        budget = (
+            self.budget(user_query, history) if budget_limit is None else budget_limit
+        )
+        if budget < 512:
+            raise ValueError("context budget is too small")
         result = PreparedContext(context)
         if cost(context) <= budget:
             return result

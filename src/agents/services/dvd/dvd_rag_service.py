@@ -19,8 +19,11 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
-from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.dvd.answer_generation import (
+    AnswerGenerationError,
+    DvdAnswerGenerator,
+)
 from src.agents.services.dvd.context_reducer import DvdContextReducer
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
@@ -486,18 +489,23 @@ class DvdRagService(BaseLlmService):
             )
             revision_note = prev_critique if iteration > 1 else None
             draft_parts: list[str] = []
-            async for chunk_event in self._generate_answer(
-                model,
-                user_query,
-                context,
-                temperature,
-                history,
-                iteration,
-                revision_note,
-            ):
-                if text := chunk_event["content"]["text"]:
-                    draft_parts.append(text)
-                yield await self._buf(request_id, chunk_event)
+            try:
+                async for chunk_event in self._generate_answer(
+                    model,
+                    user_query,
+                    context,
+                    temperature,
+                    history,
+                    iteration,
+                    revision_note,
+                ):
+                    if text := chunk_event["content"]["text"]:
+                        draft_parts.append(text)
+            except AnswerGenerationError as exc:
+                yield await self._fail_context(
+                    request_id, "answer_generation", [str(exc)]
+                )
+                return
             draft = "".join(draft_parts).strip()
 
             # A retry budget bounds cost, not the evidence required for acceptance.
@@ -521,6 +529,9 @@ class DvdRagService(BaseLlmService):
             )
 
             if verdict.satisfied:
+                yield await self._buf(
+                    request_id, self._chunk(draft, done=False, iteration=iteration)
+                )
                 collected["final_answer"] = draft
                 collected["newly_completed"] = True
                 # Emit terminal events BEFORE checkpointing "accepted" so a reconnect that
@@ -625,63 +636,33 @@ class DvdRagService(BaseLlmService):
             "- Ссылайся на источники: название документа, редакцию и номер пункта "
             "(можно через номера [1], [2]… из фрагментов).\n"
             "- Отвечай на русском языке, ясно и по существу.\n\n"
-            f"Фрагменты нормативных документов:\n"
-            f"{context or '(релевантные фрагменты не найдены)'}"
         )
         if revision_note:
             system += (
                 "\n\nУчти замечание к предыдущей версии ответа и исправь его: "
                 f"{revision_note}"
             )
-        messages = [
-            {"role": "system", "content": system},
-            *(history or []),
-            {"role": "user", "content": user_query},
-        ]
-        from .context_reducer import cost
 
-        if (
-            sum(cost(m["content"]) for m in messages)
-            + self.context_reducer.output_tokens
-            + 128
-            > self.context_reducer.window
-        ):
-            raise ValueError(
-                "answer request exceeds configured context window; shorten history or increase the window"
-            )
-        response_buffer: list[str] = []
-        async for part in await self.llm_client.chat(
-            model,
-            messages,
-            think=False,
-            options={
-                "temperature": temperature,
-                "num_predict": self.context_reducer.output_tokens,
-                "num_ctx": self.context_reducer.window,
-            },
-            stream=True,
-        ):
-            part: LlmChatResponse
-            if part.message.content:
-                response_buffer.append(part.message.content)
-            # ``done`` is forced False here; finality is decided by the loop after the
-            # critic accepts a draft (a single done=True chunk is emitted at the end).
-            yield self._chunk(
-                part.message.content or "", done=False, iteration=iteration
-            )
-            if getattr(part, "done_reason", None) in {
-                "length",
-                "max_tokens",
-                "content_filter",
-            }:
-                raise ValueError(
-                    "answer generation stopped before completion; increase DVD_ANSWER_MAX_TOKENS and the model window"
-                )
-        if not "".join(response_buffer).strip():
-            raise ValueError("model returned an empty answer")
-        logger.debug(
-            f"DVD answer draft {iteration} [{model}]: {''.join(response_buffer)}"
+        def build_messages(evidence: str) -> list[dict]:
+            return [
+                {
+                    "role": "system",
+                    "content": system
+                    + "\nФрагменты нормативных документов:\n"
+                    + evidence,
+                },
+                *(history or []),
+                {"role": "user", "content": user_query},
+            ]
+
+        answer = await DvdAnswerGenerator(
+            self.context_reducer, llm_client=self.llm_client
+        ).generate(
+            model, user_query, context, temperature, build_messages, iteration=iteration
         )
+        # Completion does not mean acceptance. The loop audits the entire assembled
+        # answer before emitting it or persisting it in chat history.
+        yield self._chunk(answer, done=False, iteration=iteration)
 
     async def _retrieve_fragments(self, client, plan, scenario_id, collected):
         request = {

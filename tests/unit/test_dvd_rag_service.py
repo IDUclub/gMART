@@ -81,6 +81,48 @@ async def test_incomplete_review_is_controlled_failure(service, fake_llm, fake_m
     service._schedule_persist_answer.assert_not_called()
 
 
+async def test_exhausted_answer_is_failed_and_replayed_without_partial_success(
+    service,
+    fake_llm,
+    fake_mcp,
+):
+    from tests.unit.test_dvd_answer_budget import InterruptedModel
+
+    fake_llm.json_responses = [plan_json()]
+    # Keep the real planner/loop/state store; replace only the generation boundary.
+    service.llm_client = InterruptedModel([("Partial ", "length")] * 3)
+    events = await _run(service, fake_mcp)
+    assert events_of_type(events, "error")
+    assert not events_of_type(events, "chunk")
+    service._schedule_persist_answer.assert_not_called()
+    request_id = events_of_type(events, "pipeline_started")[0]["content"]["request_id"]
+    assert (await service.state_store.get_state(request_id))["status"] == "failed"
+    assert await _run(service, fake_mcp, request_id=request_id) == events
+
+
+async def test_critic_receives_assembled_continuation_before_answer_is_emitted(
+    service,
+    fake_llm,
+    fake_mcp,
+):
+    from tests.unit.test_dvd_answer_budget import InterruptedModel
+
+    fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+    service.llm_client = InterruptedModel(
+        [("Не менее ", "length"), ("Не менее 15 м [1].", "stop")]
+    )
+    events = await _run(service, fake_mcp)
+    assert answer_text(events) == "Не менее 15 м [1]."
+    assert "Не менее 15 м [1]." in fake_llm.chat_calls[-1].messages[-1]["content"]
+    review_index = next(
+        i
+        for i, e in enumerate(events)
+        if e["type"] == "status" and e["content"].get("status") == "self_review"
+    )
+    answer_index = next(i for i, e in enumerate(events) if e["type"] == "chunk")
+    assert review_index < answer_index
+
+
 class TestLoop:
     async def test_later_draft_retains_all_previous_corrections(
         self, service, fake_llm, fake_mcp
@@ -138,7 +180,7 @@ class TestLoop:
             2
         ].messages[0]["content"]
         assert "второй" in second_plan_prompt and "нет пункта" in second_plan_prompt
-        # drafts are tagged with their iteration
+        # Only the accepted draft is exposed; rejected/partial drafts stay private.
         draft_iters = sorted(
             {
                 e["content"]["iteration"]
@@ -146,7 +188,7 @@ class TestLoop:
                 if e["type"] == "chunk" and e["content"]["text"]
             }
         )
-        assert draft_iters == [1, 2]
+        assert draft_iters == [2]
         collected = service._schedule_persist_answer.call_args.args[2]
         assert collected["final_answer"] == "Черновик 2 [1]"
 

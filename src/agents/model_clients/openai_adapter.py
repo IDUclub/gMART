@@ -302,7 +302,9 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                 done_reason=finish_reason,
             )
         if not finished:
-            yield LlmChatResponse(model=model, done=True, done_reason="stop")
+            # EOF is terminal for consumers, but is not proof that the model
+            # finished its answer. Never disguise a truncated stream as success.
+            yield LlmChatResponse(model=model, done=True, done_reason="incomplete")
 
     # ------------------------------------------------------------------ #
     # BaseLlmAdapter
