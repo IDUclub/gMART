@@ -34,6 +34,7 @@ planner's JSON valid.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, AsyncIterator
 
@@ -316,7 +317,27 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                     # Retry only this read-only JSON completion, once. Discard a
                     # truncated response, even if its prefix happens to parse.
                     budget = call.get("max_tokens") or 2048
-                    call["max_tokens"] = max(budget, min(8192, max(4096, budget * 2)))
+                    retry_budget = max(budget, min(8192, max(4096, budget * 2)))
+                    window = (options or {}).get("num_ctx")
+                    if window:
+                        # num_ctx cannot configure an OpenAI server, but it is
+                        # still the caller's context limit. Bound retry growth
+                        # conservatively, including schema/chat framing overhead.
+                        input_cost = sum(
+                            len(str(m.get("content", "")).encode("utf-8"))
+                            for m in call["messages"]
+                        )
+                        input_cost += len(
+                            json.dumps(call["response_format"]).encode("utf-8")
+                        )
+                        available = int(window) - input_cost - 256
+                        retry_budget = min(retry_budget, available)
+                        if retry_budget <= budget:
+                            raise LlmResponseError(
+                                "Incomplete structured answer; no context capacity for a larger output budget",
+                                502,
+                            )
+                    call["max_tokens"] = retry_budget
                     logger.warning(
                         "Retrying incomplete structured LLM response with max_tokens={}",
                         call["max_tokens"],

@@ -109,6 +109,10 @@ class DvdRagService(BaseLlmService):
             for event in await self.state_store.get_buffered_events(request_id):
                 yield event
             stored = await self.state_store.get_state(request_id) or {}
+            if stored.get("status") == PipelineStatus.FAILED:
+                # The buffered error is terminal. A deliberate retry starts a new
+                # request, rather than replaying an error and secretly rerunning it.
+                return
             if not chat_id and stored.get("chat_id"):
                 chat_id = stored["chat_id"]
             model = stored.get("model") or model
@@ -467,17 +471,10 @@ class DvdRagService(BaseLlmService):
                 "complete": not prepared.failed_parts,
             }
             if prepared.failed_parts:
-                yield await self._buf(
-                    request_id,
-                    {
-                        "type": "warning",
-                        "content": {
-                            "code": "document_context_incomplete",
-                            "message": "Часть источников не обработана; ответ будет неполным.",
-                            "failed_parts": prepared.failed_parts,
-                        },
-                    },
+                yield await self._fail_context(
+                    request_id, "preparation", prepared.failed_parts
                 )
+                return
 
             # ── Step 3: draft the answer (streamed) ───────────────────────
             yield await self._buf(
@@ -488,20 +485,6 @@ class DvdRagService(BaseLlmService):
             )
             revision_note = prev_critique if iteration > 1 else None
             draft_parts: list[str] = []
-            if prepared.failed_parts:
-                prefix = (
-                    "Ответ неполный: не удалось обработать части источников: "
-                    + "; ".join(prepared.failed_parts)
-                    + ".\n\n"
-                )
-                draft_parts.append(prefix)
-                yield await self._buf(
-                    request_id, self._chunk(prefix, done=False, iteration=iteration)
-                )
-                revision_note = (
-                    (revision_note or "")
-                    + " Ответ неполный: не делай выводов об отсутствующих сведениях в необработанных частях."
-                )
             async for chunk_event in self._generate_answer(
                 model,
                 user_query,
@@ -528,7 +511,10 @@ class DvdRagService(BaseLlmService):
                 model, user_query + "\n" + draft, context
             )
             if review_context.failed_parts:
-                raise ValueError("cannot review the answer: some evidence parts failed")
+                yield await self._fail_context(
+                    request_id, "review", review_context.failed_parts
+                )
+                return
             verdict = await self.critic.review(
                 model, user_query, review_context.text, draft
             )
@@ -735,6 +721,29 @@ class DvdRagService(BaseLlmService):
         raise ValueError(
             "DVD retrieval page limit reached; narrow the document/structure scope"
         )
+
+    async def _fail_context(self, request_id, stage, failed_parts):
+        logger.warning(
+            "DVD context failed request_id={} stage={} failed_parts={}",
+            request_id,
+            stage,
+            failed_parts,
+        )
+        event = await self._buf(
+            request_id,
+            {
+                "type": "error",
+                "content": {
+                    "traceback": "",
+                    "message": (
+                        "Не удалось полностью обработать источники и проверить ответ. "
+                        "Ответ не подтверждён. Уточните вопрос или ограничьте набор документов."
+                    ),
+                },
+            },
+        )
+        await self.state_store.set_status(request_id, PipelineStatus.FAILED)
+        return event
 
     async def _finish_retrieval(self, request_id, collected, answer, iteration):
         """Grounded not-found / clarification; no model invents an alternative answer."""

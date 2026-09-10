@@ -39,6 +39,48 @@ async def _run(service, mcp, **overrides):
 # ---------------------------------------------------------------------------
 # Iterative loop behaviour
 # ---------------------------------------------------------------------------
+async def test_incomplete_sources_stop_before_drafting(service, fake_llm, fake_mcp):
+    from src.agents.services.dvd.context_reducer import PreparedContext
+
+    fake_llm.json_responses = [plan_json()]
+    service.context_reducer.prepare = AsyncMock(
+        return_value=PreparedContext(
+            "[1] partial", failed_parts=["round-1/part-1: [1] (output_truncated)"]
+        )
+    )
+    events = await _run(service, fake_mcp)
+    assert events_of_type(events, "error")
+    assert not statuses(events, "answer_drafting")
+    assert not any(call.stream for call in fake_llm.chat_calls)
+    assert final_chunk(events) is None
+    service._schedule_persist_answer.assert_not_called()
+    request_id = events_of_type(events, "pipeline_started")[0]["content"]["request_id"]
+    assert (await service.state_store.get_state(request_id))["status"] == "failed"
+    calls = len(fake_mcp.search_calls)
+    replay = await _run(service, fake_mcp, request_id=request_id)
+    assert replay == events
+    assert len(fake_mcp.search_calls) == calls
+
+
+async def test_incomplete_review_is_controlled_failure(service, fake_llm, fake_mcp):
+    from src.agents.services.dvd.context_reducer import PreparedContext
+
+    fake_llm.json_responses = [plan_json()]
+    fake_llm.answer_texts = ["Unverified [1]"]
+    service.context_reducer.prepare = AsyncMock(
+        side_effect=[
+            PreparedContext("[1] source"),
+            PreparedContext(
+                "partial", failed_parts=["round-1/part-1: [1] (coverage_mismatch)"]
+            ),
+        ]
+    )
+    events = await _run(service, fake_mcp)
+    assert events_of_type(events, "error")
+    assert final_chunk(events) is None
+    service._schedule_persist_answer.assert_not_called()
+
+
 class TestLoop:
     async def test_accept_on_first_iteration(self, service, fake_llm, fake_mcp):
         fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
