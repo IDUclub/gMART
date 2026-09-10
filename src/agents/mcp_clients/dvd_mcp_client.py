@@ -103,10 +103,8 @@ class DvdMcpClient(BaseMcpClient):
         if scenario_id is not None:
             arguments["scenario_id"] = str(scenario_id)
         if project_id is not None or scenario_id is not None:
-            if self._user_id is not None:
-                # Trusted identity resolved by DI, never an LLM-supplied ID.
-                # Older DVD search contracts require it alongside scenario_id.
-                arguments["user_id"] = self._user_id
+            # IDU_DVD injects identity from X-User-Id in the authenticated
+            # transport. It is not an argument in the public MCP tool schema.
             arguments["include_shared"] = include_shared
             arguments["include_inherited"] = include_inherited
         result = await self.execute_tool(tool_name, arguments)

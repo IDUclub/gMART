@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from fastmcp import Client, FastMCP
+from fastmcp.dependencies import Depends
 
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.common.service_auth import (
@@ -72,13 +74,40 @@ async def test_search_includes_user_index_scope():
     assert args["include_inherited"] is True
 
 
-async def test_scoped_search_forwards_only_constructor_identity():
-    c = DvdMcpClient(Mock(), user_id="verified-user")
-    c.execute_tool = AsyncMock(return_value={"hits": []})
-    await c.search("q", scenario_id=772)
-    assert c.execute_tool.await_args.args[1]["user_id"] == "verified-user"
-    await c.search("shared-only query")
-    assert "user_id" not in c.execute_tool.await_args.args[1]
+@pytest.mark.parametrize("kind", ["all", "text", "table"])
+@pytest.mark.parametrize("scope", [{"scenario_id": 772}, {"project_id": 42}, {}])
+async def test_search_respects_mcp_injected_identity_contract(kind, scope):
+    server = FastMCP("dvd-contract")
+    received = []
+
+    # Mirror IDU_DVD: identity is dependency-injected and is not a public tool
+    # argument. A mocked execute_tool would fail to catch unexpected arguments.
+    def verified_identity():
+        return "verified-user"
+
+    @server.tool(name=DvdMcpClient.tool_name_for_kind(kind))
+    def search(
+        query: str,
+        limit: int = 10,
+        context_height: int = 0,
+        scenario_id: str | None = None,
+        project_id: str | None = None,
+        include_shared: bool = True,
+        include_inherited: bool = True,
+        user_id: str = Depends(verified_identity),
+    ) -> dict:
+        received.append((user_id, scenario_id, project_id))
+        return {"count": 0, "hits": []}
+
+    c = DvdMcpClient(Client(server), user_id="verified-user")
+    assert await c.search("q", kind=kind, **scope) == {"count": 0, "hits": []}
+    assert received == [
+        (
+            "verified-user",
+            str(scope["scenario_id"]) if "scenario_id" in scope else None,
+            str(scope["project_id"]) if "project_id" in scope else None,
+        )
+    ]
 
 
 async def test_search_omits_empty_filters():
@@ -111,12 +140,16 @@ def test_normalize_fills_missing_count():
     assert out["count"] == 2
 
 
-class TestAnonymousTransportHeaders:
-    """A public document-QA question still reaches IDU_DVD as an authorized service call."""
+class TestTransportHeaders:
+    """Search identity travels through the authenticated HTTP transport."""
 
     @pytest.mark.asyncio
-    async def test_anonymous_caller_sends_service_token_and_placeholder_user_id(
-        self, monkeypatch
+    @pytest.mark.parametrize(
+        "token,expected_user",
+        [(None, ANONYMOUS_USER_ID), ("verified-jwt", "verified-user")],
+    )
+    async def test_caller_sends_service_token_and_resolved_user_id(
+        self, monkeypatch, token, expected_user
     ):
         # IDU_DVD rejects every search tool call without X-User-Id, so the anonymous
         # path must announce a placeholder subject rather than omit the header.
@@ -132,10 +165,13 @@ class TestAnonymousTransportHeaders:
             SimpleNamespace(DVD_MCP_URL="http://dvd:8000/mcp"),
         )
         monkeypatch.setattr(dependencies, "get_service_auth", FakeServiceAuth)
+        monkeypatch.setattr(
+            dependencies, "user_id_from_jwt", lambda value: "verified-user"
+        )
 
-        client = await dependencies.get_dvd_mcp_client(token=None)
+        client = await dependencies.get_dvd_mcp_client(token=token)
 
         auth = client.mcp_client.transport.auth
         headers = await service_headers(auth.auth, auth.user_id)
         assert headers["Authorization"] == "Bearer service-token"
-        assert headers[USER_ID_HEADER] == ANONYMOUS_USER_ID
+        assert headers[USER_ID_HEADER] == expected_user
