@@ -122,3 +122,92 @@ async def test_cancellation_propagates():
 
     with pytest.raises(asyncio.CancelledError):
         await DvdContextReducer(Llm()).prepare("m", "q", "x " * 6000)
+
+
+async def test_summary_requests_structured_output_and_reasoning_budget():
+    from unittest.mock import AsyncMock
+
+    llm = AsyncMock()
+    llm.chat.return_value = {
+        "message": {
+            "content": json.dumps(
+                {"summary": "[1] FACT1", "covered_sources": ["[1]"], "complete": True}
+            )
+        }
+    }
+    reducer = DvdContextReducer(llm)
+    assert await reducer._summarize("m", "q", "[1] Doc\nFACT1", 800) == "[1] FACT1"
+    call = llm.chat.call_args.kwargs
+    assert call["format"]["properties"]["summary"]["type"] == "string"
+    assert call["options"]["num_predict"] >= 4096
+    assert call["think"] is False
+
+
+async def test_failed_summary_reports_reason_not_generic_value_error():
+    class Truncated:
+        async def chat(self, **kwargs):
+            return {"message": {"content": ""}, "done_reason": "length"}
+
+    result = await DvdContextReducer(Truncated(), retries=0).prepare(
+        "m", "q", "[1] Doc\n" + "text " * 1500
+    )
+    assert result.failed_parts
+    assert all("output_truncated" in reason for reason in result.failed_parts)
+
+
+async def test_retry_tells_model_why_summary_was_rejected():
+    class RetrySummarizer(Summarizer):
+        async def chat(self, model, messages, **kwargs):
+            response = await super().chat(model, messages, **kwargs)
+            if len(self.calls) == 1:
+                data = json.loads(response["message"]["content"])
+                data["complete"] = False
+                response["message"]["content"] = json.dumps(data)
+            return response
+
+    llm = RetrySummarizer()
+    result = await DvdContextReducer(llm, concurrency=1).prepare(
+        "m", "q", "[1] Doc\n" + "padding " * 650 + "FACT1"
+    )
+    assert not result.failed_parts
+    assert "incomplete" in llm.calls[1][0]["content"]
+
+
+async def test_reducer_and_openai_adapter_recover_reasoning_only_completion(
+    monkeypatch,
+):
+    """Exercise the real reducer -> schema translation -> bounded retry seam."""
+    from tests.unit.test_llm_adapters import _adapter_with, _Choice, _Completion, _Delta
+
+    monkeypatch.setenv("DVD_SUMMARY_MAX_TOKENS", "1536")
+    adapter, _ = _adapter_with(None)
+    calls = []
+
+    async def create(**request):
+        calls.append(request)
+        if request["max_tokens"] <= 1536:
+            return _Completion([_Choice(message=_Delta(""), finish_reason="length")])
+        assert request["response_format"]["type"] == "json_schema"
+        return _Completion(
+            [
+                _Choice(
+                    message=_Delta(
+                        json.dumps(
+                            {
+                                "summary": "[1] School distance: 500 m.",
+                                "covered_sources": ["[1]"],
+                                "complete": True,
+                            }
+                        )
+                    ),
+                    finish_reason="stop",
+                )
+            ]
+        )
+
+    adapter.client.chat.completions.create = create
+    summary = await DvdContextReducer(adapter)._summarize(
+        "gpt-oss-20b", "School distance?", "[1] Standard\nSchool distance: 500 m.", 1200
+    )
+    assert summary == "[1] School distance: 500 m."
+    assert len(calls) == 2 and calls[1]["max_tokens"] > calls[0]["max_tokens"]

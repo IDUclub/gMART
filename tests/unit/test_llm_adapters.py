@@ -546,3 +546,18 @@ async def test_budget_exhausted_is_logged_even_without_a_trace():
 
     assert response.message.content == ""
     assert any("finish_reason=length" in w for w in warnings), warnings
+
+
+async def test_structured_retry_respects_remaining_context_window():
+    adapter, calls = _adapter_with(
+        _Completion([_Choice(message=_Delta(""), finish_reason="length")])
+    )
+    with pytest.raises(LlmResponseError):
+        await adapter.chat(
+            "m",
+            [{"role": "user", "content": "x" * 3000}],
+            format="json",
+            options={"num_predict": 1024, "num_ctx": 6000},
+        )
+    assert len(calls.calls) == 2
+    assert 1024 < calls.calls[1]["max_tokens"] <= 3000 - 256

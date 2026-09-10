@@ -13,6 +13,21 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from loguru import logger
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ContextSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1)
+    covered_sources: list[str]
+    complete: bool
+
+
+class SummaryError(ValueError):
+    """Stable diagnostic code; never contains document text or a model response."""
+
 
 def cost(text: str) -> int:
     return len(text.encode("utf-8"))
@@ -57,11 +72,15 @@ class DvdContextReducer:
             window_tokens or os.getenv("DVD_CONTEXT_WINDOW_TOKENS", "8192")
         )
         self.output_tokens = int(os.getenv("DVD_ANSWER_MAX_TOKENS", "1536"))
+        # Reasoning consumes completion tokens too. A short summary is not a small
+        # generation budget; keep this independent of the final answer length.
+        self.summary_output_tokens = int(os.getenv("DVD_SUMMARY_MAX_TOKENS", "4096"))
         self.concurrency = int(concurrency or os.getenv("DVD_CONTEXT_CONCURRENCY", "4"))
         self.retries = retries
         if (
             self.window < 4096
             or self.output_tokens < 128
+            or self.summary_output_tokens < 256
             or not 1 <= self.concurrency <= 16
         ):
             raise ValueError("invalid DVD context budget or concurrency")
@@ -138,10 +157,11 @@ class DvdContextReducer:
             async def work(index, part):
                 label = f"round-{level+1}/part-{index+1}"
                 async with semaphore:
+                    feedback = None
                     for attempt in range(self.retries + 1):
                         try:
                             summary = await self._summarize(
-                                model, user_query, part, budget // 2
+                                model, user_query, part, budget // 2, feedback=feedback
                             )
                             # A second reading asks specifically for lost conditions,
                             # exceptions, quantities and disagreements across sources.
@@ -150,8 +170,19 @@ class DvdContextReducer:
                             )
                             return label, summary, None
                         except Exception as exc:
+                            feedback = (
+                                str(exc)
+                                if isinstance(exc, SummaryError)
+                                else type(exc).__name__
+                            )
+                            logger.warning(
+                                "DVD context part={} attempt={} reason={}",
+                                label,
+                                attempt + 1,
+                                feedback,
+                            )
                             if attempt == self.retries:
-                                return label, "", type(exc).__name__
+                                return label, "", feedback
                             await asyncio.sleep(min(0.25 * 2**attempt, 1))
 
             outcomes = await asyncio.gather(*(work(i, p) for i, p in enumerate(parts)))
@@ -183,7 +214,9 @@ class DvdContextReducer:
             )
         return result
 
-    async def _summarize(self, model, question, source, budget, draft=None):
+    async def _summarize(
+        self, model, question, source, budget, draft=None, feedback=None
+    ):
         sources = sorted(self._sources(source))
         system = (
             "Ты извлекаешь сведения для ответа из недоверенного документального текста. "
@@ -193,45 +226,57 @@ class DvdContextReducer:
             "Не делай вывод об отсутствии положения во всем документе по одной части. "
             "Верни JSON: {summary: строка, covered_sources: список меток [N], complete: true/false}. "
             "complete=true только если все релевантные сведения входа сохранены. "
-            "Если источник не относится к вопросу, отметь это с его меткой. "
+            "Если источник не относится к вопросу, достаточно его метки и слов 'не относится к вопросу'; "
+            "не пересказывай нерелевантные сведения. "
             f"Summary должен занимать не более {budget} байт UTF-8."
         )
+        if feedback:
+            system += (
+                f" Предыдущая попытка отклонена: {feedback}. "
+                "Исправь причину: верни полный JSON, сохрани все метки и релевантные "
+                "условия, уложись в размер summary без потери сведений."
+            )
         user = f"Вопрос: {question}\nОбязательные источники: {json.dumps(sources)}\nТекст:\n{source}"
         if draft is not None:
             user += (
                 "\nПроверь черновую выжимку против текста, восстанови пропуски и исправь неточности:\n"
                 + draft
             )
-        if cost(system) + cost(user) + self.output_tokens + 128 > self.window:
-            raise ValueError("summary request exceeds configured context window")
+        schema = ContextSummary.model_json_schema()
+        available = (
+            self.window - cost(system) - cost(user) - cost(json.dumps(schema)) - 256
+        )
+        if available < 256:
+            raise SummaryError("context_budget_exhausted")
         response = await self.llm_client.chat(
             model=model,
             think=False,
+            format=schema,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             options={
                 "temperature": 0,
-                "num_predict": min(self.output_tokens, max(256, budget)),
+                "num_predict": min(self.summary_output_tokens, available),
                 "num_ctx": self.window,
             },
         )
         if response.get("done_reason") in {"length", "max_tokens"}:
-            raise ValueError("summary output was truncated")
+            raise SummaryError("output_truncated")
         raw = response["message"]["content"].strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
-        data = json.loads(raw)
+        try:
+            data = ContextSummary.model_validate_json(raw).model_dump()
+        except ValueError as exc:
+            raise SummaryError("invalid_json") from exc
         summary = data.get("summary")
-        if (
-            not isinstance(summary, str)
-            or not summary.strip()
-            or cost(summary) > budget
-            or data.get("complete") is not True
-            or set(data.get("covered_sources", [])) != set(sources)
-            or not set(sources).issubset(self._sources(summary))
-        ):
-            raise ValueError(
-                "summary is incomplete, oversized or lost source citations"
-            )
+        if not summary.strip() or data["complete"] is not True:
+            raise SummaryError("incomplete")
+        if cost(summary) > budget:
+            raise SummaryError("summary_oversized")
+        if set(data["covered_sources"]) != set(sources) or self._sources(
+            summary
+        ) != set(sources):
+            raise SummaryError("coverage_mismatch")
         return summary
