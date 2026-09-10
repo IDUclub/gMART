@@ -17,6 +17,7 @@ from redis.exceptions import (
 )
 
 from src.agents.common.exceptions.base_exceptions import PipelineStorageUnavailable
+from src.agents.common.logging.redis_logging import redis_attempt, redis_request_id
 
 TOKEN_REFRESH_TIMEOUT: float = 60.0
 PIPELINE_TTL: int = 15 * 60  # absolute reconnect/token-refresh window
@@ -64,9 +65,11 @@ class PipelineStateStore:
     def _key(self, request_id: str, suffix: str) -> str:
         return f"{self._PREFIX}:{request_id}:{suffix}"
 
-    async def _retry(self, operation, *args, **kwargs):
+    async def _retry(self, operation, *args, _request_id=None, **kwargs):
         """Retry a caller-selected idempotent operation, never an entire pipeline."""
         for attempt in range(3):
+            attempt_token = redis_attempt.set(attempt + 1)
+            request_token = redis_request_id.set(_request_id)
             try:
                 return await operation(*args, **kwargs)
             except AuthenticationError as exc:
@@ -85,6 +88,9 @@ class PipelineStateStore:
                     type(exc).__name__,
                 )
                 await asyncio.sleep(0.1 * (2**attempt))
+            finally:
+                redis_attempt.reset(attempt_token)
+                redis_request_id.reset(request_token)
 
     @staticmethod
     def new_request_id() -> str:
@@ -179,7 +185,7 @@ class PipelineStateStore:
                 pipe.expire(seen_key, PIPELINE_TTL)
                 await pipe.execute()
 
-        await self._retry(append_once)
+        await self._retry(append_once, _request_id=request_id)
 
     async def get_buffered_events(self, request_id: str) -> list[dict]:
         raw_list = await self._retry(
@@ -238,7 +244,7 @@ class PipelineStateStore:
                 await pipe.execute()
                 return True
 
-        return await self._retry(acquire_once)
+        return await self._retry(acquire_once, _request_id=request_id)
 
     async def release_chat(self, chat_id: str, request_id: str) -> None:
         """Release a chat lock only when this pipeline still owns it."""
@@ -254,7 +260,7 @@ class PipelineStateStore:
                 pipe.delete(key)
                 await pipe.execute()
 
-        await self._retry(release_once)
+        await self._retry(release_once, _request_id=request_id)
 
     async def cancel(self, request_id: str) -> bool:
         """Mark a pipeline cancelled and release its single-flight chat lock."""

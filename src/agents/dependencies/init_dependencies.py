@@ -1,6 +1,5 @@
 import os
 
-import redis.asyncio as aioredis
 from redis.asyncio.retry import Retry
 from redis.backoff import NoBackoff
 
@@ -14,6 +13,7 @@ from src.agents.common.auth.synapse_auth import SynapseCallerVerifier
 from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.common.config.app_config_loader import load_config
 from src.agents.common.logging.log_config import config_logger
+from src.agents.common.logging.redis_logging import LoggedRedis
 from src.agents.services.a2a_service import A2AService
 from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
@@ -53,7 +53,7 @@ def init_dependencies() -> dict[str, object]:
     urban_api_client = UrbanApiClient(urban_api_json_handler)
     # Retry only idempotent operations in PipelineStateStore. A global retry
     # could duplicate RPUSH/PUBLISH or change the outcome of SET NX locks.
-    redis_client = aioredis.from_url(
+    redis_client = LoggedRedis.from_url(
         app_config.REDIS_URL,
         decode_responses=True,
         health_check_interval=30,

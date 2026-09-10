@@ -9,8 +9,11 @@ import uuid
 
 import pytest
 from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
 from redis.exceptions import ConnectionError
 
+from src.agents.common.logging.redis_logging import LoggedRedis
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 
 pytestmark = pytest.mark.integration
@@ -21,12 +24,13 @@ async def isolated_redis():
     url = os.getenv("GMART_TEST_REDIS_URL")
     if not url:
         pytest.skip("GMART_TEST_REDIS_URL must name an isolated test Redis")
-    client = Redis.from_url(
+    client = LoggedRedis.from_url(
         url,
         decode_responses=True,
         health_check_interval=30,
         socket_connect_timeout=2,
         socket_timeout=2,
+        retry=Retry(NoBackoff(), 0),
     )
     await client.ping()
     yield client
