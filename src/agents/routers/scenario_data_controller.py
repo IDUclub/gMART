@@ -46,3 +46,33 @@ async def stream_scenario_data(
         temperature=user_request.temperature,
     ):
         yield ScenarioDataResponse(**chunk)
+
+
+@scenario_data_router.get(
+    "/indicators/stream",
+    response_class=EventSourceResponse,
+    summary="Answer with scenario indicators compared with the project base scenario",
+)
+async def stream_scenario_indicators(
+    request: Request,
+    user_request: Annotated[ScenarioDataRequestDTO, Depends(ScenarioDataRequestDTO)],
+    token: str = Depends(verify_bearer_token),
+    urban_mcp_client: UrbanMcpClient = Depends(get_urban_mcp_client),
+    service: ScenarioDataService = Depends(get_scenario_data_service),
+) -> AsyncIterable[ScenarioDataResponse]:
+    async for chunk in stream_with_error_handling(
+        service.run_indicator_comparison_pipeline,
+        request,
+        service,
+        user_request.model,
+        rerun=False,
+        continue_on_disconnect=True,
+        urban_mcp_client=urban_mcp_client,
+        token=token,
+        user_query=user_request.request,
+        scenario_id=user_request.scenario_id,
+        chat_id=user_request.chat_id,
+        request_id=user_request.request_id,
+        temperature=user_request.temperature,
+    ):
+        yield ScenarioDataResponse(**chunk)

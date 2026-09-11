@@ -164,9 +164,9 @@ class ScenarioDataService(BaseLlmService):
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Run the pipeline and always release its distributed chat lock."""
 
-        tracked_request_id = request_id
-        try:
-            async for event in self._run_scenario_data_pipeline(
+        async for event in self._released_pipeline(
+            request_id,
+            self._run_scenario_data_pipeline(
                 urban_mcp_client=urban_mcp_client,
                 token=token,
                 model=model,
@@ -176,7 +176,49 @@ class ScenarioDataService(BaseLlmService):
                 chat_id=chat_id,
                 request_id=request_id,
                 persist_history=persist_history,
-            ):
+            ),
+        ):
+            yield event
+
+    async def run_indicator_comparison_pipeline(
+        self,
+        urban_mcp_client: UrbanMcpClient,
+        token: str,
+        model: str | None,
+        temperature: float,
+        user_query: str,
+        scenario_id: int | None = None,
+        chat_id: str | None = None,
+        request_id: str | None = None,
+        persist_history: bool = True,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Answer with scenario indicators, compared with the project base scenario."""
+
+        async for event in self._released_pipeline(
+            request_id,
+            self._run_scenario_data_pipeline(
+                urban_mcp_client=urban_mcp_client,
+                token=token,
+                model=model,
+                temperature=temperature,
+                user_query=user_query,
+                scenario_id=scenario_id,
+                chat_id=chat_id,
+                request_id=request_id,
+                persist_history=persist_history,
+                force_analytics=True,
+            ),
+        ):
+            yield event
+
+    async def _released_pipeline(
+        self,
+        request_id: str | None,
+        events: AsyncGenerator[dict[str, Any], None],
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        tracked_request_id = request_id
+        try:
+            async for event in events:
                 if event.get("type") == "pipeline_started":
                     tracked_request_id = (event.get("content") or {}).get("request_id")
                 yield event
@@ -212,6 +254,7 @@ class ScenarioDataService(BaseLlmService):
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
+        force_analytics: bool = False,
     ) -> AsyncGenerator[dict[str, Any], None]:
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
@@ -307,7 +350,7 @@ class ScenarioDataService(BaseLlmService):
             | ToolCallPartRequest
             | StructuredPartRequest
         ] = []
-        broad_requested = broad_data_query(user_query)
+        broad_requested = not force_analytics and broad_data_query(user_query)
         type_intent = (
             None
             if broad_requested
@@ -317,8 +360,9 @@ class ScenarioDataService(BaseLlmService):
                 scenario_selected=scenario_id is not None,
             )
         )
-        analytics_requested = not broad_requested and (
-            indicator_query(user_query) or is_comparison(user_query)
+        analytics_requested = force_analytics or (
+            not broad_requested
+            and (indicator_query(user_query) or is_comparison(user_query))
         )
         if analytics_requested:
             type_intent = None
@@ -426,6 +470,7 @@ class ScenarioDataService(BaseLlmService):
                 parts=parts,
                 chat_id=chat_id,
                 persist_history=persist_history,
+                indicators_route=force_analytics,
             ):
                 yield event
             return
@@ -1732,7 +1777,12 @@ table_rows и table_total_rows; не утверждай, что полный п�
 
     @classmethod
     def _table_from_result(
-        cls, result: Any, *, name: str, title: str
+        cls,
+        result: Any,
+        *,
+        name: str,
+        title: str,
+        labels: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         rows = result
         reported_total: int | None = None
@@ -1784,7 +1834,9 @@ table_rows и table_total_rows; не утверждай, что полный п�
         return {
             "name": re.sub(r"[^a-zA-Z0-9_]+", "_", name),
             "title": title,
-            "columns": [{"key": key, "label": key} for key in keys],
+            "columns": [
+                {"key": key, "label": (labels or {}).get(key, key)} for key in keys
+            ],
             "rows": normalized_rows,
             "total_rows": total_rows,
             "complete": (
