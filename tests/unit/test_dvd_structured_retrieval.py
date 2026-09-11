@@ -16,6 +16,31 @@ EDITION = "N\u202f190‑ФЗ (ред. от\u00a030.01.2026, с изм. и доп
 CHOICE = f"{CODE}, редакция {EDITION}: 3.3"
 
 
+def test_clarification_ranks_russian_inflections_in_clause_excerpt():
+    from src.agents.services.dvd.clarification import ranked_choices
+
+    base = {"name": CODE, "version": EDITION}
+    candidates = [
+        {
+            **base,
+            "id": "article49",
+            "selection_path": ["статья 49", "пункт 3.3"],
+            "excerpt": "Проектная документация объектов капитального строительства",
+        },
+        {
+            **base,
+            "id": "article52",
+            "selection_path": ["статья 52", "пункт 3.3"],
+            "excerpt": "По решению застройщика или технического заказчика этапы строительства",
+        },
+    ]
+    choices = ranked_choices(
+        candidates,
+        "Что говорится о выделении этапов строительства в пункте 3.3 " + CODE + "?",
+    )
+    assert "статья 52" in choices[0]
+
+
 def test_dates_in_copied_candidate_are_not_document_designations():
     plan = RetrievalPlanner._clamp(
         SemanticRetrievalPlan(retrieval_mode="semantic"), CHOICE

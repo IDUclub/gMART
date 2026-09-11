@@ -6,6 +6,10 @@ import re
 import unicodedata
 
 CLARIFICATION = "Нашлось несколько подходящих элементов. Уточните документ, редакцию или структурный путь:"
+_RUSSIAN_ENDING = re.compile(
+    r"(?:иями|ями|ами|ого|его|ому|ему|ией|ов|ев|ей|ия|ие|ии|ую|юю|ая|яя|"
+    r"ое|ее|ые|ый|ий|ой|ом|ем|ым|им|ам|ям|ах|ях|а|я|ы|и|у|ю|е|о)$"
+)
 
 
 def normalized(value: str) -> str:
@@ -74,7 +78,13 @@ def choice_groups(candidates: list[dict]) -> list[tuple[str, list[dict]]]:
 
 def ranked_choices(candidates: list[dict], question: str) -> list[str]:
     def terms(text):
-        return {word[:6] for word in re.findall(r"[^\W\d_]{5,}", normalized(text))}
+        result = set()
+        for word in re.findall(r"[^\W\d_]{5,}", normalized(text)):
+            # A ranking heuristic, not linguistic analysis: keep common case/number
+            # variants together ("этапов" / "этапы") without reducing short roots.
+            stem = _RUSSIAN_ENDING.sub("", word)
+            result.add((stem if len(stem) >= 4 else word)[:6])
+        return result
 
     query_terms = terms(question)
 
