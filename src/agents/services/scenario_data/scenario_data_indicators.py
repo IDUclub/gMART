@@ -36,6 +36,17 @@ def indicator_query(query: str) -> bool:
     )
 
 
+def names_indicator(query: str) -> bool:
+    """Tell whether the query names a particular indicator, not indicators in general."""
+    if re.search(r"[«\"]", query):
+        return True
+    return indicator_query(re.sub(r"показател\w*|индикатор\w*", " ", query, flags=re.I))
+
+
+def explanation_requested(query: str) -> bool:
+    return bool(re.search(r"почему|объясн|причин|источник|комментар", query, re.I))
+
+
 def comparison_entities(query: str) -> str | None:
     if not is_comparison(query) or indicator_query(query):
         return None
@@ -46,6 +57,38 @@ def comparison_entities(query: str) -> str | None:
     if re.search(r"физическ.*объект|физобъект", query, re.I):
         return "physical_object"
     return None
+
+
+def comparison_declined(query: str) -> bool:
+    """Recognise a request that rules out any comparison, not only the base one."""
+    text = query.casefold().replace("ё", "е")
+    return bool(
+        re.search(r"без сравнени|не сравнива|не надо сравн|не нужно сравн", text)
+    )
+
+
+def base_comparison_declined(query: str) -> bool:
+    """Recognise an explicit refusal to compare with the project base scenario."""
+    text = query.casefold().replace("ё", "е")
+    return comparison_declined(query) or bool(
+        re.search(
+            r"без базов|только текущ|только по этому сценари|только мо\w*\s+сценари",
+            text,
+        )
+    )
+
+
+def base_comparison_requested(
+    query: str, ids: list[int], *, default: bool = False
+) -> bool:
+    """Tell whether the single scoped scenario should be compared with its project base.
+
+    ``default`` is set by callers whose entry point already means "indicator answer",
+    where comparison is the expected behaviour unless the user opts out.
+    """
+    if len(ids) != 1 or base_comparison_declined(query):
+        return False
+    return default or is_comparison(query)
 
 
 def scenario_scope(query: str, selected: int | None) -> list[int]:
@@ -66,7 +109,13 @@ def scenario_scope(query: str, selected: int | None) -> list[int]:
         ids = [selected]
     if not ids:
         raise ValueError("Выберите сценарий или укажите его ID в запросе.")
-    if is_comparison(query) and len(ids) < 2 and calculation_request(query) is None:
+    if (
+        is_comparison(query)
+        and not comparison_declined(query)
+        and len(ids) < 2
+        and calculation_request(query) is None
+        and not base_comparison_requested(query, ids)
+    ):
         raise ValueError(
             "Укажите ID сценариев для сравнения, например: сценарии 772 и 848."
         )
@@ -290,13 +339,82 @@ def number(value, *, places: int | None = None) -> str:
     return text.replace(".", ",")
 
 
+def grouped(value, *, places: int | None = None) -> str:
+    text = number(value, places=places)
+    sign, digits = ("-", text[1:]) if text.startswith("-") else ("", text)
+    whole, _, fraction = digits.partition(",")
+    if len(whole) > 3:
+        whole = f"{int(whole):,}".replace(",", " ")
+    return sign + whole + ("," + fraction if fraction else "")
+
+
+def signed(value, *, places: int | None = None, group: bool = False) -> str:
+    text = (grouped if group else number)(value, places=places)
+    return f"+{text}" if Decimal(str(value)) > 0 else text
+
+
+def lower_first(text: str) -> str:
+    return text[:1].lower() + text[1:]
+
+
+def upper_first(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
 def unit_label(unit) -> str:
     return {"км2": "км²", "чел/км2": "чел/км²"}.get(unit, unit or "единица не указана")
 
 
+def with_unit(text: str, unit) -> str:
+    """Append a unit for prose; a missing or dimensionless unit adds nothing."""
+    return text if unit in (None, "", "-") else f"{text} {unit_label(unit)}"
+
+
+def difference_base(query: str, scenarios: dict[int, list[dict]]) -> int:
+    """Pick the scenario differences are measured from: named in the query, else the first."""
+    relative = re.search(r"относительно\s*(?:сценари\w*\s*)?(\d+)", query, re.I)
+    subtraction = re.search(r"(\d+)\s*(?:минус|−|-)\s*(\d+)", query, re.I)
+    explicit_base = (
+        int(relative[1]) if relative else int(subtraction[2]) if subtraction else None
+    )
+    if explicit_base is None:
+        return next(iter(scenarios))
+    if explicit_base not in scenarios:
+        raise ValueError("Исходный сценарий расчёта отсутствует в выбранном наборе.")
+    return explicit_base
+
+
+def scenario_labels(
+    names: dict[int, str | None], *, selected: int | None, base_id: int | None
+) -> dict[int, str]:
+    """Label scenarios by role and name: users choose scenarios by name, not by ID."""
+    labels = {}
+    for sid, name in names.items():
+        if sid == base_id:
+            role = "Базовый сценарий"
+        elif sid == selected:
+            role = "Ваш сценарий"
+        else:
+            role = "Сценарий"
+        labels[sid] = f"{role} «{name}»" if name else f"{role} {sid}"
+    return labels
+
+
 def render_indicators(
-    request: IndicatorRequest, scenarios: dict[int, list[dict]], *, query: str
+    request: IndicatorRequest,
+    scenarios: dict[int, list[dict]],
+    *,
+    query: str,
+    labels: dict[int, str] | None = None,
 ) -> tuple[str, list[dict]]:
+    titles = labels or {}
+
+    def title(sid: int) -> str:
+        return titles.get(sid) or f"Сценарий {sid}"
+
+    def ref(sid: int) -> str:
+        return lower_first(titles[sid]) if sid in titles else str(sid)
+
     all_facts = [f for facts in scenarios.values() for f in facts]
     wanted = list(dict.fromkeys(request.names))
     if request.operation == "all":
@@ -311,7 +429,7 @@ def render_indicators(
     rows, lines = [], []
     for sid, facts in scenarios.items():
         lines.append(
-            f"Сценарий {sid}: сохранено показателей уровня сценария — {len(facts)}."
+            f"{title(sid)}: сохранено показателей уровня сценария — {len(facts)}."
         )
         for name in wanted:
             matches = [f for f in facts if f["name"] == name]
@@ -320,9 +438,10 @@ def render_indicators(
                     f"Название «{name}» неоднозначно; уточните показатель."
                 )
             if not matches:
-                lines.append(f"Сценарий {sid}: «{name}» — данные отсутствуют.")
+                lines.append(f"{title(sid)}: «{name}» — данные отсутствуют.")
                 rows.append(
                     {
+                        "scenario": title(sid),
                         "scenario_id": sid,
                         "indicator": name,
                         "value": None,
@@ -334,6 +453,7 @@ def render_indicators(
             f = matches[0]
             rows.append(
                 {
+                    "scenario": title(sid),
                     "scenario_id": sid,
                     "indicator_id": f["indicator_id"],
                     "indicator": name,
@@ -343,16 +463,16 @@ def render_indicators(
                 }
             )
             lines.append(
-                f"Сценарий {sid}: «{name}» — {number(f['value'])} {unit_label(f['unit'])}."
+                f"{title(sid)}: «{name}» — {number(f['value'])} {unit_label(f['unit'])}."
             )
-            if re.search(r"почему|объясн|причин|источник|комментар", query, re.I):
+            if explanation_requested(query):
                 if f["comment"]:
                     lines.append(f"Комментарий источника: {f['comment']}")
                 if f["information_source"]:
                     lines.append(f"Источник: {f['information_source']}.")
         for name in request.missing:
             lines.append(
-                f"Сценарий {sid}: «{name}» — данные отсутствуют в полном наборе показателей уровня сценария."
+                f"{title(sid)}: «{name}» — данные отсутствуют в полном наборе показателей уровня сценария."
             )
         if request.operation == "density":
             named = {f["name"]: f for f in facts}
@@ -370,7 +490,7 @@ def render_indicators(
                     str(area["value"])
                 )
                 lines.append(
-                    f"Сценарий {sid}: расчётная плотность = {number(population['value'])} / {number(area['value'])} ≈ {number(density, places=4)} чел/км²."
+                    f"{title(sid)}: расчётная плотность = {number(population['value'])} / {number(area['value'])} ≈ {number(density, places=4)} чел/км²."
                 )
                 saved = named.get("Плотность населения")
                 if (
@@ -383,23 +503,10 @@ def render_indicators(
                     )
             else:
                 lines.append(
-                    f"Сценарий {sid}: рассчитать плотность нельзя — нужны численность в людях и ненулевая площадь в км²."
+                    f"{title(sid)}: рассчитать плотность нельзя — нужны численность в людях и ненулевая площадь в км²."
                 )
     if len(scenarios) > 1:
-        base_id = next(iter(scenarios))
-        relative = re.search(r"относительно\s*(?:сценари\w*\s*)?(\d+)", query, re.I)
-        subtraction = re.search(r"(\d+)\s*(?:минус|−|-)\s*(\d+)", query, re.I)
-        explicit_base = (
-            int(relative[1])
-            if relative
-            else int(subtraction[2]) if subtraction else None
-        )
-        if explicit_base is not None:
-            if explicit_base not in scenarios:
-                raise ValueError(
-                    "Исходный сценарий расчёта отсутствует в выбранном наборе."
-                )
-            base_id = explicit_base
+        base_id = difference_base(query, scenarios)
         base = {f["indicator_id"]: f for f in scenarios[base_id] if f["name"] in wanted}
         for sid, facts in scenarios.items():
             if sid == base_id:
@@ -409,7 +516,7 @@ def render_indicators(
                 second = other.get(iid)
                 if second is None:
                     lines.append(
-                        f"«{first['name']}»: разница {sid} − {base_id} не вычислена — нет значения в {sid}."
+                        f"«{first['name']}»: разница {ref(sid)} − {ref(base_id)} не вычислена — значение отсутствует: {ref(sid)}."
                     )
                     continue
                 if first["unit"] != second["unit"]:
@@ -425,14 +532,230 @@ def render_indicators(
                     else unit_label(first["unit"])
                 )
                 lines.append(
-                    f"«{first['name']}»: разница {sid} − {base_id} = {number(delta)} {unit}."
+                    f"«{first['name']}»: разница {ref(sid)} − {ref(base_id)} = {signed(delta)} {unit}."
                 )
                 if a:
                     lines.append(
-                        f"Изменение относительно {base_id}: ≈ {number(delta / abs(a) * 100, places=4)}% (разница / модуль исходного значения × 100)."
+                        f"Изменение в процентах: ≈ {signed(delta / abs(a) * 100, places=4)}% (база — {ref(base_id)}; разница / модуль исходного значения × 100)."
                     )
                 else:
                     lines.append(
                         "Процент изменения не определён: исходное значение равно нулю."
                     )
     return "\n\n".join(lines), rows
+
+
+SUMMARY_CHANGES = 10
+
+
+def _plain(value: Decimal) -> int | float:
+    return int(value) if value == value.to_integral_value() else float(value)
+
+
+def _unit(fact: dict) -> str | None:
+    """Read a fact's unit; the API marks some dimensionless indicators with a dash."""
+    return None if fact["unit"] in ("", "-") else fact["unit"]
+
+
+def _change(first: dict, second: dict) -> tuple[Decimal, str]:
+    """Describe a reference-to-other change; percent units change in percentage points."""
+    a, b = Decimal(str(first["value"])), Decimal(str(second["value"]))
+    delta = b - a
+    if first["unit"] == "%":
+        values = f"{grouped(a)} % → {grouped(b)} %"
+        detail = f"{signed(delta, group=True)} п. п."
+    else:
+        values = with_unit(f"{grouped(a)} → {grouped(b)}", first["unit"])
+        detail = (
+            f"{signed(delta / abs(a) * 100, places=1)} %"
+            if a
+            else signed(delta, group=True)
+        )
+    return delta, (f"{values} ({detail})" if delta else f"{values}, без изменений")
+
+
+def indicator_comparison(
+    request: IndicatorRequest,
+    scenarios: dict[int, list[dict]],
+    *,
+    query: str,
+    names: dict[int, str | None],
+    selected: int | None,
+    base_id: int | None,
+) -> tuple[str, list[dict], dict[str, str]]:
+    """Put every requested value into table rows and summarise them in the text.
+
+    Returns the text, rows whose value cells stay numeric for sorting, and column labels.
+    """
+    labels = scenario_labels(names, selected=selected, base_id=base_id)
+    order = list(scenarios)
+    pair = len(order) == 2
+    if pair:
+        reference = difference_base(query, scenarios)
+        order = [reference, *(sid for sid in order if sid != reference)]
+
+    def where(sid: int, *, full: bool = False) -> str:
+        if sid == base_id:
+            return "в базовом сценарии" if full else "в базовом"
+        if sid == selected:
+            return "в вашем сценарии" if full else "в вашем"
+        return f"в сценарии «{names[sid]}»" if names.get(sid) else f"в сценарии {sid}"
+
+    known = {
+        sid: {f["indicator_id"]: f for f in facts} for sid, facts in scenarios.items()
+    }
+    titles: dict[int, str] = {}
+    for sid in order:
+        for fact in scenarios[sid]:
+            titles.setdefault(fact["indicator_id"], fact["name"])
+    if request.operation == "all":
+        indicators = sorted(titles, key=lambda iid: (titles[iid], iid))
+    else:
+        indicators = []
+        for name in dict.fromkeys(request.names):
+            matches = [iid for iid, title in titles.items() if title == name]
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Название «{name}» неоднозначно; уточните показатель."
+                )
+            indicators += matches
+
+    rows, lines, changed, mismatched = [], [], [], []
+    lacking: dict[int, list[str]] = {sid: [] for sid in order}
+    unchanged = 0
+    for iid in indicators:
+        name = titles[iid]
+        facts = {sid: known[sid].get(iid) for sid in order}
+        units = list(dict.fromkeys(_unit(f) for f in facts.values() if f))
+        unit = units[0]
+        row = {
+            "indicator": name,
+            "unit": (
+                " / ".join(unit_label(u) for u in units)
+                if len(units) > 1
+                else (
+                    None
+                    if unit is None
+                    else (
+                        "% (разница — п. п.)"
+                        if pair and unit == "%"
+                        else unit_label(unit)
+                    )
+                )
+            ),
+        }
+        for sid in order:
+            row[f"scenario_{sid}"] = (
+                _plain(Decimal(str(facts[sid]["value"]))) if facts[sid] else None
+            )
+            if not facts[sid]:
+                lacking[sid].append(name)
+        if pair:
+            first, second = facts[order[0]], facts[order[1]]
+            row["difference"] = row["change_percent"] = None
+            if first and second and _unit(first) != _unit(second):
+                mismatched.append(name)
+                line = f"«{name}»: единицы не совпадают ({' / '.join(unit_label(u) for u in units)}), разница не считается."
+            elif first and second:
+                delta, text = _change(first, second)
+                a = Decimal(str(first["value"]))
+                row["difference"] = _plain(delta)
+                if first["unit"] != "%" and a:
+                    row["change_percent"] = _plain(round(delta / abs(a) * 100, 1))
+                if delta:
+                    rank = (a == 0, abs(delta / a) if a else abs(delta), abs(delta))
+                    changed.append((rank, f"• {name}: {text}"))
+                else:
+                    unchanged += 1
+                line = f"«{name}»: {text}."
+            else:
+                present = order[0] if first else order[1]
+                absent = order[1] if first else order[0]
+                fact = first or second
+                line = (
+                    f"«{name}»: {where(present, full=True)} — "
+                    f"{with_unit(grouped(fact['value']), fact['unit'])}, "
+                    f"{where(absent, full=True)} значения нет."
+                )
+            lines.append(line)
+        elif len(order) == 1:
+            fact = facts[order[0]]
+            lines.append(
+                f"{labels[order[0]]}: «{name}» — {with_unit(grouped(fact['value']), fact['unit'])}."
+            )
+        else:
+            values = "; ".join(
+                f"{lower_first(labels[sid])} — "
+                + (
+                    with_unit(grouped(facts[sid]["value"]), facts[sid]["unit"])
+                    if facts[sid]
+                    else "нет значения"
+                )
+                for sid in order
+            )
+            lines.append(f"«{name}»: {values}.")
+        rows.append(row)
+
+    column_labels = {
+        "indicator": "Показатель",
+        "unit": "Ед.",
+        **{f"scenario_{sid}": labels[sid] for sid in order},
+    }
+    if pair:
+        column_labels |= {"difference": "Разница", "change_percent": "Изменение, %"}
+    absent_names = [
+        f"«{name}» — такого показателя нет в данных "
+        + ("сценария." if len(order) == 1 else "сценариев.")
+        for name in request.missing
+    ]
+    if len(order) == 1:
+        sid = order[0]
+        body = (
+            [
+                f"{labels[sid]}: показателей уровня сценария — {len(scenarios[sid])}.",
+                "Все значения — в таблице.",
+            ]
+            if request.operation == "all"
+            else lines
+        )
+        return "\n\n".join([*body, *absent_names]), rows, column_labels
+
+    header = (
+        "Сравниваются: "
+        + (" → " if pair else ", ").join(lower_first(labels[sid]) for sid in order)
+        + "."
+    )
+    if request.operation != "all":
+        return "\n\n".join([header, *lines, *absent_names]), rows, column_labels
+    counts = ", ".join(f"{where(sid)} — {len(scenarios[sid])}" for sid in order)
+    body = [header]
+    if not pair:
+        body += [f"Показателей: {counts}.", "Все значения — в таблице."]
+        return "\n\n".join(body), rows, column_labels
+    status = [f"изменились — {len(changed)}", f"без изменений — {unchanged}"]
+    status += [
+        f"нет значения {where(sid)} — {len(lacking[sid])}"
+        for sid in reversed(order)
+        if lacking[sid]
+    ]
+    if mismatched:
+        status.append(f"единицы не совпадают — {len(mismatched)}")
+    body.append(f"Показателей: {counts}. {upper_first(', '.join(status))}.")
+    ranked = [
+        line for _, line in sorted(changed, key=lambda item: item[0], reverse=True)
+    ]
+    if ranked:
+        body.append("Изменения:\n" + "\n".join(ranked[:SUMMARY_CHANGES]))
+        if len(ranked) > SUMMARY_CHANGES:
+            body.append(f"Ещё {len(ranked) - SUMMARY_CHANGES} — в таблице.")
+    body += [
+        f"Нет значения {where(sid, full=True)}: {', '.join(lacking[sid])}."
+        for sid in reversed(order)
+        if lacking[sid]
+    ]
+    if mismatched:
+        body.append(
+            "Единицы не совпадают, разница не считается: " + ", ".join(mismatched) + "."
+        )
+    body.append("Все значения — в таблице.")
+    return "\n\n".join(body), rows, column_labels

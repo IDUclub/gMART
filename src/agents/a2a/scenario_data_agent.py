@@ -83,6 +83,29 @@ class ScenarioDataA2AAgent(A2AServer):
                     ],
                     input_modes=["text/plain", "application/json"],
                     output_modes=output_modes,
-                )
+                ),
+                AgentSkill(
+                    id="compare-scenario-indicators",
+                    name="Compare scenario indicators",
+                    description=(
+                        "Reports scenario indicator values and, unless the request "
+                        "opts out, compares them with the project base scenario. "
+                        "Values, units and differences come from authenticated reads."
+                    ),
+                    tags=[
+                        "urban-api",
+                        "scenario-data",
+                        "indicators",
+                        "comparison",
+                        "read-only",
+                    ],
+                    examples=[
+                        "Покажи показатели сценария",
+                        "Сравни плотность населения с базовым сценарием",
+                        "Покажи площадь территории без сравнения",
+                    ],
+                    input_modes=["text/plain", "application/json"],
+                    output_modes=output_modes,
+                ),
             ],
         )
