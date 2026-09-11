@@ -24,6 +24,13 @@ from src.agents.services.dvd.answer_generation import (
     AnswerGenerationError,
     DvdAnswerGenerator,
 )
+from src.agents.services.dvd.clarification import (
+    CLARIFICATION,
+    candidate_label,
+    normalized,
+    ranked_choices,
+    selected_choice,
+)
 from src.agents.services.dvd.context_reducer import DvdContextReducer
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
@@ -262,6 +269,9 @@ class DvdRagService(BaseLlmService):
         prev_query: str | None = progress.get("prev_query")
         start_iteration = int(progress.get("completed_iterations", 0)) + 1
         final_iteration = start_iteration
+        collected["selected_choice"] = progress.get(
+            "selected_choice"
+        ) or selected_choice(user_query, history)
 
         for iteration in range(start_iteration, self.MAX_ITERATIONS + 1):
             final_iteration = iteration
@@ -328,18 +338,20 @@ class DvdRagService(BaseLlmService):
                     )
                 if search_result.get("ambiguous") and not plan.allow_multiple:
                     candidates = search_result.get("candidates", [])
-                    descriptions = [
-                        f"{c.get('name')}, редакция {c.get('version')}: "
-                        + " / ".join(
-                            c.get("structure_path") or [str(c.get("numbering") or "")]
+                    question = (
+                        " ".join(
+                            m["content"] for m in history if m.get("role") == "user"
                         )
-                        for c in candidates[:20]
-                    ]
-                    answer = (
-                        "Нашлось несколько подходящих элементов. Уточните документ, редакцию или структурный путь:\n\n"
-                        + "\n".join("- " + d for d in descriptions)
+                        + " "
+                        + user_query
                     )
-                    if len(candidates) > 20 or not search_result.get(
+                    descriptions = ranked_choices(candidates, question)
+                    answer = (
+                        CLARIFICATION
+                        + "\n\n"
+                        + "\n".join("- " + d for d in descriptions[:20])
+                    )
+                    if len(descriptions) > 20 or not search_result.get(
                         "candidates_complete", True
                     ):
                         answer += "\nПоказаны первые кандидаты; уточнение сузит полный список."
@@ -692,6 +704,7 @@ class DvdRagService(BaseLlmService):
         )
         calls, hits, cursors = [], [], set()
         first = None
+        selected_ids = None
         for _ in range(int(os.getenv("DVD_RETRIEVAL_MAX_PAGES", "100"))):
             page = await client.search_fragments(request, mode=plan.retrieval_mode)
             call = self._search_tool_call(tool, {"request": dict(request)})
@@ -700,7 +713,22 @@ class DvdRagService(BaseLlmService):
             if first is None:
                 first = page
             if page.get("ambiguous") and not plan.allow_multiple:
-                return {**page, "recorded_calls": calls}
+                candidates = page.get("candidates", [])
+                complete_choices = page.get("candidates_complete", True)
+                choice = collected.get("selected_choice")
+                matches = [
+                    c
+                    for c in candidates
+                    if choice and normalized(candidate_label(c)) == normalized(choice)
+                ]
+                if matches and complete_choices and all(c.get("id") for c in matches):
+                    selected_ids = {c["id"] for c in matches}
+                elif not (
+                    not choice
+                    and complete_choices
+                    and len(ranked_choices(candidates, "")) == 1
+                ):
+                    return {**page, "recorded_calls": calls}
             hits.extend(page.get("hits", []))
             cursor = page.get("next_cursor")
             if page.get("complete") is True:
@@ -710,7 +738,16 @@ class DvdRagService(BaseLlmService):
                     )
                 return {
                     **first,
-                    "hits": hits,
+                    "ambiguous": False,
+                    "hits": [
+                        hit
+                        for hit in hits
+                        if selected_ids is None
+                        or hit.get("id") in selected_ids
+                        or selected_ids.intersection(
+                            hit.get("matched_ancestor_ids") or []
+                        )
+                    ],
                     "recorded_calls": calls,
                     "complete": True,
                 }
@@ -797,6 +834,7 @@ class DvdRagService(BaseLlmService):
                 "prev_critique": prev_critique,
                 "prev_query": prev_query,
                 "retrieval_constraints": collected.get("retrieval_constraints"),
+                "selected_choice": collected.get("selected_choice"),
                 "context_processing": collected.get("context_processing"),
             },
         )

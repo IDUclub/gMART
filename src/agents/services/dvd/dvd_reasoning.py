@@ -17,6 +17,7 @@ from src.agents.services.service_entities.dvd_plan import (
     validate_retrieval_plan,
 )
 
+from .clarification import parse_choice, selected_choice
 from .context_reducer import cost, current_context_window
 
 T = TypeVar("T", bound=BaseModel)
@@ -155,6 +156,11 @@ class RetrievalPlanner:
         prev_critique: str | None = None,
         prev_query: str | None = None,
     ) -> RetrievalPlan:
+        choice = selected_choice(user_query, history or [])
+        if choice:
+            return validate_retrieval_plan(
+                {"search_query": user_query, **parse_choice(choice)}
+            )
         messages: list[dict] = [
             {"role": "system", "content": self._prompt(prev_critique, prev_query)},
             *(history or []),
@@ -167,6 +173,8 @@ class RetrievalPlanner:
 
     @staticmethod
     def _clamp(plan: RetrievalPlan, user_query: str) -> RetrievalPlan:
+        if choice := parse_choice(user_query):
+            return validate_retrieval_plan({**plan.model_dump(), **choice})
         block = (plan.block or "").strip().lower() or None
         if block not in _VALID_BLOCKS:
             block = None
@@ -181,7 +189,9 @@ class RetrievalPlanner:
         designations = [
             m[1]
             for m in re.finditer(
-                r"\b([A-ZА-ЯЁ]{2,10}\s*\d+(?:[.\-]\d+){1,5})", user_query, re.I
+                r"\b((?:ГОСТ(?:\s+Р)?|СП|СНиП|СанПиН|СН|ТСН|НПБ|ISO|EN)\s*\d+(?:[.\-]\d+){1,5})",
+                user_query,
+                re.I,
             )
             if not (address and m.start() < address.end() and m.end() > address.start())
         ]
