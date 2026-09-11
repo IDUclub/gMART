@@ -13,11 +13,17 @@ def normalized(value: str) -> str:
 
 
 def candidate_label(candidate: dict) -> str:
-    path = candidate.get("structure_path") or [
-        " ".join(
-            filter(None, [candidate.get("numbering"), candidate.get("fragment_name")])
-        )
-    ]
+    path = (
+        candidate.get("selection_path")
+        or candidate.get("structure_path")
+        or [
+            " ".join(
+                filter(
+                    None, [candidate.get("numbering"), candidate.get("fragment_name")]
+                )
+            )
+        ]
+    )
     label = (
         f"{candidate.get('name')}, редакция {candidate.get('version')}: "
         + " / ".join(path)
@@ -27,34 +33,85 @@ def candidate_label(candidate: dict) -> str:
     return label
 
 
-def ranked_choices(candidates: list[dict], question: str) -> list[str]:
-    # Physical fragment IDs are not choices: repeated ingestion can produce
-    # several records for the same document, edition and structural address.
-    unique = {}
-    for candidate in candidates:
+def choice_groups(candidates: list[dict]) -> list[tuple[str, list[dict]]]:
+    """Only proven copies may share a choice; a display path is not an identity."""
+    groups = {}
+    for index, candidate in enumerate(candidates):
+        base = candidate_label(candidate)
+        digest = candidate.get("content_digest")
+        if digest and candidate.get("parent_id"):
+            key = (
+                normalized(base),
+                candidate.get("doc_id"),
+                candidate["parent_id"],
+                digest,
+            )
+        else:
+            key = ("node", candidate.get("id") or (normalized(base), index))
+        groups.setdefault(key, []).append(candidate)
+    labeled = []
+    for members in groups.values():
+        candidate = members[0]
         label = candidate_label(candidate)
-        unique.setdefault(normalized(label), label)
+        excerpt = " ".join((candidate.get("excerpt") or "").split())[:200]
+        if excerpt:
+            label += " — «" + excerpt.replace("«", '"').replace("»", '"') + "»"
+        labeled.append((label, members))
+    counts = {}
+    for label, _ in labeled:
+        key = normalized(label)
+        counts[key] = counts.get(key, 0) + 1
+    seen = {}
+    out = []
+    for label, members in labeled:
+        key = normalized(label)
+        if counts[key] > 1:
+            seen[key] = seen.get(key, 0) + 1
+            label += f" (совпадение {seen[key]})"
+        out.append((label, members))
+    return out
 
+
+def ranked_choices(candidates: list[dict], question: str) -> list[str]:
     def terms(text):
-        # Prefix overlap handles Russian inflection without a morphology dependency.
         return {word[:6] for word in re.findall(r"[^\W\d_]{5,}", normalized(text))}
 
     query_terms = terms(question)
 
-    def relevance(label):
-        name, _, path = label.partition(", редакция ")
-        path = path.rsplit(": ", 1)[-1]
+    def relevance(choice):
+        label, members = choice
+        candidate = members[0]
         return (
-            -len(terms(name) & query_terms),
-            -len(terms(path) & query_terms),
-            path.count(" / "),
+            -len(terms(candidate.get("name") or "") & query_terms),
+            -len(terms(label) & query_terms),
+            candidate.get("block") == "amendment",
+            -len(candidate.get("structure_path") or []),
         )
 
-    return sorted(unique.values(), key=relevance)
+    return [label for label, _ in sorted(choice_groups(candidates), key=relevance)]
+
+
+def matching_choices(candidates: list[dict], choice: str) -> list[dict]:
+    groups = choice_groups(candidates)
+    exact = [
+        members for label, members in groups if normalized(label) == normalized(choice)
+    ]
+    if len(exact) == 1:
+        return exact[0]
+    # Previously sent labels did not contain excerpts. Accept them only if they
+    # still identify one proven group, never union unrelated same-label nodes.
+    legacy = [
+        members
+        for _, members in groups
+        if normalized(candidate_label(members[0])) == normalized(choice)
+    ]
+    return legacy[0] if len(legacy) == 1 else []
 
 
 def parse_choice(label: str) -> dict | None:
     label = label.strip().removeprefix("- ")
+    label = re.sub(r" \(совпадение \d+\)$", "", label)
+    label = re.sub(r" — «.*»$", "", label)
     block = "amendment" if label.endswith(" [изменения]") else None
     if block:
         label = label.removesuffix(" [изменения]")
