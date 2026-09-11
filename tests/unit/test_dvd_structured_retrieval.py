@@ -11,6 +11,254 @@ from src.agents.services.service_entities.dvd_plan import (
 )
 from tests.helpers import answer_text, plan_json, verdict_json
 
+CODE = "Градостроительный кодекс Российской Федерации"
+EDITION = "N\u202f190‑ФЗ (ред. от\u00a030.01.2026, с изм. и доп., вступ. в силу с\u00a001.07.2026)"
+CHOICE = f"{CODE}, редакция {EDITION}: 3.3"
+
+
+def test_dates_in_copied_candidate_are_not_document_designations():
+    plan = RetrievalPlanner._clamp(
+        SemanticRetrievalPlan(retrieval_mode="semantic"), CHOICE
+    )
+    assert plan.retrieval_mode == "structure"
+    assert plan.pattern == "3.3"
+    assert plan.document_names == [CODE]
+    assert plan.version == EDITION
+
+
+async def test_clarification_deduplicates_and_ranks_by_question(service, fake_llm):
+    fake_llm.json_responses = [plan_json()]
+    candidate = {"name": CODE, "version": EDITION, "structure_path": ["3.3"]}
+    client = Pages(
+        [
+            {
+                "ambiguous": True,
+                "candidates": [
+                    {
+                        "name": "СП 309.1325800.2017",
+                        "version": "2017",
+                        "structure_path": ["3", "3.3 аппаратная"],
+                    },
+                    {**candidate, "id": "one"},
+                    {**candidate, "id": "two"},
+                    {**candidate, "structure_path": ["52", "3.3"]},
+                ],
+            }
+        ]
+    )
+    events = await run(
+        service, client, "Расскажи о пункте 3.3 Градостроительного кодекса"
+    )
+    options = [
+        line for line in answer_text(events).splitlines() if line.startswith("- ")
+    ]
+    assert len(options) == 3
+    assert CODE in options[0]
+    assert options[0].endswith(": 3.3")
+
+
+@pytest.mark.parametrize(
+    "reply", [CHOICE.replace("\u00a0", " ").replace("\u202f", " "), "первый вариант"]
+)
+async def test_selected_candidate_reaches_structural_answer(service, fake_llm, reply):
+    service.get_chat_messages.return_value = SimpleNamespace(
+        messages=[
+            {"role": "user", "content": "О чём пункт 3.3?"},
+            {
+                "role": "assistant",
+                "content": "Нашлось несколько подходящих элементов. Уточните документ, редакцию или структурный путь:\n\n- "
+                + CHOICE,
+            },
+        ]
+    )
+    # Selection needs no LLM planning; the sole JSON request is the answer critic.
+    fake_llm.json_responses = [verdict_json(satisfied=True)]
+    fake_llm.answer_texts = ["Пункт устанавливает порядок действий [1]."]
+
+    class Selected(Pages):
+        tool_name_for_kind = staticmethod(lambda kind: "search_all")
+
+        async def search(self, *args, **kwargs):
+            return {"hits": []}
+
+    client = Selected(
+        [
+            {
+                "hits": [
+                    {
+                        "id": "one",
+                        "name": CODE,
+                        "text": "Пункт устанавливает порядок действий.",
+                    }
+                ],
+                "total": 1,
+                "complete": True,
+            }
+        ]
+    )
+    events = await run(service, client, reply)
+    assert answer_text(events) == "Пункт устанавливает порядок действий [1]."
+    mode, request = client.calls[0]
+    assert mode == "structure" and request["pattern"] == "3.3"
+    assert request["document_names"] == [CODE] and request["version"] == EDITION
+
+
+async def test_two_turn_choice_keeps_only_selected_roots_and_children(
+    service, fake_llm
+):
+    # Keep this retrieval regression independent of the separately tested reducer.
+    service.context_reducer.configured_window = 32768
+    root = {"id": "root", "name": CODE, "version": EDITION, "structure_path": ["3.3"]}
+    duplicate = {**root, "id": "duplicate"}
+    other = {**root, "id": "other", "structure_path": ["52", "3.3"]}
+    candidates = [other, *([root] * 25), duplicate]
+    fake_llm.json_responses = [plan_json()]
+    events = await run(
+        service,
+        Pages([{"ambiguous": True, "candidates": candidates}]),
+        "О чём пункт 3.3?",
+    )
+    clarification = answer_text(events)
+    assert (
+        len([line for line in clarification.splitlines() if line.startswith("- ")]) == 2
+    )
+    assert "52 / 3.3" in clarification
+    service.get_chat_messages.return_value = SimpleNamespace(
+        messages=[
+            {"role": "user", "content": "О чём пункт 3.3?"},
+            {
+                "role": "assistant",
+                "parts": [{"kind": "text", "payload": {"text": clarification}}],
+            },
+        ]
+    )
+    fake_llm.json_responses = [verdict_json(satisfied=True)]
+    fake_llm.answer_texts = ["Выбранный пункт с дочерним уточнением [1] [3]."]
+    # A bare 3.3 also matches 52 / 3.3 upstream. Filter by the actual offered
+    # identity after fetching every page, preserving children of duplicate roots.
+    client = Pages(
+        [
+            {
+                "ambiguous": True,
+                "candidates": [other, root, duplicate],
+                "hits": [
+                    {**other, "text": "WRONG SECTION", "matched": True},
+                    {**root, "text": "SELECTED ROOT", "matched": True},
+                ],
+                "total": 4,
+                "complete": False,
+                "next_cursor": "next",
+            },
+            {
+                "ambiguous": True,
+                "candidates": [other, root, duplicate],
+                "hits": [
+                    {**duplicate, "text": "SELECTED COPY", "matched": True},
+                    {
+                        "id": "child",
+                        "name": CODE,
+                        "text": "CHILD EXCEPTION",
+                        "matched": False,
+                        "matched_ancestor_ids": ["duplicate"],
+                    },
+                ],
+                "total": 4,
+                "complete": True,
+            },
+        ]
+    )
+    events = await run(service, client, "первый вариант")
+    assert answer_text(events) == "Выбранный пункт с дочерним уточнением [1] [3]."
+    context = next(c.messages[0]["content"] for c in fake_llm.chat_calls if c.stream)
+    assert "SELECTED ROOT" in context and "SELECTED COPY" in context
+    assert "CHILD EXCEPTION" in context and "WRONG SECTION" not in context
+    assert len(client.calls) == 2
+
+
+async def test_only_duplicate_candidates_do_not_require_clarification(
+    service, fake_llm
+):
+    candidate = {"name": CODE, "version": EDITION, "structure_path": ["3.3"]}
+    fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+    fake_llm.answer_texts = ["Ответ по пункту [1]."]
+    client = Pages(
+        [
+            {
+                "ambiguous": True,
+                "candidates": [{**candidate, "id": "a"}, {**candidate, "id": "b"}],
+                "hits": [
+                    {"id": "a", "name": CODE, "text": "Текст пункта"},
+                    {"id": "b", "name": CODE, "text": "Текст пункта"},
+                ],
+                "total": 2,
+                "complete": True,
+            }
+        ]
+    )
+    events = await run(service, client, "Расскажи о пункте 3.3")
+    assert answer_text(events) == "Ответ по пункту [1]."
+
+
+async def test_incomplete_candidate_list_is_not_treated_as_unique(service, fake_llm):
+    fake_llm.json_responses = [plan_json()]
+    client = Pages(
+        [
+            {
+                "ambiguous": True,
+                "candidates_complete": False,
+                "candidates": [
+                    {"name": CODE, "version": EDITION, "structure_path": ["3.3"]},
+                ],
+            }
+        ]
+    )
+    events = await run(service, client)
+    assert "Уточните" in answer_text(events)
+    assert "полный список" in answer_text(events)
+    assert not any(c.stream for c in fake_llm.chat_calls)
+
+
+def test_edition_dates_do_not_replace_explicit_document_filter():
+    plan = RetrievalPlanner._clamp(
+        SemanticRetrievalPlan(retrieval_mode="semantic", document_names=[CODE]),
+        f"Что изменилось в {CODE} в редакции от 30.01.2026?",
+    )
+    assert plan.document_names == [CODE]
+
+
+def test_choices_preserve_editions_ancestors_and_amendments():
+    from src.agents.services.dvd.clarification import parse_choice, ranked_choices
+
+    root = {"name": CODE, "version": EDITION, "structure_path": ["3.3"]}
+    options = ranked_choices(
+        [
+            root,
+            {**root, "structure_path": ["52", "3.3"]},
+            {**root, "version": "2020"},
+            {**root, "block": "amendment"},
+        ],
+        "",
+    )
+    assert len(options) == 4
+    assert (
+        parse_choice(next(o for o in options if "52 / 3.3" in o))["pattern"]
+        == "52 / 3.3"
+    )
+    assert (
+        parse_choice(next(o for o in options if o.endswith("[изменения]")))["block"]
+        == "amendment"
+    )
+
+
+def test_ordinal_selection_does_not_reuse_an_old_clarification():
+    from src.agents.services.dvd.clarification import CLARIFICATION, selected_choice
+
+    history = [
+        {"role": "assistant", "content": CLARIFICATION + "\n\n- " + CHOICE},
+        {"role": "assistant", "content": "Ответ уже дан."},
+    ]
+    assert selected_choice("первый вариант", history) is None
+
 
 def test_explicit_clause_overrides_semantic_planner_and_preserves_document():
     plan = RetrievalPlanner._clamp(
