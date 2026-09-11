@@ -12,11 +12,11 @@ from src.agents.services.scenario_data.scenario_data_evaluator import (
 from src.agents.services.scenario_data.scenario_data_indicators import (
     IndicatorRequest,
     base_comparison_requested,
+    calculation_request,
     comparison_declined,
     grouped,
     indicator_comparison,
     names_indicator,
-    calculation_request,
     normalize_indicators,
     render_indicators,
     scenario_labels,
