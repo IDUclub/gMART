@@ -28,6 +28,7 @@ from src.agents.services.dvd.context_reducer import DvdContextReducer
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
+from src.agents.services.service_entities.dvd_plan import validate_retrieval_plan
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
@@ -281,7 +282,7 @@ class DvdRagService(BaseLlmService):
                 "retrieval_constraints"
             )
             if locked:
-                plan = plan.model_copy(update=locked)
+                plan = validate_retrieval_plan({**plan.model_dump(), **locked})
                 collected["retrieval_constraints"] = locked
             elif (
                 plan.retrieval_mode != "semantic"

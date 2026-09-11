@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
@@ -14,6 +14,7 @@ from src.agents.services.service_entities.dvd_plan import (
     CriticVerdict,
     RetrievalPlan,
     SearchKind,
+    validate_retrieval_plan,
 )
 
 from .context_reducer import cost, current_context_window
@@ -68,7 +69,7 @@ async def _request_json(
     llm_client,
     model: str,
     messages: list[dict],
-    model_cls: type[T],
+    model_cls: Any,
     retries: int = 2,
     max_tokens: int = 1024,
     reasoning_effort: str | None = None,
@@ -79,8 +80,14 @@ async def _request_json(
     Mirrors the structured-output convention used by ProvisionPlanBuilder: temperature 0,
     strip markdown fences, retry by feeding the invalid response back to the model.
     """
+    adapter = TypeAdapter(model_cls)
+    model_name = (
+        "RetrievalPlan"
+        if model_cls is RetrievalPlan
+        else getattr(model_cls, "__name__", "structured response")
+    )
+    schema = adapter.json_schema()
     for attempt in range(retries + 1):
-        schema = model_cls.model_json_schema()
         # The schema is a decoding constraint, not another message. Reserving its
         # serialized UTF-8 size rejected the existing planner even with no history.
         available = (
@@ -101,13 +108,20 @@ async def _request_json(
             **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
         )
         content = response["message"]["content"]
-        logger.debug(f"LLM {model_cls.__name__} response [{model}]: {content}")
+        logger.debug(f"LLM {model_name} response [{model}]: {content}")
         try:
-            return model_cls.model_validate_json(strip_json_fence(content))
+            return adapter.validate_json(strip_json_fence(content))
         except (ValidationError, json.JSONDecodeError) as exc:
+            validation_details = (
+                json.dumps(
+                    exc.errors(include_url=False), ensure_ascii=False, default=str
+                )
+                if isinstance(exc, ValidationError)
+                else str(exc)
+            )
             if attempt < retries:
                 logger.warning(
-                    f"LLM returned invalid {model_cls.__name__} JSON "
+                    f"LLM returned invalid {model_name} JSON "
                     f"(retries left: {retries - attempt - 1}): {exc}"
                 )
                 messages = [
@@ -116,15 +130,14 @@ async def _request_json(
                     {
                         "role": "user",
                         "content": (
-                            "Твой предыдущий ответ содержит невалидный JSON. "
-                            "Верни только валидный JSON нужной структуры без markdown и пояснений."
+                            "Твой предыдущий JSON нарушает схему: "
+                            f"{validation_details}. Исправь указанные поля и верни "
+                            "только валидный JSON нужной структуры без markdown и пояснений."
                         ),
                     },
                 ]
             else:
-                raise ValueError(
-                    f"Model returned invalid {model_cls.__name__} JSON"
-                ) from exc
+                raise ValueError(f"Model returned invalid {model_name} JSON") from exc
     raise AssertionError("unreachable")
 
 
@@ -181,10 +194,6 @@ class RetrievalPlanner:
             if pattern
             else "name" if plan.name_query else plan.retrieval_mode
         )
-        if mode == "structure" and not pattern:
-            raise ValueError("structural retrieval requires pattern")
-        if mode == "name" and not plan.name_query:
-            raise ValueError("name retrieval requires name_query")
         updates = {
             "pattern": pattern,
             "retrieval_mode": mode,
@@ -195,8 +204,9 @@ class RetrievalPlanner:
         }
         if designations:
             updates["document_names"] = list(dict.fromkeys(designations))
-        return plan.model_copy(
-            update={
+        return validate_retrieval_plan(
+            {
+                **plan.model_dump(),
                 "search_query": (plan.search_query or "").strip() or user_query,
                 "limit": min(max(plan.limit, _LIMIT_MIN), _LIMIT_MAX),
                 "context_height": min(
