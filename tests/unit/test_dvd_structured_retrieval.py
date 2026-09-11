@@ -5,13 +5,18 @@ from types import SimpleNamespace
 import pytest
 
 from src.agents.services.dvd.dvd_reasoning import RetrievalPlanner
-from src.agents.services.service_entities.dvd_plan import RetrievalPlan
+from src.agents.services.service_entities.dvd_plan import (
+    SemanticRetrievalPlan,
+    StructureRetrievalPlan,
+)
 from tests.helpers import answer_text, plan_json, verdict_json
 
 
 def test_explicit_clause_overrides_semantic_planner_and_preserves_document():
     plan = RetrievalPlanner._clamp(
-        RetrievalPlan(search_query="пожар", types=["clause"]),
+        SemanticRetrievalPlan(
+            retrieval_mode="semantic", search_query="пожар", types=["clause"]
+        ),
         "о чем говорится в пункте 3.3 СП 2.13130.2020 2020?",
     )
     assert plan.retrieval_mode == "structure" and plan.pattern == "3.3"
@@ -139,13 +144,17 @@ async def test_name_parameters_are_passed_to_the_name_tool(service, fake_llm):
 
 @pytest.mark.parametrize("address", ["п.3.3", "пункте 3.3", "section 3.3"])
 def test_compact_address_and_lowercase_designation(address):
-    plan = RetrievalPlanner._clamp(RetrievalPlan(), f"{address} сп2.13130.2020")
+    plan = RetrievalPlanner._clamp(
+        SemanticRetrievalPlan(retrieval_mode="semantic"),
+        f"{address} сп2.13130.2020",
+    )
     assert plan.pattern == "3.3" and plan.document_names == ["сп2.13130.2020"]
 
 
 def test_explicit_clause_does_not_remove_ancestor_path():
     plan = RetrievalPlanner._clamp(
-        RetrievalPlan(pattern="А / 3.3"), "пункт 3.3 приложения А"
+        StructureRetrievalPlan(retrieval_mode="structure", pattern="А / 3.3"),
+        "пункт 3.3 приложения А",
     )
     assert plan.pattern == "А / 3.3"
 

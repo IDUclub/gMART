@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
+import json
+
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
 from src.agents.services.service_entities.dvd_plan import SearchKind
 from tests.helpers import plan_json, verdict_json
 
 
-async def test_planner_parses_and_clamps_bounds(fake_llm):
+async def test_planner_retries_out_of_bounds_plan(fake_llm):
     fake_llm.json_responses = [
         plan_json(
             search_query="озеленение дворов", kind="table", limit=99, context_height=99
-        )
+        ),
+        plan_json(
+            search_query="озеленение дворов", kind="table", limit=20, context_height=5
+        ),
     ]
     plan = await RetrievalPlanner(fake_llm).build_plan("m", "вопрос", history=[])
     assert plan.search_query == "озеленение дворов"
     assert plan.kind == SearchKind.TABLE
-    assert plan.limit == 20  # clamped to 1..20
-    assert plan.context_height == 5  # clamped to 0..5
+    assert plan.limit == 20
+    assert plan.context_height == 5
+    assert len(fake_llm.chat_calls) == 2
+    assert "limit" in fake_llm.chat_calls[-1].messages[-1]["content"]
 
 
 async def test_planner_keeps_valid_filters(fake_llm):
@@ -65,6 +72,32 @@ async def test_planner_retries_on_invalid_json(fake_llm):
     plan = await RetrievalPlanner(fake_llm).build_plan("m", "q", history=[])
     assert plan.search_query == "ок"
     assert len(fake_llm.chat_calls) == 2
+
+
+async def test_planner_retries_when_name_mode_lacks_name_query(fake_llm):
+    fake_llm.json_responses = [
+        json.dumps(
+            {
+                "retrieval_mode": "name",
+                "name_query": None,
+                "document_names": ["СП 2.13130.2020"],
+            },
+            ensure_ascii=False,
+        ),
+        plan_json(
+            search_query="наличие документа",
+            document_names=["СП 2.13130.2020"],
+        ),
+    ]
+
+    plan = await RetrievalPlanner(fake_llm).build_plan(
+        "m", "загружен ли документ СП 2.13130.2020?", history=[]
+    )
+
+    assert plan.retrieval_mode == "semantic"
+    assert plan.document_names == ["СП 2.13130.2020"]
+    assert len(fake_llm.chat_calls) == 2
+    assert "name_query" in fake_llm.chat_calls[-1].messages[-1]["content"]
 
 
 async def test_critic_parses_rejection(fake_llm):

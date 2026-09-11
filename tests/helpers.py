@@ -140,6 +140,7 @@ class FakeUrbanApiClient:
 # JSON builders (what the planner / critic LLM would return)
 # ---------------------------------------------------------------------------
 def plan_json(
+    retrieval_mode: str = "semantic",
     search_query: str = "нормы озеленения",
     kind: str = "all",
     limit: int = 5,
@@ -150,6 +151,7 @@ def plan_json(
 ) -> str:
     return json.dumps(
         {
+            "retrieval_mode": retrieval_mode,
             "search_query": search_query,
             "kind": kind,
             "limit": limit,

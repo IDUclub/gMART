@@ -11,25 +11,40 @@ from src.agents.services.provision.provision_plan_builder import ProvisionPlanBu
 from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
-from src.agents.services.service_entities.dvd_plan import RetrievalPlan
+from src.agents.services.service_entities.dvd_plan import validate_retrieval_plan
 from src.agents.services.service_entities.restriction_plan import RestrictionPlan
 
 
 async def test_dvd_planner_constrains_non_nullable_search_modes():
     client = AsyncMock()
     client.chat.return_value = {
-        "message": {"content": json.dumps({"search_query": "инсоляция"})}
+        "message": {
+            "content": json.dumps(
+                {"retrieval_mode": "semantic", "search_query": "инсоляция"}
+            )
+        }
     }
     await RetrievalPlanner(client).build_plan("m", "Найди требования к инсоляции")
     args = client.chat.await_args.kwargs
     assert args["think"] is False
     schema = args["format"]
-    assert schema["properties"]["name_mode"]["enum"] == ["strict", "expanded"]
+    assert schema["discriminator"]["propertyName"] == "retrieval_mode"
+    assert len(schema["oneOf"]) == 3
+    assert "name_query" in schema["$defs"]["NameRetrievalPlan"]["required"]
+    assert "pattern" in schema["$defs"]["StructureRetrievalPlan"]["required"]
     assert args["options"]["num_predict"] >= 1024
 
 
 def test_literal_null_is_not_a_fragment_address():
-    plan = RetrievalPlan(pattern="null", name_query="null", doc_id="None", version="")
+    plan = validate_retrieval_plan(
+        {
+            "retrieval_mode": "semantic",
+            "pattern": "null",
+            "name_query": "null",
+            "doc_id": "None",
+            "version": "",
+        }
+    )
     plan = RetrievalPlanner._clamp(plan, "Найди требования к инсоляции")
     assert plan.retrieval_mode == "semantic"
     assert plan.pattern is None and plan.doc_id is None and plan.name_query is None
