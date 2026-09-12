@@ -196,6 +196,8 @@ class RetrievalPlanner:
             if not (address and m.start() < address.end() and m.end() > address.start())
         ]
         pattern = address[1] if address else (plan.pattern or "").strip() or None
+        if address and pattern and re.search(r"\d\?$", pattern):
+            pattern = pattern[:-1]  # Sentence punctuation, not an explicit 3.? mask.
         if address and plan.pattern and "/" in plan.pattern:
             if plan.pattern.rsplit("/", 1)[-1].strip() == address[1].strip():
                 pattern = plan.pattern.strip()

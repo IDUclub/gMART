@@ -26,8 +26,7 @@ from src.agents.services.dvd.answer_generation import (
 )
 from src.agents.services.dvd.clarification import (
     CLARIFICATION,
-    candidate_label,
-    normalized,
+    matching_choices,
     ranked_choices,
     selected_choice,
 )
@@ -716,11 +715,7 @@ class DvdRagService(BaseLlmService):
                 candidates = page.get("candidates", [])
                 complete_choices = page.get("candidates_complete", True)
                 choice = collected.get("selected_choice")
-                matches = [
-                    c
-                    for c in candidates
-                    if choice and normalized(candidate_label(c)) == normalized(choice)
-                ]
+                matches = matching_choices(candidates, choice) if choice else []
                 if matches and complete_choices and all(c.get("id") for c in matches):
                     selected_ids = {c["id"] for c in matches}
                 elif not (

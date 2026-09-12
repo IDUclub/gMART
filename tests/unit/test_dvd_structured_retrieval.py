@@ -16,6 +16,31 @@ EDITION = "N\u202f190‑ФЗ (ред. от\u00a030.01.2026, с изм. и доп
 CHOICE = f"{CODE}, редакция {EDITION}: 3.3"
 
 
+def test_clarification_ranks_russian_inflections_in_clause_excerpt():
+    from src.agents.services.dvd.clarification import ranked_choices
+
+    base = {"name": CODE, "version": EDITION}
+    candidates = [
+        {
+            **base,
+            "id": "article49",
+            "selection_path": ["статья 49", "пункт 3.3"],
+            "excerpt": "Проектная документация объектов капитального строительства",
+        },
+        {
+            **base,
+            "id": "article52",
+            "selection_path": ["статья 52", "пункт 3.3"],
+            "excerpt": "По решению застройщика или технического заказчика этапы строительства",
+        },
+    ]
+    choices = ranked_choices(
+        candidates,
+        "Что говорится о выделении этапов строительства в пункте 3.3 " + CODE + "?",
+    )
+    assert "статья 52" in choices[0]
+
+
 def test_dates_in_copied_candidate_are_not_document_designations():
     plan = RetrievalPlanner._clamp(
         SemanticRetrievalPlan(retrieval_mode="semantic"), CHOICE
@@ -40,7 +65,7 @@ async def test_clarification_deduplicates_and_ranks_by_question(service, fake_ll
                         "structure_path": ["3", "3.3 аппаратная"],
                     },
                     {**candidate, "id": "one"},
-                    {**candidate, "id": "two"},
+                    {**candidate, "id": "one"},
                     {**candidate, "structure_path": ["52", "3.3"]},
                 ],
             }
@@ -54,7 +79,7 @@ async def test_clarification_deduplicates_and_ranks_by_question(service, fake_ll
     ]
     assert len(options) == 3
     assert CODE in options[0]
-    assert options[0].endswith(": 3.3")
+    assert options[0].endswith(": 52 / 3.3")
 
 
 @pytest.mark.parametrize(
@@ -108,7 +133,14 @@ async def test_two_turn_choice_keeps_only_selected_roots_and_children(
 ):
     # Keep this retrieval regression independent of the separately tested reducer.
     service.context_reducer.configured_window = 32768
-    root = {"id": "root", "name": CODE, "version": EDITION, "structure_path": ["3.3"]}
+    root = {
+        "id": "root",
+        "name": CODE,
+        "version": EDITION,
+        "structure_path": ["3.3"],
+        "parent_id": "parent",
+        "content_digest": "identical-subtrees",
+    }
     duplicate = {**root, "id": "duplicate"}
     other = {**root, "id": "other", "structure_path": ["52", "3.3"]}
     candidates = [other, *([root] * 25), duplicate]
@@ -153,7 +185,7 @@ async def test_two_turn_choice_keeps_only_selected_roots_and_children(
                 "ambiguous": True,
                 "candidates": [other, root, duplicate],
                 "hits": [
-                    {**duplicate, "text": "SELECTED COPY", "matched": True},
+                    {**duplicate, "text": "SELECTED ROOT", "matched": True},
                     {
                         "id": "child",
                         "name": CODE,
@@ -167,10 +199,10 @@ async def test_two_turn_choice_keeps_only_selected_roots_and_children(
             },
         ]
     )
-    events = await run(service, client, "первый вариант")
+    events = await run(service, client, "второй вариант")
     assert answer_text(events) == "Выбранный пункт с дочерним уточнением [1] [3]."
     context = next(c.messages[0]["content"] for c in fake_llm.chat_calls if c.stream)
-    assert "SELECTED ROOT" in context and "SELECTED COPY" in context
+    assert "SELECTED ROOT" in context and "SELECTED ROOT" in context
     assert "CHILD EXCEPTION" in context and "WRONG SECTION" not in context
     assert len(client.calls) == 2
 
@@ -178,7 +210,13 @@ async def test_two_turn_choice_keeps_only_selected_roots_and_children(
 async def test_only_duplicate_candidates_do_not_require_clarification(
     service, fake_llm
 ):
-    candidate = {"name": CODE, "version": EDITION, "structure_path": ["3.3"]}
+    candidate = {
+        "name": CODE,
+        "version": EDITION,
+        "structure_path": ["3.3"],
+        "parent_id": "parent",
+        "content_digest": "same-complete-text",
+    }
     fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
     fake_llm.answer_texts = ["Ответ по пункту [1]."]
     client = Pages(
@@ -482,3 +520,77 @@ async def test_truncated_final_generation_cannot_be_accepted(service):
                 "m", "question", "[1] source", 0, [], 1
             )
         ]
+
+
+async def test_same_address_different_content_is_not_merged_and_choice_round_trips(
+    service, fake_llm
+):
+    base = {
+        "name": CODE,
+        "version": EDITION,
+        "structure_path": ["52", "3.3"],
+        "parent_id": "article52",
+    }
+    a = {
+        **base,
+        "id": "a",
+        "excerpt": "Строительство линейного объекта",
+        "content_digest": "digest-a",
+    }
+    b = {
+        **base,
+        "id": "b",
+        "excerpt": "Другое условие строительства",
+        "content_digest": "digest-b",
+    }
+    fake_llm.json_responses = [plan_json()]
+    events = await run(
+        service,
+        Pages([{"ambiguous": True, "candidates": [a, b]}]),
+        "Пункт 3.3 про линейный объект",
+    )
+    answer = answer_text(events)
+    options = [s[2:] for s in answer.splitlines() if s.startswith("- ")]
+    assert len(options) == 2 and "линейного" in options[0]
+    service.get_chat_messages.return_value = SimpleNamespace(
+        messages=[{"role": "assistant", "content": answer}]
+    )
+    fake_llm.json_responses = [verdict_json(satisfied=True)]
+    fake_llm.answer_texts = ["Выбранный текст [1]."]
+    client = Pages(
+        [
+            {
+                "ambiguous": True,
+                "candidates": [a, b],
+                "hits": [
+                    {**a, "text": "SELECTED CONTENT", "matched": True},
+                    {**b, "text": "WRONG CONTENT", "matched": True},
+                ],
+                "total": 2,
+                "complete": True,
+            }
+        ]
+    )
+    result = await run(service, client, "первый вариант")
+    assert answer_text(result) == "Выбранный текст [1]."
+    assert client.calls[0][1]["pattern"] == "52 / 3.3"
+    context = next(c.messages[0]["content"] for c in fake_llm.chat_calls if c.stream)
+    assert "SELECTED CONTENT" in context and "WRONG CONTENT" not in context
+
+
+def test_legacy_identical_labels_are_not_proof_of_identity():
+    from src.agents.services.dvd.clarification import matching_choices, ranked_choices
+
+    a = {"id": "a", "name": CODE, "version": EDITION, "structure_path": ["3.3"]}
+    b = {**a, "id": "b"}
+    options = ranked_choices([a, b], "")
+    assert len(options) == 2
+    assert matching_choices([a, b], CHOICE) == []
+    assert matching_choices([a, b], options[0]) == [a]
+
+
+def test_question_mark_after_clause_is_not_a_wildcard():
+    plan = RetrievalPlanner._clamp(
+        SemanticRetrievalPlan(retrieval_mode="semantic"), "О чём пункт 3.3?"
+    )
+    assert plan.pattern == "3.3"
