@@ -126,6 +126,19 @@ class ProvisionService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
     ) -> AsyncGenerator:
+        if request_id:
+            stored = await self.state_store.get_state(request_id) or {}
+            if stored.get("status") in {
+                PipelineStatus.DONE,
+                PipelineStatus.FAILED,
+                PipelineStatus.CANCELLED,
+            }:
+                # Match the initial public stream without re-running any stage
+                # or scheduling the same assistant message in ChatStorage again.
+                for event in await self.state_store.get_buffered_events(request_id):
+                    if event.get("type") != "tool_call":
+                        yield event
+                return
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
         model = await self.resolve_model(model)
