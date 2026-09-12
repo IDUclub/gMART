@@ -36,3 +36,11 @@ Fix checkouts: ObjectEffectsAPI `fix/missing-service-normatives`, NormGraph
 
 See `tests/integration/local_stack/README.md` for reproduction. Test outputs and credentials are
 local-only and excluded from commits. This report does not claim a complete analytical/dev pass.
+
+## Follow-up — 2026-09-13
+
+The user supplied the embedding server `a.dgx:8010`. Both clients now share that origin in the
+local test environment, with the standard `/v1/embeddings` path. Windows DNS and Docker both
+return name-resolution errors for `a.dgx`; HTTP requests cannot yet reach the server. Its exact
+model ID and dimension therefore remain unverified. An IP address, resolvable full hostname,
+or access to the required corporate DNS is needed to continue.

@@ -11,6 +11,10 @@ an OpenAI-compatible embedding endpoint/model/dimension. All generative clients 
 `local-gpu` endpoint is not an embedding server. Do not substitute random/fake embeddings for
 an end-to-end document test.
 
+The requested embedding origin is `http://a.dgx:8010`; clients append `/v1/embeddings`.
+The hostname must resolve both on the host and inside Docker (corporate DNS/VPN may be needed).
+Confirm the model ID and vector dimension from the server before starting DVD/NormGraph.
+
 From this directory:
 
 ```powershell
