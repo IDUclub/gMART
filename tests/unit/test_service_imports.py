@@ -30,7 +30,14 @@ for module in (
 ):
     importlib.import_module("src.agents.services." + module)
 
-assert not any(name == "agents" or name.startswith("agents.") for name in sys.modules)
+# The top-level agents package now belongs to OpenAI Agents SDK. Application
+# modules must still resolve exclusively under src.agents, without shadowing it.
+from agents import Agent, Runner
+import agents
+import src.agents
+assert agents is not src.agents
+assert "site-packages" in agents.__file__
+assert not any(name.startswith("agents.services") for name in sys.modules)
 """,
             str(repo_root),
         ],

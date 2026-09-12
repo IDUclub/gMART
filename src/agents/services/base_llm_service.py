@@ -20,6 +20,7 @@ from src.agents.common.exceptions.ollama_exceptions import ModelNotFound
 from src.agents.model_clients.base_client import BaseLlmClient
 from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.model_clients.model_defaults import resolve_default_model
+from src.agents.runtime.runner import run_title
 
 
 class BaseLlmService(BaseLlmClient):
@@ -29,7 +30,7 @@ class BaseLlmService(BaseLlmClient):
         host (str): Ollama host.
         chat_storage_client (ChatStorageApiClient): Chat storage API client instance.
         urban_api_client (UrbanApiClient): Urban API client instance.
-        llm_client (AsyncOllamaClient): Asynchronous ollama client.
+        llm_client (BaseLlmAdapter): Inference transport for the SDK runtime.
     """
 
     def __init__(
@@ -173,8 +174,8 @@ class BaseLlmService(BaseLlmClient):
         """.strip()
 
         try:
-            title = await self.llm_client.generate(
-                model=model_name, prompt=prompt, stream=False
+            title = await run_title(
+                self.llm_client, model=model_name, prompt=prompt, stream=False
             )
         except LlmResponseError as exc:
             # Both backends answer 404 when the requested model is not served. Map

@@ -71,5 +71,8 @@ async def stream_orchestration(
         chat_id=user_request.chat_id,
         request_id=user_request.request_id,
         temperature=user_request.temperature,
+        budget_tokens=user_request.budget_tokens,
+        budget_seconds=user_request.budget_seconds,
+        continue_from=user_request.continue_from,
     ):
         yield OrchestratorResponse(**chunk)

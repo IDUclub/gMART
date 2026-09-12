@@ -34,6 +34,7 @@ planner's JSON valid.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any, AsyncIterator
@@ -47,7 +48,9 @@ from src.agents.model_clients.llm_base import (
     LlmGenerateResponse,
     LlmMessage,
     LlmResponseError,
+    closing_stream,
 )
+from src.agents.runtime.budget import current_budget
 
 THINK_REASONING_EFFORT = "reasoning_effort"
 THINK_CHAT_TEMPLATE = "chat_template"
@@ -266,6 +269,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             ),
             done=True,
             done_reason=finish_reason,
+            usage=getattr(completion, "usage", None),
         )
 
     @classmethod
@@ -300,6 +304,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                 ),
                 done=finish_reason is not None,
                 done_reason=finish_reason,
+                usage=getattr(chunk, "usage", None),
             )
         if not finished:
             # EOF is terminal for consumers, but is not proof that the model
@@ -322,7 +327,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
     ) -> LlmChatResponse | AsyncIterator[LlmChatResponse]:
         call = self._build(model, messages, stream, think, format, options, kwargs)
         try:
-            result = await self.client.chat.completions.create(**call)
+            result = await self._request_completion(call)
             if not stream and call.get("response_format"):
                 response = self._as_response(result)
                 if (
@@ -357,7 +362,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                         "Retrying incomplete structured LLM response with max_tokens={}",
                         call["max_tokens"],
                     )
-                    result = await self.client.chat.completions.create(**call)
+                    result = await self._request_completion(call)
                     response = self._as_response(result)
                     if (
                         response.done_reason == "length"
@@ -372,7 +377,63 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             raise LlmResponseError(str(exc), exc.status_code) from exc
         except OpenAIError as exc:
             raise LlmResponseError(str(exc)) from exc
-        return self._as_stream(result) if stream else self._as_response(result)
+        return self._mapped_stream(result) if stream else self._as_response(result)
+
+    async def _request_completion(self, call):
+        budget = current_budget.get()
+        if budget is None:
+            return await self.client.chat.completions.create(**call)
+        reservation = budget.reserve(
+            call["messages"], call.get("response_format"), call.get("max_tokens")
+        )
+        call = {**call, "max_tokens": reservation.output}
+        if call.get("stream"):
+            call["stream_options"] = {
+                **call.get("stream_options", {}),
+                "include_usage": True,
+            }
+        try:
+            async with asyncio.timeout(budget.remaining_seconds):
+                result = await self.client.with_options(
+                    max_retries=0
+                ).chat.completions.create(**call)
+        except BaseException:
+            reservation.settle()
+            raise
+        if call.get("stream"):
+            return self._budget_stream(result, reservation)
+        reservation.settle(getattr(result, "usage", None))
+        return result
+
+    async def _budget_stream(self, stream, reservation):
+        usage = None
+        terminal = None
+        try:
+            async with asyncio.timeout(reservation.budget.remaining_seconds):
+                async with closing_stream(stream):
+                    async for chunk in stream:
+                        usage = getattr(chunk, "usage", None) or usage
+                        choices = getattr(chunk, "choices", None) or []
+                        if choices and getattr(choices[0], "finish_reason", None):
+                            terminal = chunk
+                        elif choices:
+                            yield chunk
+            reservation.settle(usage)
+            if terminal is not None:
+                terminal.usage = usage
+                yield terminal
+        finally:
+            reservation.settle(usage)
+
+    async def _mapped_stream(self, stream):
+        try:
+            async with closing_stream(stream):
+                async for part in self._as_stream(stream):
+                    yield part
+        except APIStatusError as exc:
+            raise LlmResponseError(str(exc), exc.status_code) from exc
+        except OpenAIError as exc:
+            raise LlmResponseError(str(exc)) from exc
 
     async def generate(
         self, model: str, prompt: str, *, stream: bool = False, **kwargs: Any
@@ -381,7 +442,10 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             model, [{"role": "user", "content": prompt}], stream=False, **kwargs
         )
         return LlmGenerateResponse(
-            model=response.model, response=response.message.content, done=True
+            model=response.model,
+            response=response.message.content,
+            done=True,
+            usage=getattr(response, "usage", None),
         )
 
     async def list(self) -> dict[str, list[dict[str, Any]]]:

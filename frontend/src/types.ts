@@ -17,6 +17,7 @@ export type Agent = {
   examples: string[];
 };
 export type TableData = {
+  artifact_id?: string;
   name?: string;
   title?: string;
   columns: Array<{ key: string; label: string }>;

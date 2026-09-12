@@ -37,6 +37,7 @@ import McpConsole from "./McpConsole";
 import DocumentLibrary from "./DocumentLibrary";
 import { reusableChatId } from "./agentSession";
 import { appendLatestVisibleLayer } from "./layerState";
+import { extractStoredLayers, extractStoredComplianceSummary, analysisComplete } from "./analysisArtifacts";
 import {
   appendIterationChunk,
   appendSseExchange,
@@ -527,10 +528,10 @@ export default function App() {
       setAnswer("");
       setPendingQuestion("");
       setStatusEntries([]);
-      setLayers([]);
+      setLayers(extractStoredLayers(cached.chat.messages, colors));
       setTables(extractStoredTables(cached.chat.messages));
       setComplianceResults(extractStoredCompliance(cached.chat.messages));
-      setComplianceSummary(null);
+      setComplianceSummary(extractStoredComplianceSummary(cached.chat.messages));
       setComplianceProgress(null);
       scrollChatToBottom();
       return;
@@ -562,10 +563,10 @@ export default function App() {
       setAnswer("");
       setPendingQuestion("");
       setStatusEntries([]);
-      setLayers([]);
+      setLayers(extractStoredLayers(stored.messages, colors));
       setTables(extractStoredTables(stored.messages));
       setComplianceResults(extractStoredCompliance(stored.messages));
-      setComplianceSummary(null);
+      setComplianceSummary(extractStoredComplianceSummary(stored.messages));
       setComplianceProgress(null);
       scrollChatToBottom();
     } catch (e) {
@@ -632,7 +633,13 @@ export default function App() {
         };
       });
       setTables(extractStoredTables(merged.messages));
+      setLayers(current => {
+        const byId = new Map(extractStoredLayers(merged.messages, colors).map(layer => [layer.id, layer]));
+        current.forEach(layer => byId.set(layer.id, layer));
+        return [...byId.values()];
+      });
       setComplianceResults(extractStoredCompliance(merged.messages));
+      setComplianceSummary(extractStoredComplianceSummary(merged.messages));
       setHistoryWindow({
         hasMore: Boolean(page.has_more),
         nextBeforeSeq: page.next_before_seq ?? null,
@@ -1076,9 +1083,18 @@ export default function App() {
       const needsClarification = steps.some(
         (step: { status?: string }) => step.status === "needs_clarification",
       );
-      const complete = steps.length > 0 && steps.every(
-        (step: { status?: string }) => step.status === "completed",
-      );
+      const complete = analysisComplete(event.content || {});
+      if (event.content?.answer)
+        updateSseAnswer(current => current + "\n\n" + event.content.answer);
+      const unconfirmed = new Set<string>((event.content?.artifacts || [])
+        .filter((artifact: { confirmed?: boolean }) => artifact.confirmed === false)
+        .map((artifact: { id: string }) => artifact.id));
+      if (unconfirmed.size) {
+        setLayers(current => current.map(layer => unconfirmed.has(layer.id)
+          ? { ...layer, name: `${layer.name} — результат не подтверждён`, visible: false } : layer));
+        setTables(current => current.map(table => table.artifact_id && unconfirmed.has(table.artifact_id)
+          ? { ...table, title: `${table.title || table.name || "Таблица"} — результат не подтверждён` } : table));
+      }
       updateStatus(
         needsClarification ? "Нужно уточнение" : complete ? "Ответ готов" : "Запрос выполнен не полностью",
         complete ? "done" : "warning",
@@ -1092,7 +1108,7 @@ export default function App() {
         event.content;
       setLayers((v) =>
         appendLatestVisibleLayer(v, {
-          id: uid(),
+          id: event.content?.artifact_id || uid(),
           name: event.content?.name || `Слой ${v.length + 1}`,
           color: colors[v.length % colors.length],
           visible: true,

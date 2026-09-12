@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
+from src.agents.runtime.runner import IncompleteStructuredOutput, run_structured
+
 from .dvd_context import SOURCE_SEPARATOR, source_records
 
 _MODEL_WINDOW = ContextVar("dvd_model_window", default=None)
@@ -107,7 +109,11 @@ class DvdContextReducer:
 
     @property
     def window(self) -> int:
-        return _MODEL_WINDOW.get() or self.configured_window or 8192
+        from src.agents.runtime.budget import current_budget
+
+        selected = _MODEL_WINDOW.get() or self.configured_window or 8192
+        budget = current_budget.get()
+        return min(selected, budget.limits.context_tokens) if budget else selected
 
     @asynccontextmanager
     async def model_window(self, model: str):
@@ -331,26 +337,27 @@ class DvdContextReducer:
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")
-        response = await self.llm_client.chat(
-            model=model,
-            think=False,
-            format=schema,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            options={
-                "temperature": 0,
-                "num_predict": min(self.summary_output_tokens, available),
-                "num_ctx": self.window,
-            },
-        )
-        if response.get("done_reason") in {"length", "max_tokens"}:
-            raise SummaryError("output_truncated")
         try:
-            selected = EvidenceSelection.model_validate_json(
-                response["message"]["content"]
+            selected = await run_structured(
+                self.llm_client,
+                model,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                EvidenceSelection,
+                schema=schema,
+                agent_name="documents.EvidenceSelection",
+                retries=0,
+                think=False,
+                options={
+                    "temperature": 0,
+                    "num_predict": min(self.summary_output_tokens, available),
+                    "num_ctx": self.window,
+                },
             )
+        except IncompleteStructuredOutput as exc:
+            raise SummaryError("output_truncated") from exc
         except ValueError as exc:
             raise SummaryError("invalid_json") from exc
         if not selected.complete:
@@ -424,26 +431,27 @@ class DvdContextReducer:
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")
-        response = await self.llm_client.chat(
-            model=model,
-            think=False,
-            format=schema,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            options={
-                "temperature": 0,
-                "num_predict": min(self.summary_output_tokens, available),
-                "num_ctx": self.window,
-            },
-        )
-        if response.get("done_reason") in {"length", "max_tokens"}:
-            raise SummaryError("output_truncated")
-        raw = response["message"]["content"].strip()
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
         try:
-            data = ContextSummary.model_validate_json(raw)
+            data = await run_structured(
+                self.llm_client,
+                model,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                ContextSummary,
+                schema=schema,
+                agent_name="documents.ContextSummary",
+                retries=0,
+                think=False,
+                options={
+                    "temperature": 0,
+                    "num_predict": min(self.summary_output_tokens, available),
+                    "num_ctx": self.window,
+                },
+            )
+        except IncompleteStructuredOutput as exc:
+            raise SummaryError("output_truncated") from exc
         except ValueError as exc:
             raise SummaryError("invalid_json") from exc
         if not data.complete:

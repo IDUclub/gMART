@@ -1,9 +1,8 @@
-"""Backend-neutral contract for the LLM clients the agents use.
+"""Inference transport contract behind the OpenAI Agents SDK Model bridge.
 
-Every agent talks to the model through :class:`BaseLlmAdapter`, so the inference
-engine is a deployment choice rather than something baked into the services.
-Two backends implement it: Ollama (the historical one, still the default) and
-any OpenAI-compatible server such as vLLM.
+Services use src.agents.runtime to execute named SDK agents. Its Model bridge
+uses these adapters to preserve deployment-specific inference behaviour:
+OpenAI-compatible servers (the default) and native Ollama.
 
 The response objects deliberately mimic Ollama's: the call sites read them both
 as attributes (``part.message.content``, ``part.done``, ``title.response``) and
@@ -14,9 +13,24 @@ two backends be swapped without touching a single agent.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import asynccontextmanager
+from inspect import isawaitable
 from typing import Any, AsyncIterator
 
 from pydantic import BaseModel, ConfigDict
+
+
+@asynccontextmanager
+async def closing_stream(stream):
+    """Close a provider stream on exhaustion, exception or consumer cancellation."""
+    try:
+        yield stream
+    finally:
+        close = getattr(stream, "aclose", None) or getattr(stream, "close", None)
+        if close is not None:
+            result = close()
+            if isawaitable(result):
+                await result
 
 
 class LlmResponseError(Exception):
@@ -63,7 +77,7 @@ class LlmGenerateResponse(_SubscriptableModel):
 
 
 class BaseLlmAdapter(ABC):
-    """The whole surface the agents use — nothing else may be added lightly.
+    """Inference transport and model discovery; agent execution belongs to runtime.
 
     ``chat`` returns a single :class:`LlmChatResponse` when ``stream`` is false
     and an async iterator of them when it is true; the call sites therefore do

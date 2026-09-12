@@ -25,6 +25,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
+from src.agents.runtime.runner import run_completion
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.pipeline_state import (
     PipelineStateStore,
@@ -988,12 +989,14 @@ class ProvisionService(BaseLlmService):
             {"role": "user", "content": user_query},
         ]
         response_buffer: list[str] = []
-        async for part in await self.llm_client.chat(
+        async for part in await run_completion(
+            self.llm_client,
             model,
             messages,
             think=False,
             options={"temperature": temperature},
             stream=True,
+            agent_name="provsion_service",
         ):
             part: LlmChatResponse
             if part.message.content:

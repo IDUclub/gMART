@@ -25,6 +25,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
+from src.agents.runtime.runner import run_completion
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
@@ -1059,12 +1060,14 @@ class RestrictionParserService(BaseLlmService):
             {"role": "user", "content": user_query},
         ]
         response_buffer: list[str] = []
-        async for part in await self.llm_client.chat(
+        async for part in await run_completion(
+            self.llm_client,
             model,
             messages,
             think=False,
             options={"temperature": min(temperature, 0.4)},
             stream=True,
+            agent_name="restriction_parser_service",
         ):
             part: LlmChatResponse
             if part.message.content:
@@ -1102,12 +1105,14 @@ class RestrictionParserService(BaseLlmService):
             {"role": "user", "content": user_query},
         ]
         response_buffer: list[str] = []
-        async for part in await self.llm_client.chat(
+        async for part in await run_completion(
+            self.llm_client,
             model,
             messages,
             think=False,
             options={"temperature": temperature},
             stream=True,
+            agent_name="restriction_parser_service",
         ):
             part: LlmChatResponse
             if part.message.content:
@@ -1129,12 +1134,14 @@ class RestrictionParserService(BaseLlmService):
         """Answer from the persisted result without invoking compliance tools."""
 
         response_buffer: list[str] = []
-        async for part in await self.llm_client.chat(
+        async for part in await run_completion(
+            self.llm_client,
             model,
             prepared.messages,
             think=False,
             options={"temperature": min(temperature, 0.2)},
             stream=True,
+            agent_name="restriction_parser_service",
         ):
             part: LlmChatResponse
             if part.message.content:

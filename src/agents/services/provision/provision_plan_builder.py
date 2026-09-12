@@ -4,12 +4,9 @@ import json
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from pydantic import ValidationError
 
-from src.agents.services.restriction.restriction_catalog import (
-    parse_catalog_prompt,
-    strip_json_fence,
-)
+from src.agents.runtime.runner import run_structured
+from src.agents.services.restriction.restriction_catalog import parse_catalog_prompt
 from src.agents.services.service_entities.provision_plan import (
     ProvisionPlan,
     ProvisionPlanMode,
@@ -112,7 +109,7 @@ class ProvisionPlanBuilder:
         history: list[dict] | None = None,
         _retries: int = 2,
     ) -> ProvisionPlan:
-        messages: list[dict] = [
+        messages = [
             {"role": "system", "content": self._build_prompt(services_catalog)},
             *(history or []),
             {"role": "user", "content": user_query},
@@ -121,37 +118,18 @@ class ProvisionPlanBuilder:
         schema["properties"]["service_name"]["enum"] = [*services_catalog, None]
         for key in ("service_names", "layer_service_names"):
             schema["properties"][key]["items"]["enum"] = services_catalog
-        for attempt in range(_retries + 1):
-            response = await self.llm_client.chat(
-                model=model,
-                options={"temperature": 0, "num_predict": 1024},
-                think=False,
-                format=schema,
-                messages=messages,
-            )
-            content = response["message"]["content"]
-            logger.debug(f"LLM provision plan response [{model}]: {content}")
-            try:
-                return ProvisionPlan.model_validate_json(strip_json_fence(content))
-            except (ValidationError, json.JSONDecodeError) as exc:
-                if attempt < _retries:
-                    logger.warning(
-                        f"LLM returned invalid provision plan JSON "
-                        f"(retries left: {_retries - attempt - 1}): {exc}"
-                    )
-                    messages.append({"role": "assistant", "content": content})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Твой предыдущий ответ содержит невалидный JSON. "
-                                "Верни только валидный JSON нужной структуры без markdown и пояснений."
-                            ),
-                        }
-                    )
-                else:
-                    raise ValueError("Model returned invalid provision plan") from exc
-        raise AssertionError("unreachable")
+        return await run_structured(
+            self.llm_client,
+            model,
+            messages,
+            ProvisionPlan,
+            schema=schema,
+            agent_name="provision.plan",
+            retries=_retries,
+            think=False,
+            options={"temperature": 0, "num_predict": 1024},
+            error_message="Model returned invalid provision plan",
+        )
 
     @staticmethod
     def _build_prompt(services_catalog: list[str]) -> str:

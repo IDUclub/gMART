@@ -4,6 +4,7 @@ from mcp import ListToolsResult, Tool
 from mcp.server.fastmcp.prompts import Prompt
 
 from src.agents.common.exceptions.token_exceptions import TokenExpiredError
+from src.agents.runtime.tools import execute_planned
 
 
 def _is_token_expired(exc: Exception) -> bool:
@@ -93,6 +94,12 @@ class BaseMcpClient:
         meta: dict | None = None,
         log: bool = False,
     ):
+        return await execute_planned(
+            f"mcp.{tool_name}",
+            lambda: self._execute_transport(tool_name, arguments, meta, log),
+        )
+
+    async def _execute_transport(self, tool_name, arguments, meta, log):
         try:
             async with self.mcp_client as mcp:
                 result = await mcp.call_tool(tool_name, arguments, meta=meta or {})

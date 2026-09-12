@@ -8,15 +8,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from loguru import logger
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    ValidationError,
-    field_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.agents.services.restriction.restriction_catalog import strip_json_fence
+from src.agents.runtime.runner import run_structured
 from src.agents.services.scenario_data.scenario_data_aggregate import extract_records
 from src.agents.services.scenario_data.scenario_data_mapping import (
     MappingCall,
@@ -601,45 +595,28 @@ Candidates: {candidate_payload}"""
         *,
         post_validate=None,
     ):
-        error = ""
-        for attempt in range(MAPPING_LLM_RETRIES + 1):
-            call: dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "think": False,
+        def policy(attempt, conversation):
+            return {
                 "options": {
                     "temperature": 0,
                     "num_predict": 1800 if attempt == 0 else 3000,
                 },
+                "unconstrained": attempt == MAPPING_LLM_RETRIES,
+                **({"reasoning_effort": "medium"} if attempt else {}),
             }
-            if attempt < MAPPING_LLM_RETRIES:
-                call["format"] = schema.model_json_schema()
-            if attempt:
-                call["reasoning_effort"] = "medium"
-                call["messages"] = messages + [
-                    {
-                        "role": "user",
-                        "content": (f"Исправь JSON: {error}. Верни только JSON."),
-                    }
-                ]
-            response = await self.llm_client.chat(**call)
-            raw = (response.get("message") or {}).get("content") or ""
-            if not raw.strip():
-                done_reason = response.get("done_reason") or "unknown"
-                error = f"empty model response (done_reason={done_reason})"
-                logger.warning(
-                    f"Invalid scenario-data {label}, attempt {attempt + 1}: {error}"
-                )
-                continue
-            try:
-                parsed = schema.model_validate(json.loads(strip_json_fence(raw)))
-                return post_validate(parsed) if post_validate else parsed
-            except (ValidationError, ValueError, json.JSONDecodeError) as exc:
-                error = str(exc)
-                logger.warning(
-                    f"Invalid scenario-data {label}, attempt {attempt + 1}: {error}"
-                )
-        raise ValueError(f"invalid scenario-data {label} after retries: {error}")
+
+        return await run_structured(
+            self.llm_client,
+            model,
+            messages,
+            schema,
+            agent_name=f"scenario_data.{label}",
+            retries=MAPPING_LLM_RETRIES,
+            think=False,
+            attempt_settings=policy,
+            validate=post_validate,
+            error_message=f"invalid scenario-data {label} after retries",
+        )
 
 
 def _type_record(record: dict[str, Any], domain: str) -> tuple[Any, str]:

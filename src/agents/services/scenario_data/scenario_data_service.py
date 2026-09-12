@@ -24,6 +24,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient, UrbanMcpTool
+from src.agents.runtime.runner import run_completion
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
@@ -1660,7 +1661,9 @@ class ScenarioDataService(BaseLlmService):
             }
             if attempt:
                 call["reasoning_effort"] = "medium"
-            response = await self.llm_client.chat(**call)
+            response = await run_completion(
+                self.llm_client, **call, agent_name="scenario_data_service"
+            )
             answer = sanitize_public_answer(response["message"]["content"] or "")
             done_reason = response.get("done_reason")
             if answer and done_reason != "length":

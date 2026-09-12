@@ -6,6 +6,7 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.model_clients.llm_base import LlmChatResponse
+from src.agents.runtime.runner import run_completion
 from src.agents.services.base_llm_service import BaseLlmService
 
 
@@ -51,7 +52,13 @@ class SimpleLlmService(BaseLlmService):
         model = await self.resolve_model(model)
         await self.validate_model(model)
         messages = [{"role": "user", "content": user_request}]
-        return await self.llm_client.chat(model, messages, stream=False)
+        return await run_completion(
+            self.llm_client,
+            model,
+            messages,
+            stream=False,
+            agent_name="simple_llm_service",
+        )
 
     async def generate_stream_message(
         self, user_request: str, model: str | None
@@ -67,7 +74,13 @@ class SimpleLlmService(BaseLlmService):
 
         model = await self.resolve_model(model)
         messages = [{"role": "user", "content": user_request}]
-        async for part in await self.llm_client.chat(model, messages, stream=True):
+        async for part in await run_completion(
+            self.llm_client,
+            model,
+            messages,
+            stream=True,
+            agent_name="simple_llm_service",
+        ):
             part: LlmChatResponse
             if part.done:
                 yield {"type": "Text", "content": part.message.content}

@@ -167,6 +167,36 @@ class PipelineStateStore:
                 json.dumps(question, ensure_ascii=False),
             )
 
+    async def get_analysis_context(self, scope: str) -> dict | None:
+        raw = await self._retry(self._redis.get, f"analysis:{scope}")
+        return json.loads(raw) if raw else None
+
+    async def save_analysis_context(self, scope: str, data: dict) -> None:
+        # The scope includes the caller identity and chat ID. Source artifacts
+        # outlive the short reconnect window, but are never shared across users.
+        key = f"analysis:{scope}"
+
+        async def save_once():
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(key)
+                raw = await pipe.get(key)
+                previous = json.loads(raw) if raw else {}
+                merged = {**previous, **data}
+                for field, identity in (
+                    ("artifacts", lambda item: item["id"]),
+                    ("completed", lambda item: (item["request_id"], item["step"])),
+                ):
+                    items = {identity(item): item for item in previous.get(field, [])}
+                    items.update({identity(item): item for item in data.get(field, [])})
+                    merged[field] = list(items.values())
+                pipe.multi()
+                pipe.setex(
+                    key, 86400, json.dumps(merged, ensure_ascii=False, default=str)
+                )
+                await pipe.execute()
+
+        await self._retry(save_once)
+
     async def set_status(self, request_id: str, status: PipelineStatus) -> None:
         raw = await self._retry(self._redis.get, self._key(request_id, "state"))
         if not raw:

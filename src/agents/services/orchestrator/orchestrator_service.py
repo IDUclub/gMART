@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -19,9 +21,20 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
+from src.agents.model_clients.llm_base import LlmResponseError
+from src.agents.runtime.budget import BudgetExceeded, RunBudget, budget_scope
+from src.agents.runtime.tools import stream_planned
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
+from src.agents.services.orchestrator.analysis import AnalyticalRun, artifact_parts
+from src.agents.services.orchestrator.analysis_context import AnalysisContext
+from src.agents.services.orchestrator.analysis_support import (
+    blocker_text,
+    configured_limits,
+    context_scope,
+    missing_input,
+)
 from src.agents.services.orchestrator.orchestrator_catalog import (
     AGENT_CATALOG,
     AgentCatalogEntry,
@@ -56,25 +69,12 @@ _SUPPRESSED_INNER_EVENTS = {"pipeline_started", "service_event"}
 
 
 class OrchestratorService(BaseLlmService):
-    """
-    Single entry point routing a user request across the gMART agents.
+    """Route simple tasks and run bounded analytical investigations through SDK.
 
-    An LLM planner maps the request onto a sequential plan of 1..3 steps over the
-    restriction / provision / scenario-data / documents / norms agents (or a clarification
-    question when nothing fits). Each step invokes the corresponding pipeline
-    service **in-process** with ``persist_history=False`` and its own
-    ``request_id``; the sub-agent's events are forwarded verbatim inside
-    ``step_event`` envelopes. Between steps only a short text digest of the
-    previous results is passed (no GeoJSON threading in v1).
-
-    The orchestrator owns the ChatStorage lifecycle: it creates the chat, stores
-    the user question and persists one combined assistant message with a text
-    part per step, so follow-up requests in the same chat give the planner the
-    full dialogue context.
-
-    Reconnect (v1): every emitted event is buffered in Redis keyed by the outer
-    ``request_id``; reconnecting with the same ``request_id`` replays the
-    buffered events only — unfinished steps are not resumed.
+    Specialists execute in-process with independent request IDs. The orchestrator
+    owns chat persistence, artifact delivery and replay. Analytical tasks review
+    evidence between steps and can continue from a scoped saved context.
+    See docs/analytical-orchestrator.md for limits and the SSE contract.
     """
 
     DIGEST_MAX_CHARS = 1500
@@ -121,10 +121,138 @@ class OrchestratorService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
         urban_mcp_client: "UrbanMcpClient | None" = None,
+        budget_tokens: int | None = None,
+        budget_seconds: float | None = None,
+        continue_from: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        if request_id and await self.state_store.exists(request_id):
+            for event in await self.state_store.get_buffered_events(request_id):
+                yield event
+            return
+        request_id = request_id or self.state_store.new_request_id()
+        args = dict(
+            idu_mcp_client=idu_mcp_client,
+            effects_mcp_client=effects_mcp_client,
+            dvd_mcp_client=dvd_mcp_client,
+            normgraph_mcp_client=normgraph_mcp_client,
+            token=token,
+            model=model,
+            temperature=temperature,
+            user_query=user_query,
+            scenario_id=scenario_id,
+            chat_id=chat_id,
+            request_id=request_id,
+            persist_history=persist_history,
+            urban_mcp_client=urban_mcp_client,
+            continue_from=continue_from,
+        )
+        budget = RunBudget(configured_limits(budget_tokens, budget_seconds))
+        with budget_scope(budget):
+            try:
+                async with asyncio.timeout(budget.remaining_seconds):
+                    async with aclosing(
+                        self._run_orchestration_pipeline(**args)
+                    ) as events:
+                        async for event in events:
+                            yield event
+            except (BudgetExceeded, TimeoutError, ValueError, LlmResponseError) as exc:
+                missing = [
+                    missing_input(
+                        exc.resource
+                        if isinstance(exc, BudgetExceeded)
+                        else "time" if isinstance(exc, TimeoutError) else "planning"
+                    )
+                ]
+                saved = await self.state_store.get_analysis_context(
+                    context_scope(token, "run:" + request_id)
+                )
+                context = AnalysisContext(saved)
+                steps = (saved or {}).get("steps", [])
+                if not saved:
+                    # A deadline may fire while the outer SSE buffer is being
+                    # written, outside the specialist generator's timeout scope.
+                    started = {}
+                    for event in await self.state_store.get_buffered_events(request_id):
+                        content = event.get("content", {})
+                        if event["type"] == "step_started":
+                            started[content["step"]] = content
+                        elif (
+                            event["type"] == "step_event" and content["step"] in started
+                        ):
+                            info = started[content["step"]]
+                            context.add_artifact(
+                                content["event"],
+                                content["step"],
+                                info["step_request_id"],
+                            )
+                        elif (
+                            event["type"] == "step_finished"
+                            and content["step"] in started
+                        ):
+                            info = started[content["step"]]
+                            context.finish(
+                                content["step"],
+                                info["task"],
+                                scenario_id,
+                                content["status"],
+                                content["summary"],
+                                info["step_request_id"],
+                            )
+                            steps.append({**content, "task": info["task"]})
+                    context.query = user_query
+                    await self.state_store.save_analysis_context(
+                        context_scope(token, "run:" + request_id), context.dump()
+                    )
+                answer = blocker_text(
+                    missing, sum(c["status"] == "completed" for c in context.completed)
+                )
+                final = {
+                    "type": "orchestrator_final",
+                    "content": {
+                        "steps": steps,
+                        "status": "blocked",
+                        "answer": answer,
+                        "artifacts": context.index(),
+                        "missing": [m.model_dump() for m in missing],
+                        "budget": budget.snapshot(),
+                        "continue_from": request_id,
+                    },
+                }
+                if persist_history:
+                    state = await self.state_store.get_state(request_id)
+                    self._schedule_persist_parts(
+                        token,
+                        chat_id or (state or {}).get("chat_id"),
+                        [
+                            TextPartRequest(
+                                kind="text", payload=TextPayload(text=answer)
+                            ),
+                            *artifact_parts(context),
+                        ],
+                        scenario_id,
+                    )
+                await self.state_store.set_status(request_id, PipelineStatus.FAILED)
+                yield await self._buf(request_id, final)
+
+    async def _run_orchestration_pipeline(
+        self,
+        idu_mcp_client: "IduMcpClient",
+        effects_mcp_client: "EffectsMcpClient",
+        dvd_mcp_client: "DvdMcpClient | None",
+        normgraph_mcp_client: "NormGraphMcpClient | None",
+        token: str,
+        model: str | None,
+        temperature: float,
+        user_query: str,
+        scenario_id: int | None = None,
+        chat_id: str | None = None,
+        request_id: str | None = None,
+        persist_history: bool = True,
+        urban_mcp_client: "UrbanMcpClient | None" = None,
+        continue_from: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
-        model = await self.resolve_model(model)
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
         )
@@ -136,6 +264,7 @@ class OrchestratorService(BaseLlmService):
             for event in await self.state_store.get_buffered_events(request_id):
                 yield event
             return
+        model = await self.resolve_model(model)
         request_id = request_id or self.state_store.new_request_id()
 
         original_chat_id = chat_id
@@ -173,14 +302,59 @@ class OrchestratorService(BaseLlmService):
         )
 
         history: list[dict] = []
+        context = AnalysisContext()
+        saved = None
+        scope = context_scope(
+            token, "run:" + continue_from if continue_from else chat_id
+        )
+        if scope:
+            saved = await self.state_store.get_analysis_context(scope)
+            if saved:
+                context = AnalysisContext(saved)
+                if scenario_id is None:
+                    scenario_id = saved.get("scenario_id")
         if original_chat_id:
             try:
                 chat_info = await self.get_chat_messages(token, original_chat_id)
                 history = self.build_llm_history(
                     chat_info.messages, current_user_query=user_query
                 )
+                if not saved and not continue_from:
+                    for message in reversed(chat_info.messages):
+                        if message.get("role") != "assistant":
+                            continue
+                        snapshot = next(
+                            (
+                                part.get("payload", {}).get("content")
+                                for part in message.get("parts", [])
+                                if part.get("kind") == "data"
+                                and part.get("payload", {}).get("event_type")
+                                == "analysis_context"
+                            ),
+                            None,
+                        )
+                        if snapshot:
+                            context = AnalysisContext(snapshot)
+                            break
             except Exception as exc:
                 logger.warning(f"Orchestrator: failed to fetch chat history: {exc}")
+
+        if continue_from and not saved:
+            question = "Сохранённый анализ недоступен или срок хранения истёк. Укажите исходные сценарии, показатели и изменённые условия, чтобы восстановить задачу."
+            yield await self._buf(request_id, self._clarification_event(question))
+            await self.state_store.set_status(request_id, PipelineStatus.FAILED)
+            return
+        if context.completed:
+            # Full historical tables never enter the prompt. Their loss-aware
+            # index and selected evidence replace unbounded dialogue history.
+            history = [
+                {
+                    "role": "assistant",
+                    "content": json.dumps(context.view(), ensure_ascii=False),
+                }
+            ]
+        elif saved and context.query:
+            history = [{"role": "user", "content": context.query}]
 
         # A follow-up question in an existing chat is persisted here — create_chat
         # stores only the first one. Runs after the history fetch so the current
@@ -203,9 +377,12 @@ class OrchestratorService(BaseLlmService):
             self._status("planning", "Определяю, какие агенты нужны для запроса…"),
         )
         agents = available_agents(self.app_config, scenario_id)
-        plan = await self.plan_builder.build_plan(
-            model, user_query, agents, history, scenario_id=scenario_id
-        )
+        if context.completed:
+            plan = OrchestratorPlan(mode=OrchestratorPlanMode.EXECUTE, analytical=True)
+        else:
+            plan = await self.plan_builder.build_plan(
+                model, user_query, agents, history, scenario_id=scenario_id
+            )
 
         if plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION:
             question = plan.clarification_question or ""
@@ -217,6 +394,29 @@ class OrchestratorService(BaseLlmService):
 
         # ── Execution ──────────────────────────────────────────────────
         yield await self._buf(request_id, self._plan_event(plan))
+
+        if plan.analytical:
+            args = dict(
+                idu_mcp_client=idu_mcp_client,
+                effects_mcp_client=effects_mcp_client,
+                dvd_mcp_client=dvd_mcp_client,
+                normgraph_mcp_client=normgraph_mcp_client,
+                urban_mcp_client=urban_mcp_client,
+                token=token,
+                model=model,
+                temperature=temperature,
+                user_query=user_query,
+                scenario_id=scenario_id,
+                chat_id=chat_id,
+                request_id=request_id,
+                persist_history=persist_history,
+            )
+            async with aclosing(
+                AnalyticalRun(self, plan, agents, args, context).events()
+            ) as events:
+                async for event in events:
+                    yield await self._buf(request_id, event)
+            return
 
         summary_steps: list[dict[str, Any]] = []
         digests: list[tuple[OrchestratorStep, str]] = []
@@ -255,37 +455,51 @@ class OrchestratorService(BaseLlmService):
                     token,
                     model,
                     temperature,
-                    scenario_id,
+                    step.scenario_id or scenario_id,
                 )
-                async for item in pipeline:
-                    if item.get("type") in _SUPPRESSED_INNER_EVENTS:
-                        continue
-                    self._collect_digest(collected, item)
-                    table_part = self._table_part(item)
-                    if table_part is not None:
-                        step_tables.append(table_part)
-                    yield await self._buf(
-                        request_id,
-                        self._step_event(step_number, step, item),
-                    )
-                    if item.get("type") in {"error", "pipeline_failed"}:
-                        status = "failed"
-                        break
-                    if item.get("type") == "clarification":
-                        status = "needs_clarification"
-                        content = item.get("content") or {}
-                        collected = {
-                            "chunks": {},
-                            "notes": [
-                                content.get("question")
-                                or content.get("text")
-                                or "Для выполнения шага требуется уточнение пользователя."
-                            ],
-                        }
-                        break
-                    if item.get("type") == "pipeline_suspended":
-                        status = "suspended"
-                        break
+                async with aclosing(
+                    stream_planned(f"orchestrator.{step.agent}", pipeline)
+                ) as events:
+                    async for item in events:
+                        if item.get("type") in _SUPPRESSED_INNER_EVENTS:
+                            continue
+                        self._collect_digest(collected, item)
+                        artifact_id = context.add_artifact(
+                            item, step_number, step_request_id
+                        )
+                        if artifact_id:
+                            item = {
+                                **item,
+                                "content": {
+                                    **item["content"],
+                                    "artifact_id": artifact_id,
+                                },
+                            }
+                        table_part = self._table_part(item)
+                        if table_part is not None:
+                            step_tables.append(table_part)
+                        yield await self._buf(
+                            request_id,
+                            self._step_event(step_number, step, item),
+                        )
+                        if item.get("type") in {"error", "pipeline_failed"}:
+                            status = "failed"
+                            break
+                        if item.get("type") == "clarification":
+                            status = "needs_clarification"
+                            content = item.get("content") or {}
+                            collected = {
+                                "chunks": {},
+                                "notes": [
+                                    content.get("question")
+                                    or content.get("text")
+                                    or "Для выполнения шага требуется уточнение пользователя."
+                                ],
+                            }
+                            break
+                        if item.get("type") == "pipeline_suspended":
+                            status = "suspended"
+                            break
             except PipelineSuspendedError:
                 status = "suspended"
             except Exception as exc:
@@ -308,6 +522,14 @@ class OrchestratorService(BaseLlmService):
                 self._step_finished_event(step_number, step, status, digest),
             )
             summary_steps.append(self._summary_step(step_number, step, status, digest))
+            context.finish(
+                step_number,
+                step.task,
+                step.scenario_id or scenario_id,
+                status,
+                digest,
+                step_request_id,
+            )
             if status == "completed":
                 digests.append((step, digest))
                 table_parts.extend(step_tables)
@@ -316,7 +538,16 @@ class OrchestratorService(BaseLlmService):
                 # failure would produce misleading results — abort the plan.
                 aborted = True
 
-        yield await self._buf(request_id, self._final_event(summary_steps))
+        if aborted:
+            yield await self._buf(
+                request_id,
+                self._clarification_event(
+                    blocker_text([missing_input("service")], len(digests))
+                ),
+            )
+        final_event = self._final_event(summary_steps)
+        final_event["content"]["artifacts"] = context.index()
+        yield await self._buf(request_id, final_event)
         await self.state_store.set_status(
             request_id, PipelineStatus.FAILED if aborted else PipelineStatus.DONE
         )
@@ -326,7 +557,7 @@ class OrchestratorService(BaseLlmService):
                 chat_id,
                 summary_steps,
                 scenario_id,
-                table_parts=table_parts,
+                table_parts=artifact_parts(context),
             )
 
     # ------------------------------------------------------------------

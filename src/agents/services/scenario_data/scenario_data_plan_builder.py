@@ -6,14 +6,13 @@ from collections.abc import Callable
 from typing import Any
 
 from loguru import logger
-from pydantic import ValidationError
 
 from src.agents.mcp_clients.urban_mcp_client import (
     URBAN_MCP_GROUP_DESCRIPTIONS,
     URBAN_MCP_GROUPS,
     UrbanMcpTool,
 )
-from src.agents.services.restriction.restriction_catalog import strip_json_fence
+from src.agents.runtime.runner import run_structured
 from src.agents.services.scenario_data.scenario_data_mapping import (
     bind_mapping_arguments,
     mapped_ids_for_need,
@@ -858,12 +857,8 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
         post_validate: Callable[[Any], Any] | None = None,
         stop_after_first_error: bool = False,
     ):
-        error = ""
-        for attempt in range(MAX_PLANNER_RETRIES + 1):
-            call: dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "think": False,
+        def policy(attempt, conversation):
+            return {
                 "options": {
                     "temperature": 0,
                     "num_predict": (
@@ -872,44 +867,32 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                         else PLANNER_NUM_PREDICT_RETRY
                     ),
                 },
+                "unconstrained": attempt == MAX_PLANNER_RETRIES,
+                **(
+                    {"reasoning_effort": PLANNER_RETRY_REASONING_EFFORT}
+                    if attempt
+                    else {}
+                ),
             }
-            if attempt:
-                call["reasoning_effort"] = PLANNER_RETRY_REASONING_EFFORT
-                call["messages"] = messages + [
-                    {
-                        "role": "user",
-                        "content": f"Исправь JSON: {error}. Верни только JSON.",
-                    }
-                ]
-            if attempt < MAX_PLANNER_RETRIES:
-                call["format"] = schema.model_json_schema()
-            response = await self.llm_client.chat(**call)
-            raw = (response.get("message") or {}).get("content") or ""
-            if (
-                schema is ExecutionPlanRevision
-                and not raw.strip()
-                and response.get("done_reason") == "length"
-            ):
-                error = "empty execution plan after reasoning exhausted max_tokens"
-                logger.warning(
-                    "Scenario-data execution planner exhausted max_tokens; "
-                    "using deterministic fallback without redundant retries"
-                )
-                break
-            try:
-                payload = json.loads(strip_json_fence(raw))
-                if schema is ExecutionPlanRevision:
-                    payload = self._normalize_execution_plan_payload(payload)
-                parsed = schema.model_validate(payload)
-                return post_validate(parsed) if post_validate else parsed
-            except (ValidationError, ValueError, json.JSONDecodeError) as exc:
-                error = str(exc)
-                logger.warning(
-                    f"Invalid scenario-data {label}, attempt {attempt + 1}: {error}"
-                )
-                if stop_after_first_error:
-                    break
-        raise ValueError(f"invalid scenario-data {label} after retries: {error}")
+
+        return await run_structured(
+            self.llm_client,
+            model,
+            messages,
+            schema,
+            agent_name=f"scenario_data.{label}",
+            retries=0 if stop_after_first_error else MAX_PLANNER_RETRIES,
+            think=False,
+            attempt_settings=policy,
+            validate=post_validate,
+            normalize=(
+                self._normalize_execution_plan_payload
+                if schema is ExecutionPlanRevision
+                else None
+            ),
+            stop_on_empty_truncation=schema is ExecutionPlanRevision,
+            error_message=f"invalid scenario-data {label} after retries",
+        )
 
     @staticmethod
     def _normalize_execution_plan_payload(payload: Any) -> Any:
@@ -1070,93 +1053,47 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
         scenario_id: int | None = None,
     ) -> ScenarioDataAction:
         shortlist = self._shortlist(tools, user_query, observations)
-        prompt = self._build_prompt(shortlist, observations, scenario_id)
         messages = [
-            {"role": "system", "content": prompt},
+            {
+                "role": "system",
+                "content": self._build_prompt(shortlist, observations, scenario_id),
+            },
             *(history or []),
             {"role": "user", "content": user_query},
         ]
-        error = ""
-        for attempt in range(MAX_PLANNER_RETRIES + 1):
-            if error:
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "Предыдущий JSON не прошёл проверку: "
-                            f"{error}. Верни исправленный JSON строго по схеме. "
-                            'Поле action должно быть ровно "call_tool" или '
-                            '"final_answer"; не объединяй варианты через символ |.'
-                        ),
-                    }
-                )
-            # Escalate on each retry. Repeating an identical call is pointless when the
-            # server answered with an empty string, and on a Harmony-served gpt-oss the
-            # lever that actually matters is the reasoning effort, not the budget:
-            # measured on the same prompt, reasoning_effort="low" returns *no content at
-            # all* — the model finishes its analysis channel and stops without emitting a
-            # final message — while "medium", "high" and omitting the field all answer.
-            # Prompt size is not the factor: six tools (2k tokens) fail on "low" just as
-            # forty-one (11.5k) do. So a retry raises the effort explicitly, which wins
-            # over the configured default because _apply_think uses setdefault.
-            budget = PLANNER_NUM_PREDICT if attempt == 0 else PLANNER_NUM_PREDICT_RETRY
-            call: dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "think": False,
-                "options": {"temperature": 0, "num_predict": budget},
+
+        def policy(attempt, conversation):
+            return {
+                "options": {
+                    "temperature": 0,
+                    "num_predict": (
+                        PLANNER_NUM_PREDICT
+                        if attempt == 0
+                        else PLANNER_NUM_PREDICT_RETRY
+                    ),
+                },
+                "unconstrained": attempt == MAX_PLANNER_RETRIES,
+                **(
+                    {"reasoning_effort": PLANNER_RETRY_REASONING_EFFORT}
+                    if attempt
+                    else {}
+                ),
             }
-            if attempt > 0:
-                call["reasoning_effort"] = PLANNER_RETRY_REASONING_EFFORT
-            if attempt < MAX_PLANNER_RETRIES:
-                call["format"] = ScenarioDataAction.model_json_schema()
-            else:
-                # Last chance: no structured-output constraint at all, JSON asked for in
-                # words. A model that returns nothing under the schema usually answers here.
-                messages = messages + [
-                    {
-                        "role": "user",
-                        "content": (
-                            "Ответь ТОЛЬКО JSON-объектом по описанной схеме, без "
-                            "пояснений и без markdown-ограждения."
-                        ),
-                    }
-                ]
-                call["messages"] = messages
-            response = await self.llm_client.chat(**call)
-            raw = response["message"]["content"]
-            if not (raw or "").strip():
-                # Name the real cause. "Empty answer" on its own sent a reader looking for a
-                # vague prompt, when the model had in fact reasoned to a conclusion and
-                # simply never emitted it.
-                trace = (response["message"].get("thinking") or "").strip()
-                error = (
-                    "модель не выдала финальный ответ"
-                    + (
-                        f" (сгенерирован только след рассуждений: {trace[:160]}…)"
-                        if trace
-                        else " (пустой ответ без следа рассуждений)"
-                    )
-                    + "; проверьте лимит выходных токенов и поддерживаемый режим рассуждений"
-                )
-                logger.warning(
-                    f"Empty scenario-data action, attempt {attempt + 1} "
-                    f"(num_predict={budget}, format={'format' in call}, "
-                    f"reasoning_effort={call.get('reasoning_effort', 'configured')}, "
-                    f"reasoning_trace_len={len(trace)})"
-                )
-                continue
-            try:
-                payload = json.loads(strip_json_fence(raw))
-                payload = self._repair_ambiguous_action(payload, shortlist)
-                action = ScenarioDataAction.model_validate(payload)
-                return self._canonicalize(action, shortlist)
-            except (ValidationError, ValueError, json.JSONDecodeError) as exc:
-                error = str(exc)
-                logger.warning(
-                    f"Invalid scenario-data action, attempt {attempt + 1}: {error}"
-                )
-        raise ValueError(f"invalid scenario-data action after retries: {error}")
+
+        return await run_structured(
+            self.llm_client,
+            model,
+            messages,
+            ScenarioDataAction,
+            agent_name="scenario_data.action",
+            retries=MAX_PLANNER_RETRIES,
+            think=False,
+            attempt_settings=policy,
+            normalize=lambda payload: self._repair_ambiguous_action(payload, shortlist),
+            validate=lambda action: self._canonicalize(action, shortlist),
+            error_message="invalid scenario-data action after retries",
+            repair_instruction=" Поле action должно быть ровно call_tool или final_answer; не объединяй варианты через символ |.",
+        )
 
     @staticmethod
     def _repair_ambiguous_action(payload: Any, tools: list[UrbanMcpTool]) -> Any:

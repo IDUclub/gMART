@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.agents.common.exceptions.sse_exceptions import SseBaseError
 from src.agents.schema.dvd_response import (
@@ -16,7 +16,7 @@ StepStatus = Literal["completed", "failed", "suspended", "needs_clarification"]
 class OrchestratorStatusResponse(BaseModel):
     """Status update for an orchestrator-level stage."""
 
-    status: Literal["planning"]
+    status: Literal["planning", "reviewing"]
     text: str
 
 
@@ -27,12 +27,14 @@ class PlanStepInfo(BaseModel):
     agent: str
     agent_title: str
     task: str
+    scenario_id: int | None = None
 
 
 class PlanContent(BaseModel):
     """The full orchestration plan announced before execution starts."""
 
     steps: list[PlanStepInfo]
+    revision: int = 1
 
 
 class StepStartedContent(BaseModel):
@@ -94,6 +96,14 @@ class OrchestratorFinalContent(BaseModel):
     """Structured per-step summary emitted once at the end of the run."""
 
     steps: list[OrchestratorSummaryStep]
+    status: Literal["completed", "blocked"] | None = None
+    answer: str = ""
+    missing: list[dict[str, Any]] = Field(default_factory=list)
+    hypotheses: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    budget: dict[str, Any] = Field(default_factory=dict)
+    continue_from: str | None = None
 
 
 class OrchestratorResponse(BaseModel):
