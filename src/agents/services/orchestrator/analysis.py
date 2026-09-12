@@ -287,14 +287,42 @@ class AnalyticalRun:
                                 },
                                 ensure_ascii=False,
                             )
-                        review = await s.plan_builder.review(
-                            a["model"],
-                            query,
-                            self.agents,
-                            self.view(),
-                            self.remaining,
-                            self.budget.snapshot(),
-                        )
+                        validation_error = None
+                        comparison = None
+                        for attempt in range(3):
+                            view = self.view()
+                            if validation_error:
+                                view["review_validation_error"] = validation_error
+                            review = await s.plan_builder.review(
+                                a["model"],
+                                query,
+                                self.agents,
+                                view,
+                                self.remaining,
+                                self.budget.snapshot(),
+                            )
+                            try:
+                                for ref in review.evidence_ids:
+                                    self.context.get(ref)
+                                if review.action == "complete":
+                                    if not review.evidence_ids:
+                                        raise ValueError(
+                                            "Cannot finish an analysis without evidence"
+                                        )
+                                    comparison = (
+                                        self.context.compare(review.comparisons)
+                                        if review.comparisons
+                                        else None
+                                    )
+                                break
+                            except ValueError as exc:
+                                if attempt == 2:
+                                    raise
+                                validation_error = str(exc)
+                                yield s._status(
+                                    "reviewing",
+                                    "Исправляю ссылки на доказательства; полученные результаты сохранены…",
+                                )
                     finally:
                         self.budget.finalizing = False
                     for ref in review.evidence_ids:
@@ -335,8 +363,8 @@ class AnalyticalRun:
                         break
                     if not review.evidence_ids:
                         raise ValueError("Cannot finish an analysis without evidence")
-                    if review.comparisons:
-                        event = self.context.compare(review.comparisons)
+                    if comparison:
+                        event = comparison
                         aid = self.context.add_artifact(event, 0, request_id)
                         self.context.artifacts[-1]["confirmed"] = True
                         self.evidence_ids.append(aid)

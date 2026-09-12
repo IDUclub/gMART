@@ -28,6 +28,7 @@ async def main():
             "documents",
             "artifacts",
             "llm",
+            "seed-documents",
         ],
         default="health",
     )
@@ -49,6 +50,11 @@ async def main():
         token = auth.json()["access_token"]
         claims = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "==="))
         headers = {"Authorization": f"Bearer {token}", "X-User-Id": claims["sub"]}
+        if args.mode == "seed-documents":
+            from document_cycle import document_cycle
+
+            await document_cycle(http, headers, args.output)
+            return
         if args.mode == "llm":
             response = await http.get(
                 "http://localhost:18000/llm/message/stream",
@@ -193,13 +199,21 @@ async def main():
         elif args.mode == "analysis":
             query = f"В сценарии {args.scenario} посчитай школы и детские сады, сравни их количество в таблице и верни слои объектов. Затем оцени обеспеченность школами. Если нормативы не заданы, сохрани результаты подсчёта и прямо объясни, каких данных не хватает."
         else:
-            query = "Какие ограничения установлены в синтетическом документе LOCAL SDK TEST? Приведи точную ссылку на пункт. Это тестовые данные, не действующий норматив."
+            query = (
+                "Сравни исходный текст пункта 1.1 документа LOCAL SDK TEST из DVD "
+                "с ограничением, извлечённым в NormGraph из этого документа. "
+                "Проверь совпадение числового требования и объектов, объясни результат "
+                "и приложи ссылки на исходный пункт и запись ограничения. Используй оба "
+                "источника. Это синтетические тестовые данные, не действующий норматив."
+            )
         params = {
             "request": query,
             "scenario_id": args.scenario,
             "model": config["LLM_MODEL"],
             "temperature": 0,
         }
+        if args.mode == "documents":
+            params.pop("scenario_id")
         response = await http.get(
             "http://localhost:18000/orchestrator/route/stream",
             params=params,
@@ -221,7 +235,21 @@ async def main():
             for event in reversed(events)
             if event["type"] == "orchestrator_final"
         )
-        print(json.dumps(final, ensure_ascii=False), flush=True)
+        print(
+            json.dumps(
+                {
+                    k: final[k]
+                    for k in ("status", "budget", "continue_from")
+                    if k in final
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        if args.mode == "documents":
+            from document_cycle import verify_analysis
+
+            await verify_analysis(http, headers, args.output, events, final)
         request_id = final["continue_from"]
         replay = await http.get(
             "http://localhost:18000/orchestrator/route/stream",
@@ -239,4 +267,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
     asyncio.run(main())

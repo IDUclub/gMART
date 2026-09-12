@@ -19,6 +19,7 @@ from src.agents.services.service_entities.dvd_plan import (
 
 from .clarification import parse_choice, selected_choice
 from .context_reducer import cost, current_context_window
+from .dvd_context import source_records
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -339,6 +340,13 @@ class AnswerCritic:
 
         source = normalize(context)
         defects = []
+        labels = [label for label in source_records(context) if label != "unlabelled"]
+        for label in dict.fromkeys(re.findall(r"\[N\d*\]", answer)):
+            defects.append(
+                f"Неверная метка источника {label}. Копируй метки из заголовков "
+                f"без букв: {', '.join(labels) or 'доступных меток нет'}. "
+                "Выбирай только источник, подтверждающий утверждение."
+            )
         for acronym, expansion in re.findall(
             r"\b([А-ЯЁA-Z]{2,})\s*\(([^()\n]+)\)", answer
         ):

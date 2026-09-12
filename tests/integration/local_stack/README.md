@@ -13,7 +13,8 @@ an end-to-end document test.
 
 The requested embedding origin is `http://a.dgx:8010`; clients append `/v1/embeddings`.
 The hostname must resolve both on the host and inside Docker (corporate DNS/VPN may be needed).
-Confirm the model ID and vector dimension from the server before starting DVD/NormGraph.
+Verified model: `ai-sage/Giga-Embeddings-instruct`, 2048 dimensions. The server returns 404 for
+`/v1/models`, but `/v1/embeddings` returns the model ID and vectors successfully.
 
 From this directory:
 
@@ -24,6 +25,8 @@ python smoke.py --env-file stack.local.env --output results --mode health
 python smoke.py --env-file stack.local.env --output results --mode llm
 python smoke.py --env-file stack.local.env --output results --mode artifacts
 python smoke.py --env-file stack.local.env --output results --mode effects --scenario 772
+python smoke.py --env-file stack.local.env --output results --mode seed-documents
+python smoke.py --env-file stack.local.env --output results --mode documents
 ```
 
 Run `smoke.py` with the gMART development Python environment. `llm` sends only a synthetic
@@ -34,8 +37,14 @@ it expects the known missing-normative case in scenario 772 and does not call th
 
 `--mode data` and `--mode analysis` send real scenario tool results to the configured LLM.
 Use only with authorization for that data transfer. They save SSE traces and verify exact
-terminal replay. `--mode documents` expects a previously ingested synthetic document named
-`LOCAL SDK TEST`; it does not seed the document or certify full document ingestion by itself.
+terminal replay. `--mode seed-documents` uploads a synthetic document named `LOCAL SDK TEST`
+through the direct fragment ingestion API, waits for the durable queue, verifies DVD vector
+search, runs NormGraph extraction/search and checks idempotent repeated sync. It leaves the
+fixture in the isolated databases. This tests direct ingestion, not file parsing/OCR.
+`--mode documents` compares the fixture's source clause and extracted restriction through the
+real analytical orchestrator, requiring both specialists to complete, the correct numeric answer,
+both evidence references, full artifacts in reopened chat history and exact terminal replay.
+It sends only the synthetic fixture to the configured inference services.
 
 Ports: Agents/UI 18000, IDU MCP 18002, Effects 18080, ChatStorage 18010, DVD 18100,
 NormGraph 18020, Redis 16389, Neo4j Bolt 17687. Urban API/MCP and inference remain external.

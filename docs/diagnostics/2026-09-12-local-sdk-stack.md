@@ -24,10 +24,6 @@ Fix checkouts: ObjectEffectsAPI `fix/missing-service-normatives`, NormGraph
 
 ## Not yet verified
 
-- DVD/NormGraph document ingestion and retrieval over the complete running stack require a
-  configured OpenAI-compatible embedding endpoint. The specified chat server returns 404 for
-  `/v1/embeddings`; legacy local configs reference Ollama/bge-m3. Their images were built, but
-  these two API containers were not started with a fabricated replacement endpoint.
 - The full real-scenario analytical SSE run did not execute: automatic approval review rejected
   transfer of scenario 772 data/layers to the remote model pending explicit data-transfer consent.
   No workaround or indirect replay of that rejected request was performed.
@@ -39,8 +35,39 @@ local-only and excluded from commits. This report does not claim a complete anal
 
 ## Follow-up — 2026-09-13
 
-The user supplied the embedding server `a.dgx:8010`. Both clients now share that origin in the
-local test environment, with the standard `/v1/embeddings` path. Windows DNS and Docker both
-return name-resolution errors for `a.dgx`; HTTP requests cannot yet reach the server. Its exact
-model ID and dimension therefore remain unverified. An IP address, resolvable full hostname,
-or access to the required corporate DNS is needed to continue.
+The corporate VPN resolved the embedding connectivity blocker: `a.dgx` resolves to `10.32.2.3`
+on Windows and inside Docker. POST `http://a.dgx:8010/v1/embeddings` returns 200 with model
+`ai-sage/Giga-Embeddings-instruct`, dimension 2048. GET `/v1/models` returns 404 on this server.
+DVD and NormGraph now run with this shared embedding space; all six application health checks pass.
+
+The synthetic `LOCAL SDK TEST` document completed direct fragment ingestion through DVD's
+durable queue and vector retrieval. NormGraph extracted one restriction through the configured
+remote vLLM, persisted it in Neo4j, and found it by vector search: school building to open car
+park distance >= 50 m, source clause 1.1. Repeated sync skipped the completed extraction and
+preserved the count. Only the isolated local corpus was seeded; parsing/OCR was not exercised.
+
+The analytical smoke test exposed two application defects, now covered by regressions:
+- DVD's ambiguous `[N]` instruction produced unsupported `[N1]` citations. Drafting now specifies
+  literal numeric source labels, and malformed labels receive a deterministic correction before
+  the semantic audit. Source-grounding review remains mandatory.
+- The analytical reviewer attempted numeric table comparisons using `analysis_text` artifacts.
+  Invalid references now trigger at most two corrective review calls using preserved evidence,
+  without replaying specialists. Continued invalid decisions block honestly and retain artifacts.
+
+Repeated runs also encountered vLLM HTTP 500 `unexpected tokens remaining in message header`
+with `<|constrain|>analysis`. The OpenAI adapter now retries this specific non-streaming gpt-oss
+high-effort failure once at medium effort, charging both attempts to the budget. Other errors and
+a repeated failure still propagate. Transport regressions cover recovery and bounded failure.
+NormGraph drafting/audit instructions now agree on numeric citations and include restriction IDs
+when the user asks for a restriction record.
+
+The final synthetic analytical run **passed**: both `documents` and `norms` specialists completed,
+the answer compared the 50 m requirement, both evidence references were returned, and every
+artifact's full content was verified in reopened ChatStorage history. Terminal SSE replay matched
+exactly. Run `b37b683b-7103-4bd4-9743-c32e17324675` took about 47 s with 14 model calls, 3 tool calls,
+56,936 charged tokens (including one conservatively estimated failed call), and one reasoning
+fallback. This is one successful acceptance run, not a reliability claim for the remote model.
+
+Validation: 943 gMART unit tests passed (the existing POSIX-only workspace test file is excluded
+on Windows); the NormGraph prompt test passed again after the final citation change. All-file
+Black/isort checks passed. Live outputs remain local-only under `output/local-sdk-stack/`.

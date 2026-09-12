@@ -222,3 +222,61 @@ async def test_truncated_high_plan_is_repaired_with_bounded_medium_attempt():
         assert budget.reasoning_fallbacks == 1 and budget.model_calls == 2
     finally:
         await adapter.client.close()
+
+
+@pytest.mark.parametrize(
+    "message,recover,expected_calls",
+    [
+        (
+            'unexpected tokens remaining in message header: Some("<|constrain|>analysis")',
+            True,
+            2,
+        ),
+        (
+            'unexpected tokens remaining in message header: Some("<|constrain|>analysis")',
+            False,
+            2,
+        ),
+        ("unrelated server failure", False, 1),
+    ],
+)
+async def test_harmony_header_failure_has_one_charged_medium_fallback(
+    message, recover, expected_calls
+):
+    calls = []
+
+    def handle(request):
+        calls.append(json.loads(request.content))
+        if len(calls) == 1 or not recover:
+            return httpx.Response(500, json={"error": {"message": message}})
+        return httpx.Response(200, json=response("stop"))
+
+    adapter = OpenAiCompatAdapter("http://test/v1")
+    adapter.client = AsyncOpenAI(
+        base_url="http://test/v1",
+        api_key="test",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+    budget = RunBudget()
+    try:
+        with budget_scope(budget):
+            if recover:
+                await adapter.chat(
+                    "gpt-oss-20b",
+                    [{"role": "user", "content": "synthetic"}],
+                    reasoning_effort="high",
+                )
+            else:
+                with pytest.raises(Exception):
+                    await adapter.chat(
+                        "gpt-oss-20b",
+                        [{"role": "user", "content": "synthetic"}],
+                        reasoning_effort="high",
+                    )
+        assert len(calls) == budget.model_calls == expected_calls
+        assert budget.reasoning_fallbacks == expected_calls - 1
+        assert [c["reasoning_effort"] for c in calls] == ["high", "medium"][
+            :expected_calls
+        ]
+    finally:
+        await adapter.client.close()

@@ -78,6 +78,47 @@ def final(events):
     return OrchestratorResponse.model_validate(event).model_dump()["content"]
 
 
+@pytest.mark.parametrize("repair", [True, False])
+async def test_invalid_comparison_is_repaired_without_replaying_specialist(
+    orchestrator, repair
+):
+    calls = []
+
+    async def pipeline(**kwargs):
+        calls.append(kwargs)
+        yield {
+            "type": "chunk",
+            "content": {"text": "Требование: 50 м [1]", "iteration": 1, "done": True},
+        }
+
+    orchestrator.provision_service.run_provision_pipeline = pipeline
+    orchestrator.plan_builder.build_plan = AsyncMock(return_value=plan())
+    reviews = []
+
+    async def review(model, query, agents, context, remaining, budget):
+        reviews.append(context)
+        aid = context["artifacts"][0]["id"]
+        result = {
+            "action": "complete",
+            "answer": "В обоих источниках 50 м.",
+            "evidence_ids": [aid],
+        }
+        if len(reviews) > 1:
+            assert "table" in context["review_validation_error"]
+        if len(reviews) == 1 or not repair:
+            ref = {"artifact_id": aid, "row": 0, "column": "value"}
+            result["comparisons"] = [
+                {"name": "Расстояние", "unit": "м", "before": ref, "after": ref}
+            ]
+        return AnalysisReview.model_validate(result)
+
+    orchestrator.plan_builder.review = review
+    events = await run_pipeline(orchestrator)
+    assert final(events)["status"] == ("completed" if repair else "blocked")
+    assert len(calls) == 1 and len(reviews) == (2 if repair else 3)
+    assert final(events)["artifacts"][0]["confirmed"]
+
+
 @pytest.mark.asyncio
 async def test_compare_three_scenarios_replans_and_returns_full_artifacts(orchestrator):
     calls = []

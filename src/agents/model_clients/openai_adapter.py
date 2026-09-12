@@ -327,7 +327,27 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
     ) -> LlmChatResponse | AsyncIterator[LlmChatResponse]:
         call = self._build(model, messages, stream, think, format, options, kwargs)
         try:
-            result = await self._request_completion(call)
+            try:
+                result = await self._request_completion(call)
+            except APIStatusError as exc:
+                # The dev Harmony parser can fail before returning any completion
+                # at high effort. Retry only this identifiable, non-streaming model
+                # call once; never replay tools or hide unrelated server failures.
+                if not (
+                    not stream
+                    and "gpt-oss" in model.lower()
+                    and call.get("reasoning_effort") == "high"
+                    and exc.status_code == 500
+                    and "unexpected tokens remaining in message header" in str(exc)
+                ):
+                    raise
+                if run_budget := current_budget.get():
+                    run_budget.reasoning_fallbacks += 1
+                logger.warning(
+                    "Harmony header failure; retrying once with medium reasoning"
+                )
+                call = {**call, "reasoning_effort": "medium"}
+                result = await self._request_completion(call)
             if not stream and call.get("response_format"):
                 response = self._as_response(result)
                 if (
