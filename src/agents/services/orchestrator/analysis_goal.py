@@ -245,6 +245,12 @@ class GoalState:
         steps = []
         progress = {r["id"]: r for r in self.progress()}
         if decision.action == "blocked":
+            if all(r["status"] == "satisfied" for r in progress.values()) and any(
+                m.owner == "service" for m in decision.missing
+            ):
+                raise ValueError(
+                    "All required specialist artifacts are confirmed; no service blocker was observed. Inspect the saved evidence and finish the analysis. Source text and source_evidence values can be compared directly in answer; a new numeric table is not required. Reserve comparisons for existing table cells."
+                )
             independent = [
                 r["id"]
                 for r in progress.values()
@@ -441,6 +447,7 @@ required_artifacts: table для таблицы/количества, feature_co
 description — самодостаточные условия получения результата на русском, без указания порядка шагов. Для scenario_data не добавляй слово «сравни» или чужие типы объектов.
 Не добавляй фиксированные значения результатов. Не делай вывод об отсутствии данных до вызова сервиса.
 Не добавляй вспомогательный поиск нормативов к расчёту provision: этот специалист сам проверяет норматив. norms/documents нужны только если пользователь отдельно запросил исследование источников.
+Причину недоступности расчёта обеспеченности проверяет сам provision. Сохрани это условие в его description, не создавай отдельное требование restriction/compliance/scenario_data для диагностики расчёта.
 Контракты результатов: documents/norms возвращают analysis_text; restriction возвращает feature_collection; compliance возвращает compliance_summary и compliance_result; provision возвращает table. Сопоставление источников входит в objective, отдельного специалиста для него нет.
 Верни JSON по схеме."""
 
@@ -457,19 +464,34 @@ description — самодостаточные условия получения
                     raise ValueError(
                         "source_ids must refer to existing request_fragments"
                     )
+                if (
+                    r.agent in {"scenario_data", "restriction", "compliance"}
+                    and re.search(r"обеспечен", r.description, re.I)
+                    and re.search(
+                        r"(?:причин|доступност|возможност).*расч[её]т|расч[её]т.*(?:причин|доступ|возмож)",
+                        r.description,
+                        re.I,
+                    )
+                    and any(
+                        item.agent == "provision"
+                        and (item.scenario_id or scenario_id)
+                        == (r.scenario_id or scenario_id)
+                        for item in goal.requirements
+                    )
+                ):
+                    raise ValueError(
+                        "The provision specialist itself diagnoses whether its calculation is possible. Preserve this condition in the existing provision requirement; do not send calculation diagnostics to scenario_data, restriction or compliance. Keep any independently requested spatial checks."
+                    )
                 typed_results = [
                     item
                     for item in goal.requirements
                     if item.agent == "scenario_data"
+                    and item.id != r.id
                     and item.entity_kind != "other"
                     and (item.scenario_id or scenario_id)
                     == (r.scenario_id or scenario_id)
                 ]
-                if (
-                    r.agent == "scenario_data"
-                    and r.entity_kind == "other"
-                    and typed_results
-                ):
+                if r.agent == "scenario_data" and typed_results:
                     comparison = (
                         len(typed_results) >= 2
                         and re.search(r"сравн|сопостав|разниц", r.description, re.I)
@@ -477,7 +499,7 @@ description — самодостаточные условия получения
                             r"количеств|подсч[её]т|числ[оа]\b", r.description, re.I
                         )
                     )
-                    availability = re.search(
+                    availability = r.entity_kind == "other" and re.search(
                         r"провер\w*\s+наличи\w*\s+данн", r.description, re.I
                     )
                     scoped = re.search(
@@ -591,6 +613,7 @@ description — самодостаточные условия получения
             "high" if synthesis else "medium",
         )
         prompt = """Ты ведёшь аналитическое исследование до достижения цели. Обязательные условия goal неизменны.
+Исходный текст и значения в source_evidence можно сопоставлять прямо в answer. Поле comparisons — только для арифметики по уже существующим таблицам; не требуй новую таблицу для сравнения документных источников.
 Выбери только ОДНО следующее действие. Полный план не требуется.
 continue: requirement_id из goal и конкретный task на русском. agent и scenario_id приложение возьмёт из требования, их можно не указывать. Добивайся недостающего результата; используй сохранённые доказательства. Поля steps нет: возвращай одно действие, например {"action":"continue","requirement_id":"req1","task":"Получи нужные данные"}.
 Для вспомогательного исследования (например, получить население перед расчётом) используй support=true и подходящего специалиста. Вспомогательный результат не закрывает обязательное требование. Не меняй исходные условия; относительное изменение населения задавай population_adjustment со ссылкой на исходную таблицу и multiplier.

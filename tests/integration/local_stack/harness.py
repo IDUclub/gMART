@@ -111,6 +111,23 @@ def main():
                 flush=True,
             )
             return 1
+        storage_ready = phase(
+            "storage-contract",
+            [
+                sys.executable,
+                str(SCRIPTS / "storage_cycle.py"),
+                "--env-file",
+                str(args.env_file.resolve()),
+                "--output",
+                str(output / "storage-contract.json"),
+            ],
+        )
+        if not storage_ready:
+            print(
+                "Live inference not started because the storage contract failed",
+                flush=True,
+            )
+            return 1
         phase(
             "redis-contention",
             [

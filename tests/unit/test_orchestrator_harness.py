@@ -1,5 +1,6 @@
 """Functional contracts at the public orchestration, identity and evidence seams."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -50,13 +51,12 @@ async def test_every_specialist_preserves_terminal_replay_and_evidence(
         "scenario_data": school_artifacts(),
         "provision": [table()],
         "restriction": [deepcopy(LAYER)],
-        "compliance": [
-            {
-                "type": "compliance_result",
-                "content": {"restriction_id": "r1", "verification_status": "complete"},
-            },
-            {"type": "compliance_summary", "content": {"total_norms": 1}},
-        ],
+        "compliance": json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "fixtures/compliance_storage_events.json"
+            ).read_text(encoding="utf-8")
+        ),
         "documents": [
             source_event(
                 "documents",
@@ -166,6 +166,22 @@ async def test_every_specialist_preserves_terminal_replay_and_evidence(
     replay = await run_pipeline(orchestrator, request_id=result["continue_from"])
     assert replay == events and len(backend.chat_calls) == calls
     assert result["continue_from"]
+    if agent == "compliance" and outcome == "success":
+        import jsonschema
+
+        contracts = json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "fixtures/chatstorage_compliance_contract.json"
+            ).read_text(encoding="utf-8")
+        )
+        parts = orchestrator.add_complex_message.call_args.args[3]
+        typed = [
+            part.model_dump(mode="json") for part in parts if part.kind in contracts
+        ]
+        assert {part["kind"] for part in typed} == set(contracts)
+        for part in typed:
+            jsonschema.validate(part["payload"], contracts[part["kind"]])
     if outcome == "model_exception":
         assert (
             result["missing"][0]["missing"]

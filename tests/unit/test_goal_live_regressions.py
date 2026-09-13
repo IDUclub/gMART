@@ -205,9 +205,18 @@ async def test_reasoning_fallback_remains_active_for_later_controller_actions(fa
     ],
 )
 @pytest.mark.parametrize("filtered", [False, True])
+@pytest.mark.parametrize("comparison_kind", ["other", "services"])
 async def test_comparing_retrieved_counts_is_not_a_new_data_fetch(
-    fake_llm, description, artifacts, filtered
+    fake_llm, description, artifacts, filtered, comparison_kind
 ):
+    independent = (
+        comparison_kind == "services"
+        and description.startswith("Проверить наличие")
+        and not filtered
+    )
+    comparison_subject = "Поликлиника" if independent else "сопоставление количеств"
+    if independent:
+        description = "Проверить наличие данных о поликлиниках."
     if filtered:
         description += " Только в радиусе 500 метров от заданного адреса."
     requirements = [
@@ -237,8 +246,8 @@ async def test_comparing_retrieved_counts_is_not_a_new_data_fetch(
                 "source_ids": [1],
                 "agent": "scenario_data",
                 "scenario_id": 772,
-                "subject": "сопоставление количеств",
-                "entity_kind": "other",
+                "subject": comparison_subject,
+                "entity_kind": "other" if filtered else comparison_kind,
                 "required_artifacts": artifacts,
             },
         ],
@@ -248,8 +257,60 @@ async def test_comparing_retrieved_counts_is_not_a_new_data_fetch(
         "m", "Получи школы и детские сады и сопоставь их количества.", [], 772
     )
     expected = ["Школа", "Детский сад"]
+    if filtered or independent:
+        expected.append(comparison_subject)
     if filtered:
-        expected.append("сопоставление количеств")
         assert "радиусе 500 метров" in goal.requirements[-1].description
     assert [r.subject for r in goal.requirements] == expected
     assert "Сопоставить" in goal.objective
+
+
+@pytest.mark.parametrize("agent", ["scenario_data", "restriction", "compliance"])
+@pytest.mark.parametrize("independent_spatial_check", [False, True])
+async def test_provision_failure_diagnosis_is_not_an_independent_specialist_goal(
+    fake_llm, agent, independent_spatial_check
+):
+    calculation = {
+        "id": "provision",
+        "description": "Вычислить обеспеченность школами в сценарии 772 и проверить причину недоступности расчёта.",
+        "agent": "provision",
+        "scenario_id": 772,
+        "subject": "Школа",
+        "entity_kind": "other",
+        "required_artifacts": ["table"],
+        "source_ids": [1],
+    }
+    valid = {
+        "objective": "Рассчитать обеспеченность или сообщить причину невозможности расчёта",
+        "requirements": [calculation],
+    }
+    invalid = {
+        **valid,
+        "requirements": [
+            calculation,
+            {
+                "id": "diagnosis",
+                "description": "Проверить причину недоступности расчёта обеспеченности школами.",
+                "agent": agent,
+                "scenario_id": 772,
+                "entity_kind": "other",
+                "required_artifacts": ["analysis_text"],
+                "source_ids": [1],
+            },
+        ],
+    }
+    if independent_spatial_check:
+        invalid["requirements"][-1][
+            "description"
+        ] = "Проверить соблюдение минимального расстояния от школы до стоянки."
+    fake_llm.json_responses = [json.dumps(invalid), json.dumps(valid)]
+    goal = await GoalManager(fake_llm).create(
+        "m",
+        "Рассчитай обеспеченность школами; если расчёт недоступен, проверь причину через сервис.",
+        [],
+        772,
+    )
+    assert [r.agent for r in goal.requirements] == (
+        ["provision", agent] if independent_spatial_check else ["provision"]
+    )
+    assert "причину" in goal.requirements[0].description

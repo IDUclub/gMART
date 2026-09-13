@@ -1,0 +1,206 @@
+{
+  "check_plan": {
+    "additionalProperties": true,
+    "description": "Versioned executable-norm plan persisted without executable expressions.",
+    "properties": {
+      "schema_version": {
+        "pattern": "^1\\.0$",
+        "title": "Schema Version",
+        "type": "string"
+      },
+      "template": {
+        "minLength": 1,
+        "title": "Template",
+        "type": "string"
+      },
+      "template_version": {
+        "minimum": 1,
+        "title": "Template Version",
+        "type": "integer"
+      },
+      "params": {
+        "additionalProperties": true,
+        "title": "Params",
+        "type": "object"
+      },
+      "source": {
+        "additionalProperties": true,
+        "title": "Source",
+        "type": "object"
+      },
+      "planner_status": {
+        "title": "Planner Status",
+        "type": "string"
+      }
+    },
+    "required": [
+      "schema_version",
+      "template",
+      "template_version",
+      "params",
+      "source",
+      "planner_status"
+    ],
+    "title": "CheckPlanPartPayload",
+    "type": "object"
+  },
+  "requirement_resolution": {
+    "additionalProperties": true,
+    "properties": {
+      "restriction_id": {
+        "minLength": 1,
+        "title": "Restriction Id",
+        "type": "string"
+      },
+      "effective_requirements": {
+        "additionalProperties": true,
+        "title": "Effective Requirements",
+        "type": "object"
+      },
+      "resolved_requirements": {
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": "Resolved Requirements",
+        "type": "array"
+      },
+      "missing_requirements": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Missing Requirements",
+        "type": "array"
+      }
+    },
+    "required": [
+      "restriction_id",
+      "effective_requirements",
+      "resolved_requirements",
+      "missing_requirements"
+    ],
+    "title": "RequirementResolutionPartPayload",
+    "type": "object"
+  },
+  "compliance_result": {
+    "additionalProperties": true,
+    "properties": {
+      "restriction_id": {
+        "minLength": 1,
+        "title": "Restriction Id",
+        "type": "string"
+      },
+      "template": {
+        "minLength": 1,
+        "title": "Template",
+        "type": "string"
+      },
+      "template_version": {
+        "minimum": 1,
+        "title": "Template Version",
+        "type": "integer"
+      },
+      "verification_status": {
+        "title": "Verification Status",
+        "type": "string"
+      },
+      "compliance_status": {
+        "title": "Compliance Status",
+        "type": "string"
+      },
+      "coverage": {
+        "additionalProperties": true,
+        "title": "Coverage",
+        "type": "object"
+      },
+      "summary": {
+        "additionalProperties": true,
+        "title": "Summary",
+        "type": "object"
+      },
+      "evidence_schema_version": {
+        "pattern": "^1\\.0$",
+        "title": "Evidence Schema Version",
+        "type": "string"
+      }
+    },
+    "required": [
+      "restriction_id",
+      "template",
+      "template_version",
+      "verification_status",
+      "compliance_status",
+      "coverage",
+      "summary",
+      "evidence_schema_version"
+    ],
+    "title": "ComplianceResultPartPayload",
+    "type": "object"
+  },
+  "compliance_summary": {
+    "additionalProperties": true,
+    "properties": {
+      "request_id": {
+        "minLength": 1,
+        "title": "Request Id",
+        "type": "string"
+      },
+      "total_norms": {
+        "minimum": 0,
+        "title": "Total Norms",
+        "type": "integer"
+      },
+      "violated_norms": {
+        "minimum": 0,
+        "title": "Violated Norms",
+        "type": "integer"
+      },
+      "passed_norms": {
+        "minimum": 0,
+        "title": "Passed Norms",
+        "type": "integer"
+      },
+      "unverifiable_norms": {
+        "minimum": 0,
+        "title": "Unverifiable Norms",
+        "type": "integer"
+      },
+      "unsupported_norms": {
+        "minimum": 0,
+        "title": "Unsupported Norms",
+        "type": "integer"
+      },
+      "not_applicable_norms": {
+        "minimum": 0,
+        "title": "Not Applicable Norms",
+        "type": "integer"
+      },
+      "partial_norms": {
+        "minimum": 0,
+        "title": "Partial Norms",
+        "type": "integer"
+      },
+      "results": {
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": "Results",
+        "type": "array"
+      }
+    },
+    "required": [
+      "request_id",
+      "total_norms",
+      "violated_norms",
+      "passed_norms",
+      "unverifiable_norms",
+      "unsupported_norms",
+      "not_applicable_norms",
+      "partial_norms",
+      "results"
+    ],
+    "title": "ComplianceSummaryPartPayload",
+    "type": "object"
+  }
+}

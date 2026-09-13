@@ -127,3 +127,11 @@ Failure before a valid goal now persists a blocked context before emitting the f
 answer, and continuation restores the original query. Comparison tables carry the same
 artifact ID in events and storage. Confirmed source snapshots can also be opened from
 loaded chat history after the runtime source cache expires.
+
+Before live inference, `storage_cycle.py` checks the actual ChatStorage HTTP contract
+for check_plan, requirement_resolution, compliance_result and compliance_summary.
+It creates a separate synthetic chat, requires rejection of the incompatible wrapped
+plan, then verifies exact persistence of the adapted parts and full analysis_context.
+It uses no model calls. The same four contracts and captured synthetic events live in
+`tests/fixtures/*compliance*` for offline tests; update those snapshots deliberately when
+changing the ChatStorage protocol. A storage-contract failure prevents live inference.

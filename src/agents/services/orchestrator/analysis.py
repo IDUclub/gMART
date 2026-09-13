@@ -53,11 +53,18 @@ def artifact_parts(context):
             "validation",
             "artifact_ref",
         }:
-            parts.append(
-                StructuredPartRequest(
-                    kind=artifact["kind"], payload=artifact["content"]
-                )
-            )
+            payload = artifact["content"]
+            if artifact["kind"] == "check_plan" and isinstance(
+                payload.get("plan"), dict
+            ):
+                # SSE wraps the plan with its restriction ID; ChatStorage's typed
+                # part expects the plan fields at the payload root. The complete
+                # original event remains unchanged in analysis_context.
+                payload = {
+                    **payload["plan"],
+                    **{k: v for k, v in payload.items() if k != "plan"},
+                }
+            parts.append(StructuredPartRequest(kind=artifact["kind"], payload=payload))
         else:
             parts.append(
                 StructuredPartRequest(
