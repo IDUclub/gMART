@@ -30,6 +30,7 @@ from src.agents.services.scenario_data.scenario_data_aggregate import (
     sanitize_public_answer,
     unresolved_references,
 )
+from src.agents.services.scenario_data.scenario_data_columns import ids_requested
 from src.agents.services.scenario_data.scenario_data_execution_context import (
     ScenarioExecutionContext,
 )
@@ -675,7 +676,11 @@ class ScenarioDataLinearWorkflow:
                                 result = value
                         observation, result_events = (
                             await self._consume_workspace_result(
-                                request_id, step, result, parts
+                                request_id,
+                                step,
+                                result,
+                                parts,
+                                show_ids=ids_requested(user_query),
                             )
                         )
                     else:
@@ -744,6 +749,7 @@ class ScenarioDataLinearWorkflow:
                             token_ref,
                             ledger,
                             parts,
+                            show_ids=ids_requested(user_query),
                         )
                         observation["arguments"] = arguments
                     for event in result_events:
@@ -1091,6 +1097,8 @@ class ScenarioDataLinearWorkflow:
         token_ref: list[str],
         ledger: ExecutionLedger,
         parts: list,
+        *,
+        show_ids: bool = False,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         events: list[dict[str, Any]] = []
         layer_count = 0
@@ -1111,6 +1119,7 @@ class ScenarioDataLinearWorkflow:
             result,
             name=f"urban_{step.group}_{step.tool_name}",
             title=step.purpose,
+            show_ids=show_ids,
         )
         if table is not None:
             events.append(await self._event(request_id, "table", table))
@@ -1267,6 +1276,8 @@ class ScenarioDataLinearWorkflow:
         step: PlanStep,
         result: Any,
         parts: list,
+        *,
+        show_ids: bool = False,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         events: list[dict[str, Any]] = []
         layer_count = 0
@@ -1285,7 +1296,10 @@ class ScenarioDataLinearWorkflow:
                     )
                 )
         table = self.owner._table_from_result(
-            result, name=f"workspace_{step.tool_name}", title=step.purpose
+            result,
+            name=f"workspace_{step.tool_name}",
+            title=step.purpose,
+            show_ids=show_ids,
         )
         if table is not None:
             events.append(await self._event(request_id, "table", table))

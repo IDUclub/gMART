@@ -22,6 +22,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.common.exceptions.token_exceptions import TokenExpiredError
+from src.agents.services.scenario_data.scenario_data_columns import ids_requested
 from src.agents.services.scenario_data.scenario_data_evaluator import wants_layers
 from src.agents.services.scenario_data.scenario_data_type_mapper import UrbanTypeMapper
 
@@ -415,21 +416,25 @@ def data_layers(result):
     return [{"type": "FeatureCollection", "features": features}] if features else []
 
 
-def output_tables(host, result, title, name):
+def output_tables(host, result, title, name, *, show_ids=False):
     """Split long complete results into complete table parts, keeping every row."""
     rows = data_rows(result)
     if len(rows) <= 1000:
-        table = host._table_from_result(result, name=name, title=title)
+        table = host._table_from_result(
+            result, name=name, title=title, show_ids=show_ids
+        )
         return [table] if table else []
     total = (len(rows) + 999) // 1000
-    return [
+    tables = [
         host._table_from_result(
             rows[start : start + 1000],
             name=f"{name}_{start//1000+1}",
             title=f"{title} · часть {start//1000+1} из {total}",
+            show_ids=show_ids,
         )
         for start in range(0, len(rows), 1000)
     ]
+    return [table for table in tables if table]
 
 
 def source_error_answer(error):
@@ -627,7 +632,13 @@ class UrbanReadWorkflow:
                 )
                 continue
             # Only source fields and values reach the user; no second LLM prose pass.
-            tables = output_tables(host, result, tool.title, f"urban_{tool.name}")
+            tables = output_tables(
+                host,
+                result,
+                tool.title,
+                f"urban_{tool.name}",
+                show_ids=ids_requested(query),
+            )
             for table in tables:
                 yield await host._buf(request_id, {"type": "table", "content": table})
                 parts.append(host._table_part(table))
@@ -640,17 +651,7 @@ class UrbanReadWorkflow:
                         "content": {"name": tool.title, "feature_collection": layer},
                     },
                 )
-            labels = {
-                "scenario_id": "сценарий",
-                "project_id": "проект",
-                "territory_id": "территория",
-                "physical_object_id": "физический объект",
-                "soc_group_id": "социальная группа",
-                "soc_value_id": "социальная ценность",
-                "parent_id": "родитель",
-                "year": "год",
-                "source": "источник",
-            }
+            labels = {"year": "год", "source": "источник"}
             scope = ", ".join(
                 f"{labels[key]} {value}"
                 for key, value in arguments.items()

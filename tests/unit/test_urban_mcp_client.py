@@ -83,6 +83,32 @@ async def test_duplicate_tool_names_across_groups_fail_clearly():
         await client.load_tools()
 
 
+def test_output_field_descriptions_are_kept_for_column_labels():
+    output = {
+        "type": "object",
+        "properties": {"result": {"type": "array", "items": {"$ref": "#/$defs/S"}}},
+        "$defs": {
+            "S": {
+                "properties": {
+                    "capacity": {"type": "integer", "description": "Service capacity"},
+                    "service_type": {"$ref": "#/$defs/T"},
+                    "properties": {"type": "object", "description": "Extra data"},
+                }
+            },
+            "T": {"properties": {"name": {"type": "string", "description": "Name"}}},
+        },
+    }
+    source = SimpleNamespace(**vars(tool("GetServices")), outputSchema=output)
+
+    normalized = UrbanMcpClient._normalize_tool("projects", source)
+
+    assert normalized.output_fields == {
+        "capacity": "Service capacity",
+        "properties": "Extra data",
+        "name": "Name",
+    }
+
+
 def test_service_auth_object_is_preserved_for_every_transport():
     created = []
     service_auth = object()

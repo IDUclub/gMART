@@ -163,6 +163,48 @@ def _text(events) -> str:
     )
 
 
+COMPARISON_LABELS = [
+    "Показатель",
+    "Ед.",
+    "Базовый сценарий «Исходный сценарий»",
+    "Ваш сценарий «Застройка у реки»",
+    "Разница",
+    "Изменение, %",
+]
+
+
+def _with_area(mcp: FakeUrbanMcp) -> FakeUrbanMcp:
+    for sid, area in ((772, 8.08), (700, 5.95)):
+        mcp.results[("GetScenarioIndicatorsValues", sid)].append(
+            {
+                "scenario": {"id": sid, "name": f"Сценарий {sid}"},
+                "indicator": {
+                    "indicator_id": 2,
+                    "name_full": "Площадь территории",
+                    "measurement_unit": {"name": "км2"},
+                },
+                "value": area,
+            }
+        )
+    return mcp
+
+
+def _summary_model(fake_llm, summary: str) -> list[list[dict]]:
+    """Answer only the summary prompt; other calls keep the fake's defaults."""
+    prompts: list[list[dict]] = []
+    default_chat = fake_llm.chat
+
+    async def chat(*args, **kwargs):
+        messages = kwargs.get("messages") or []
+        if messages and messages[0]["content"].startswith("Напиши краткую сводку"):
+            prompts.append(messages)
+            return {"message": {"content": summary}, "done_reason": "stop"}
+        return await default_chat(*args, **kwargs)
+
+    fake_llm.chat = chat
+    return prompts
+
+
 async def test_base_scenario_is_read_first_so_the_difference_is_mine_minus_base(
     monkeypatch, fake_llm, fake_urban, state_store
 ):
@@ -186,15 +228,9 @@ async def test_base_scenario_is_read_first_so_the_difference_is_mine_minus_base(
     )
     assert "«Численность населения»: 1 000 → 1 500 человек (+50 %)." in text
     assert "772" not in text and "700" not in text
+    assert fake_llm.chat_calls == []
     table = next(e["content"] for e in events if e.get("type") == "table")
-    assert [column["label"] for column in table["columns"]] == [
-        "Показатель",
-        "Ед.",
-        "Базовый сценарий «Исходный сценарий»",
-        "Ваш сценарий «Застройка у реки»",
-        "Разница",
-        "Изменение, %",
-    ]
+    assert [column["label"] for column in table["columns"]] == COMPARISON_LABELS
     assert table["rows"] == [
         {
             "indicator": "Численность населения",
@@ -364,10 +400,81 @@ async def test_the_old_route_substitutes_the_base_when_no_second_id_is_named(
     assert mcp.targets("GetProjectById") == [10]
     assert mcp.targets("GetScenarioIndicatorsValues") == [700, 772]
     text = _text(events)
-    assert (
-        "разница ваш сценарий «Застройка у реки» − "
-        "базовый сценарий «Исходный сценарий» = +500 человек" in text
+    assert "«Численность населения»: 1 000 → 1 500 человек (+50 %)." in text
+    assert "772" not in text and "700" not in text
+    table = next(e["content"] for e in events if e.get("type") == "table")
+    assert [column["label"] for column in table["columns"]] == COMPARISON_LABELS
+
+
+ORCHESTRATOR_TASK = (
+    "Сравни все показатели выбранного сценария с базовым сценарием проекта"
+)
+
+
+async def test_the_orchestrator_task_gets_a_checked_model_summary_on_the_qa_route(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    mcp = _with_area(_mcp())
+    prompts = _summary_model(
+        fake_llm,
+        "Численность населения выросла на 50 %, площадь территории увеличилась "
+        "на 2,13 км². Все значения — в таблице.",
     )
+
+    events = await _run(
+        monkeypatch,
+        fake_llm,
+        fake_urban,
+        state_store,
+        mcp,
+        ORCHESTRATOR_TASK,
+        indicators_route=False,
+    )
+
+    assert mcp.targets("GetScenarioIndicatorsValues") == [700, 772]
+    assert any(
+        event.get("type") == "status" and event["content"]["text"] == "Готовлю сводку…"
+        for event in events
+    )
+    assert len(prompts) == 1
+    assert "772" not in prompts[0][0]["content"]
+    assert "700" not in prompts[0][0]["content"]
+    text = _text(events)
+    assert text.startswith(
+        "Сравниваются: базовый сценарий «Исходный сценарий» → "
+        "ваш сценарий «Застройка у реки».\n\n"
+        "Численность населения выросла на 50 %, площадь территории увеличилась "
+        "на 2,13 км².\n\n"
+    )
+    assert text.endswith("Все значения — в таблице.")
+    table = next(e["content"] for e in events if e.get("type") == "table")
+    assert [column["label"] for column in table["columns"]] == COMPARISON_LABELS
+    assert [row["indicator"] for row in table["rows"]] == [
+        "Площадь территории",
+        "Численность населения",
+    ]
+
+
+async def test_a_summary_with_an_invented_number_is_replaced_by_the_computed_one(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    mcp = _with_area(_mcp())
+    _summary_model(fake_llm, "Численность населения выросла в 3 раза.")
+
+    events = await _run(
+        monkeypatch,
+        fake_llm,
+        fake_urban,
+        state_store,
+        mcp,
+        ORCHESTRATOR_TASK,
+        indicators_route=False,
+    )
+
+    text = _text(events)
+    assert "в 3 раза" not in text
+    assert "Изменились — 2, без изменений — 0." in text
+    assert "• Численность населения: 1 000 → 1 500 человек (+50 %)" in text
 
 
 async def test_a_project_pointing_at_the_selected_scenario_is_not_compared_with_itself(

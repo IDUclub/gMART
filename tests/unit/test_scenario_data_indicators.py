@@ -10,6 +10,7 @@ from src.agents.services.scenario_data.scenario_data_evaluator import (
     ScenarioDataEvaluator,
 )
 from src.agents.services.scenario_data.scenario_data_indicators import (
+    INDICATOR_ROW_LABELS,
     IndicatorRequest,
     base_comparison_requested,
     calculation_request,
@@ -246,7 +247,10 @@ def test_calculated_density_does_not_replace_the_saved_value():
     )
     assert "2187,563" in answer and "22 чел/км²" in answer
     assert "Причина расхождения по этим данным не установлена" in answer
-    assert next(r for r in rows if r["indicator_id"] == 37)["value"] == 22
+    assert (
+        next(r for r in rows if r["indicator"] == "Плотность населения")["value"] == 22
+    )
+    assert all(set(row) == set(INDICATOR_ROW_LABELS) for row in rows)
 
 
 def test_model_cannot_invent_an_indicator_or_erase_a_known_one():
@@ -424,7 +428,7 @@ async def test_full_pipeline_fetches_each_authorized_scenario_and_computes_the_d
     answer = "".join(
         e["content"].get("text", "") for e in events if e["type"] == "chunk"
     )
-    assert "2,13 км²" in answer and "35,7983%" in answer
+    assert "«Площадь территории»: 5,95 → 8,08 км² (+35,8 %)." in answer
     assert mcp.calls == [
         ("GetScenarioById", 772),
         ("GetScenarioIndicatorsValues", 772),
@@ -465,7 +469,7 @@ def test_scenarios_are_labelled_by_role_and_name():
     assert labels == {
         846: "Базовый сценарий «Исходный сценарий»",
         848: "Ваш сценарий «Застройка у реки»",
-        900: "Сценарий 900",
+        900: "Сценарий без названия",
     }
 
 
@@ -690,15 +694,16 @@ def test_a_single_scenario_gets_one_value_column():
     )
 
 
-def test_table_columns_take_labels_and_keep_unknown_keys():
+def test_table_columns_take_explicit_labels_before_the_dictionary():
     table = ScenarioDataService._table_from_result(
-        [{"indicator": "A", "value": 1}],
+        [{"indicator": "A", "value": 1, "unit": "км²"}],
         name="t",
         title="T",
-        labels={"indicator": "Показатель"},
+        labels={"indicator": "Показатель уровня сценария", "unit": "Ед."},
     )
 
     assert table["columns"] == [
-        {"key": "indicator", "label": "Показатель"},
-        {"key": "value", "label": "value"},
+        {"key": "indicator", "label": "Показатель уровня сценария"},
+        {"key": "value", "label": "Значение"},
+        {"key": "unit", "label": "Ед."},
     ]
