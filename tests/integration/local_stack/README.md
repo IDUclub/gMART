@@ -51,6 +51,20 @@ real analytical orchestrator, requiring both specialists to complete, the correc
 both evidence references, full artifacts in reopened chat history and exact terminal replay.
 It sends only the synthetic fixture to the configured inference services.
 
+`stability.py --env-file stack.local.env --output results --runs 20` runs a fixed,
+sequential audit across scenario 772 paraphrases, data-only queries, the synthetic
+document comparison and continuation. It fingerprints the source and running image
+and does not retry failed analyses. `verify_stability.py` rechecks saved runs with
+fresh authentication, separating useful results from clean goal completion, stable
+artifact IDs and the requested source links. It never invokes inference.
+
+`contract_probes.py` reproduces negative goal/replay boundary cases using only
+synthetic in-memory data. `store_concurrency.py --output redis-results.json` tests
+concurrent synthetic context writes on localhost:16389, with unique keys expiring
+after five minutes. These diagnostic probes return exit 1 when defects reproduce;
+this is not a test-runner failure. See the 2026-09-13 orchestrator stability report
+for the tested snapshot, per-run results and current limitations.
+
 Ports: Agents/UI 18000, IDU MCP 18002, Effects 18080, ChatStorage 18010, DVD 18100,
 NormGraph 18020, Redis 16389, Neo4j Bolt 17687. Urban API/MCP and inference remain external.
 This is a hybrid integration stand, not an offline deployment. Stop only this project with
