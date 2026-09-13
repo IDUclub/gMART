@@ -141,7 +141,7 @@ class OrchestratorPlanBuilder:
     def is_analytical(query):
         return bool(
             re.search(
-                r"сравн|почему|хуже|лучше|компромисс|гипотез|изменится|увелич\w*.*населен|анализ.*(?:комплекс|подроб)|compar|why|trade.?off",
+                r"сравн|сопостав|почему|хуже|лучше|компромисс|гипотез|изменится|увелич\w*.*населен|анализ.*(?:комплекс|подроб)|compar|why|trade.?off",
                 query,
                 re.IGNORECASE,
             )

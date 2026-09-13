@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,7 @@ from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 from src.agents.services.orchestrator.analysis import AnalyticalRun, artifact_parts
 from src.agents.services.orchestrator.analysis_context import AnalysisContext
+from src.agents.services.orchestrator.analysis_goal import GoalManager, GoalState
 from src.agents.services.orchestrator.analysis_support import (
     blocker_text,
     configured_limits,
@@ -102,6 +104,7 @@ class OrchestratorService(BaseLlmService):
         self.normgraph_service = normgraph_service
         self.app_config = app_config
         self.plan_builder = OrchestratorPlanBuilder(self.llm_client)
+        self.goal_manager = GoalManager(self.llm_client)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -157,6 +160,11 @@ class OrchestratorService(BaseLlmService):
                         async for event in events:
                             yield event
             except (BudgetExceeded, TimeoutError, ValueError, LlmResponseError) as exc:
+                logger.warning(
+                    "Orchestrator control failed ({}): {}",
+                    type(exc).__name__,
+                    str(exc).splitlines()[0][:250] if str(exc) else "deadline",
+                )
                 missing = [
                     missing_input(
                         exc.resource
@@ -217,6 +225,7 @@ class OrchestratorService(BaseLlmService):
                         "missing": [m.model_dump() for m in missing],
                         "budget": budget.snapshot(),
                         "continue_from": request_id,
+                        "goal": GoalState(context).view() if context.goal else None,
                     },
                 }
                 if persist_history:
@@ -345,6 +354,7 @@ class OrchestratorService(BaseLlmService):
             yield await self._buf(request_id, self._clarification_event(question))
             await self.state_store.set_status(request_id, PipelineStatus.FAILED)
             return
+        goal_mode = os.getenv("ORCHESTRATOR_ANALYSIS_MODE", "goal") == "goal"
         if context.completed:
             # Full historical tables never enter the prompt. Their loss-aware
             # index and selected evidence replace unbounded dialogue history.
@@ -378,7 +388,9 @@ class OrchestratorService(BaseLlmService):
             self._status("planning", "Определяю, какие агенты нужны для запроса…"),
         )
         agents = available_agents(self.app_config, scenario_id)
-        if context.completed:
+        if context.completed or (
+            goal_mode and (context.goal or self.plan_builder.is_analytical(user_query))
+        ):
             plan = OrchestratorPlan(mode=OrchestratorPlanMode.EXECUTE, analytical=True)
         else:
             plan = await self.plan_builder.build_plan(
@@ -397,6 +409,20 @@ class OrchestratorService(BaseLlmService):
         yield await self._buf(request_id, self._plan_event(plan))
 
         if plan.analytical:
+            if goal_mode:
+                if not (continue_from and context.goal):
+                    goal = await self.goal_manager.create(
+                        model, user_query, agents, scenario_id, history
+                    )
+                    GoalState(context, goal)
+                    context.query = user_query
+                # Successful operations survive explicit continuation. A blocked
+                # requirement may be retried after the user supplies new input.
+                elif context.goal:
+                    GoalState(context).resume()
+                plan = OrchestratorPlan(
+                    mode=OrchestratorPlanMode.EXECUTE, analytical=True
+                )
             args = dict(
                 idu_mcp_client=idu_mcp_client,
                 effects_mcp_client=effects_mcp_client,

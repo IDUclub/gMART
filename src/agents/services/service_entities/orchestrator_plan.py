@@ -40,6 +40,8 @@ class OrchestratorStep(BaseModel):
     scenario_id: int | None = Field(default=None, gt=0)
     evidence_ids: list[str] = Field(default_factory=list, max_length=20)
     population_adjustment: PopulationAdjustment | None = None
+    requirement_id: str | None = None
+    support: bool = False
 
     @field_validator("task")
     @classmethod

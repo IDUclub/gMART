@@ -17,6 +17,7 @@ class AnalysisContext:
         self.artifacts = data.get("artifacts", [])
         self.completed = data.get("completed", [])
         self.query = data.get("query", "")
+        self.goal = data.get("goal")
         self.inspected = []
 
     def add_artifact(self, event, step, request_id):
@@ -302,4 +303,5 @@ class AnalysisContext:
             "artifacts": self.artifacts,
             "completed": self.completed,
             "query": self.query,
+            "goal": self.goal,
         }

@@ -17,6 +17,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.runtime.budget import BudgetExceeded, current_budget, token_bound
 from src.agents.runtime.tools import stream_planned
 from src.agents.services.orchestrator.analysis_context import AnalysisContext
+from src.agents.services.orchestrator.analysis_goal import GoalState
 from src.agents.services.orchestrator.analysis_support import (
     blocker_text,
     context_scope,
@@ -86,9 +87,11 @@ class AnalyticalRun:
         self.hypotheses = []
         self.evidence_ids = []
         self.status = "blocked"
+        self.goal = GoalState(self.context) if self.context.goal else None
 
     def signature(self, step):
         return (
+            step.requirement_id,
             step.agent,
             step.scenario_id or self.args["scenario_id"],
             " ".join(step.task.casefold().split()),
@@ -123,7 +126,10 @@ class AnalyticalRun:
             - self.budget.tokens
             - self.budget.limits.final_reserve
         )
-        return self.context.view(max_chars=max(2000, min(9000, room, remaining)))
+        view = self.context.view(max_chars=max(2000, min(9000, room, remaining)))
+        if self.goal:
+            view["goal"] = self.goal.view(for_model=True)
+        return view
 
     async def events(self):
         s, a = self.service, self.args
@@ -141,7 +147,8 @@ class AnalyticalRun:
             else set()
         )
         # A continuation reviews existing evidence before performing more work.
-        review_first = bool(self.context.completed)
+        review_first = bool(self.context.completed) or bool(self.goal)
+        await self.save()
         try:
             async with asyncio.timeout(self.budget.remaining_seconds):
                 while True:
@@ -181,6 +188,7 @@ class AnalyticalRun:
                         collected = {"chunks": {}, "notes": []}
                         status = "completed"
                         failure = "service"
+                        failure_detail = ""
                         try:
                             pipeline = s._build_step_pipeline(
                                 step,
@@ -242,6 +250,13 @@ class AnalyticalRun:
                                             }
                                             else "service"
                                         )
+                                        content = item.get("content") or {}
+                                        failure_detail = (
+                                            content.get("question")
+                                            or content.get("text")
+                                            or content.get("message")
+                                            or ""
+                                        )
                                         break
                                     if (
                                         kind == "compliance_summary"
@@ -283,6 +298,13 @@ class AnalyticalRun:
                             self.context.finish(
                                 number, step.task, scenario_id, status, summary, sid
                             )
+                            if self.goal:
+                                blocker = (
+                                    missing_input(failure, failure_detail)
+                                    if status != "completed"
+                                    else None
+                                )
+                                self.goal.record(step, sid, status, blocker)
                             self.steps.append(
                                 s._summary_step(number, step, status, summary)
                             )
@@ -290,7 +312,7 @@ class AnalyticalRun:
                         yield s._step_finished_event(number, step, status, summary)
                         if self.budget.exhausted:
                             raise BudgetExceeded(self.budget.exhausted)
-                        if status != "completed":
+                        if status != "completed" and not self.goal:
                             detail = (
                                 (
                                     (item.get("content") or {}).get("question")
@@ -305,9 +327,12 @@ class AnalyticalRun:
                     review_first = False
                     yield s._status(
                         "reviewing",
-                        "Проверяю доказательства и уточняю оставшийся план…",
+                        "Проверяю результаты и выбираю следующее действие…",
                     )
-                    self.budget.finalizing = not self.remaining
+                    self.budget.finalizing = not self.remaining and (
+                        not self.goal
+                        or all(r["status"] != "pending" for r in self.goal.progress())
+                    )
                     try:
                         query = a["user_query"]
                         if self.context.query != query:
@@ -324,7 +349,8 @@ class AnalyticalRun:
                             view = self.view()
                             if validation_error:
                                 view["review_validation_error"] = validation_error
-                            review = await s.plan_builder.review(
+                            reviewer = s.goal_manager if self.goal else s.plan_builder
+                            review = await reviewer.review(
                                 a["model"],
                                 query,
                                 self.agents,
@@ -333,6 +359,10 @@ class AnalyticalRun:
                                 self.budget.snapshot(),
                             )
                             try:
+                                if self.goal:
+                                    review = self.goal.validate_decision(
+                                        review, {entry.key for entry in self.agents}
+                                    )
                                 for ref in review.evidence_ids:
                                     self.context.get(ref)
                                 if review.action == "continue" and any(
@@ -407,7 +437,9 @@ class AnalyticalRun:
                     self.evidence_ids = review.evidence_ids
                     self.hypotheses = review.hypotheses
                     if review.action == "blocked":
-                        self.missing = review.missing
+                        self.missing = (
+                            self.goal.blockers() if self.goal else []
+                        ) or review.missing
                         self.answer = review.answer
                         break
                     if not review.evidence_ids:
@@ -441,6 +473,39 @@ class AnalyticalRun:
         except Exception:
             logger.exception("Analytical review failed")
             self.missing = [missing_input("service")]
+        if self.goal and self.missing:
+            for blocker in self.goal.blockers():
+                if blocker not in self.missing:
+                    self.missing.append(blocker)
+        if self.goal:
+            counts = self.goal.count_comparison()
+            if counts:
+                aid = self.context.add_artifact(counts, 0, request_id)
+                next(a for a in self.context.artifacts if a["id"] == aid)[
+                    "confirmed"
+                ] = True
+                self.evidence_ids.append(aid)
+                count_lines = [
+                    f'{r["subject"]} (сценарий {r["scenario_id"]}, {"услуги" if r["entity_kind"] == "services" else "физические объекты"}): {r["count"]}; разница с первой строкой того же вида сущности: {r["difference_from_first"]}.'
+                    for r in counts["content"]["rows"]
+                ]
+                self.answer = (
+                    "Подтверждённое количество:\n"
+                    + "\n".join(count_lines)
+                    + "\n\n"
+                    + self.answer
+                )
+                yield {
+                    "type": "step_event",
+                    "content": {
+                        "step": 0,
+                        "agent": "orchestrator",
+                        "event": {
+                            **counts,
+                            "content": {**counts["content"], "artifact_id": aid},
+                        },
+                    },
+                }
         if self.missing:
             self.answer = "\n\n".join(
                 filter(
@@ -467,7 +532,7 @@ class AnalyticalRun:
             if (
                 artifact["confirmed"]
                 and artifact["request_id"] not in emitted_requests
-                and artifact["id"] in self.evidence_ids
+                and (self.goal or artifact["id"] in self.evidence_ids)
             ):
                 yield {
                     "type": "step_event",
@@ -531,5 +596,6 @@ class AnalyticalRun:
                 "artifacts": self.context.index(),
                 "budget": self.budget.snapshot(),
                 "continue_from": request_id,
+                "goal": self.goal.view() if self.goal else None,
             },
         }

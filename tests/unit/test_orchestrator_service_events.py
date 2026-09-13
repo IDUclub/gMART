@@ -72,6 +72,8 @@ RESTRICTION_EVENTS = [
 
 @pytest.fixture
 def orchestrator(monkeypatch, fake_llm, fake_urban, state_store):
+    # Retain the previous execution mode as the baseline for contract regressions.
+    monkeypatch.setenv("ORCHESTRATOR_ANALYSIS_MODE", "plan")
     monkeypatch.setattr(
         "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,

@@ -104,6 +104,7 @@ class OrchestratorFinalContent(BaseModel):
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     budget: dict[str, Any] = Field(default_factory=dict)
     continue_from: str | None = None
+    goal: dict[str, Any] | None = None
 
 
 class OrchestratorResponse(BaseModel):
