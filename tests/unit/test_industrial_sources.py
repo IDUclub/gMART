@@ -67,10 +67,23 @@ def test_transient_source_fault_is_bounded_and_audited():
 async def test_mcp_source_catalog_supports_real_typed_selection():
     from fastmcp import Client
 
+    from src.agents.services.scenario_data.scenario_data_selection import (
+        selection_candidates,
+    )
+    from src.agents.services.scenario_data.scenario_data_service import (
+        ScenarioDataService,
+    )
     from tests.integration.industrial.server import groups
 
     async with Client(groups["projects"]) as client:
         tools = {t.name: t for t in await client.list_tools()}
+        catalogue = await client.call_tool(
+            "GetScenarioServiceTypes", {"scenario_id": 91001}
+        )
+        candidates = selection_candidates(
+            {"service_type": ScenarioDataService._unwrap_result(catalogue.data)}
+        )
+        assert {c["type_id"] for c in candidates.values()} == {21, 22}
         assert "GetScenarioServiceTypes" in tools
         assert (
             "service_type_id" in tools["GetScenarioServices"].inputSchema["properties"]

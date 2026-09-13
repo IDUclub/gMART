@@ -10,7 +10,7 @@ from dotenv import dotenv_values
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-from .control import entities
+from .control import VERSION, entities
 from .geometry import is_fifty_metre_buffer
 from .transport import headers_for, provision, save
 
@@ -56,9 +56,82 @@ def verify_calculation(sid, result):
                     raise ValueError("Invalid calculation geometry")
 
 
+async def verify_source_transport():
+    """Use the application's actual client, including structured MCP decoding."""
+    from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
+    from src.agents.services.scenario_data.scenario_data_selection import (
+        selection_candidates,
+        verified_entity_records,
+    )
+
+    client = UrbanMcpClient("http://localhost:18090", None)
+    await client.load_tools()
+
+    async def read(group, name, arguments):
+        result = await client.execute_tool(group, name, arguments)
+        if isinstance(result, dict) and set(result) == {"result"}:
+            result = result["result"]
+        if not isinstance(result, (list, dict)):
+            raise ValueError(f"Missing structured source response: {name}")
+        return result
+
+    for domain, noun in (
+        ("service_type", "Service"),
+        ("physical_object_type", "PhysicalObject"),
+    ):
+        catalogue = await read(
+            "projects", f"GetScenario{noun}Types", {"scenario_id": 91001}
+        )
+        candidates = selection_candidates({domain: catalogue})
+        if not candidates:
+            raise ValueError("Empty source catalogue")
+        for candidate in candidates.values():
+            arguments = {"scenario_id": 91001, f"{domain}_id": candidate["type_id"]}
+            records = verified_entity_records(
+                await read("projects", f"GetScenario{noun}s", arguments), candidate
+            )
+            geometry = verified_entity_records(
+                await read("projects", f"GetScenario{noun}sWithGeometry", arguments),
+                candidate,
+            )
+            identity = domain.removesuffix("_type") + "_id"
+            if not records or {r[identity] for r in records} != {
+                r[identity] for r in geometry
+            }:
+                raise ValueError("Source table and geometry identities differ")
+    for group, name, arguments in (
+        ("projects", "GetScenarioById", {"scenario_id": 91001}),
+        ("projects", "GetProjectById", {"project_id": 910}),
+        ("projects", "GetProjectScenarios", {"project_id": 910}),
+        ("dictionaries", "GetServiceTypes", {}),
+        ("dictionaries", "GetPhysicalObjectTypes", {}),
+        ("indicators", "GetScenarioIndicatorsValues", {"scenario_id": 91001}),
+        ("projects", "GetScenarioFunctionalZoneSources", {"scenario_id": 91001}),
+        (
+            "projects",
+            "GetScenarioFunctionalZones",
+            {"scenario_id": 91001, "source": VERSION, "year": 2026},
+        ),
+        ("territories", "GetTerritoryNormatives", {"territory_id": 911}),
+    ):
+        await read(group, name, arguments)
+
+
 async def run(config, output):
     output.mkdir(parents=True, exist_ok=False)
     report = {"cases": [], "passed": False}
+    source = {"name": "application_source_transport", "passed": False}
+    try:
+        async with asyncio.timeout(120):
+            await verify_source_transport()
+        source["passed"] = True
+    except Exception as exc:
+        source["error"] = type(exc).__name__ + ": " + str(exc)[:250]
+    report["cases"].append(source)
+    save(output / "report.json", report)
+    print(f"Sources: {'PASS' if source['passed'] else source['error']}", flush=True)
+    if not source["passed"]:
+        return False
     async with httpx.AsyncClient(timeout=120, trust_env=False) as http:
         for sid in EXPECTED:
             row = {"scenario_id": sid, "passed": False}
