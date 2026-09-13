@@ -374,7 +374,13 @@ class ScenarioDataService(BaseLlmService):
             | ToolCallPartRequest
             | StructuredPartRequest
         ] = []
-        broad_requested = not force_analytics and broad_data_query(user_query)
+        # A typed selection is already an explicit scope contract. Descriptive
+        # words such as "context" must not send it through a broader read plan.
+        broad_requested = (
+            not entity_selection
+            and not force_analytics
+            and broad_data_query(user_query)
+        )
         type_intent = (
             None
             if broad_requested or entity_selection

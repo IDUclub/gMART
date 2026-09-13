@@ -23,6 +23,7 @@ def main():
         "--mode", choices=["deterministic", "live", "full"], default="deterministic"
     )
     parser.add_argument("--env-file", type=Path)
+    parser.add_argument("--suite", choices=["legacy", "industrial"], default="legacy")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.mode != "deterministic" and not args.env_file:
@@ -31,6 +32,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     report = {
         "mode": args.mode,
+        "suite": args.suite,
         "platform": sys.platform,
         "phases": [],
         "windows_exclusions": (
@@ -50,7 +52,11 @@ def main():
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     check=False,
-                    timeout=14000 if name == "live-20" else 600,
+                    timeout=(
+                        21600
+                        if name == "industrial-15"
+                        else 14000 if name == "live-20" else 600
+                    ),
                 )
                 exit_code = process.returncode
             except subprocess.TimeoutExpired:
@@ -143,14 +149,26 @@ def main():
             "--output",
             str(output / "live"),
         ]
-        phase(
-            "live-20",
-            [sys.executable, str(SCRIPTS / "stability.py"), *common, "--runs", "20"],
-        )
-        phase(
-            "live-verification",
-            [sys.executable, str(SCRIPTS / "verify_stability.py"), *common],
-        )
+        if args.suite == "industrial":
+            phase(
+                "industrial-15",
+                [sys.executable, "-m", "tests.integration.industrial.runner", *common],
+            )
+        else:
+            phase(
+                "live-20",
+                [
+                    sys.executable,
+                    str(SCRIPTS / "stability.py"),
+                    *common,
+                    "--runs",
+                    "20",
+                ],
+            )
+            phase(
+                "live-verification",
+                [sys.executable, str(SCRIPTS / "verify_stability.py"), *common],
+            )
     report["passed"] = bool(report["phases"]) and all(
         p["exit_code"] == 0 for p in report["phases"]
     )

@@ -304,6 +304,8 @@ class GoalState:
                     r.description
                     + "\nПроверь возможность расчёта вызовом расчётного сервиса. Наличие норматива проверяет сервис; не предполагай его отсутствие по истории анализа."
                 )
+                if "feature_collection" in r.required_artifacts:
+                    task += "\nОбязательно верни расчётные слои зданий, услуг и связей для всех запрошенных типов услуг вместе с таблицей результатов."
             if r.entity_kind != "other" and not decision.support:
                 entity = (
                     "услуги" if r.entity_kind == "services" else "физические объекты"
@@ -440,6 +442,7 @@ class GoalManager:
 source_ids — номера фрагментов request_fragments, обосновывающих требование. Не копируй и не перефразируй цитату: приложение само сохранит исходный текст выбранных фрагментов.
 Для получения услуг: agent=scenario_data, entity_kind=services, subject=один тип в именительном падеже.
 Для физических объектов entity_kind=physical_objects. Не путай услуги со зданиями.
+subject — название типа на языке пользователя, не английское имя поля или машинный id. Например subject="Жилой дом", а не residential_buildings. id может быть машинным именем.
 entity_kind services/physical_objects означает полную выборку ОДНОГО типа БЕЗ дополнительных фильтров. Если нужны фильтры по адресу, радиусу, мощности или иные условия, укажи entity_kind=other и сохрани все условия в description.
 required_artifacts: table для таблицы/количества, feature_collection для слоя, analysis_text для текстового исследования/расчёта, compliance_summary для проверки соответствия.
 Когда нужны таблица И слой, оба обязательны. Расчёт обеспеченности — отдельное требование agent=provision, entity_kind=other.
@@ -449,6 +452,8 @@ description — самодостаточные условия получения
 Не добавляй вспомогательный поиск нормативов к расчёту provision: этот специалист сам проверяет норматив. norms/documents нужны только если пользователь отдельно запросил исследование источников.
 Причину недоступности расчёта обеспеченности проверяет сам provision. Сохрани это условие в его description, не создавай отдельное требование restriction/compliance/scenario_data для диагностики расчёта.
 Контракты результатов: documents/norms возвращают analysis_text; restriction возвращает feature_collection; compliance возвращает compliance_summary и compliance_result; provision возвращает table. Сопоставление источников входит в objective, отдельного специалиста для него нет.
+provision также возвращает расчётные feature_collection зданий, услуг и связей, если пользователь запросил слои: включи их в required_artifacts и description.
+Итоговую оценку проекта, вывод о достаточности мест и ограничения анализа составляет сам оркестратор. Это objective, НЕ отдельное requirement для documents, provision или scenario_data. documents ищет и анализирует документы, а не заменяет итоговый ответ оркестратора.
 Верни JSON по схеме."""
 
         def validate(goal):
@@ -534,6 +539,16 @@ description — самодостаточные условия получения
                 # saying that a specialist ran.
                 if r.agent == "provision" and "table" not in required:
                     required.append("table")
+                if (
+                    r.agent == "provision"
+                    and re.search(
+                        r"(?<!не )\b(?:верни|верните|возвращай|возвращайте|покажи|покажите|приложи|приложите|нужны)\s+расч[её]тн\w*\s+сло",
+                        query,
+                        re.I,
+                    )
+                    and "feature_collection" not in required
+                ):
+                    required.append("feature_collection")
                 requirements.append(
                     GoalRequirement(
                         **{

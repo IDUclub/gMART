@@ -1,0 +1,21 @@
+# Overlay for the existing isolated local stack. Only source-data URLs change.
+services:
+  industrial_sources:
+    image: gmart-sdk-local-agents
+    entrypoint: ["python", "-m", "uvicorn", "tests.integration.industrial.server:app", "--host", "0.0.0.0", "--port", "8090"]
+    working_dir: /industrial
+    volumes:
+      - ../../..:/industrial:ro
+    ports: ["127.0.0.1:18090:8090"]
+  effects:
+    environment:
+      URBAN_API: http://industrial_sources:8090
+      MCP_URBAN_API: http://industrial_sources:8090
+  idu_mcp:
+    environment:
+      URBAN_API_URL: http://industrial_sources:8090/api
+  agents:
+    environment:
+      ORCHESTRATOR_GOAL_REASONING_EFFORT: low
+      URBAN_API_URL: http://industrial_sources:8090/api
+      URBAN_MCP_SERVER: http://industrial_sources:8090
