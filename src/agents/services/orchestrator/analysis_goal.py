@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 from typing import Literal
 
 from geojson_pydantic import FeatureCollection
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.agents.model_clients.llm_base import LlmResponseError
+from src.agents.runtime.budget import current_budget
 from src.agents.runtime.runner import run_structured
 from src.agents.services.orchestrator.orchestrator_plan_builder import (
     OrchestratorPlanBuilder,
@@ -453,6 +457,38 @@ description — самодостаточные условия получения
                     raise ValueError(
                         "source_ids must refer to existing request_fragments"
                     )
+                typed_results = [
+                    item
+                    for item in goal.requirements
+                    if item.agent == "scenario_data"
+                    and item.entity_kind != "other"
+                    and (item.scenario_id or scenario_id)
+                    == (r.scenario_id or scenario_id)
+                ]
+                if (
+                    r.agent == "scenario_data"
+                    and r.entity_kind == "other"
+                    and typed_results
+                ):
+                    comparison = (
+                        len(typed_results) >= 2
+                        and re.search(r"сравн|сопостав|разниц", r.description, re.I)
+                        and re.search(
+                            r"количеств|подсч[её]т|числ[оа]\b", r.description, re.I
+                        )
+                    )
+                    availability = re.search(
+                        r"провер\w*\s+наличи\w*\s+данн", r.description, re.I
+                    )
+                    scoped = re.search(
+                        r"район|радиус|адрес|мощност|вместимост|частн|групп|только|после|до\s+\d|в\s+пределах|категор|фильтр",
+                        r.description,
+                        re.I,
+                    )
+                    if (comparison or availability) and not scoped:
+                        raise ValueError(
+                            "Comparing counts and checking availability of already requested typed selections belongs to objective, not another scenario_data requirement. Keep the separate typed selections; the application computes their count comparison. Preserve the original comparison conditions in objective."
+                        )
                 required = list(r.required_artifacts)
                 if r.agent in {"documents", "norms"}:
                     required = ["analysis_text", "source_evidence"]
@@ -540,6 +576,20 @@ description — самодостаточные условия получения
         )
 
     async def review(self, model, query, agents, context, remaining, budget):
+        requirements = context["goal"]["requirements"]
+        synthesis = (
+            bool(requirements)
+            and all(r.get("status") == "satisfied" for r in requirements)
+            and any(r.get("entity_kind", "other") == "other" for r in requirements)
+        )
+        effort = os.getenv(
+            (
+                "ORCHESTRATOR_SYNTHESIS_REASONING_EFFORT"
+                if synthesis
+                else "ORCHESTRATOR_CONTROL_REASONING_EFFORT"
+            ),
+            "high" if synthesis else "medium",
+        )
         prompt = """Ты ведёшь аналитическое исследование до достижения цели. Обязательные условия goal неизменны.
 Выбери только ОДНО следующее действие. Полный план не требуется.
 continue: requirement_id из goal и конкретный task на русском. agent и scenario_id приложение возьмёт из требования, их можно не указывать. Добивайся недостающего результата; используй сохранённые доказательства. Поля steps нет: возвращай одно действие, например {"action":"continue","requirement_id":"req1","task":"Получи нужные данные"}.
@@ -565,6 +615,7 @@ review_validation_error — обязательное исправление пр
                 "budget": budget,
             },
             GoalDecision,
+            reasoning_effort=effort,
         )
 
     async def _call(self, model, name, prompt, payload, schema, **kwargs):
@@ -572,24 +623,56 @@ review_validation_error — обязательное исправление пр
         prompt += "\nJSON schema:\n" + json.dumps(
             schema.model_json_schema(), ensure_ascii=False
         )
-        return await run_structured(
-            self.backend,
-            model,
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ],
-            schema,
-            agent_name=name,
-            retries=1,
-            unconstrained=True,
-            reasoning_effort=effort,
-            attempt_settings=(
-                OrchestratorPlanBuilder._analysis_attempt if effort == "high" else None
-            ),
-            options={
-                "temperature": 0,
-                "num_predict": 16384 if effort == "high" else 8192,
-            },
-            **kwargs,
-        )
+        for attempt in range(2):
+            try:
+                return await run_structured(
+                    self.backend,
+                    model,
+                    [
+                        {"role": "system", "content": prompt},
+                        {
+                            "role": "user",
+                            "content": json.dumps(payload, ensure_ascii=False),
+                        },
+                    ],
+                    schema,
+                    agent_name=name,
+                    retries=1,
+                    unconstrained=True,
+                    reasoning_effort=effort,
+                    attempt_settings=(
+                        OrchestratorPlanBuilder._analysis_attempt
+                        if effort == "high"
+                        else None
+                    ),
+                    options={
+                        "temperature": 0,
+                        "num_predict": 16384 if effort == "high" else 8192,
+                    },
+                    **kwargs,
+                )
+            except LlmResponseError as exc:
+                retry = attempt == 0 and exc.status_code in {
+                    None,
+                    429,
+                    500,
+                    502,
+                    503,
+                    504,
+                }
+                logger.warning(
+                    "Controller model failure: stage={}, status={}, retry={}",
+                    name,
+                    exc.status_code,
+                    retry,
+                )
+                if not retry:
+                    raise
+                # This call only selects a decision; no specialist/tool is replayed.
+                # Each real provider request is separately charged by the adapter.
+                if effort == "high":
+                    if budget := current_budget.get():
+                        budget.reasoning_fallbacks += 1
+                    effort = "medium"
+                await asyncio.sleep(0.2)
+        raise AssertionError("unreachable")

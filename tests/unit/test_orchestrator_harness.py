@@ -28,7 +28,8 @@ AGENT_METHODS = {
 
 @pytest.mark.parametrize("agent", list(AGENT_METHODS))
 @pytest.mark.parametrize(
-    "outcome", ["success", "error", "exception", "clarification", "suspended"]
+    "outcome",
+    ["success", "error", "exception", "model_exception", "clarification", "suspended"],
 )
 async def test_every_specialist_preserves_terminal_replay_and_evidence(
     orchestrator, monkeypatch, agent, outcome
@@ -36,6 +37,7 @@ async def test_every_specialist_preserves_terminal_replay_and_evidence(
     import json
     from copy import deepcopy
 
+    from src.agents.model_clients.llm_base import LlmResponseError
     from src.agents.services.orchestrator.analysis_goal import GoalManager
     from src.agents.services.source_evidence import source_event
     from tests.helpers import FakeLlmClient
@@ -100,7 +102,15 @@ async def test_every_specialist_preserves_terminal_replay_and_evidence(
         )
     pipeline = FakePipeline(
         outputs,
-        raise_exc=ConnectionError("synthetic") if outcome == "exception" else None,
+        raise_exc=(
+            ConnectionError("synthetic")
+            if outcome == "exception"
+            else (
+                LlmResponseError("synthetic provider failure", 503)
+                if outcome == "model_exception"
+                else None
+            )
+        ),
     )
     attribute, method = AGENT_METHODS[agent]
     setattr(orchestrator, attribute, SimpleNamespace(**{method: pipeline}))
@@ -156,6 +166,11 @@ async def test_every_specialist_preserves_terminal_replay_and_evidence(
     replay = await run_pipeline(orchestrator, request_id=result["continue_from"])
     assert replay == events and len(backend.chat_calls) == calls
     assert result["continue_from"]
+    if outcome == "model_exception":
+        assert (
+            result["missing"][0]["missing"]
+            == "Корректное управляющее решение для анализа"
+        )
 
 
 async def test_typed_retrieval_runs_actual_specialist_without_reclassifying(

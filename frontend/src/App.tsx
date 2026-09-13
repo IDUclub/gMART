@@ -37,7 +37,7 @@ import McpConsole from "./McpConsole";
 import DocumentLibrary from "./DocumentLibrary";
 import { reusableChatId } from "./agentSession";
 import { appendLatestVisibleLayer } from "./layerState";
-import { extractStoredLayers, extractStoredComplianceSummary, analysisComplete, storedContinuation, storedTables } from "./analysisArtifacts";
+import { extractStoredLayers, extractStoredComplianceSummary, analysisComplete, storedContinuation, storedTables, storedSource } from "./analysisArtifacts";
 import {
   appendIterationChunk,
   appendSseExchange,
@@ -1468,8 +1468,14 @@ export default function App() {
       const link = (event.target as HTMLElement).closest("a");
       if (!link) return;
       const url = new URL(link.getAttribute("href") || "", settings.agentsUrl);
-      if (url.origin !== new URL(settings.agentsUrl).origin || !/^\/orchestrator\/runs\/[^/]+\/artifacts\/[^/]+$/.test(url.pathname)) return;
+      const sourcePath = /^\/orchestrator\/runs\/([^/]+)\/artifacts\/([^/]+)$/.exec(url.pathname);
+      if (url.origin !== new URL(settings.agentsUrl).origin || !sourcePath) return;
       event.preventDefault();
+      const saved = storedSource(chat?.messages || [], decodeURIComponent(sourcePath[1]), decodeURIComponent(sourcePath[2]));
+      if (saved) {
+        setSourceSnapshot(saved);
+        return;
+      }
       void freshToken().then(t => request(settings.agentsUrl, url.pathname, t))
         .then(setSourceSnapshot).catch(e => updateStatus(err(e), "warning"));
     }}>

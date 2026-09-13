@@ -145,6 +145,10 @@ def fingerprint():
     for path in sorted((root / "src").rglob("*.py")):
         digest.update(path.relative_to(root).as_posix().encode())
         digest.update(path.read_bytes())
+    harness = hashlib.sha256()
+    for path in sorted(Path(__file__).parent.glob("*.py")):
+        harness.update(path.name.encode())
+        harness.update(path.read_bytes())
     image = subprocess.check_output(
         ["docker", "inspect", "gmart-sdk-local-agents-1", "--format", "{{.Image}}"],
         text=True,
@@ -153,6 +157,7 @@ def fingerprint():
     return {
         "commit": commit,
         "source_sha256": digest.hexdigest(),
+        "harness_sha256": harness.hexdigest(),
         "agents_image": image,
     }
 

@@ -108,3 +108,22 @@ the rest of `tests/unit` retains the specialists' detailed contracts and failure
 This is functional coverage of the supported interfaces and observed failure classes,
 not proof that every possible natural-language request or provider failure will succeed.
 Live stability is reported separately and only for a completed, immutable series.
+
+The strengthened verifier also requires exactly twenty distinct requests in fixture order,
+an unchanged build fingerprint, and the original clause 1.1 / version 2026 paired with
+the matching NormGraph restriction (school, parking, >= 50 m). For scenario 772 it checks
+the actual missing-normative payload: only school service type 22 and request territory
+58. A broad calculation for unrelated catalog entries fails even if it includes schools.
+New runs fingerprint the harness scripts as well as application source and image.
+
+Controller routing defaults to `ORCHESTRATOR_CONTROL_REASONING_EFFORT=medium`;
+ready analytical synthesis uses `ORCHESTRATOR_SYNTHESIS_REASONING_EFFORT=high`.
+After an exhausted high-reasoning attempt, subsequent controller calls retain medium
+for that request. Goal creation retains its separate medium default. Transient controller
+transport errors have at most one retry; permanent errors and specialist side effects
+are not replayed by that retry. All attempts share the request budget.
+
+Failure before a valid goal now persists a blocked context before emitting the final
+answer, and continuation restores the original query. Comparison tables carry the same
+artifact ID in events and storage. Confirmed source snapshots can also be opened from
+loaded chat history after the runtime source cache expires.

@@ -8,6 +8,9 @@ from pathlib import Path
 
 import httpx
 from dotenv import dotenv_values
+from scenario_contract import verify_provision_scope
+from series_contract import verify_series_manifest
+from source_contract import verify_source_records
 from stability import (
     headers_for,
     persisted,
@@ -26,6 +29,12 @@ async def main():
     original = json.loads((args.output / "summary.json").read_text(encoding="utf-8"))
     config = dotenv_values(args.env_file)
     audit = {"fingerprint": original["fingerprint"], "cases": []}
+    try:
+        verify_series_manifest(original)
+        audit["complete_immutable_series"] = True
+    except AssertionError as exc:
+        audit["complete_immutable_series"] = False
+        audit["series_error"] = str(exc)
     async with httpx.AsyncClient(timeout=60, trust_env=False) as http:
         for row in original["cases"]:
             output = args.output / f"{row['index']:02d}-{row['kind']}"
@@ -141,6 +150,13 @@ async def main():
             except Exception as exc:
                 result["checks"]["functional_acceptance"] = False
                 result["acceptance_error"] = type(exc).__name__
+            if row["kind"] in {"analysis", "continuation"}:
+                try:
+                    verify_provision_scope(events)
+                    result["checks"]["calculation_scope"] = True
+                except AssertionError as exc:
+                    result["checks"]["calculation_scope"] = False
+                    result["calculation_scope_error"] = str(exc)
             # A useful partial answer is distinct from a clean controller finish.
             expected_blocker = "Применимый норматив обеспеченности"
             result["checks"]["controller_clean"] = (
@@ -188,6 +204,12 @@ async def main():
                     "norms",
                 }
                 save(output / "source-records.json", source_records)
+                try:
+                    verify_source_records(source_records)
+                    result["checks"]["matching_fixture_sources"] = True
+                except (AssertionError, TypeError, KeyError, AttributeError) as exc:
+                    result["checks"]["matching_fixture_sources"] = False
+                    result["source_error"] = str(exc)
             if saved and row["kind"] != "documents":
                 try:
                     for subject in ("Школа", "Детский сад"):
@@ -226,7 +248,8 @@ async def main():
         )
     )
     return int(
-        len(audit["cases"]) != len(original["cases"])
+        not audit["complete_immutable_series"]
+        or len(audit["cases"]) != len(original["cases"])
         or not all(r.get("passed") for r in audit["cases"])
     )
 

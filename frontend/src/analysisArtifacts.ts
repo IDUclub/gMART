@@ -1,5 +1,20 @@
 import type { LayerData, Message, ComplianceSummary, TableData } from "./types";
 
+export function storedSource(messages: Message[], runId: string, artifactId: string) {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    for (const part of message.parts) {
+      if (part.kind !== "data" || part.payload.event_type !== "analysis_context") continue;
+      const snapshot = part.payload.content;
+      if (snapshot?.continue_from !== runId) continue;
+      const artifact = (snapshot.artifacts || []).find((item: {id: string; kind: string; confirmed: boolean}) =>
+        item.id === artifactId && item.kind === "source_evidence" && item.confirmed === true);
+      if (artifact) return artifact;
+    }
+  }
+  return null;
+}
+
 export function storedContinuation(messages: Message[], chatId: string) {
   for (const message of [...messages].reverse()) {
     if (message.role !== "assistant") continue;

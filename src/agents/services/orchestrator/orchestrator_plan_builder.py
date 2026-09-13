@@ -32,11 +32,12 @@ class OrchestratorPlanBuilder:
 
     @staticmethod
     def _analysis_attempt(attempt, conversation):
+        budget = current_budget.get()
         if attempt:
-            budget = current_budget.get()
             if budget:
                 budget.reasoning_fallbacks += 1
-        return {"reasoning_effort": "high" if attempt == 0 else "medium"}
+        fallback = attempt > 0 or (budget and budget.reasoning_fallbacks > 0)
+        return {"reasoning_effort": "medium" if fallback else "high"}
 
     async def build_plan(
         self,

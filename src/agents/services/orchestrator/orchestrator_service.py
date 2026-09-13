@@ -15,6 +15,7 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 )
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
+    StructuredPartRequest,
     TablePartRequest,
     TablePayload,
     TextPartRequest,
@@ -257,17 +258,46 @@ class OrchestratorService(BaseLlmService):
                 }
                 if persist_history:
                     state = await self.state_store.get_state(request_id)
-                    self._schedule_persist_parts(
-                        token,
-                        chat_id or (state or {}).get("chat_id"),
-                        [
-                            TextPartRequest(
-                                kind="text", payload=TextPayload(text=answer)
-                            ),
-                            *artifact_parts(context),
-                        ],
-                        scenario_id,
-                    )
+                    history_chat_id = chat_id or (state or {}).get("chat_id")
+                    parts = [
+                        TextPartRequest(kind="text", payload=TextPayload(text=answer)),
+                        *artifact_parts(context),
+                        StructuredPartRequest(
+                            kind="data",
+                            payload={
+                                "event_type": "analysis_context",
+                                "content": {
+                                    **context.dump(),
+                                    "continue_from": request_id,
+                                    "status": "blocked",
+                                    "scenario_id": scenario_id,
+                                },
+                            },
+                        ),
+                    ]
+                    if history_chat_id:
+                        try:
+                            await self.add_complex_message(
+                                token,
+                                history_chat_id,
+                                RoleEnum.ASSISTANT,
+                                parts,
+                                scenario_id=scenario_id,
+                            )
+                        except Exception:
+                            logger.opt(exception=False).warning(
+                                "Could not persist blocked analysis to ChatStorage"
+                            )
+                            yield await self._buf(
+                                request_id,
+                                {
+                                    "type": "warning",
+                                    "content": {
+                                        "code": "history_unavailable",
+                                        "message": "История чата недоступна. Сохранённый анализ можно продолжить по идентификатору текущего запроса до истечения срока хранения.",
+                                    },
+                                },
+                            )
                 await self.state_store.set_status(request_id, PipelineStatus.FAILED)
                 yield await self._buf(request_id, final)
 
@@ -426,8 +456,13 @@ class OrchestratorService(BaseLlmService):
         if plan.analytical:
             if goal_mode:
                 if not (continue_from and context.goal):
+                    goal_query = (
+                        f"{context.query}\nУточнение для продолжения: {user_query}"
+                        if continue_from and context.query
+                        else user_query
+                    )
                     goal = await self.goal_manager.create(
-                        model, user_query, agents, scenario_id, history
+                        model, goal_query, agents, scenario_id, history
                     )
                     if isinstance(goal, GoalClarification):
                         yield await self._buf(
@@ -442,7 +477,7 @@ class OrchestratorService(BaseLlmService):
                         )
                         return
                     GoalState(context, goal)
-                    context.query = user_query
+                    context.query = goal_query
                 # Successful operations survive explicit continuation. A blocked
                 # requirement may be retried after the user supplies new input.
                 elif context.goal:

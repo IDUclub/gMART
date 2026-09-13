@@ -80,6 +80,36 @@ def final(events):
     return OrchestratorResponse.model_validate(event).model_dump()["content"]
 
 
+async def test_failed_goal_is_saved_to_history_before_final_and_can_resume(
+    orchestrator, monkeypatch
+):
+    monkeypatch.setenv("ORCHESTRATOR_ANALYSIS_MODE", "goal")
+    orchestrator.goal_manager.create = AsyncMock(
+        side_effect=ValueError("Invalid GoalDraft")
+    )
+    events = await run_pipeline(orchestrator, user_query="Сравни школы и сады")
+    result = final(events)
+    parts = orchestrator.add_complex_message.call_args.args[3]
+    snapshots = [
+        p.payload
+        for p in parts
+        if p.kind == "data" and p.payload.get("event_type") == "analysis_context"
+    ]
+    assert len(snapshots) == 1
+    saved = snapshots[0]["content"]
+    assert saved["continue_from"] == result["continue_from"]
+    assert saved["query"] == "Сравни школы и сады"
+    assert saved["status"] == "blocked" and saved["scenario_id"] == 772
+    assert events == await run_pipeline(
+        orchestrator, request_id=result["continue_from"]
+    )
+    await run_pipeline(
+        orchestrator, user_query="Продолжи", continue_from=result["continue_from"]
+    )
+    retried_query = orchestrator.goal_manager.create.call_args.args[1]
+    assert "Сравни школы и сады" in retried_query and "Продолжи" in retried_query
+
+
 async def test_scenario_data_receives_task_without_control_context(orchestrator):
     task = "Получи услуги типа школа в сценарии 772 и их слой."
     first = FakePipeline([table()])
@@ -303,6 +333,9 @@ async def test_compare_three_scenarios_replans_and_returns_full_artifacts(orches
         == "analysis_comparison"
     ][0]
     assert [r["delta"] for r in comparison["rows"]] == ["10", "5"]
+    assert comparison["artifact_id"] in {
+        artifact["id"] for artifact in result["artifacts"]
+    }
     parts = orchestrator.add_complex_message.await_args.args[3]
     assert len([p for p in parts if p.kind == "table"]) == 4
     assert (

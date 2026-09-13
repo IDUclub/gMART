@@ -16,6 +16,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     TextPartRequest,
     TextPayload,
 )
+from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.runtime.budget import BudgetExceeded, current_budget, token_bound
 from src.agents.runtime.tools import stream_planned
 from src.agents.services.orchestrator.analysis_context import AnalysisContext
@@ -318,7 +319,9 @@ class AnalyticalRun:
                                 "Analytical specialist failed: {}", type(exc).__name__
                             )
                             failure = (
-                                "planning" if isinstance(exc, ValueError) else "service"
+                                "planning"
+                                if isinstance(exc, (ValueError, LlmResponseError))
+                                else "service"
                             )
                             failure_detail = ""
                             status = "failed"
@@ -517,7 +520,10 @@ class AnalyticalRun:
                             "content": {
                                 "step": 0,
                                 "agent": "orchestrator",
-                                "event": event,
+                                "event": {
+                                    **event,
+                                    "content": {**event["content"], "artifact_id": aid},
+                                },
                             },
                         }
                     self.answer, self.status = review.answer, "completed"
@@ -538,7 +544,11 @@ class AnalyticalRun:
                 "Analytical review failed: {}", type(exc).__name__
             )
             self.missing = [
-                missing_input("planning" if isinstance(exc, ValueError) else "service")
+                missing_input(
+                    "planning"
+                    if isinstance(exc, (ValueError, LlmResponseError))
+                    else "service"
+                )
             ]
         if self.goal and self.missing:
             for blocker in self.goal.blockers():

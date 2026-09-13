@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -118,12 +119,30 @@ class ProvisionPlanBuilder:
         schema["properties"]["service_name"]["enum"] = [*services_catalog, None]
         for key in ("service_names", "layer_service_names"):
             schema["properties"][key]["items"]["enum"] = services_catalog
+
+        def validate_scope(plan):
+            if plan.mode == ProvisionPlanMode.SUMMARY and not plan.service_names:
+                request = re.split(r"\n\nПодтвержд[её]нные результаты", user_query)[0]
+                broad = re.search(
+                    r"\b(?:все|всё|всем|всех|всеми|кажд\w*)\b.{0,80}(?:сервис|услуг)"
+                    r"|(?:сводк|обзор)\w*\s*(?:по\s+)?обеспеченност\w*\s+(?:сервисами|услугами)\b"
+                    r"|какими\s+(?:сервисами|услугами)\b|\ball\s+(?:services|amenities)\b",
+                    request,
+                    re.I,
+                )
+                if not broad:
+                    raise ValueError(
+                        "Empty service_names expands to EVERY service in the catalog, but the current request does not ask for all services. Select the requested service_name/service_names; a table or layer does not imply a full-catalog summary."
+                    )
+            return plan
+
         return await run_structured(
             self.llm_client,
             model,
             messages,
             ProvisionPlan,
             schema=schema,
+            validate=validate_scope,
             agent_name="provision.plan",
             retries=_retries,
             think=False,
