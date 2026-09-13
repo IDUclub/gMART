@@ -69,3 +69,42 @@ Ports: Agents/UI 18000, IDU MCP 18002, Effects 18080, ChatStorage 18010, DVD 181
 NormGraph 18020, Redis 16389, Neo4j Bolt 17687. Urban API/MCP and inference remain external.
 This is a hybrid integration stand, not an offline deployment. Stop only this project with
 `docker compose --env-file stack.local.env down`.
+
+## Functional orchestrator harness
+
+Run from the repository root with its development Python environment:
+
+```powershell
+python tests/integration/local_stack/harness.py --mode deterministic --output output/orchestrator-harness
+python tests/integration/local_stack/harness.py --mode live --env-file stack.local.env --output output/orchestrator-harness-live
+```
+
+`full` runs both phases, and refuses to start inference after a deterministic failure.
+The live phase always uses the same 20 inputs and order: ten mixed scenario analyses,
+four data-only queries, four DVD/NormGraph comparisons, and two continuations from the
+first accepted mixed analysis. Retries are internal bounded orchestrator behavior;
+the harness never silently repeats a failed case. Keep source, commit and image fixed
+throughout a series. Do not overwrite a previous output directory when changing a build.
+
+| Functional boundary | Deterministic coverage | Live acceptance |
+|---|---|---|
+| Goal creation and next action | Actual Agents SDK with controlled provider responses; invalid outputs, scope, evidence and independent work | Three paraphrases, immutable goal and no pending requirements at a clean finish |
+| Six specialists | Scenario data, provision, restriction, compliance, DVD and NormGraph; success/error/exception/clarification/suspension matrix | Actual Urban data and missing normative, plus both synthetic document sources |
+| Data and arithmetic | Real typed-selection workflow with controlled MCP; entity IDs, duplicates, empty/partial selections, metric dimensions | Counts, differences, exact table/layer IDs, full persisted payloads |
+| Failure and continuation | Six resource budgets, failed specialists, disconnect, saved evidence, current-invocation attempts | Two new requests retry the actual calculation without fetching successful selections again |
+| Authentication and ownership | RSA JWT verification; expiry, wrong issuer, forged signature; replay and artifact endpoint isolation; atomic request claim | Fresh auth for each request and verification |
+| Persistence and concurrency | Real store over fakeredis, source snapshots and stable IDs | Real Redis at 1/4/8 concurrent writers; ChatStorage HTTP/MongoDB; exact replay |
+| User interface | History reconstruction, continuation anchor, stable table/layer identities; TypeScript and production build | Artifact exports and authenticated source snapshot endpoints |
+
+`harness.json` contains phase exit codes and timings, alongside individual logs and
+JUnit XML. A timeout is a failure, not a skip. `live/verified-summary.json` separates
+functional usefulness from a clean controller finish and verifies that source links
+resolve to confirmed source records. Missing events and skipped continuation prerequisites
+fail acceptance. Windows explicitly excludes the four POSIX `fcntl` workspace tests;
+run the full Python suite in a Linux container before claiming cross-platform acceptance.
+The standalone `tests/unit/test_orchestrator_harness.py` matrix uses synthetic data;
+the rest of `tests/unit` retains the specialists' detailed contracts and failure probes.
+
+This is functional coverage of the supported interfaces and observed failure classes,
+not proof that every possible natural-language request or provider failure will succeed.
+Live stability is reported separately and only for a completed, immutable series.

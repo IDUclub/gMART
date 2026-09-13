@@ -139,7 +139,7 @@ def verify_data(saved, final):
 def fingerprint():
     root = Path(__file__).resolve().parents[3]
     commit = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True, timeout=15
     ).strip()
     digest = hashlib.sha256()
     for path in sorted((root / "src").rglob("*.py")):
@@ -148,6 +148,7 @@ def fingerprint():
     image = subprocess.check_output(
         ["docker", "inspect", "gmart-sdk-local-agents-1", "--format", "{{.Image}}"],
         text=True,
+        timeout=15,
     ).strip()
     return {
         "commit": commit,

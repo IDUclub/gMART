@@ -42,18 +42,24 @@ def main():
         started = time.monotonic()
         print(f"START {name}", flush=True)
         with (output / f"{name}.log").open("w", encoding="utf-8") as log:
-            process = subprocess.run(
-                command,
-                cwd=cwd,
-                env=env,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                check=False,
-            )
+            try:
+                process = subprocess.run(
+                    command,
+                    cwd=cwd,
+                    env=env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                    timeout=14000 if name == "live-20" else 600,
+                )
+                exit_code = process.returncode
+            except subprocess.TimeoutExpired:
+                log.write("\nHarness phase deadline exceeded\n")
+                exit_code = 124
         report["phases"].append(
             {
                 "name": name,
-                "exit_code": process.returncode,
+                "exit_code": exit_code,
                 "seconds": round(time.monotonic() - started, 2),
                 "log": f"{name}.log",
             }
@@ -61,8 +67,8 @@ def main():
         (output / "harness.json").write_text(
             json.dumps(report, indent=2), encoding="utf-8"
         )
-        print(f"{'PASS' if process.returncode == 0 else 'FAIL'} {name}", flush=True)
-        return process.returncode == 0
+        print(f"{'PASS' if exit_code == 0 else 'FAIL'} {name}", flush=True)
+        return exit_code == 0
 
     if args.mode in {"deterministic", "full"}:
         env = {
