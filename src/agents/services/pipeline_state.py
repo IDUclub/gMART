@@ -16,7 +16,10 @@ from redis.exceptions import (
     WatchError,
 )
 
-from src.agents.common.exceptions.base_exceptions import PipelineStorageUnavailable
+from src.agents.common.exceptions.base_exceptions import (
+    AgentsNotFound,
+    PipelineStorageUnavailable,
+)
 from src.agents.common.logging.redis_logging import redis_attempt, redis_request_id
 
 TOKEN_REFRESH_TIMEOUT: float = 60.0
@@ -110,9 +113,13 @@ class PipelineStateStore:
         scenario_id: int | None,
         model: str,
         temperature: float,
-    ) -> None:
+        owner: str | None = None,
+        claim_id: str | None = None,
+    ) -> bool:
         state = {
             "status": PipelineStatus.RUNNING,
+            "owner": owner,
+            "claim_id": claim_id,
             "chat_id": chat_id,
             "user_query": user_query,
             "scenario_id": scenario_id,
@@ -121,12 +128,28 @@ class PipelineStateStore:
             "token_wait_seconds": 0.0,
             "started_at": time.time(),
         }
+        if claim_id:
+
+            async def claim_once():
+                acquired = await self._redis.set(
+                    self._key(request_id, "state"),
+                    json.dumps(state, ensure_ascii=False),
+                    ex=PIPELINE_TTL,
+                    nx=True,
+                )
+                if acquired:
+                    return True
+                current = await self._redis.get(self._key(request_id, "state"))
+                return bool(current and json.loads(current).get("claim_id") == claim_id)
+
+            return await self._retry(claim_once)
         await self._retry(
             self._redis.setex,
             self._key(request_id, "state"),
             PIPELINE_TTL,
             json.dumps(state, ensure_ascii=False),
         )
+        return True
 
     async def get_state(self, request_id: str) -> dict | None:
         raw = await self._retry(self._redis.get, self._key(request_id, "state"))
@@ -168,31 +191,61 @@ class PipelineStateStore:
             )
 
     async def get_analysis_context(self, scope: str) -> dict | None:
-        raw = await self._retry(self._redis.get, f"analysis:{scope}")
-        return json.loads(raw) if raw else None
+        async def read():
+            async with self._redis.pipeline(transaction=True) as pipe:
+                pipe.get(f"analysis:{scope}")
+                pipe.hgetall(f"analysis:{scope}:v2")
+                return await pipe.execute()
+
+        raw, fields = await self._retry(read)
+        if not raw and not fields:
+            return None
+        result = json.loads(raw) if raw else {}
+        artifacts = {a["id"]: a for a in result.get("artifacts", [])}
+        completed = {
+            (a["request_id"], a["step"]): a for a in result.get("completed", [])
+        }
+        for key, value in fields.items():
+            key = key.decode() if isinstance(key, bytes) else key
+            value = json.loads(value)
+            if key.startswith("artifact:"):
+                artifacts[value["id"]] = value
+            elif key.startswith("completed:"):
+                completed[value["request_id"], value["step"]] = value
+            else:
+                result[key.removeprefix("meta:")] = value
+        result.update(
+            artifacts=list(artifacts.values()), completed=list(completed.values())
+        )
+        return result
 
     async def save_analysis_context(self, scope: str, data: dict) -> None:
         # The scope includes the caller identity and chat ID. Source artifacts
         # outlive the short reconnect window, but are never shared across users.
-        key = f"analysis:{scope}"
+        key = f"analysis:{scope}:v2"
+        fields = {
+            "meta:" + k: json.dumps(v, ensure_ascii=False, default=str)
+            for k, v in data.items()
+            if k not in {"artifacts", "completed"}
+        }
+        for item in data.get("artifacts", []):
+            fields["artifact:" + item["id"]] = json.dumps(
+                item, ensure_ascii=False, default=str
+            )
+        for item in data.get("completed", []):
+            identity = json.dumps([item["request_id"], item["step"]])
+            fields["completed:" + identity] = json.dumps(
+                item, ensure_ascii=False, default=str
+            )
+        if not fields:
+            fields["meta:version"] = "2"
 
         async def save_once():
             async with self._redis.pipeline(transaction=True) as pipe:
-                await pipe.watch(key)
-                raw = await pipe.get(key)
-                previous = json.loads(raw) if raw else {}
-                merged = {**previous, **data}
-                for field, identity in (
-                    ("artifacts", lambda item: item["id"]),
-                    ("completed", lambda item: (item["request_id"], item["step"])),
-                ):
-                    items = {identity(item): item for item in previous.get(field, [])}
-                    items.update({identity(item): item for item in data.get(field, [])})
-                    merged[field] = list(items.values())
-                pipe.multi()
-                pipe.setex(
-                    key, 86400, json.dumps(merged, ensure_ascii=False, default=str)
-                )
+                # Per-artifact fields avoid read/modify/write contention across
+                # workers. Repeating this transaction after a lost ACK is safe.
+                pipe.hset(key, mapping=fields)
+                pipe.expire(key, 86400)
                 await pipe.execute()
 
         await self._retry(save_once)
@@ -252,7 +305,12 @@ class PipelineStateStore:
 
         await self._retry(append_once, _request_id=request_id)
 
-    async def get_buffered_events(self, request_id: str) -> list[dict]:
+    async def get_buffered_events(
+        self, request_id: str, *, owner: str | None = None
+    ) -> list[dict]:
+        state = await self.get_state(request_id)
+        if state and state.get("owner") is not None and state["owner"] != owner:
+            raise AgentsNotFound("Сохранённый запрос недоступен")
         raw_list = await self._retry(
             self._redis.lrange, self._key(request_id, "events"), 0, -1
         )

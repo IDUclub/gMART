@@ -37,7 +37,7 @@ import McpConsole from "./McpConsole";
 import DocumentLibrary from "./DocumentLibrary";
 import { reusableChatId } from "./agentSession";
 import { appendLatestVisibleLayer } from "./layerState";
-import { extractStoredLayers, extractStoredComplianceSummary, analysisComplete } from "./analysisArtifacts";
+import { extractStoredLayers, extractStoredComplianceSummary, analysisComplete, storedContinuation, storedTables } from "./analysisArtifacts";
 import {
   appendIterationChunk,
   appendSseExchange,
@@ -254,6 +254,8 @@ export default function App() {
     [historyWindow, setHistoryWindow] =
       useState<HistoryWindow>(emptyHistoryWindow),
     [query, setQuery] = useState(""),
+    [continuation, setContinuation] = useState<{ id: string; chatId: string | null; scenario: string } | null>(null),
+    [sourceSnapshot, setSourceSnapshot] = useState<unknown>(null),
     [answer, setAnswer] = useState(""),
     [layers, setLayers] = useState<LayerData[]>([]),
     [tables, setTables] = useState<TableData[]>([]),
@@ -514,6 +516,7 @@ export default function App() {
     const cached = chatWindowsRef.current.get(id);
     if (cached) {
       setChat(cached.chat);
+      setContinuation(storedContinuation(cached.chat.messages, cached.chat.chat_id));
       setHistoryWindow(cached.history);
       chatIdRef.current = cached.chat.chat_id;
       activeExchangeRef.current = null;
@@ -547,6 +550,7 @@ export default function App() {
         spaceForAgent(agentId),
       );
       setChat(stored);
+      setContinuation(storedContinuation(stored.messages, stored.chat_id));
       setHistoryWindow({
         hasMore: Boolean(stored.has_more),
         nextBeforeSeq: stored.next_before_seq ?? null,
@@ -1079,6 +1083,8 @@ export default function App() {
       updateStatus("Нужно уточнение", "warning");
     }
     if (event.type === "orchestrator_final") {
+      setContinuation(event.content?.status === "blocked" && event.content?.continue_from
+        ? { id: event.content.continue_from, chatId: chatIdRef.current || null, scenario } : null);
       const steps = Array.isArray(event.content?.steps) ? event.content.steps : [];
       const needsClarification = steps.some(
         (step: { status?: string }) => step.status === "needs_clarification",
@@ -1125,7 +1131,7 @@ export default function App() {
     if (event.type === "table") {
       if (activeExchangeRef.current)
         activeExchangeRef.current.tables.push(event.content);
-      setTables((v) => [...v, event.content]);
+      setTables((v) => [...v.filter(t => !event.content?.artifact_id || t.artifact_id !== event.content.artifact_id), event.content]);
       setRightTab("data");
       if (!resultAutoOpened.current) {
         resultAutoOpened.current = true;
@@ -1290,13 +1296,14 @@ export default function App() {
       setBusy(false);
     }
   }
-  async function submit() {
+  async function submit(continueFrom?: string) {
     if (!token) {
       login();
       return;
     }
-    if (!query.trim() || busy) return;
-    const submittedQuery = query.trim();
+    if ((!query.trim() && !continueFrom) || busy) return;
+    const submittedQuery = query.trim() || "Продолжи сохранённый анализ.";
+    if (!continueFrom) setContinuation(null);
     activeExchangeRef.current = {
       question: submittedQuery,
       answer: "",
@@ -1417,6 +1424,7 @@ export default function App() {
     }
     const url = new URL(agent.path, settings.agentsUrl);
     url.searchParams.set("request", submittedQuery);
+    if (continueFrom) url.searchParams.set("continue_from", continueFrom);
     // Omitted when unknown: the agents then use the provider's default.
     if (settings.model) url.searchParams.set("model", settings.model);
     url.searchParams.set("temperature", String(settings.temperature));
@@ -1456,7 +1464,20 @@ export default function App() {
   );
   const synapseConfigurationLocked = Boolean(reusableChatId(chat, agentId));
   return (
-    <div className="app-shell" ref={appRoot}>
+    <div className="app-shell" ref={appRoot} onClickCapture={event => {
+      const link = (event.target as HTMLElement).closest("a");
+      if (!link) return;
+      const url = new URL(link.getAttribute("href") || "", settings.agentsUrl);
+      if (url.origin !== new URL(settings.agentsUrl).origin || !/^\/orchestrator\/runs\/[^/]+\/artifacts\/[^/]+$/.test(url.pathname)) return;
+      event.preventDefault();
+      void freshToken().then(t => request(settings.agentsUrl, url.pathname, t))
+        .then(setSourceSnapshot).catch(e => updateStatus(err(e), "warning"));
+    }}>
+      {sourceSnapshot !== null && <dialog open aria-label="Первоисточник" style={{ position: "fixed", zIndex: 1000, maxWidth: "85vw", maxHeight: "80vh", overflow: "auto" }}>
+        <button onClick={() => setSourceSnapshot(null)}>Закрыть</button>
+        <h2>Сохранённый первоисточник</h2>
+        <pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(sourceSnapshot, null, 2)}</pre>
+      </dialog>}
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
@@ -1774,6 +1795,9 @@ export default function App() {
                   />
                 )}
                 <div className="composer">
+                  {agentId === "orchestrator" && continuation && !busy && continuation.scenario === scenario && continuation.chatId === (chat?.chat_id || null) && (
+                    <button onClick={() => void submit(continuation.id)}>Продолжить сохранённый анализ</button>
+                  )}
                   <textarea
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
@@ -2498,11 +2522,7 @@ function pluralize(
 }
 
 function extractStoredTables(messages: Message[]): TableData[] {
-  return messages.flatMap((message) =>
-    message.parts
-      .filter((part) => part.kind === "table")
-      .map((part) => part.payload as TableData),
-  );
+  return storedTables(messages);
 }
 
 function extractStoredCompliance(messages: Message[]): ComplianceResult[] {

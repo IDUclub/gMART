@@ -26,8 +26,10 @@ from src.agents.services.normgraph.normgraph_reasoning import (
     NormGraphAnswerCritic,
     NormGraphRetrievalPlanner,
 )
+from src.agents.services.orchestrator.analysis_support import context_scope
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.service_entities.normgraph_plan import PrimaryTool
+from src.agents.services.source_evidence import source_event
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
@@ -115,7 +117,9 @@ class NormGraphRagService(BaseLlmService):
             logger.info(
                 f"NormGraph QA reconnect request_id={request_id}, replaying buffered events"
             )
-            for event in await self.state_store.get_buffered_events(request_id):
+            for event in await self.state_store.get_buffered_events(
+                request_id, owner=context_scope(token, "owner")
+            ):
                 yield event
             stored = await self.state_store.get_state(request_id) or {}
             if not chat_id and stored.get("chat_id"):
@@ -185,6 +189,7 @@ class NormGraphRagService(BaseLlmService):
                 scenario_id=scenario_id,
                 model=model,
                 temperature=temperature,
+                owner=context_scope(token, "owner"),
             )
 
         history: list[dict] = []
@@ -404,6 +409,8 @@ class NormGraphRagService(BaseLlmService):
             verdict = await self.critic.review(model, user_query, context, draft)
 
             if verdict.satisfied:
+                if sources := source_event("norms", hits):
+                    yield await self._buf(request_id, sources)
                 collected["final_answer"] = draft
                 collected["newly_completed"] = True
                 # Emit terminal events BEFORE checkpointing "accepted" so a reconnect that

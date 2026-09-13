@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import fakeredis.aioredis
 
+from src.agents.common.exceptions.base_exceptions import AgentsNotFound
 from src.agents.services.orchestrator.analysis_context import AnalysisContext
 from src.agents.services.orchestrator.analysis_goal import GoalDecision, GoalState
 from src.agents.services.orchestrator.analysis_support import missing_input
@@ -114,6 +115,8 @@ async def replay_probe():
             )
         ]
         return result == [event]
+    except AgentsNotFound:
+        return False
     finally:
         await db.aclose()
 

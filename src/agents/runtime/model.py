@@ -26,6 +26,23 @@ from src.agents.model_clients.llm_base import (
 )
 
 
+def provider_schema(schema):
+    """Keep provider grammar in its supported regex dialect; validate fully in SDK."""
+    if isinstance(schema, list):
+        return [provider_schema(value) for value in schema]
+    if not isinstance(schema, dict):
+        return schema
+    return {
+        key: provider_schema(value)
+        for key, value in schema.items()
+        if not (
+            key == "pattern"
+            and isinstance(value, str)
+            and any(marker in value for marker in ("(?=", "(?!", "(?<=", "(?<!"))
+        )
+    }
+
+
 def output_message(text: str) -> ResponseOutputMessage:
     return ResponseOutputMessage(
         id=f"msg_{uuid4().hex}",
@@ -79,7 +96,7 @@ class BackendModel(Model):
             messages.insert(0, {"role": "system", "content": instructions})
         settings = dict(self.settings)
         if output_schema is not None and not settings.pop("unconstrained", False):
-            settings["format"] = output_schema.json_schema()
+            settings["format"] = provider_schema(output_schema.json_schema())
         else:
             settings.pop("unconstrained", None)
         return dict(model=self.model, messages=messages, **settings)

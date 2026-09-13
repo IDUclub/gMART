@@ -34,6 +34,11 @@ class PopulationAdjustment(BaseModel):
     multiplier: Decimal = Field(gt=0)
 
 
+class EntitySelection(BaseModel):
+    subject: str = Field(min_length=1)
+    kind: Literal["services", "physical_objects"]
+
+
 class OrchestratorStep(BaseModel):
     agent: OrchestratorAgent
     task: str
@@ -42,6 +47,7 @@ class OrchestratorStep(BaseModel):
     population_adjustment: PopulationAdjustment | None = None
     requirement_id: str | None = None
     support: bool = False
+    entity_selection: EntitySelection | None = None
 
     @field_validator("task")
     @classmethod

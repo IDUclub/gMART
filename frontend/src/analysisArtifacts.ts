@@ -1,4 +1,30 @@
-import type { LayerData, Message, ComplianceSummary } from "./types";
+import type { LayerData, Message, ComplianceSummary, TableData } from "./types";
+
+export function storedContinuation(messages: Message[], chatId: string) {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    const snapshot = message.parts.find(p => p.kind === "data" && p.payload.event_type === "analysis_context")?.payload.content;
+    if (!snapshot) continue;
+    return snapshot.status === "blocked" && typeof snapshot.continue_from === "string"
+      ? {id: snapshot.continue_from, chatId, scenario: String(snapshot.scenario_id ?? "")} : null;
+  }
+  return null;
+}
+
+export function storedTables(messages: Message[]): TableData[] {
+  const tables = new Map<string, TableData>();
+  for (const message of messages) {
+    const snapshot = message.parts.find(p => p.kind === "data" && p.payload.event_type === "analysis_context")?.payload.content;
+    if (snapshot) {
+      for (const artifact of snapshot.artifacts || []) {
+        if (artifact.kind === "table" && artifact.confirmed) tables.set(artifact.id, {...artifact.content, artifact_id: artifact.id});
+      }
+    } else for (const part of message.parts) {
+      if (part.kind === "table") tables.set(part.payload.artifact_id || `${message.message_id}:${part.part_seq}`, part.payload as TableData);
+    }
+  }
+  return [...tables.values()];
+}
 
 export function extractStoredComplianceSummary(messages: Message[]): ComplianceSummary | null {
   for (const message of [...messages].reverse()) {

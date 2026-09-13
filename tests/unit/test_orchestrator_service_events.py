@@ -9,6 +9,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from src.agents.services.orchestrator.analysis_support import (
+    context_scope,
+)
 from tests.helpers import events_of_type, types_of
 
 
@@ -529,6 +532,7 @@ async def test_reconnect_replays_buffered_events_only(
     await state_store.create(
         request_id,
         chat_id="chat-xyz",
+        owner=context_scope("tok", "owner"),
         user_query="запрос",
         scenario_id=772,
         model="m",

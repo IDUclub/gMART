@@ -19,6 +19,7 @@ class AnalysisContext:
         self.query = data.get("query", "")
         self.goal = data.get("goal")
         self.inspected = []
+        self.inspection_signatures = set()
 
     def add_artifact(self, event, step, request_id):
         kind = event.get("type")
@@ -32,6 +33,7 @@ class AnalysisContext:
             "validation",
             "artifact_ref",
             "analysis_text",
+            "source_evidence",
         }:
             return None
         content = event.get("content")
@@ -196,9 +198,22 @@ class AnalysisContext:
         return {"artifact_id": artifact_id, "content": content}
 
     def inspect(self, requests):
-        self.inspected = [
-            self.slice(r.artifact_id, r.offset, r.limit) for r in requests
+        previews = [self.slice(r.artifact_id, r.offset, r.limit) for r in requests]
+        signatures = [
+            json.dumps(p, ensure_ascii=False, sort_keys=True) for p in previews
         ]
+        if any(
+            p.get("artifact_id") == "_catalog" and not p["entries"] for p in previews
+        ):
+            raise ValueError(
+                "Cannot inspect an empty catalog; execute a pending requirement"
+            )
+        if all(s in self.inspection_signatures for s in signatures):
+            raise ValueError(
+                "Evidence slice already inspected and unchanged; execute a pending requirement"
+            )
+        self.inspection_signatures.update(signatures)
+        self.inspected = previews
 
     def population(self, adjustment):
         ref = adjustment.base

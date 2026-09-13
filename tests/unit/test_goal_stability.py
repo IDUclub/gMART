@@ -154,7 +154,8 @@ async def test_model_control_failure_is_bounded_and_preserves_finished_work(
         )
     )
     assert result["status"] == "blocked"
-    assert calls == 4 and len(data.calls) == 1
+    assert calls == 7 and len(data.calls) == 1
+    assert any(step["agent"] == "provision" for step in result["steps"])
     assert result["goal"]["requirements"][0]["status"] == "satisfied"
     assert result["continue_from"] and result["missing"]
 

@@ -1,13 +1,27 @@
+import os
+from functools import lru_cache
+
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from src.agents.common.auth.synapse_auth import SynapseCallerVerifier
 from src.agents.common.exceptions.base_exceptions import (
     AgentsInputException,
     AgentsUnauthorizedException,
 )
 
-http_bearer = HTTPBearer()
+http_bearer = HTTPBearer(auto_error=False)
 optional_http_bearer = HTTPBearer(auto_error=False)
+
+
+@lru_cache(maxsize=1)
+def bearer_verifier():
+    return SynapseCallerVerifier(
+        auth_server_url=os.environ["SERVICE_AUTH_SERVER_URL"],
+        realm=os.environ["SERVICE_AUTH_REALM"],
+        service_client_id=os.environ["SERVICE_AUTH_CLIENT_ID"],
+        audience=os.getenv("SERVICE_AUTH_AUDIENCE") or None,
+    )
 
 
 async def verify_bearer_token(
@@ -32,6 +46,7 @@ async def verify_bearer_token(
     if not token:
         raise AgentsInputException("Token is missing in the authorization header")
 
+    await bearer_verifier().verify_user(token)
     return token
 
 
@@ -59,4 +74,5 @@ async def optional_bearer_token(
     if not token:
         raise AgentsInputException("Token is missing in the authorization header")
 
+    await bearer_verifier().verify_user(token)
     return token

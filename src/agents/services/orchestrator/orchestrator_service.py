@@ -22,6 +22,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.config.app_config import AgentsAppConfig
+from src.agents.common.exceptions.base_exceptions import AgentsNotFound
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.runtime.budget import BudgetExceeded, RunBudget, budget_scope
@@ -31,7 +32,11 @@ from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 from src.agents.services.orchestrator.analysis import AnalyticalRun, artifact_parts
 from src.agents.services.orchestrator.analysis_context import AnalysisContext
-from src.agents.services.orchestrator.analysis_goal import GoalManager, GoalState
+from src.agents.services.orchestrator.analysis_goal import (
+    GoalClarification,
+    GoalManager,
+    GoalState,
+)
 from src.agents.services.orchestrator.analysis_support import (
     blocker_text,
     configured_limits,
@@ -130,10 +135,30 @@ class OrchestratorService(BaseLlmService):
         continue_from: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         if request_id and await self.state_store.exists(request_id):
-            for event in await self.state_store.get_buffered_events(request_id):
+            await self.check_replay_owner(request_id, token)
+            for event in await self.state_store.get_buffered_events(
+                request_id, owner=context_scope(token, "owner")
+            ):
                 yield event
             return
         request_id = request_id or self.state_store.new_request_id()
+        claimed = await self.state_store.create(
+            request_id,
+            chat_id=chat_id,
+            user_query=user_query,
+            scenario_id=scenario_id,
+            model=model,
+            temperature=temperature,
+            owner=context_scope(token, "owner"),
+            claim_id=self.state_store.new_request_id(),
+        )
+        if not claimed:
+            await self.check_replay_owner(request_id, token)
+            for event in await self.state_store.get_buffered_events(
+                request_id, owner=context_scope(token, "owner")
+            ):
+                yield event
+            return
         args = dict(
             idu_mcp_client=idu_mcp_client,
             effects_mcp_client=effects_mcp_client,
@@ -181,7 +206,9 @@ class OrchestratorService(BaseLlmService):
                     # A deadline may fire while the outer SSE buffer is being
                     # written, outside the specialist generator's timeout scope.
                     started = {}
-                    for event in await self.state_store.get_buffered_events(request_id):
+                    for event in await self.state_store.get_buffered_events(
+                        request_id, owner=context_scope(token, "owner")
+                    ):
                         content = event.get("content", {})
                         if event["type"] == "step_started":
                             started[content["step"]] = content
@@ -263,17 +290,6 @@ class OrchestratorService(BaseLlmService):
     ) -> AsyncGenerator[dict[str, Any], None]:
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
-        is_reconnect = request_id is not None and await self.state_store.exists(
-            request_id
-        )
-        if is_reconnect:
-            logger.info(
-                f"Orchestrator reconnect request_id={request_id}, "
-                "replaying buffered events"
-            )
-            for event in await self.state_store.get_buffered_events(request_id):
-                yield event
-            return
         model = await self.resolve_model(model)
         request_id = request_id or self.state_store.new_request_id()
 
@@ -309,6 +325,7 @@ class OrchestratorService(BaseLlmService):
             scenario_id=scenario_id,
             model=model,
             temperature=temperature,
+            owner=context_scope(token, "owner"),
         )
 
         history: list[dict] = []
@@ -388,9 +405,7 @@ class OrchestratorService(BaseLlmService):
             self._status("planning", "Определяю, какие агенты нужны для запроса…"),
         )
         agents = available_agents(self.app_config, scenario_id)
-        if context.completed or (
-            goal_mode and (context.goal or self.plan_builder.is_analytical(user_query))
-        ):
+        if context.completed or goal_mode:
             plan = OrchestratorPlan(mode=OrchestratorPlanMode.EXECUTE, analytical=True)
         else:
             plan = await self.plan_builder.build_plan(
@@ -414,6 +429,18 @@ class OrchestratorService(BaseLlmService):
                     goal = await self.goal_manager.create(
                         model, user_query, agents, scenario_id, history
                     )
+                    if isinstance(goal, GoalClarification):
+                        yield await self._buf(
+                            request_id, self._clarification_event(goal.question)
+                        )
+                        if persist_history:
+                            self._schedule_persist_text(
+                                token, chat_id, goal.question, scenario_id
+                            )
+                        await self.state_store.set_status(
+                            request_id, PipelineStatus.DONE
+                        )
+                        return
                     GoalState(context, goal)
                     context.query = user_query
                 # Successful operations survive explicit continuation. A blocked
@@ -662,6 +689,11 @@ class OrchestratorService(BaseLlmService):
                 scenario_id=scenario_id,
                 request_id=step_request_id,
                 persist_history=False,
+                **(
+                    {"entity_selection": step.entity_selection}
+                    if step.entity_selection
+                    else {}
+                ),
             )
         if step.agent == OrchestratorAgent.DOCUMENTS:
             if dvd_mcp_client is None:
@@ -828,6 +860,12 @@ class OrchestratorService(BaseLlmService):
     # ------------------------------------------------------------------
     # Event helpers
     # ------------------------------------------------------------------
+
+    async def check_replay_owner(self, request_id: str, token: str) -> None:
+        state = await self.state_store.get_state(request_id)
+        if state and state.get("owner") != context_scope(token, "owner"):
+            # Legacy unowned runs are deliberately not public replay caches.
+            raise AgentsNotFound("Сохранённый запрос недоступен")
 
     async def _buf(self, request_id: str, event: dict) -> dict:
         """Persist the event for reconnect replay before returning it."""

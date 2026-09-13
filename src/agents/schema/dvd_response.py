@@ -3,6 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from src.agents.common.exceptions.sse_exceptions import SseBaseError
+from src.agents.services.source_evidence import SourceEvidence
 
 
 class DvdStatusResponse(BaseModel):
@@ -87,6 +88,7 @@ class DvdResponse(BaseModel):
         "pipeline_started",
         "warning",
         "error",
+        "source_evidence",
     ]
     content: (
         DvdStatusResponse
@@ -96,4 +98,5 @@ class DvdResponse(BaseModel):
         | PipelineStartedContent
         | WarningContent
         | SseBaseError
+        | SourceEvidence
     )

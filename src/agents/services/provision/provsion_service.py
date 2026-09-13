@@ -27,6 +27,7 @@ from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.runtime.runner import run_completion
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.orchestrator.analysis_support import context_scope
 from src.agents.services.pipeline_state import (
     PipelineStateStore,
     PipelineStatus,
@@ -136,7 +137,9 @@ class ProvisionService(BaseLlmService):
             }:
                 # Match the initial public stream without re-running any stage
                 # or scheduling the same assistant message in ChatStorage again.
-                for event in await self.state_store.get_buffered_events(request_id):
+                for event in await self.state_store.get_buffered_events(
+                    request_id, owner=context_scope(token, "owner")
+                ):
                     if event.get("type") != "tool_call":
                         yield event
                 return
@@ -219,7 +222,9 @@ class ProvisionService(BaseLlmService):
         )
         if is_reconnect:
             logger.info(f"Reconnect for request_id={request_id}, replaying events")
-            for event in await self.state_store.get_buffered_events(request_id):
+            for event in await self.state_store.get_buffered_events(
+                request_id, owner=context_scope(token_ref[0], "owner")
+            ):
                 yield event
             if not chat_id:
                 stored = await self.state_store.get_state(request_id)
@@ -270,6 +275,7 @@ class ProvisionService(BaseLlmService):
                 scenario_id=scenario_id,
                 model=model,
                 temperature=temperature,
+                owner=context_scope(token_ref[0], "owner"),
             )
 
         logger.info(f"Provision pipeline request_id={request_id} chat_id={chat_id}")

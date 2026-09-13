@@ -38,6 +38,7 @@ from src.agents.services.compilance.compliance_result_harness import (
 from src.agents.services.normgraph.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,
 )
+from src.agents.services.orchestrator.analysis_support import context_scope
 from src.agents.services.pipeline_state import (
     PipelineStateStore,
     PipelineStatus,
@@ -188,7 +189,9 @@ class RestrictionParserService(BaseLlmService):
             }:
                 # Tool-call records are kept for history, but the public stream
                 # filters them on the initial run as well. Replay never persists.
-                for event in await self.state_store.get_buffered_events(request_id):
+                for event in await self.state_store.get_buffered_events(
+                    request_id, owner=context_scope(token, "owner")
+                ):
                     if event.get("type") != "tool_call":
                         yield event
                 return
@@ -279,7 +282,9 @@ class RestrictionParserService(BaseLlmService):
         )
         if is_reconnect:
             logger.info(f"Reconnect for request_id={request_id}, replaying events")
-            for event in await self.state_store.get_buffered_events(request_id):
+            for event in await self.state_store.get_buffered_events(
+                request_id, owner=context_scope(token_ref[0], "owner")
+            ):
                 yield event
             # Restore chat_id from persisted state so history is available
             # even if the client didn't re-send the query parameter.
@@ -334,6 +339,7 @@ class RestrictionParserService(BaseLlmService):
                 scenario_id=scenario_id,
                 model=model,
                 temperature=temperature,
+                owner=context_scope(token_ref[0], "owner"),
             )
 
         logger.info(

@@ -13,6 +13,7 @@ from src.common.service_auth import user_id_from_jwt
 def context_scope(token, chat_id):
     if not chat_id:
         return None
+    token = token or ""
     # JWT extraction supplies a cache namespace, never permission to access data;
     # actual data access is still enforced by the service transports.
     try:
@@ -66,8 +67,8 @@ def missing_input(reason, detail=""):
         return NeededInput(
             missing="Корректное управляющее решение для анализа",
             reason="Модель не вернула корректное управляющее решение после ограниченных попыток.",
-            question="Укажите приоритетный сценарий и показатель либо повторите запрос с более узкой задачей. Уже полученные результаты можно использовать при продолжении.",
-            example="Сначала сравни обеспеченность школами в сценариях A и B; ограничения проверь отдельным шагом.",
+            question="Продолжите сохранённый анализ, чтобы повторить управляющий вызов. Если ошибка повторится, оператору сервиса нужен идентификатор запроса; исходные данные пользователя не считаются отсутствующими.",
+            example="Продолжи сохранённый анализ.",
             owner="service",
         )
     if reason in {"time", "tokens", "tool_calls", "model_calls", "steps", "context"}:

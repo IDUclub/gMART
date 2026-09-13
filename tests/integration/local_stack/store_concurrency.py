@@ -67,12 +67,20 @@ async def main():
                     }
                 )
                 await db.expire("analysis:" + scope, 300)
+                await db.expire("analysis:" + scope + ":v2", 300)
     finally:
         await db.aclose()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(json.dumps(results))
-    return int(any(r["errors"] for r in results))
+    return int(
+        any(
+            r["errors"]
+            or r["saved_artifacts"] != r["writes"]
+            or r["saved_operations"] != r["writes"]
+            for r in results
+        )
+    )
 
 
 if __name__ == "__main__":

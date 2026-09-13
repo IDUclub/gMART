@@ -61,7 +61,11 @@ def school_artifacts():
 
     t, layer = table(), deepcopy(LAYER)
     t["content"]["title"] = "Школа"
+    t["content"]["rows"][0]["service_id"] = 101
     layer["content"]["name"] = "Школа"
+    layer["content"]["feature_collection"]["features"][0]["properties"][
+        "service_id"
+    ] = 101
     return [t, layer]
 
 

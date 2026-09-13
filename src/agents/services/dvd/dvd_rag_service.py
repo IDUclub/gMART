@@ -38,8 +38,10 @@ from src.agents.services.dvd.dialogue import (
 )
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
+from src.agents.services.orchestrator.analysis_support import context_scope
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.service_entities.dvd_plan import validate_retrieval_plan
+from src.agents.services.source_evidence import source_event
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
@@ -121,7 +123,9 @@ class DvdRagService(BaseLlmService):
             logger.info(
                 f"DVD QA reconnect request_id={request_id}, replaying buffered events"
             )
-            for event in await self.state_store.get_buffered_events(request_id):
+            for event in await self.state_store.get_buffered_events(
+                request_id, owner=context_scope(token, "owner")
+            ):
                 yield event
             stored = await self.state_store.get_state(request_id) or {}
             if stored.get("status") == PipelineStatus.FAILED:
@@ -196,6 +200,7 @@ class DvdRagService(BaseLlmService):
                 scenario_id=scenario_id,
                 model=model,
                 temperature=temperature,
+                owner=context_scope(token, "owner"),
             )
 
         history: list[dict] = []
@@ -583,6 +588,8 @@ class DvdRagService(BaseLlmService):
             )
 
             if verdict.satisfied:
+                if sources := source_event("documents", hits):
+                    yield await self._buf(request_id, sources)
                 yield await self._buf(
                     request_id, self._chunk(draft, done=False, iteration=iteration)
                 )

@@ -30,6 +30,14 @@ async def main():
         for row in original["cases"]:
             output = args.output / f"{row['index']:02d}-{row['kind']}"
             if not (output / "events.json").exists():
+                audit["cases"].append(
+                    {
+                        "index": row["index"],
+                        "kind": row["kind"],
+                        "checks": {"terminal": False},
+                        "passed": False,
+                    }
+                )
                 continue
             events = json.loads((output / "events.json").read_text(encoding="utf-8"))
             result = {
@@ -48,7 +56,8 @@ async def main():
                 None,
             )
             if final is None:
-                result["checks"]["terminal"] = "FAIL"
+                result["checks"]["terminal"] = False
+                result["passed"] = False
                 continue
             result["status"] = final["status"]
             result["elapsed_seconds"] = row["elapsed_seconds"]
@@ -148,6 +157,37 @@ async def main():
                 # this prompt's explicit request for links to both sources.
                 links = re.findall(r"\[[^\]]+\]\(([^)]+)\)", final.get("answer", ""))
                 result["checks"]["document_source_links"] = len(set(links)) >= 2
+                source_systems = set()
+                source_records = {}
+                for link in set(links):
+                    # Never send the service credential to model-supplied origins.
+                    url = httpx.URL(
+                        link
+                        if link.startswith("http")
+                        else "http://localhost:18000" + link
+                    )
+                    if str(
+                        url.copy_with(path="/", query=None)
+                    ) != "http://localhost:18000/" or not url.path.startswith(
+                        "/orchestrator/runs/"
+                    ):
+                        continue
+                    response = await http.get(url, headers=headers)
+                    if response.status_code != 200:
+                        continue
+                    artifact = response.json()
+                    if artifact.get("kind") != "source_evidence" or not artifact.get(
+                        "confirmed"
+                    ):
+                        continue
+                    payload = artifact["content"]
+                    source_systems.add(payload["system"])
+                    source_records[payload["system"]] = payload["sources"]
+                result["checks"]["resolvable_source_records"] = source_systems == {
+                    "documents",
+                    "norms",
+                }
+                save(output / "source-records.json", source_records)
             if saved and row["kind"] != "documents":
                 try:
                     for subject in ("Школа", "Детский сад"):

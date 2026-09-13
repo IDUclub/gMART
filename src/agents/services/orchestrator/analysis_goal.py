@@ -41,6 +41,7 @@ class GoalResult(BaseModel):
             "analysis_text",
             "compliance_summary",
             "compliance_result",
+            "source_evidence",
         ]
     ] = Field(min_length=1, max_length=5)
 
@@ -75,7 +76,12 @@ class AnalysisGoal(BaseModel):
 
 
 class GoalDraft(AnalysisGoal):
-    requirements: list[GoalDraftRequirement] = Field(min_length=1, max_length=12)
+    requirements: list[GoalDraftRequirement] = Field(min_length=0, max_length=12)
+    clarification_question: str | None = None
+
+
+class GoalClarification(BaseModel):
+    question: str = Field(min_length=1)
 
 
 class GoalDecision(BaseModel):
@@ -134,8 +140,21 @@ class GoalState:
             if r.entity_kind != "other" and {"table", "feature_collection"} <= kinds:
                 tables = [a for a in evidence if a["kind"] == "table"]
                 layers = [a for a in evidence if a["kind"] == "feature_collection"]
-                if len(tables[-1]["content"]["rows"]) != len(
-                    layers[-1]["content"]["feature_collection"]["features"]
+                rows = tables[-1]["content"]["rows"]
+                features = layers[-1]["content"]["feature_collection"]["features"]
+                identity = (
+                    "service_id"
+                    if r.entity_kind == "services"
+                    else "physical_object_id"
+                )
+                table_ids = [row.get(identity) for row in rows]
+                layer_ids = [
+                    (f.get("properties") or {}).get(identity) for f in features
+                ]
+                if (
+                    len(rows) != len(features)
+                    or any(v is None for v in table_ids + layer_ids)
+                    or sorted(map(str, table_ids)) != sorted(map(str, layer_ids))
                 ):
                     missing.append("matching_table_and_layer")
             result.append(
@@ -153,6 +172,9 @@ class GoalState:
                     "missing_artifacts": missing,
                     "evidence_ids": ids,
                     "attempts": len(attempts),
+                    "current_attempts": sum(
+                        not a.get("previous_run") for a in attempts
+                    ),
                     "blocker": attempts[-1].get("blocker") if attempts else None,
                 }
             )
@@ -194,6 +216,7 @@ class GoalState:
                         continue
                 if a["kind"] == "table" and (
                     not c.get("complete", True)
+                    or (requirement.agent == "provision" and not c.get("rows"))
                     or c.get("total_rows", len(c.get("rows", [])))
                     != len(c.get("rows", []))
                 ):
@@ -223,7 +246,7 @@ class GoalState:
                 for r in progress.values()
                 if r["status"] == "pending"
                 and r["agent"] in available
-                and r["attempts"] < 2
+                and r["current_attempts"] < 2
             ]
             if independent:
                 raise ValueError(
@@ -266,6 +289,11 @@ class GoalState:
                 )
             # Typed retrieval never depends on a freely rewritten routing prompt.
             task = decision.task or r.description
+            if r.agent == "provision" and not decision.support:
+                task = (
+                    r.description
+                    + "\nПроверь возможность расчёта вызовом расчётного сервиса. Наличие норматива проверяет сервис; не предполагай его отсутствие по истории анализа."
+                )
             if r.entity_kind != "other" and not decision.support:
                 entity = (
                     "услуги" if r.entity_kind == "services" else "физические объекты"
@@ -278,6 +306,11 @@ class GoalState:
                     task=task,
                     requirement_id=r.id,
                     support=decision.support,
+                    entity_selection=(
+                        {"subject": r.subject, "kind": r.entity_kind}
+                        if r.entity_kind != "other" and not decision.support
+                        else None
+                    ),
                     evidence_ids=decision.evidence_ids,
                     population_adjustment=decision.population_adjustment,
                 )
@@ -299,6 +332,31 @@ class GoalState:
             for r in self.progress()
             if r["status"] == "blocked" and r["blocker"]
         ]
+
+    def recovery_decision(self, available):
+        """Bounded controller repair may not prevent independent verified work."""
+        progress = self.progress()
+        for r in progress:
+            if (
+                r["status"] == "pending"
+                and r["agent"] in available
+                and r["current_attempts"] < 2
+            ):
+                return GoalDecision(action="continue", requirement_id=r["id"])
+        blockers = self.blockers()
+        if blockers and all(r["status"] != "pending" for r in progress):
+            return GoalDecision(action="blocked", missing=blockers)
+        if all(
+            r["status"] == "satisfied" and r["entity_kind"] != "other" for r in progress
+        ):
+            return GoalDecision(
+                action="complete",
+                answer="Полные выборки подтверждены. Сопоставление количества приведено ниже.",
+                evidence_ids=list(
+                    dict.fromkeys(aid for r in progress for aid in r["evidence_ids"])
+                ),
+            )
+        return None
 
     def count_comparison(self):
         """Compare complete typed selections using code, including blocked runs."""
@@ -367,18 +425,28 @@ class GoalManager:
         }
         prompt = """Выдели цель и обязательные результаты запроса. Не составляй план действий.
 Сохрани ВСЕ требования, типы услуг, сценарии, изменённые условия, ограничения и запрошенные артефакты.
+Если сама задача или её обязательная область не определены, верни requirements=[] и конкретный clarification_question: что нужно сообщить пользователю. Не спрашивай заранее о наличии объектов, населения или нормативов: их доступность проверяют специалисты инструментами.
 Один requirement — один результат одного специалиста для одного типа и сценария.
 source_ids — номера фрагментов request_fragments, обосновывающих требование. Не копируй и не перефразируй цитату: приложение само сохранит исходный текст выбранных фрагментов.
 Для получения услуг: agent=scenario_data, entity_kind=services, subject=один тип в именительном падеже.
 Для физических объектов entity_kind=physical_objects. Не путай услуги со зданиями.
+entity_kind services/physical_objects означает полную выборку ОДНОГО типа БЕЗ дополнительных фильтров. Если нужны фильтры по адресу, радиусу, мощности или иные условия, укажи entity_kind=other и сохрани все условия в description.
 required_artifacts: table для таблицы/количества, feature_collection для слоя, analysis_text для текстового исследования/расчёта, compliance_summary для проверки соответствия.
 Когда нужны таблица И слой, оба обязательны. Расчёт обеспеченности — отдельное требование agent=provision, entity_kind=other.
 Сопоставление полученных результатов и финальные выводы делает оркестратор; не передавай сравнение списков агенту scenario_data.
 description — самодостаточные условия получения результата на русском, без указания порядка шагов. Для scenario_data не добавляй слово «сравни» или чужие типы объектов.
 Не добавляй фиксированные значения результатов. Не делай вывод об отсутствии данных до вызова сервиса.
+Не добавляй вспомогательный поиск нормативов к расчёту provision: этот специалист сам проверяет норматив. norms/documents нужны только если пользователь отдельно запросил исследование источников.
+Контракты результатов: documents/norms возвращают analysis_text; restriction возвращает feature_collection; compliance возвращает compliance_summary и compliance_result; provision возвращает table. Сопоставление источников входит в objective, отдельного специалиста для него нет.
 Верни JSON по схеме."""
 
         def validate(goal):
+            if goal.clarification_question and not goal.requirements:
+                return GoalClarification(question=goal.clarification_question)
+            if not goal.requirements:
+                raise ValueError(
+                    "A goal requires results or a concrete clarification_question"
+                )
             requirements = []
             for r in goal.requirements:
                 if any(i not in fragments for i in r.source_ids):
@@ -386,6 +454,24 @@ description — самодостаточные условия получения
                         "source_ids must refer to existing request_fragments"
                     )
                 required = list(r.required_artifacts)
+                if r.agent in {"documents", "norms"}:
+                    required = ["analysis_text", "source_evidence"]
+                elif r.agent == "restriction":
+                    required = ["feature_collection"]
+                elif r.agent == "compliance":
+                    required = list(
+                        dict.fromkeys(["compliance_summary", "compliance_result"])
+                    )
+                if (
+                    r.agent == "scenario_data"
+                    and not (r.scenario_id or scenario_id)
+                    and re.search(
+                        r"DVD|NormGraph|источник|пункт|документ", r.description, re.I
+                    )
+                ):
+                    raise ValueError(
+                        "Document comparison belongs to objective, not a scenario_data requirement; keep separate documents and norms source requirements"
+                    )
                 # A calculation must produce a typed result, not merely prose
                 # saying that a specialist ran.
                 if r.agent == "provision" and "table" not in required:
@@ -402,7 +488,38 @@ description — самодостаточные условия получения
                         }
                     )
                 )
-            return AnalysisGoal(objective=goal.objective, requirements=requirements)
+            merged = {}
+            for r in requirements:
+                key = (
+                    (
+                        r.agent,
+                        r.scenario_id,
+                        r.entity_kind,
+                        r.subject.strip().casefold(),
+                    )
+                    if r.entity_kind != "other"
+                    else (r.id,)
+                )
+                if key in merged:
+                    previous = merged[key]
+                    merged[key] = previous.model_copy(
+                        update={
+                            "required_artifacts": list(
+                                dict.fromkeys(
+                                    previous.required_artifacts + r.required_artifacts
+                                )
+                            ),
+                            "source_quote": "\n".join(
+                                dict.fromkeys([previous.source_quote, r.source_quote])
+                            ),
+                            "description": previous.description + "\n" + r.description,
+                        }
+                    )
+                else:
+                    merged[key] = r
+            return AnalysisGoal(
+                objective=goal.objective, requirements=list(merged.values())
+            )
 
         return await self._call(
             model,

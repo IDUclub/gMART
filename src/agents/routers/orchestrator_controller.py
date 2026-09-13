@@ -26,6 +26,26 @@ from src.agents.services.orchestrator.orchestrator_service import OrchestratorSe
 orchestrator_router = APIRouter(prefix="/orchestrator", tags=["orchestrator"])
 
 
+@orchestrator_router.get("/runs/{request_id}/artifacts/{artifact_id}")
+async def get_analysis_artifact(
+    request_id: str,
+    artifact_id: str,
+    token: str = Depends(verify_bearer_token),
+    service: OrchestratorService = Depends(get_orchestrator_service),
+):
+    from src.agents.common.exceptions.base_exceptions import AgentsNotFound
+    from src.agents.services.orchestrator.analysis_context import AnalysisContext
+    from src.agents.services.orchestrator.analysis_support import context_scope
+
+    saved = await service.state_store.get_analysis_context(
+        context_scope(token, "run:" + request_id)
+    )
+    try:
+        return AnalysisContext(saved).get(artifact_id)
+    except ValueError as exc:
+        raise AgentsNotFound("Артефакт недоступен или срок хранения истёк") from exc
+
+
 @orchestrator_router.get(
     "/route/stream",
     response_class=EventSourceResponse,

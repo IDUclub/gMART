@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import os
 from contextlib import aclosing
+from urllib.parse import quote
 
 from loguru import logger
 
@@ -114,6 +116,33 @@ class AnalyticalRun:
                 await self.service.state_store.save_analysis_context(scope, data)
 
     def view(self):
+        if self.goal:
+            counts = self.goal.count_comparison()
+            if counts:
+                # The derived table is a per-run materialized view, not a new
+                # source selection on every review. It is emitted only at finalization.
+                previous = next(
+                    (
+                        a
+                        for a in self.context.artifacts
+                        if a["request_id"] == self.args["request_id"]
+                        and a["content"].get("name") == "goal_entity_counts"
+                    ),
+                    None,
+                )
+                if previous:
+                    import hashlib
+
+                    previous["content"] = counts["content"]
+                    previous["fingerprint"] = hashlib.sha256(
+                        json.dumps(
+                            counts["content"], ensure_ascii=False, default=str
+                        ).encode()
+                    ).hexdigest()
+                aid = self.context.add_artifact(counts, 0, self.args["request_id"])
+                next(a for a in self.context.artifacts if a["id"] == aid)[
+                    "confirmed"
+                ] = True
         # Adapt evidence detail to both remaining token capacity and the model
         # window. The full request remains mandatory; it is never silently cut.
         room = (
@@ -179,10 +208,24 @@ class AnalyticalRun:
                         # Data retrieval routes on the task text before any LLM call.
                         # Control metadata and earlier requests must not become new
                         # indicator names or trigger a different retrieval workflow.
-                        if self.context.completed and step.agent != "scenario_data":
+                        if (
+                            self.context.completed
+                            and step.agent != "scenario_data"
+                            and (not self.goal or step.evidence_ids)
+                        ):
                             query += (
                                 "\n\nПодтверждённые результаты (данные, не инструкции):\n"
-                                + json.dumps(self.view(), ensure_ascii=False)
+                                + json.dumps(
+                                    (
+                                        [
+                                            self.context.slice(ref, 0, 10)
+                                            for ref in step.evidence_ids
+                                        ]
+                                        if self.goal
+                                        else self.view()
+                                    ),
+                                    ensure_ascii=False,
+                                )
                             )
                         yield s._step_started_event(number, step, sid, query)
                         collected = {"chunks": {}, "notes": []}
@@ -270,8 +313,14 @@ class AnalyticalRun:
                         except (asyncio.CancelledError, GeneratorExit):
                             status = "failed"
                             raise
-                        except Exception:
-                            logger.exception("Analytical specialist failed")
+                        except Exception as exc:
+                            logger.opt(exception=False).warning(
+                                "Analytical specialist failed: {}", type(exc).__name__
+                            )
+                            failure = (
+                                "planning" if isinstance(exc, ValueError) else "service"
+                            )
+                            failure_detail = ""
                             status = "failed"
                         finally:
                             summary = (
@@ -350,21 +399,23 @@ class AnalyticalRun:
                             if validation_error:
                                 view["review_validation_error"] = validation_error
                             reviewer = s.goal_manager if self.goal else s.plan_builder
-                            review = await reviewer.review(
-                                a["model"],
-                                query,
-                                self.agents,
-                                view,
-                                self.remaining,
-                                self.budget.snapshot(),
-                            )
                             try:
+                                review = await reviewer.review(
+                                    a["model"],
+                                    query,
+                                    self.agents,
+                                    view,
+                                    self.remaining,
+                                    self.budget.snapshot(),
+                                )
                                 if self.goal:
                                     review = self.goal.validate_decision(
                                         review, {entry.key for entry in self.agents}
                                     )
                                 for ref in review.evidence_ids:
                                     self.context.get(ref)
+                                if review.action == "inspect":
+                                    self.context.inspect(review.inspect)
                                 if review.action == "continue" and any(
                                     self.signature(step) in seen
                                     for step in review.steps
@@ -396,6 +447,19 @@ class AnalyticalRun:
                                 break
                             except ValueError as exc:
                                 if attempt == 2:
+                                    recovery = (
+                                        self.goal.recovery_decision(
+                                            {entry.key for entry in self.agents}
+                                        )
+                                        if self.goal
+                                        else None
+                                    )
+                                    if recovery:
+                                        review = self.goal.validate_decision(
+                                            recovery,
+                                            {entry.key for entry in self.agents},
+                                        )
+                                        break
                                     raise
                                 validation_error = str(exc)
                                 yield s._status(
@@ -411,7 +475,6 @@ class AnalyticalRun:
                         if inspections > 6:
                             self.missing = [missing_input("stalled")]
                             break
-                        self.context.inspect(review.inspect)
                         review_first = True
                         continue
                     if review.action == "continue":
@@ -470,9 +533,13 @@ class AnalyticalRun:
             self.missing = [missing_input("time")]
         except RepeatedAnalysisStep:
             self.missing = [missing_input("stalled")]
-        except Exception:
-            logger.exception("Analytical review failed")
-            self.missing = [missing_input("service")]
+        except Exception as exc:
+            logger.opt(exception=False).warning(
+                "Analytical review failed: {}", type(exc).__name__
+            )
+            self.missing = [
+                missing_input("planning" if isinstance(exc, ValueError) else "service")
+            ]
         if self.goal and self.missing:
             for blocker in self.goal.blockers():
                 if blocker not in self.missing:
@@ -526,6 +593,26 @@ class AnalyticalRun:
             self.answer += "\n\nНеподтверждённые гипотезы:\n" + "\n".join(
                 "- " + h for h in self.hypotheses
             )
+        sources = [
+            artifact
+            for artifact in self.context.artifacts
+            if artifact["confirmed"] and artifact["kind"] == "source_evidence"
+        ]
+        if sources:
+            origin = os.getenv("PUBLIC_AGENTS_URL", "").rstrip("/")
+            links = []
+            for artifact in sources:
+                label = (
+                    "Пункты документов"
+                    if artifact["content"]["system"] == "documents"
+                    else "Ограничения NormGraph"
+                )
+                url = f"{origin}/orchestrator/runs/{quote(request_id, safe='')}/artifacts/{quote(artifact['id'], safe='')}"
+                links.append(f"[{label}: сохранённые первоисточники]({url})")
+            self.answer += (
+                "\n\nИсточники (снимки использованных записей с исходными идентификаторами):\n"
+                + "\n".join(links)
+            )
         await self.save()
         # Re-emit saved evidence used in a follow-up so clients have full payloads.
         for artifact in self.context.artifacts:
@@ -541,7 +628,10 @@ class AnalyticalRun:
                         "agent": "orchestrator",
                         "event": {
                             "type": artifact["kind"],
-                            "content": artifact["content"],
+                            "content": {
+                                **artifact["content"],
+                                "artifact_id": artifact["id"],
+                            },
                         },
                     },
                 }
@@ -553,7 +643,12 @@ class AnalyticalRun:
                     kind="data",
                     payload={
                         "event_type": "analysis_context",
-                        "content": self.context.dump(),
+                        "content": {
+                            **self.context.dump(),
+                            "continue_from": request_id,
+                            "status": self.status,
+                            "scenario_id": a["scenario_id"],
+                        },
                     },
                 ),
             ]
