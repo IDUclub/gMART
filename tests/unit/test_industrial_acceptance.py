@@ -141,3 +141,44 @@ def test_correct_geometry_with_stale_source_version_is_rejected():
     assert verify_result(final, context, contract)["passed"]
     layer["features"][0]["properties"]["source_version"] = "stale"
     assert not verify_result(final, context, contract)["passed"]
+
+
+def test_matching_violation_count_from_another_norm_cannot_pass():
+    from tests.unit.test_harness_source_oracle import records
+
+    final, context = sample()
+    sources = records()
+    wrong = deepcopy(sources["norms"][0])
+    wrong.update(id="wrong", value={"number": 100, "operator": ">=", "unit": "м"})
+    sources["norms"].append(wrong)
+    for system, rows in sources.items():
+        context["artifacts"].append(
+            {
+                "id": system,
+                "request_id": "r",
+                "step": 1,
+                "confirmed": True,
+                "kind": "source_evidence",
+                "content": {"system": system, "sources": rows},
+            }
+        )
+    context["artifacts"].append(
+        {
+            "id": "check",
+            "request_id": "r",
+            "step": 1,
+            "confirmed": True,
+            "kind": "compliance_result",
+            "content": {
+                "restriction_id": "wrong",
+                "coverage": {"checked_objects": 1, "unchecked_objects": 0},
+                "summary": {"violated_objects": 1},
+                "compliance_status": "violated",
+            },
+        }
+    )
+    contract = {
+        "sources": True,
+        "compliance": [{"scenario_id": 91001, "violations": 1}],
+    }
+    assert not verify_result(final, context, contract)["passed"]

@@ -7,6 +7,7 @@ Each invocation creates a new directory; failed episodes are never replaced.
 import argparse
 import asyncio
 import hashlib
+import inspect
 import json
 import subprocess
 import time
@@ -25,7 +26,43 @@ from .transport import headers_for, parse_events, save, stored_context
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def application_digest(root):
+    root = Path(root)
+    files = [
+        *root.glob("src/agents/**/*.py"),
+        *root.glob("src/common/**/*.py"),
+        root / "src/__init__.py",
+        root / "src/__version__.py",
+    ]
+    records = {
+        p.relative_to(root)
+        .as_posix(): hashlib.sha256(p.read_bytes().replace(b"\r\n", b"\n"))
+        .hexdigest()
+        for p in files
+    }
+    return hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()
+
+
 def fingerprint(config):
+    expected_application = application_digest(ROOT)
+    actual_application = subprocess.check_output(
+        [
+            "docker",
+            "exec",
+            "gmart-sdk-local-agents-1",
+            "python",
+            "-c",
+            "import hashlib,json\nfrom pathlib import Path\n"
+            + inspect.getsource(application_digest)
+            + '\nprint(application_digest("/app"))',
+        ],
+        text=True,
+        timeout=30,
+    ).strip()
+    if actual_application != expected_application:
+        raise ValueError(
+            "Running agents image does not match this checkout; rebuild before acceptance"
+        )
     digest = hashlib.sha256()
     for folder in (
         "src",
@@ -69,6 +106,7 @@ def fingerprint(config):
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, timeout=15
         ).strip(),
         "source_sha256": digest.hexdigest(),
+        "application_sha256": actual_application,
         "deployment": deployment,
         "model": config["LLM_MODEL"],
         "base_url": config["LLM_BASE_URL"],

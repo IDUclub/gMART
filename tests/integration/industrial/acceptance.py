@@ -286,15 +286,20 @@ def verify_result(final, context, contract):
                     if {before, after} & reached:
                         reached.update((before, after))
             check("deficit_comparison:" + service, required <= reached)
-    restriction_ids = {
-        r["id"]
-        for a in artifacts
-        if a["kind"] == "source_evidence"
-        and a.get("confirmed")
-        and a["content"].get("system") == "norms"
-        for r in a["content"].get("sources", [])
-        if r.get("id")
-    }
+    from tests.integration.local_stack.source_contract import verify_source_records
+
+    sources = {"documents": [], "norms": []}
+    for a in artifacts:
+        if a["kind"] == "source_evidence" and a.get("confirmed"):
+            content = a["content"]
+            sources.setdefault(content["system"], []).extend(content["sources"])
+    restriction_ids = set()
+    for rule in sources["norms"]:
+        try:
+            verify_source_records({"documents": sources["documents"], "norms": [rule]})
+            restriction_ids.add(rule["id"])
+        except (AssertionError, KeyError, IndexError, TypeError):
+            continue
     for expected in contract.get("compliance", []):
         sid = expected["scenario_id"]
         results = [a["content"] for a in scoped(context, sid, "compliance_result")]
@@ -311,18 +316,7 @@ def verify_result(final, context, contract):
             ),
         )
     if contract.get("sources"):
-        from tests.integration.local_stack.source_contract import verify_source_records
-
-        sources = {"documents": [], "norms": []}
-        for a in artifacts:
-            if a["kind"] == "source_evidence" and a.get("confirmed"):
-                content = a["content"]
-                sources.setdefault(content["system"], []).extend(content["sources"])
-        try:
-            verify_source_records(sources)
-            check("normative_source_version", True)
-        except (AssertionError, KeyError, IndexError, TypeError):
-            check("normative_source_version", False)
+        check("normative_source_version", bool(restriction_ids))
     return {
         "passed": bool(checks) and all(c["passed"] for c in checks),
         "checks": checks,
