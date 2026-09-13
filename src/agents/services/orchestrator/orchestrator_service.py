@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
+from fastapi.encoders import jsonable_encoder
 from loguru import logger
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
@@ -485,7 +486,10 @@ class OrchestratorService(BaseLlmService):
                         if item.get("type") in {"error", "pipeline_failed"}:
                             status = "failed"
                             break
-                        if item.get("type") == "clarification":
+                        if item.get("type") in {
+                            "clarification",
+                            "clarification_required",
+                        }:
                             status = "needs_clarification"
                             content = item.get("content") or {}
                             collected = {
@@ -670,7 +674,7 @@ class OrchestratorService(BaseLlmService):
         step: OrchestratorStep,
         digests: list[tuple[OrchestratorStep, str]],
     ) -> str:
-        if not digests:
+        if not digests or step.agent == OrchestratorAgent.SCENARIO_DATA:
             return step.task
         context_lines = "\n".join(
             f"[Шаг {number}, {self._agent_title(prev.agent)}] {digest}"
@@ -801,6 +805,7 @@ class OrchestratorService(BaseLlmService):
 
     async def _buf(self, request_id: str, event: dict) -> dict:
         """Persist the event for reconnect replay before returning it."""
+        event = jsonable_encoder(event)
         await self.state_store.buffer_event(request_id, event)
         return event
 

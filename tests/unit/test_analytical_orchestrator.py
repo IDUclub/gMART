@@ -3,6 +3,8 @@
 import asyncio
 import json
 from dataclasses import replace
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -76,6 +78,123 @@ def final(events):
     event = next(e for e in reversed(events) if e["type"] == "orchestrator_final")
     # Exercise the actual REST serialization contract, not just service dicts.
     return OrchestratorResponse.model_validate(event).model_dump()["content"]
+
+
+async def test_scenario_data_receives_task_without_control_context(orchestrator):
+    task = "Получи услуги типа школа в сценарии 772 и их слой."
+    first = FakePipeline([table()])
+    second = FakePipeline([table(20)])
+    orchestrator.provision_service.run_provision_pipeline = first
+    orchestrator.scenario_data_service = SimpleNamespace(
+        run_scenario_data_pipeline=second
+    )
+    orchestrator.plan_builder.build_plan = AsyncMock(return_value=plan())
+
+    async def review(model, query, agents, context, remaining, budget):
+        if not second.calls:
+            return AnalysisReview(
+                action="continue", steps=[{"agent": "scenario_data", "task": task}]
+            )
+        return AnalysisReview(
+            action="complete",
+            answer="Готово",
+            evidence_ids=[a["id"] for a in context["artifacts"]],
+        )
+
+    orchestrator.plan_builder.review = review
+    events = await run_pipeline(orchestrator, urban_mcp_client=AsyncMock())
+    assert final(events)["status"] == "completed"
+    assert second.calls[0]["user_query"] == task
+
+
+async def test_native_dates_are_json_safe_in_evidence_and_terminal_replay(orchestrator):
+    event = table()
+    event["content"]["rows"][0]["created_at"] = datetime(
+        2026, 9, 13, tzinfo=timezone.utc
+    )
+    orchestrator.provision_service.run_provision_pipeline = FakePipeline([event])
+    orchestrator.plan_builder.build_plan = AsyncMock(return_value=plan())
+
+    async def review(model, query, agents, context, remaining, budget):
+        json.dumps(context)
+        return AnalysisReview(
+            action="complete",
+            answer="Готово",
+            evidence_ids=[a["id"] for a in context["artifacts"]],
+        )
+
+    orchestrator.plan_builder.review = review
+    events = await run_pipeline(orchestrator)
+    result = final(events)
+    assert result["status"] == "completed"
+    assert json.loads(json.dumps(events)) == await run_pipeline(
+        orchestrator, request_id=result["continue_from"]
+    )
+
+
+async def test_scenario_clarification_is_not_confirmed_evidence(orchestrator):
+    question = "Считать услуги или здания?"
+    pipeline = FakePipeline(
+        [{"type": "clarification_required", "content": {"text": question}}]
+    )
+    orchestrator.scenario_data_service = SimpleNamespace(
+        run_scenario_data_pipeline=pipeline
+    )
+    orchestrator.plan_builder.build_plan = AsyncMock(
+        return_value=plan({"agent": "scenario_data", "task": "Посчитай объекты"})
+    )
+    orchestrator.plan_builder.review = AsyncMock(
+        return_value=AnalysisReview(action="complete", answer="Готово", evidence_ids=[])
+    )
+    result = final(await run_pipeline(orchestrator, urban_mcp_client=AsyncMock()))
+    assert result["status"] == "blocked"
+    assert result["steps"][0]["status"] == "needs_clarification"
+    assert question in result["answer"]
+    assert result["artifacts"] == []
+    orchestrator.plan_builder.review.assert_not_called()
+
+
+async def test_review_cannot_skip_calculation_or_repeat_completed_data(orchestrator):
+    task = "Получи школы"
+    data = FakePipeline([table()])
+    calculation = FakePipeline(
+        [{"type": "error", "content": {"message": "Нет норматива"}}]
+    )
+    orchestrator.scenario_data_service = SimpleNamespace(
+        run_scenario_data_pipeline=data
+    )
+    orchestrator.provision_service.run_provision_pipeline = calculation
+    orchestrator.plan_builder.build_plan = AsyncMock(
+        return_value=plan(
+            {"agent": "scenario_data", "task": task},
+            {"agent": "provision", "task": "Рассчитай обеспеченность"},
+        )
+    )
+    attempts = []
+
+    async def review(model, query, agents, context, remaining, budget):
+        attempts.append(context)
+        aid = context["artifacts"][0]["id"]
+        if len(attempts) == 1:
+            return AnalysisReview(
+                action="complete", answer="Расчёт невозможен", evidence_ids=[aid]
+            )
+        assert context["review_validation_error"]
+        if len(attempts) == 2:
+            return AnalysisReview(
+                action="continue",
+                steps=[{"agent": "scenario_data", "task": task, "evidence_ids": [aid]}],
+            )
+        return AnalysisReview(
+            action="continue",
+            steps=[{"agent": "provision", "task": "Рассчитай обеспеченность"}],
+        )
+
+    orchestrator.plan_builder.review = review
+    result = final(await run_pipeline(orchestrator, urban_mcp_client=AsyncMock()))
+    assert result["status"] == "blocked"
+    assert len(data.calls) == len(calculation.calls) == 1
+    assert len(attempts) == 3
 
 
 @pytest.mark.parametrize("repair", [True, False])

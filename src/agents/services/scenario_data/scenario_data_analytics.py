@@ -13,6 +13,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPartRequest,
     ToolCallPayload,
 )
+from src.agents.services.pipeline_state import PipelineStatus
 from src.agents.services.scenario_data.scenario_data_indicators import (
     INDICATOR_ROW_LABELS,
     IndicatorRequest,
@@ -65,6 +66,7 @@ class ScenarioAnalytics:
         indicators_route=False,
     ):
         host = self.service
+        failed = False
         named = {(t.group, t.name): t for t in tools}
         metadata, data = {}, {}
 
@@ -325,6 +327,17 @@ class ScenarioAnalytics:
             rows = []
             # Validation failures are explicit; no partially acquired facts are published.
             answer = "Не удалось подтвердить данные для ответа. Уточните сценарии, названия показателей и условия запроса."
+            failed = True
+            yield await host._buf(
+                request_id,
+                {
+                    "type": "pipeline_failed",
+                    "content": {
+                        "code": "scenario_analytics_unverified",
+                        "message": answer,
+                    },
+                },
+            )
         if rows:
             table = host._table_from_result(
                 rows,
@@ -347,3 +360,5 @@ class ScenarioAnalytics:
             persist_history=persist_history,
             context_model=model if host.linear_workflow_enabled else None,
         )
+        if failed:
+            await host.state_store.set_status(request_id, PipelineStatus.FAILED)

@@ -37,7 +37,12 @@ it expects the known missing-normative case in scenario 772 and does not call th
 
 `--mode data` and `--mode analysis` send real scenario tool results to the configured LLM.
 Use only with authorization for that data transfer. They save SSE traces and verify exact
-terminal replay. `--mode seed-documents` uploads a synthetic document named `LOCAL SDK TEST`
+terminal replay. `analysis` specifically exercises the known missing-school-normative case:
+separate school/kindergarten service counts, tables and layers, followed by provision. It requires
+an attempted provision calculation, a concrete normative blocker and both complete artifact sets
+in reopened history, then exports the verified tables/GeoJSON. It fails if the model omits a task
+or returns incomplete output; see `docs/diagnostics/2026-09-13-scenario-772.md` for current results.
+`--mode seed-documents` uploads a synthetic document named `LOCAL SDK TEST`
 through the direct fragment ingestion API, waits for the durable queue, verifies DVD vector
 search, runs NormGraph extraction/search and checks idempotent repeated sync. It leaves the
 fixture in the isolated databases. This tests direct ingestion, not file parsing/OCR.

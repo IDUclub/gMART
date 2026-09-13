@@ -6,6 +6,8 @@ import hashlib
 import json
 from decimal import Decimal, InvalidOperation
 
+from fastapi.encoders import jsonable_encoder
+
 from src.agents.api_clients.chat_storage_client.request_models import TablePayload
 
 
@@ -34,6 +36,7 @@ class AnalysisContext:
         content = event.get("content")
         if not isinstance(content, dict):
             return None
+        content = jsonable_encoder(content)
         if kind == "table":
             TablePayload.model_validate(content)
         encoded = json.dumps(content, ensure_ascii=False, default=str)

@@ -393,6 +393,10 @@ class ScenarioDataService(BaseLlmService):
             clarification = sanitize_public_answer(clarification)
             yield await self._buf(
                 request_id,
+                {"type": "clarification_required", "content": {"text": clarification}},
+            )
+            yield await self._buf(
+                request_id,
                 self._status("planning", "Уточняю параметры запроса…"),
             )
             for event in self._answer_events(clarification):

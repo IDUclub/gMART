@@ -195,9 +195,17 @@ async def main():
             )
             return
         if args.mode == "data":
-            query = f"В сценарии {args.scenario} посчитай школы и детские сады, сравни их количество в таблице и верни слои этих объектов. Не оценивай обеспеченность."
+            query = f"В сценарии {args.scenario} посчитай услуги типов «Школа» и «Детский сад», сравни их количество в таблице и верни слои этих услуг. Не оценивай обеспеченность."
         elif args.mode == "analysis":
-            query = f"В сценарии {args.scenario} посчитай школы и детские сады, сравни их количество в таблице и верни слои объектов. Затем оцени обеспеченность школами. Если нормативы не заданы, сохрани результаты подсчёта и прямо объясни, каких данных не хватает."
+            query = (
+                f"В сценарии {args.scenario} выполни три отдельные подзадачи: "
+                "1. Получи услуги типа «Школа»: количество, таблицу и слой. "
+                "2. Получи услуги типа «Детский сад»: количество, таблицу и слой. "
+                "3. Рассчитай обеспеченность школами. "
+                "Затем сопоставь количества школ и детских садов. "
+                "Если нормативы не заданы, сохрани результаты подсчёта, таблицы и слои "
+                "и прямо объясни, каких данных не хватает для расчёта обеспеченности."
+            )
         else:
             query = (
                 "Сравни исходный текст пункта 1.1 документа LOCAL SDK TEST из DVD "
@@ -250,6 +258,10 @@ async def main():
             from document_cycle import verify_analysis
 
             await verify_analysis(http, headers, args.output, events, final)
+        if args.mode == "analysis":
+            from scenario_cycle import verify_scenario_analysis
+
+            await verify_scenario_analysis(http, headers, args.output, events, final)
         request_id = final["continue_from"]
         replay = await http.get(
             "http://localhost:18000/orchestrator/route/stream",

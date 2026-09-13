@@ -1,5 +1,8 @@
 # Local SDK/service integration — 2026-09-12
 
+For the subsequently authorized real scenario-772 run, verified artifacts, additional fixes
+and remaining model limitations, see [2026-09-13-scenario-772.md](2026-09-13-scenario-772.md).
+
 Fix checkouts: ObjectEffectsAPI `fix/missing-service-normatives`, NormGraph
 `fix/reconcile-incomplete-extraction`, gMART `fix/local-sdk-integration`.
 
