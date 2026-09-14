@@ -240,8 +240,11 @@ async def test_truncated_high_plan_is_repaired_with_bounded_medium_attempt():
         ("unrelated server failure", False, 1),
     ],
 )
-async def test_harmony_header_failure_has_one_charged_medium_fallback(
-    message, recover, expected_calls
+@pytest.mark.parametrize(
+    "effort,fallback", [("high", "medium"), ("low", "medium"), ("medium", "low")]
+)
+async def test_harmony_header_failure_has_one_charged_fallback(
+    message, recover, expected_calls, effort, fallback
 ):
     calls = []
 
@@ -264,18 +267,18 @@ async def test_harmony_header_failure_has_one_charged_medium_fallback(
                 await adapter.chat(
                     "gpt-oss-20b",
                     [{"role": "user", "content": "synthetic"}],
-                    reasoning_effort="high",
+                    reasoning_effort=effort,
                 )
             else:
                 with pytest.raises(Exception):
                     await adapter.chat(
                         "gpt-oss-20b",
                         [{"role": "user", "content": "synthetic"}],
-                        reasoning_effort="high",
+                        reasoning_effort=effort,
                     )
         assert len(calls) == budget.model_calls == expected_calls
         assert budget.reasoning_fallbacks == expected_calls - 1
-        assert [c["reasoning_effort"] for c in calls] == ["high", "medium"][
+        assert [c["reasoning_effort"] for c in calls] == [effort, fallback][
             :expected_calls
         ]
     finally:
