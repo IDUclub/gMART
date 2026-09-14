@@ -133,6 +133,95 @@ def sample():
     }
 
 
+@pytest.mark.asyncio
+async def test_judge_deduplicates_same_scope_evidence_without_skipping_evaluation():
+    import json
+    from unittest.mock import AsyncMock, Mock
+
+    from tests.integration.industrial.judge import BASE_RUBRIC, evaluate
+
+    final, context = sample()
+    context["artifacts"][0]["content"]["rows"] *= 80
+    template = context["artifacts"][0]
+    context["artifacts"] = [
+        {**deepcopy(template), "id": f"copy-{i}"} for i in range(20)
+    ]
+    rows = [
+        {"id": name, "verdict": "fail", "reason": "Неподтверждённый вывод"}
+        for name in BASE_RUBRIC
+    ]
+    http = Mock(
+        post=AsyncMock(
+            return_value=Mock(
+                json=lambda: {
+                    "choices": [
+                        {"message": {"content": json.dumps({"criteria": rows})}}
+                    ]
+                }
+            )
+        )
+    )
+    result = await evaluate(
+        http,
+        {"LLM_BASE_URL": "http://model.test/v1", "LLM_MODEL": "m"},
+        {"rubric": []},
+        [{"query": "Оцени", "final": final}],
+        context,
+    )
+    assert http.post.await_count == 1
+    assert result["verdict"] == "fail"
+    payload = json.loads(http.post.await_args.kwargs["json"]["messages"][1]["content"])
+    assert len(payload["evidence"]) == 20
+    assert payload["evidence"]["E2"]["identical_to"] == "E1"
+
+
+def test_judge_never_deduplicates_evidence_across_scenarios():
+    from tests.integration.industrial.judge import evidence_for_judge
+
+    _, context = sample()
+    context["artifacts"].append(
+        {**deepcopy(context["artifacts"][0]), "id": "b", "request_id": "other"}
+    )
+    context["completed"].append(
+        {"request_id": "other", "step": 1, "scenario_id": 91002}
+    )
+    evidence = evidence_for_judge(context)
+    assert evidence["a"]["scenario_id"] == 91001
+    assert evidence["b"]["scenario_id"] == 91002
+    assert "content" in evidence["a"] and "content" in evidence["b"]
+
+
+def test_judge_compaction_preserves_verdict_scope_and_source_without_mutating_artifact():
+    from tests.integration.industrial.judge import evidence_for_judge
+
+    _, context = sample()
+    result = {
+        "restriction_id": "r",
+        "compliance_status": "violated",
+        "verification_status": "complete",
+        "coverage": {"checked_objects": 1},
+        "summary": {"violated_objects": 1},
+        "source": {"document_name": "TEST", "version": "2026", "clause_number": "1.1"},
+        "violated_features": {
+            "type": "FeatureCollection",
+            "features": [{"geometry": {"coordinates": [[30, 60]] * 1000}}],
+        },
+        "evidence": [{"object_ref": {"id": "school-1"}, "threshold": 50, "unit": "m"}],
+    }
+    saved = deepcopy(result)
+    context["artifacts"] = [
+        {**context["artifacts"][0], "kind": "compliance_result", "content": result}
+    ]
+    proof = evidence_for_judge(context)["a"]
+    assert proof["scenario_id"] == 91001
+    assert proof["content"]["coverage"] == result["coverage"]
+    assert proof["content"]["summary"] == result["summary"]
+    assert proof["content"]["source"] == result["source"]
+    assert proof["content"]["evidence"] == result["evidence"]
+    assert "violated_features" not in proof["content"]
+    assert result == saved
+
+
 def test_numeric_acceptance_rejects_correct_number_from_wrong_version():
     final, context = sample()
     contract = {

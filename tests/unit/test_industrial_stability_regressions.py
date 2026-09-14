@@ -862,3 +862,129 @@ async def test_goal_cannot_lose_explicit_buffer_behind_compliance_layer(fake_llm
         17,
     )
     assert {r.agent for r in goal.requirements} == {"compliance", "restriction"}
+
+
+async def test_bound_scenario_is_not_re_requested_as_user_input(fake_llm):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.agents.services.provision.provision_plan_builder import (
+        ProvisionPlanBuilder,
+    )
+    from src.agents.services.provision.provsion_service import ProvisionService
+
+    service = object.__new__(ProvisionService)
+    service.urban_api_client = SimpleNamespace(
+        get_scenario_service_types=AsyncMock(return_value={"Школа": 22})
+    )
+    service.plan_builder = ProvisionPlanBuilder(fake_llm)
+    fake_llm.json_responses = [
+        json.dumps(
+            {
+                "mode": "needs_clarification",
+                "clarification_question": "Для каких именно сценариев (ID) нужны расчёт и слои?",
+            }
+        ),
+        '{"mode":"provision","service_name":"Школа"}',
+    ]
+    plan, _ = await service._resolve_service_plan(
+        "token",
+        "m",
+        "Рассчитай обеспеченность школами для выбранного сценария; сравниваем варианты 17, 18 и 19.",
+        17,
+    )
+    assert plan.mode == "provision"
+
+
+async def test_summary_preserves_explicit_calculation_layers_for_every_service(
+    fake_llm,
+):
+    from src.agents.services.provision.provision_plan_builder import (
+        ProvisionPlanBuilder,
+    )
+
+    fake_llm.json_responses = [
+        json.dumps(
+            {
+                "mode": "summary",
+                "service_names": ["Школа", "Детский сад"],
+                "layer_service_names": [],
+            }
+        )
+    ]
+    plan = await ProvisionPlanBuilder(fake_llm).build_plan(
+        "m",
+        "Рассчитай обеспеченность школами и детскими садами, верни расчётные слои зданий, учреждений и связей.",
+        ["Школа", "Детский сад"],
+    )
+    assert set(plan.layer_service_names) == {"Школа", "Детский сад"}
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("Верни расчётные слои зданий только для школ.", ["Школа"]),
+        ("Не возвращай расчётные слои зданий, нужна только сводка.", []),
+    ],
+)
+async def test_summary_does_not_expand_explicitly_limited_layers(
+    fake_llm, query, expected
+):
+    from src.agents.services.provision.provision_plan_builder import (
+        ProvisionPlanBuilder,
+    )
+
+    fake_llm.json_responses = [
+        json.dumps(
+            {
+                "mode": "summary",
+                "service_names": ["Школа", "Детский сад"],
+                "layer_service_names": expected,
+            }
+        )
+    ]
+    plan = await ProvisionPlanBuilder(fake_llm).build_plan(
+        "m", query, ["Школа", "Детский сад"]
+    )
+    assert plan.layer_service_names == expected
+
+
+@pytest.mark.parametrize(
+    "agent, system", [("documents", "DVD"), ("norms", "NormGraph")]
+)
+def test_source_specialist_receives_its_part_of_cross_source_comparison(agent, system):
+    requirement = {
+        "id": "source",
+        "agent": agent,
+        "scenario_id": 17,
+        "description": "Сопоставь текст DVD с записью NormGraph, укажи источники и версию.",
+        "source_quote": "Пункт 1.1 документа EXAMPLE TEST, версия 2026: 50 м.",
+        "required_artifacts": ["source_evidence", "analysis_text"],
+    }
+    state = GoalState(
+        AnalysisContext(),
+        AnalysisGoal.model_validate(
+            {"objective": "Сопоставить источники", "requirements": [requirement]}
+        ),
+    )
+    step = state.validate_decision(
+        GoalDecision(action="continue", requirement_id="source"), {agent}
+    ).steps[0]
+    assert f"только из {system}" in step.task
+    assert "Сопоставление разных систем выполнит оркестратор" in step.task
+    assert "EXAMPLE TEST" in step.task and "2026" in step.task
+
+
+def test_normgraph_context_identifies_the_system_that_returned_the_record():
+    from src.agents.services.normgraph.normgraph_context import NormGraphContextBuilder
+
+    text = NormGraphContextBuilder().build_context(
+        [
+            {
+                "id": "r",
+                "provenance": {"name": "TEST", "version": "2026"},
+                "extraction_text": "Отступ 50 м",
+            }
+        ]
+    )
+    assert "Система источника: NormGraph" in text

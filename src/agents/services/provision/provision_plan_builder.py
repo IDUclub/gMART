@@ -35,14 +35,36 @@ class ProvisionPlanBuilder:
         user_query: str,
         services_catalog: list[str],
         history: list[dict] | None = None,
+        *,
+        scenario_id: int | None = None,
     ) -> ProvisionPlan:
         if not services_catalog:
             return ProvisionPlan(
                 mode=ProvisionPlanMode.NEEDS_CLARIFICATION,
                 clarification_question="В выбранном сценарии нет доступных сервисов для расчёта обеспеченности. Выберите сценарий с нужными сервисами.",
             )
-        raw = await self._request_plan(model, user_query, services_catalog, history)
+        raw = await self._request_plan(
+            model, user_query, services_catalog, history, scenario_id=scenario_id
+        )
         raw = self._canonicalize_plan(raw, services_catalog)
+        request = re.split(r"\n\nПодтвержд[её]нные результаты", user_query)[0]
+        # A general request for calculation layers covers the selected services;
+        # it must not disappear because the model left an optional list empty.
+        general_layers = any(
+            re.search(
+                r"(?<!не )(?:верни|верните|возвращай|покажи|приложи)\s+расч[её]тн\w*\s+сло\w*\s+(?:здани|для\s+всех)",
+                part,
+                re.I,
+            )
+            and not re.search(r"сло\w*[^.!?]*\bтолько\b", part, re.I)
+            for part in re.split(r"[.!?\n]", request)
+        )
+        if raw.mode == ProvisionPlanMode.SUMMARY and general_layers:
+            raw = raw.model_copy(
+                update={
+                    "layer_service_names": list(raw.service_names or services_catalog)
+                }
+            )
         if (
             raw.mode == ProvisionPlanMode.NEEDS_CLARIFICATION
             and not raw.clarification_question
@@ -109,9 +131,14 @@ class ProvisionPlanBuilder:
         services_catalog: list[str],
         history: list[dict] | None = None,
         _retries: int = 2,
+        *,
+        scenario_id: int | None = None,
     ) -> ProvisionPlan:
+        prompt = self._build_prompt(services_catalog)
+        if scenario_id is not None:
+            prompt += f"\nТекущий вызов уже привязан приложением к scenario_id={scenario_id}. Каталог относится к этому сценарию. Рассчитывай только его; другие версии и сравнение обрабатывает оркестратор. Не спрашивай ID уже выбранного сценария."
         messages = [
-            {"role": "system", "content": self._build_prompt(services_catalog)},
+            {"role": "system", "content": prompt},
             *(history or []),
             {"role": "user", "content": user_query},
         ]
@@ -122,6 +149,18 @@ class ProvisionPlanBuilder:
 
         def validate_scope(plan):
             request = re.split(r"\n\nПодтвержд[её]нные результаты", user_query)[0]
+            if (
+                scenario_id is not None
+                and plan.mode == ProvisionPlanMode.NEEDS_CLARIFICATION
+                and re.search(
+                    r"(?:как(?:ой|ого|им|их|ие)|укаж|уточн|выбер)[^.?!]{0,70}сценари|сценари[^.?!]{0,30}(?:\bID\b|идентификатор)",
+                    plan.clarification_question or "",
+                    re.I,
+                )
+            ):
+                raise ValueError(
+                    f"Scenario ID is already bound by the caller: {scenario_id}. Select provision/summary for this scenario and the named services. Do not ask the user to re-enter it."
+                )
             if (
                 plan.mode == ProvisionPlanMode.EFFECTS
                 and re.search(

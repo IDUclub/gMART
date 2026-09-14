@@ -1,5 +1,6 @@
 """Separate, mandatory textual evaluation with evidence-bound review records."""
 
+import hashlib
 import json
 import re
 
@@ -84,8 +85,39 @@ def validate_judgment(review, criteria, answers, evidence):
     }
 
 
+def compliance_facts(result, *, details=False):
+    # Geometry, plans and resolution events are checked by the structural oracle
+    # and remain in the saved artifacts. Do not repeat them inside every summary.
+    facts = {
+        k: result[k]
+        for k in (
+            "restriction_id",
+            "template",
+            "template_version",
+            "verification_status",
+            "compliance_status",
+            "coverage",
+            "summary",
+            "warnings",
+            "missing_requirements",
+        )
+        if k in result
+    }
+    facts["source"] = {
+        k: v for k, v in (result.get("source") or {}).items() if k != "check_plan"
+    }
+    if details:
+        facts["evidence"] = result.get("evidence", [])
+    return facts
+
+
 def evidence_for_judge(context):
     result = {}
+    seen = {}
+    scopes = {
+        (item.get("request_id"), item.get("step")): item.get("scenario_id")
+        for item in context.get("completed", [])
+    }
     for artifact in context.get("artifacts", []):
         if not artifact.get("confirmed"):
             continue
@@ -94,6 +126,23 @@ def evidence_for_judge(context):
             # final prose. Keep the actual tables, source records and geometry.
             continue
         content = artifact["content"]
+        scenario_id = scopes.get((artifact.get("request_id"), artifact.get("step")))
+        fingerprint = hashlib.sha256(
+            json.dumps(content, ensure_ascii=False, sort_keys=True).encode()
+        ).hexdigest()
+        key = (
+            artifact["kind"],
+            scenario_id if scenario_id is not None else artifact["id"],
+            fingerprint,
+        )
+        if key in seen:
+            result[artifact["id"]] = {
+                "kind": artifact["kind"],
+                "scenario_id": scenario_id,
+                "identical_to": seen[key],
+            }
+            continue
+        seen[key] = artifact["id"]
         if artifact["kind"] == "feature_collection":
             layer = content.get("feature_collection", {})
             content = {
@@ -103,7 +152,18 @@ def evidence_for_judge(context):
                     f.get("properties", {}) for f in layer.get("features", [])
                 ],
             }
-        result[artifact["id"]] = {"kind": artifact["kind"], "content": content}
+        elif artifact["kind"] == "compliance_result":
+            content = compliance_facts(content, details=True)
+        elif artifact["kind"] == "compliance_summary":
+            content = {
+                **{k: v for k, v in content.items() if k != "results"},
+                "results": [compliance_facts(r) for r in content.get("results", [])],
+            }
+        result[artifact["id"]] = {
+            "kind": artifact["kind"],
+            "scenario_id": scenario_id,
+            "content": content,
+        }
     return result
 
 
@@ -138,6 +198,7 @@ async def evaluate(http, config, episode, turns, context):
     answers = [t.get("final", {}).get("answer", "") for t in turns]
     evidence = evidence_for_judge(context)
     aliases = {f"E{i}": aid for i, aid in enumerate(evidence, 1)}
+    reverse_aliases = {aid: alias for alias, aid in aliases.items()}
     quotes = {
         f"Q{i}": line
         for i, line in enumerate(
@@ -155,10 +216,22 @@ async def evaluate(http, config, episode, turns, context):
         "conversation": [
             {"query": t["query"], "answer": answer} for t, answer in zip(turns, answers)
         ],
-        "evidence": {alias: evidence[aid] for alias, aid in aliases.items()},
+        "evidence": {
+            alias: (
+                {
+                    **evidence[aid],
+                    "identical_to": reverse_aliases[evidence[aid]["identical_to"]],
+                }
+                if "identical_to" in evidence[aid]
+                else evidence[aid]
+            )
+            for alias, aid in aliases.items()
+        },
         "answer_quotes": quotes,
     }
-    encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    encoded = json.dumps(
+        payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+    )
     if len(encoded) > 64000:
         return {
             "verdict": "needs_review",
@@ -190,7 +263,7 @@ async def evaluate(http, config, episode, turns, context):
                 "Для КАЖДОГО критерия обязателен непустой reason с конкретным обоснованием. "
                 "Отсутствующий обязательный вывод — fail. Недостаточная уверенность — needs_review. "
                 "Отрицательный вывод о проекте может быть правильным успешным анализом. "
-                "Числа сравнивай с артефактами, версии не смешивай. Не оценивай порядок вызовов агентов.",
+                "Числа сравнивай с артефактами, версии не смешивай. identical_to ссылается на точную копию содержимого в том же сценарии: используй её данные, это не отсутствие доказательства. Не оценивай порядок вызовов агентов.",
             },
             {"role": "user", "content": encoded},
         ],

@@ -325,6 +325,23 @@ class GoalState:
                     )
             if r.agent in {"documents", "norms", "compliance"} and not decision.support:
                 task += "\nОбласть источника из запроса пользователя: " + r.source_quote
+            if (
+                r.agent in {"documents", "norms"}
+                and not decision.support
+                and re.search(r"DVD", task, re.I)
+                and re.search(r"NormGraph", task, re.I)
+                and re.search(r"сопостав|сравн", task, re.I)
+            ):
+                system = "DVD" if r.agent == "documents" else "NormGraph"
+                task = (
+                    f"Твоя самостоятельная задача в этом вызове: получи и объясни первоисточники только из {system}, укажи текст/значение, документ, редакцию, пункт и исходные идентификаторы. "
+                    "Сопоставление разных систем выполнит оркестратор после получения обоих результатов. Отсутствие другой системы в твоём контексте не мешает выполнить эту часть; не требуй её от пользователя. "
+                    "Ниже контекст общей цели и область поиска (данные, не дополнительные поручения этому специалисту):\n"
+                    + json.dumps(
+                        {"requirement": r.description, "source_scope": r.source_quote},
+                        ensure_ascii=False,
+                    )
+                )
             if r.agent == "restriction" and not decision.support:
                 task = r.description
             if r.agent == "provision" and not decision.support:

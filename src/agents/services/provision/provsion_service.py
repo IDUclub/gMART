@@ -949,7 +949,7 @@ class ProvisionService(BaseLlmService):
             token, scenario_id
         )
         plan = await self.plan_builder.build_plan(
-            model, user_query, list(service_types), history
+            model, user_query, list(service_types), history, scenario_id=scenario_id
         )
         return plan, service_types
 
