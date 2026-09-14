@@ -640,6 +640,18 @@ provision также возвращает расчётные feature_collection 
                     )
                     names = literal_names or names
                 if (
+                    r.agent == "provision"
+                    and physical
+                    and not services
+                    and re.search(r"исходн", quote, re.I)
+                    and not re.search(
+                        r"обеспечен|рассчит|расч[её]т|эффект", r.description, re.I
+                    )
+                ):
+                    # Raw physical objects are a retrieval request even when
+                    # the model assigns their building layers to provision.
+                    r = r.model_copy(update={"agent": OrchestratorAgent.SCENARIO_DATA})
+                if (
                     r.agent == "scenario_data"
                     and services
                     and re.search(r"рассчит|расч[её]тн", quote, re.I)

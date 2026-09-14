@@ -553,7 +553,10 @@ def test_multiword_document_name_in_canonical_scope():
     )
 
 
-async def test_source_quote_supplies_entity_kind_when_description_omits_it(fake_llm):
+@pytest.mark.parametrize("agent", ["scenario_data", "provision"])
+async def test_source_quote_supplies_entity_kind_when_description_omits_it(
+    fake_llm, agent
+):
     fake_llm.json_responses = [
         json.dumps(
             {
@@ -561,7 +564,7 @@ async def test_source_quote_supplies_entity_kind_when_description_omits_it(fake_
                 "requirements": [
                     {
                         "id": "objects",
-                        "agent": "scenario_data",
+                        "agent": agent,
                         "entity_kind": "other",
                         "subject": "Жилой дом и Парк",
                         "source_ids": [1],
@@ -582,6 +585,7 @@ async def test_source_quote_supplies_entity_kind_when_description_omits_it(fake_
         ("physical_objects", "Жилой дом"),
         ("physical_objects", "Парк"),
     ]
+    assert all(r.agent == "scenario_data" for r in goal.requirements)
 
 
 @pytest.mark.parametrize(
