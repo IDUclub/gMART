@@ -990,7 +990,7 @@ review_validation_error — обязательное исправление пр
                     retries=2 if name == "orchestrator.goal" else 1,
                     unconstrained=(
                         getattr(self.backend, "structured_transport", "chat")
-                        != "responses_function"
+                        not in {"responses_function", "harmony_completion"}
                     ),
                     reasoning_effort=effort,
                     attempt_settings=(

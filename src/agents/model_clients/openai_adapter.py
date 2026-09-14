@@ -87,9 +87,13 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
     ):
         self.base_url = base_url
         self.structured_transport = os.getenv("OPENAI_STRUCTURED_TRANSPORT", "chat")
-        if self.structured_transport not in {"chat", "responses_function"}:
+        if self.structured_transport not in {
+            "chat",
+            "responses_function",
+            "harmony_completion",
+        }:
             raise ValueError(
-                "OPENAI_STRUCTURED_TRANSPORT must be chat or responses_function"
+                "OPENAI_STRUCTURED_TRANSPORT must be chat, responses_function or harmony_completion"
             )
         # How think= is spelled for this server; see the module docstring.
         self.think_mode = (
@@ -458,6 +462,14 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
 
     async def _create_completion(self, client, call):
         schema = (call.get("response_format") or {}).get("json_schema")
+        if (
+            self.structured_transport == "harmony_completion"
+            and schema
+            and not call.get("stream")
+        ):
+            from .harmony_completion import create_harmony_completion
+
+            return await create_harmony_completion(client, call, schema)
         if (
             self.structured_transport != "responses_function"
             or call.get("stream")
