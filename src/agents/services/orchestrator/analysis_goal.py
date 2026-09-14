@@ -508,6 +508,12 @@ provision также возвращает расчётные feature_collection 
             normalized = []
             objective = goal.objective
             for r in goal.requirements:
+                if re.search(r"[А-Яа-яЁё]", query) and len(
+                    re.findall(r"[A-Za-z]{3,}", r.description)
+                ) > len(re.findall(r"[А-Яа-яЁё]{3,}", r.description)):
+                    raise ValueError(
+                        "description должен быть на русском языке, как запрос пользователя. Переведи описание результата, сохрани имена документов, ID, ограничения и значения. Английский пересказ не подходит для маршрутизации русскоязычных инструментов."
+                    )
                 quote = "\n".join(fragments.get(i, "") for i in r.source_ids)
                 if re.search(
                     r"(?:оцен\w*|вывод\w*)[^.]*достаточ|итогов\w*\s+оцен|ограничения\s+(?:вывода|анализа)",
@@ -529,6 +535,29 @@ provision также возвращает расчётные feature_collection 
                 names = list(dict.fromkeys(re.findall(r"«([^»]+)»", r.description)))
                 physical = bool(re.search(r"физическ\w*\s+объект", r.description, re.I))
                 services = bool(re.search(r"услуг\w*\s+тип", r.description, re.I))
+                if not physical and not services:
+                    physical_quote = bool(
+                        re.search(r"физическ\w*\s+объект", quote, re.I)
+                    )
+                    services_quote = bool(re.search(r"услуг\w*\s+тип", quote, re.I))
+                    if physical_quote != services_quote:
+                        physical, services = physical_quote, services_quote
+                if physical or services:
+                    literal_fragments = [
+                        fragments.get(i, "")
+                        for i in r.source_ids
+                        if re.search(
+                            r"физическ" if physical else r"услуг",
+                            fragments.get(i, ""),
+                            re.I,
+                        )
+                    ]
+                    literal_names = list(
+                        dict.fromkeys(
+                            re.findall(r"«([^»]+)»", "\n".join(literal_fragments))
+                        )
+                    )
+                    names = literal_names or names
                 if (
                     r.agent == "scenario_data"
                     and services
@@ -538,7 +567,7 @@ provision также возвращает расчётные feature_collection 
                     continue
                 filtered = re.search(
                     r"адрес|радиус|вместимост|мощност|фильтр|старше|младше|больше|меньше",
-                    r.description,
+                    r.description + "\n" + quote,
                     re.I,
                 )
                 if (
@@ -817,7 +846,7 @@ review_validation_error — обязательное исправление пр
                     ],
                     schema,
                     agent_name=name,
-                    retries=1,
+                    retries=2 if name == "orchestrator.goal" else 1,
                     unconstrained=True,
                     reasoning_effort=effort,
                     attempt_settings=(

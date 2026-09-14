@@ -169,6 +169,23 @@ async def run(config, output):
         )
         if not documents["passed"]:
             return False
+        canonical = {"name": "real_canonical_compliance_route", "passed": False}
+        try:
+            from .compliance_probe import verify_compliance_transport
+
+            result = await verify_compliance_transport(await headers_for(http, config))
+            save(output / "canonical-compliance.json", result)
+            canonical["passed"] = True
+        except Exception as exc:
+            canonical["error"] = type(exc).__name__ + ": " + str(exc)[:1000]
+        report["cases"].append(canonical)
+        save(output / "report.json", report)
+        print(
+            f"Compliance route: {'PASS' if canonical['passed'] else canonical['error']}",
+            flush=True,
+        )
+        if not canonical["passed"]:
+            return False
         for sid in EXPECTED:
             row = {"scenario_id": sid, "passed": False}
             try:

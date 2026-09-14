@@ -53,6 +53,9 @@ python tests/integration/local_stack/harness.py --suite industrial --mode full -
 The overlay changes all Urban source URLs, including DVD's scenario-to-project
 lookup. Preflight searches the seeded clause through DVD with scenario scope,
 exercising both its Urban dependency and the remote embedding endpoint.
+It also exercises the actual compliance dispatcher with a quoted canonical
+distance, persisted NormGraph plans, Redis and IDU geometry for before/after
+scenarios. This probe must use no model and must check exactly the scoped clause.
 Goal formation uses medium reasoning and allows up to 16384 output tokens.
 Ready analytical synthesis keeps high reasoning; the separate judge uses medium.
 The test vLLM advertises a 65536-token model window; this overlay uses that bound,
@@ -86,6 +89,8 @@ and evidence references. The separate LLM evaluation checks relevance, grounding
 limitations, conversation continuity and scenario-specific conclusions. Passing
 criteria require an exact answer quote and existing evidence IDs; uncertainty or
 malformed judgments produce `needs_review`, never success.
+One bounded repair of invalid JSON/references is allowed; substantive negative
+verdicts survive a repair. All raw attempts and reference maps are saved.
 
 Successful analysis can conclude that a project is unsuitable. Missing-data and
 service blockers do not satisfy a positive scenario. The existing deterministic

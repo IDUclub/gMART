@@ -1,9 +1,53 @@
 from copy import deepcopy
 
+import pytest
+
 from tests.integration.industrial.acceptance import verify_result
 from tests.integration.industrial.judge import validate_judgment
 from tests.integration.industrial.runner import series_verdict
 from tests.integration.industrial.scenarios import episodes
+
+
+@pytest.mark.asyncio
+async def test_judge_repairs_missing_proof_once_without_changing_failures():
+    import json
+    from unittest.mock import AsyncMock, Mock
+
+    from tests.integration.industrial.judge import BASE_RUBRIC, evaluate
+
+    final, context = sample()
+    rows = [
+        {
+            "id": name,
+            "verdict": "pass",
+            "quote_id": "Q1",
+            "evidence_ids": [],
+            "reason": "Проверено",
+        }
+        for name in BASE_RUBRIC
+    ]
+    rows[0]["verdict"] = "fail"
+    invalid = {"choices": [{"message": {"content": json.dumps({"criteria": rows})}}]}
+    repaired = deepcopy(rows)
+    for row in repaired:
+        row["evidence_ids"] = ["E1"]
+    repaired[0]["verdict"] = "pass"  # A format repair must not overturn a failure.
+    valid = {"choices": [{"message": {"content": json.dumps({"criteria": repaired})}}]}
+    http = Mock(
+        post=AsyncMock(
+            side_effect=[Mock(json=lambda: invalid), Mock(json=lambda: valid)]
+        )
+    )
+    result = await evaluate(
+        http,
+        {"LLM_BASE_URL": "http://model.test/v1", "LLM_MODEL": "m"},
+        {"rubric": []},
+        [{"query": "Оцени", "final": final}],
+        context,
+    )
+    assert http.post.await_count == 2
+    assert result["verdict"] == "fail"
+    assert len(result["attempts"]) == 2
 
 
 def sample():

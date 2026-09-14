@@ -361,3 +361,224 @@ def test_draft_calculation_domain_cannot_be_confused_with_retrieval_kind():
         }
     )
     assert r.agent == "provision" and r.entity_kind == "other"
+
+
+async def test_russian_request_cannot_dispatch_an_english_indicator_task(fake_llm):
+    draft = {
+        "objective": "Получить население",
+        "requirements": [
+            {
+                "id": "population",
+                "agent": "scenario_data",
+                "source_ids": [1],
+                "description": "Retrieve the population indicator for scenario 17",
+                "required_artifacts": ["table"],
+            }
+        ],
+    }
+    repaired = {
+        **draft,
+        "requirements": [
+            {
+                **draft["requirements"][0],
+                "description": "Получи сохранённый показатель численности населения для сценария 17",
+            }
+        ],
+    }
+    fake_llm.json_responses = [json.dumps(draft), json.dumps(repaired)]
+    goal = await GoalManager(fake_llm).create(
+        "m", "Приведи сохранённую численность населения.", [], 17
+    )
+    assert "показатель" in goal.requirements[0].description
+
+
+async def test_scoped_compliance_does_not_audit_other_documents_or_versions():
+    from src.agents.services.normgraph.normgraph_restriction_retriever import (
+        NormGraphRestrictionRetriever,
+    )
+    from tests.unit.test_normgraph_restriction_retriever import FakeClient
+
+    hits = [
+        {
+            "id": rid,
+            "kind": "минимальное_расстояние",
+            "value": {"number": 50, "unit": "м"},
+            "provenance": {"name": name, "numbering": "1.1", "version": year},
+        }
+        for rid, name, year in [
+            ("wanted", "EXAMPLE", "2026"),
+            ("old", "EXAMPLE", "2025"),
+            ("other", "OTHER", "2026"),
+        ]
+    ]
+    result = await NormGraphRestrictionRetriever(None).retrieve(
+        FakeClient(hits),
+        "m",
+        "Проверь пункт 1.1 документа EXAMPLE, версия 2026: минимум 50 м.",
+        retrieve_all=True,
+        retain_unsupported=True,
+    )
+    assert [h["id"] for h in result.restrictions] == ["wanted"]
+
+
+async def test_quoted_canonical_distance_uses_saved_compliance_plan(state_store):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.agents.services.restriction.restriction_parser_service import (
+        RestrictionParserService,
+    )
+
+    service = object.__new__(RestrictionParserService)
+    service.state_store = state_store
+    service.compliance_result_harness = SimpleNamespace(
+        prepare_follow_up=lambda *a, **k: None
+    )
+    hit = {
+        "id": "r1",
+        "kind": "минимальное_расстояние",
+        "value": {"number": 50, "unit": "м"},
+        "provenance": {"name": "EXAMPLE", "version": "2026", "numbering": "1.1"},
+    }
+    service.normgraph_retriever = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=SimpleNamespace(
+                restrictions=[hit], unsupported_count=0, tool_call={}
+            )
+        )
+    )
+    service._build_plan = AsyncMock(
+        side_effect=AssertionError(
+            "Canonical clause was routed into the free-form planner"
+        )
+    )
+
+    async def canonical(**kwargs):
+        yield {"type": "compliance_summary", "content": {"total_norms": 1}}
+
+    service._run_executable_compliance = canonical
+    events = [
+        e
+        async for e in service._run_restriction_execution_pipline(
+            mcp_client=object(),
+            temperature=0,
+            model="m",
+            user_query="Проверь пункт 1.1 документа EXAMPLE, версия 2026: расстояние не менее 50 м.",
+            scenario_id=17,
+            token_ref=["t"],
+            persist_history=False,
+            normgraph_mcp_client=object(),
+            history_agent="compliance",
+        )
+    ]
+    assert any(e["type"] == "compliance_summary" for e in events)
+    service._build_plan.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "query,temporary",
+    [
+        ("Проверь пункт 1.1 документа EXAMPLE, версия 2026: не менее 50 м.", False),
+        ("Проверь пункт 1.1 документа EXAMPLE, версия 2026: не менее 0.05 км.", False),
+        (
+            "Проверь пункт 1.1 документа EXAMPLE, версия 2026: вместо 50 м используй 70 м.",
+            True,
+        ),
+        ("Проверь пункт 1.1 документа EXAMPLE, версия 2026: не менее 70 м.", True),
+        ("Проверь расстояние 50 м между школами и стоянками.", True),
+        ("Проверь пункт 1.1 документа OTHER, версия 2026: не менее 50 м.", True),
+        ("Проверь пункт 1.1 документа EXAMPLE, версия 2025: не менее 50 м.", True),
+    ],
+)
+def test_canonical_quote_does_not_swallow_temporary_user_conditions(query, temporary):
+    from src.agents.services.normgraph.normgraph_restriction_retriever import (
+        NormGraphRestrictionRetriever,
+    )
+
+    hit = {
+        "id": "r1",
+        "kind": "минимальное_расстояние",
+        "value": {"number": 50, "unit": "м"},
+        "provenance": {"name": "EXAMPLE", "numbering": "1.1", "version": "2026"},
+    }
+    assert (
+        NormGraphRestrictionRetriever.requires_temporary_distance(query, [hit])
+        == temporary
+    )
+
+
+async def test_exhaustive_scoped_retrieval_retains_canonical_value_for_override():
+    from src.agents.services.normgraph.normgraph_restriction_retriever import (
+        NormGraphRestrictionRetriever,
+    )
+    from tests.unit.test_normgraph_restriction_retriever import FakeClient
+
+    hit = {
+        "id": "r1",
+        "kind": "минимальное_расстояние",
+        "value": {"number": 50, "unit": "м"},
+        "provenance": {"name": "EXAMPLE", "numbering": "1.1", "version": "2026"},
+    }
+    result = await NormGraphRestrictionRetriever(None).retrieve(
+        FakeClient([hit]),
+        "m",
+        "В пункте 1.1 документа EXAMPLE, версия 2026, вместо 50 м используй 70 м.",
+        retrieve_all=True,
+    )
+    assert result.restrictions == [hit]
+
+
+def test_multiword_document_name_in_canonical_scope():
+    from src.agents.services.normgraph.normgraph_restriction_retriever import (
+        NormGraphRestrictionRetriever,
+    )
+
+    hit = {
+        "id": "r1",
+        "kind": "минимальное_расстояние",
+        "value": {"number": 50, "unit": "м"},
+        "provenance": {
+            "name": "EXAMPLE TEST NORM",
+            "numbering": "1.1",
+            "version": "2026",
+        },
+    }
+    query = "Используй только пункт 1.1 синтетического документа EXAMPLE TEST NORM, версия 2026: 50 м."
+    assert NormGraphRestrictionRetriever._filter_explicit_references([hit], query) == [
+        hit
+    ]
+    assert not NormGraphRestrictionRetriever.requires_temporary_distance(query, [hit])
+    assert not NormGraphRestrictionRetriever.requires_temporary_distance(
+        query + " Анализируй без создания или изменения объектов.", [hit]
+    )
+
+
+async def test_source_quote_supplies_entity_kind_when_description_omits_it(fake_llm):
+    fake_llm.json_responses = [
+        json.dumps(
+            {
+                "objective": "Получить исходные объекты",
+                "requirements": [
+                    {
+                        "id": "objects",
+                        "agent": "scenario_data",
+                        "entity_kind": "other",
+                        "subject": "Жилой дом и Парк",
+                        "source_ids": [1],
+                        "description": "Исходные таблицы и слои выбранного сценария для типов «Жилой дом» и «Парк»",
+                        "required_artifacts": ["table", "feature_collection"],
+                    }
+                ],
+            }
+        )
+    ]
+    goal = await GoalManager(fake_llm).create(
+        "m",
+        "Для физических объектов типов «Жилой дом» и «Парк» нужны только исходные таблицы и слои выбранного сценария.",
+        [],
+        17,
+    )
+    assert [(r.entity_kind, r.subject) for r in goal.requirements] == [
+        ("physical_objects", "Жилой дом"),
+        ("physical_objects", "Парк"),
+    ]

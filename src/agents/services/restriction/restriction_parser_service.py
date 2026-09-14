@@ -443,10 +443,8 @@ class RestrictionParserService(BaseLlmService):
 
         # A current distance condition must go through the request-scoped plan:
         # the canonical-plan audit below cannot represent a user's temporary rule.
-        explicit_distance = re.search(
-            r"\d+(?:[.,]\d+)?\s*[-–]?\s*(?:км\b|м\b|метр|километр)",
-            user_query.split("\n\nКонтекст — результаты предыдущих шагов:", 1)[0],
-            re.IGNORECASE,
+        explicit_distance = NormGraphRestrictionRetriever.requires_temporary_distance(
+            user_query, normgraph_restrictions
         )
         if (
             history_agent == "compliance"
