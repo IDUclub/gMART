@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import time
+from copy import deepcopy
 from math import isfinite
 from typing import Literal
 from uuid import uuid4
@@ -298,7 +299,7 @@ def completed_domain_operation(tool, result):
         "canceled",
     }:
         return False
-    if tool == "run_func_generation":
+    if tool in {"run_func_generation", "run_constrained_generation"}:
         return all(
             isinstance(result.get(k), dict)
             and result[k].get("type") == "FeatureCollection"
@@ -467,6 +468,31 @@ class PlanningService(BaseLlmService):
                 ]
             )
         catalogue = {t["function"]["name"]: t["function"] for t in tools}
+        if self.profile.key == "genplanner" and "run_func_generation" in catalogue:
+            constrained = deepcopy(catalogue["run_func_generation"])
+            constrained["name"] = "run_constrained_generation"
+            constrained["description"] = (
+                "Реальная генерация зон/дорог с сохранением всех неизменяемых зон. "
+                "Передай layer ссылкой $artifact на полный исходный слой и editable_zone_kinds "
+                "(например [industrial]). Программа извлечёт year/source и полный список "
+                "закреплённых ID. Доли territory_balance выбери как проектное допущение."
+            )
+            params = constrained["parameters"]
+            params["properties"].pop("functional_zones", None)
+            params["properties"].update(
+                {
+                    "layer": {"type": "object"},
+                    "editable_zone_kinds": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
+                }
+            )
+            params["required"] = [
+                k for k in params.get("required", []) if k != "functional_zones"
+            ] + ["layer", "editable_zone_kinds"]
+            catalogue[constrained["name"]] = constrained
         if not self.profile.required_tools <= catalogue.keys():
             yield {
                 "type": "error",
@@ -725,7 +751,11 @@ class PlanningService(BaseLlmService):
                     raise ValueError(
                         "Generation requires explicit population or floor-area targets"
                     )
-                if action.tool == "run_func_generation":
+                if action.tool in {"run_func_generation", "run_constrained_generation"}:
+                    if args.get("test"):
+                        raise ValueError(
+                            "Synthetic generation is not allowed; only explicit normative inputs may be mocked"
+                        )
                     balance = args["territory_balance"]
                     if (
                         not balance
@@ -805,6 +835,25 @@ class PlanningService(BaseLlmService):
                         )
                         response.raise_for_status()
                         result = response.json()
+                elif action.tool == "run_constrained_generation":
+                    resolved = dict(args)
+                    constraints = prepare_zoning_constraints(
+                        resolved.pop("layer"), resolved.pop("editable_zone_kinds")
+                    )
+                    resolved["functional_zones"] = {
+                        key: constraints[key]
+                        for key in ("year", "source", "fixed_functional_zones_ids")
+                    }
+                    validate(resolved, catalogue["run_func_generation"]["parameters"])
+                    result = await client.execute_tool(
+                        "run_func_generation",
+                        resolved,
+                        meta={"scenario_id": scenario_id},
+                    )
+                    result = {
+                        **jsonable_encoder(result),
+                        "generation_constraints": constraints,
+                    }
                 else:
                     result = await client.execute_tool(
                         action.tool, args, meta={"scenario_id": scenario_id}

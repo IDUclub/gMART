@@ -77,7 +77,7 @@ services:
       <<: *auth
       LLM_BACKEND: openai
       OPENAI_BASE_URL: http://10.32.11.27:8001/v1
-      OPENAI_STRUCTURED_TRANSPORT: responses_function
+      OPENAI_STRUCTURED_TRANSPORT: harmony_completion
       DEFAULT_LLM_MODEL: gpt-oss-20b
       PUBLIC_AGENTS_URL: http://localhost:18000
       ORCHESTRATOR_ANALYSIS_MODE: goal

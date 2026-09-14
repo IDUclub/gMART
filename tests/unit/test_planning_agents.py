@@ -544,3 +544,89 @@ def test_pzz_mock_changes_only_explicit_test_attributes(tmp_path):
     zones["features"][0]["properties"]["territory_zone_name"] = "unknown"
     with pytest.raises(ValueError, match="No explicit test normative"):
         prepare_test_pzz_inputs(zones, buildings, fixture)
+
+
+@pytest.mark.parametrize("synthetic", [False, True])
+async def test_constrained_generation_passes_all_preserved_zones(
+    specialist, monkeypatch, synthetic
+):
+    from copy import deepcopy
+
+    service, transport = specialist
+    service.profile = PROFILES["genplanner"]
+    transport.load_ollama_tools.return_value = [
+        {
+            "function": {
+                "name": "run_func_generation",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "integer"},
+                        "territory_balance": {"type": "object"},
+                        "functional_zones": {"type": "object"},
+                        "test": {"type": "boolean"},
+                    },
+                    "required": ["project_id", "territory_balance", "functional_zones"],
+                    "additionalProperties": False,
+                },
+            }
+        }
+    ]
+    transport.execute_tool.return_value = {"zones": LAYER, "roads": LAYER}
+    layer = deepcopy(LAYER)
+    layer["features"] = [
+        dict(
+            deepcopy(LAYER["features"][0]),
+            properties={
+                "functional_zone_id": i,
+                "functional_zone_type": {
+                    "name": "industrial" if i == 19 else "recreation"
+                },
+                "year": 2024,
+                "source": "OSM",
+            },
+        )
+        for i in range(20)
+    ]
+    actions = AsyncMock(
+        side_effect=[
+            PlanningAction(
+                action="call",
+                tool="run_constrained_generation",
+                arguments_json=json.dumps(
+                    {
+                        "project_id": 604,
+                        "territory_balance": {"1": 1},
+                        "layer": {"$artifact": "input"},
+                        "editable_zone_kinds": ["industrial"],
+                        "test": synthetic,
+                    }
+                ),
+            ),
+            PlanningAction(action="blocked", answer="stop"),
+        ]
+    )
+    monkeypatch.setattr(
+        "src.agents.services.planning.planning_service.run_structured", actions
+    )
+    events = [
+        e
+        async for e in service.run(
+            token=internal_user_context_jwt("u"),
+            user_query="Перестрой промышленную часть",
+            input_artifacts={"input": layer},
+        )
+    ]
+    if synthetic:
+        transport.execute_tool.assert_not_called()
+        assert any("Synthetic generation" in str(e) for e in events)
+    else:
+        call = transport.execute_tool.call_args
+        assert call.args[0] == "run_func_generation"
+        assert call.args[1]["functional_zones"] == {
+            "year": 2024,
+            "source": "OSM",
+            "fixed_functional_zones_ids": list(range(19)),
+        }
+        evidence = next(e["content"] for e in events if e["type"] == "source_evidence")
+        assert evidence["result"]["generation_constraints"]["editable_count"] == 1
