@@ -18,7 +18,7 @@ from src.agents.common.build_info import application_digest
 from src.agents.services.planning.artifacts import preview
 from tests.integration.industrial.judge import validate_judgment
 from tests.integration.industrial.transport import parse_events, save
-from tests.integration.real_planning.scenarios import episodes
+from tests.integration.real_planning.scenarios import CASES, episodes
 
 
 async def user_headers(http, auth):
@@ -133,6 +133,7 @@ async def run(args):
         "target": 15,
         "minimum": 8,
         "accepted": False,
+        "selected_case": args.case,
     }
     save(output / "report.json", report)
     async with httpx.AsyncClient(timeout=2100, trust_env=False) as http:
@@ -185,7 +186,8 @@ async def run(args):
             json.dumps(source, sort_keys=True).encode()
         ).hexdigest()
         save(output / "report.json", report)
-        for episode in list(episodes())[: args.episodes]:
+        selected = [e for e in episodes() if args.case is None or e["id"] == args.case]
+        for episode in selected[: args.episodes]:
             directory = output / f"{episode['id']}-{episode['formulation']}"
             directory.mkdir()
             row = {
@@ -233,10 +235,17 @@ async def run(args):
                     events = parse_events(response)
                     save(turn_dir / "events.json", events)
                     final = next(
-                        e["content"]
-                        for e in reversed(events)
-                        if e["type"] == "orchestrator_final"
+                        (
+                            e["content"]
+                            for e in reversed(events)
+                            if e["type"] == "orchestrator_final"
+                        ),
+                        None,
                     )
+                    if final is None:
+                        raise RuntimeError(
+                            "Stream ended without orchestrator_final; inspect recorded events"
+                        )
                     turn["final"] = final
                     for event in events:
                         if (
@@ -329,6 +338,11 @@ def main():
     parser.add_argument("--scenario-id", type=int, default=772)
     parser.add_argument("--model", default="gpt-oss-20b")
     parser.add_argument("--episodes", type=int, choices=range(1, 16), default=15)
+    parser.add_argument(
+        "--case",
+        choices=[case["id"] for case in CASES],
+        help="Run one scenario family for diagnosis; acceptance still requires 8/15 episodes",
+    )
     raise SystemExit(asyncio.run(run(parser.parse_args())))
 
 

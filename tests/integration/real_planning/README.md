@@ -106,3 +106,8 @@ assessment adapter serializes known building types as numeric catalogue IDs in
 `building_type`, retaining the original value separately. This prevents PZZ's
 auto-selected column from unnecessarily invoking semantic type inference for
 GenBuilder's `low`/`medium`/`high` labels. Missing source attributes remain missing.
+
+For a bounded diagnosis of another scenario family, add `--case education`
+(or `redevelopment`, `preinvestment`, `masterplans`, `revision` as listed
+by `--help`). `--episodes` then limits that family's formulations. A filtered
+run retains the full 15-episode target and cannot establish complete acceptance.
