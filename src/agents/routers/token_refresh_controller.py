@@ -1,9 +1,14 @@
 from fastapi import APIRouter, Depends
 
 from src.agents.common.auth.auth import verify_bearer_token
-from src.agents.common.exceptions.base_exceptions import AgentsNotFound
+from src.agents.common.exceptions.base_exceptions import (
+    AgentsNotFound,
+    AgentsUnauthorizedException,
+)
 from src.agents.dependencies.dependencies import get_pipeline_state_store
+from src.agents.services.dvd.runs import run_metadata
 from src.agents.services.pipeline_state import PipelineStateStore
+from src.common.service_auth import user_id_from_jwt
 
 token_refresh_router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
@@ -14,6 +19,11 @@ async def cancel_pipeline(
     _token: str = Depends(verify_bearer_token),
     store: PipelineStateStore = Depends(get_pipeline_state_store),
 ) -> dict:
+    meta = await run_metadata(store, request_id)
+    if meta and meta["owner"] != user_id_from_jwt(_token):
+        raise AgentsUnauthorizedException(
+            "Этот запрос принадлежит другому пользователю."
+        )
     if not await store.cancel(request_id):
         raise AgentsNotFound(
             f"Pipeline request_id={request_id!r} was not found",

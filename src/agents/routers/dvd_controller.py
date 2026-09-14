@@ -14,7 +14,6 @@ from src.agents.common.exceptions.base_exceptions import (
     AgentsInputException,
     AgentsUnauthorizedException,
 )
-from src.agents.common.executors.sse_executors import stream_with_error_handling
 from src.agents.dependencies.dependencies import (
     get_dvd_api_client,
     get_dvd_mcp_client,
@@ -25,6 +24,7 @@ from src.agents.dto.dvd_request_dto import DocumentQaRequestDTO
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.schema.dvd_response import DvdResponse
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
+from src.agents.services.dvd.runs import stream_document_run, validate_resume
 
 dvd_router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -167,6 +167,7 @@ async def resolve_document_qa_token(
     user_request: Annotated[DocumentQaRequestDTO, Depends(DocumentQaRequestDTO)],
     token: str | None = Depends(optional_bearer_token),
     dvd_rag_service: DvdRagService = Depends(get_dvd_rag_service),
+    dvd_mcp_client: DvdMcpClient = Depends(get_dvd_mcp_client),
 ) -> str | None:
     """
     Authorize the document-QA stream, keeping questions to the shared index public.
@@ -190,6 +191,12 @@ async def resolve_document_qa_token(
     """
 
     if token is not None:
+        await validate_resume(
+            dvd_rag_service.state_store,
+            user_request.request_id,
+            user_request.after_event,
+            dvd_mcp_client._user_id,
+        )
         return token
 
     if user_request.scenario_id is not None or user_request.chat_id is not None:
@@ -209,6 +216,12 @@ async def resolve_document_qa_token(
                 error_input={"request_id": user_request.request_id},
             )
 
+    await validate_resume(
+        dvd_rag_service.state_store,
+        user_request.request_id,
+        user_request.after_event,
+        None,
+    )
     return None
 
 
@@ -225,12 +238,11 @@ async def stream_document_qa(
     dvd_rag_service: DvdRagService = Depends(get_dvd_rag_service),
 ) -> AsyncIterable[DvdResponse]:
 
-    async for chunk in stream_with_error_handling(
-        dvd_rag_service.run_document_qa_pipeline,
-        request,
+    async for chunk in stream_document_run(
         dvd_rag_service,
-        user_request.model,
-        rerun=False,
+        model=user_request.model,
+        owner=dvd_mcp_client._user_id if token else None,
+        after_event=user_request.after_event,
         dvd_mcp_client=dvd_mcp_client,
         token=token,
         user_query=user_request.request,

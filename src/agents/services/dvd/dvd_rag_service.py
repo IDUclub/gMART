@@ -31,6 +31,11 @@ from src.agents.services.dvd.clarification import (
     selected_choice,
 )
 from src.agents.services.dvd.context_reducer import DvdContextReducer
+from src.agents.services.dvd.dialogue import (
+    pending_question,
+    render_question,
+    resolve_reply,
+)
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
@@ -220,6 +225,35 @@ class DvdRagService(BaseLlmService):
             except Exception as exc:
                 logger.warning(f"DVD QA: failed to persist user question: {exc}")
 
+        collected["chat_id"] = chat_id
+        if original_chat_id and not is_reconnect:
+            pending = await self.state_store.get_document_question(original_chat_id)
+            last_answer = next(
+                (
+                    m["content"]
+                    for m in reversed(history)
+                    if m.get("role") == "assistant"
+                ),
+                "",
+            )
+            if pending and CLARIFICATION in last_answer:
+                reply = resolve_reply(user_query, pending)
+                if reply and reply.get("unresolved"):
+                    async for event in self._finish_retrieval(
+                        request_id, collected, render_question(pending), 1
+                    ):
+                        yield event
+                    if persist_history:
+                        self._schedule_persist_answer(
+                            token, chat_id, collected, scenario_id
+                        )
+                    return
+                if reply:
+                    collected["reply_plan"] = reply["plan"]
+                    collected["selected_candidate_ids"] = reply.get("selected_ids")
+                else:
+                    await self.state_store.set_document_question(original_chat_id, None)
+
         async with self.context_reducer.model_window(model):
             async for event in self._run_qa_loop(
                 dvd_mcp_client,
@@ -284,8 +318,12 @@ class DvdRagService(BaseLlmService):
                     f"Подбираю параметры поиска (попытка {iteration})…",
                 ),
             )
-            plan = await self.planner.build_plan(
-                model, user_query, history, prev_critique, prev_query
+            plan = (
+                validate_retrieval_plan(collected["reply_plan"])
+                if collected.get("reply_plan")
+                else await self.planner.build_plan(
+                    model, user_query, history, prev_critique, prev_query
+                )
             )
             locked = collected.get("retrieval_constraints") or progress.get(
                 "retrieval_constraints"
@@ -344,13 +382,13 @@ class DvdRagService(BaseLlmService):
                         + " "
                         + user_query
                     )
-                    descriptions = ranked_choices(candidates, question)
-                    answer = (
-                        CLARIFICATION
-                        + "\n\n"
-                        + "\n".join("- " + d for d in descriptions[:20])
-                    )
-                    if len(descriptions) > 20 or not search_result.get(
+                    pending = pending_question(plan, candidates, question)
+                    answer = render_question(pending)
+                    if collected.get("chat_id"):
+                        await self.state_store.set_document_question(
+                            collected["chat_id"], pending
+                        )
+                    if len(candidates) > 20 or not search_result.get(
                         "candidates_complete", True
                     ):
                         answer += "\nПоказаны первые кандидаты; уточнение сузит полный список."
@@ -367,6 +405,10 @@ class DvdRagService(BaseLlmService):
                         yield event
                     return
                 hits = search_result["hits"]
+                if collected.get("chat_id"):
+                    await self.state_store.set_document_question(
+                        collected["chat_id"], None
+                    )
                 context = self.context_builder.build_context(hits)
             else:
                 context = None
@@ -715,7 +757,12 @@ class DvdRagService(BaseLlmService):
                 candidates = page.get("candidates", [])
                 complete_choices = page.get("candidates_complete", True)
                 choice = collected.get("selected_choice")
-                matches = matching_choices(candidates, choice) if choice else []
+                ids = collected.get("selected_candidate_ids")
+                matches = (
+                    [c for c in candidates if c.get("id") in ids]
+                    if ids
+                    else matching_choices(candidates, choice) if choice else []
+                )
                 if matches and complete_choices and all(c.get("id") for c in matches):
                     selected_ids = {c["id"] for c in matches}
                 elif not (
