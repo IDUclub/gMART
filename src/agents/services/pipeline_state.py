@@ -132,6 +132,41 @@ class PipelineStateStore:
         raw = await self._retry(self._redis.get, self._key(request_id, "state"))
         return json.loads(raw) if raw else None
 
+    async def get_document_question(self, chat_id: str) -> dict | None:
+        raw = await self._retry(
+            self._redis.get, self._key(chat_id, "document_question")
+        )
+        return json.loads(raw) if raw else None
+
+    async def get_document_run(self, request_id: str) -> dict | None:
+        raw = await self._retry(self._redis.get, self._key(request_id, "document_run"))
+        return json.loads(raw) if raw else None
+
+    async def save_document_run(
+        self, request_id: str, metadata: dict, *, create=False
+    ) -> bool:
+        return bool(
+            await self._retry(
+                self._redis.set,
+                self._key(request_id, "document_run"),
+                json.dumps(metadata),
+                nx=create,
+                ex=PIPELINE_TTL,
+            )
+        )
+
+    async def set_document_question(self, chat_id: str, question: dict | None) -> None:
+        key = self._key(chat_id, "document_question")
+        if question is None:
+            await self._retry(self._redis.delete, key)
+        else:
+            await self._retry(
+                self._redis.setex,
+                key,
+                PIPELINE_TTL,
+                json.dumps(question, ensure_ascii=False),
+            )
+
     async def set_status(self, request_id: str, status: PipelineStatus) -> None:
         raw = await self._retry(self._redis.get, self._key(request_id, "state"))
         if not raw:
@@ -265,9 +300,21 @@ class PipelineStateStore:
     async def cancel(self, request_id: str) -> bool:
         """Mark a pipeline cancelled and release its single-flight chat lock."""
 
+        run = await self.get_document_run(request_id)
+        if run:
+            if run["status"] != "running":
+                return False
+            await self._retry(
+                self._redis.setex,
+                self._key(request_id, "document_cancel"),
+                PIPELINE_TTL,
+                "1",
+            )
         state = await self.get_state(request_id)
-        if not state:
+        if not state and not run:
             return False
+        if not state:
+            return True
         await self.set_status(request_id, PipelineStatus.CANCELLED)
         await self._redis.publish(
             self._key(request_id, "token_channel"), json.dumps({"cancelled": True})
@@ -277,6 +324,10 @@ class PipelineStateStore:
         return True
 
     async def is_cancelled(self, request_id: str) -> bool:
+        if await self._retry(
+            self._redis.exists, self._key(request_id, "document_cancel")
+        ):
+            return True
         state = await self.get_state(request_id)
         return bool(state and state.get("status") == PipelineStatus.CANCELLED)
 

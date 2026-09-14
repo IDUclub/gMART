@@ -1,5 +1,6 @@
 import copy
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -75,11 +76,11 @@ async def test_clarification_deduplicates_and_ranks_by_question(service, fake_ll
         service, client, "Расскажи о пункте 3.3 Градостроительного кодекса"
     )
     options = [
-        line for line in answer_text(events).splitlines() if line.startswith("- ")
+        line for line in answer_text(events).splitlines() if re.match(r"^\d+\. ", line)
     ]
-    assert len(options) == 3
-    assert CODE in options[0]
-    assert options[0].endswith(": 52 / 3.3")
+    assert len(options) == 2
+    assert answer_text(events).count(CODE) == 1
+    assert "52 / 3.3" in options[0]
 
 
 @pytest.mark.parametrize(
@@ -152,7 +153,8 @@ async def test_two_turn_choice_keeps_only_selected_roots_and_children(
     )
     clarification = answer_text(events)
     assert (
-        len([line for line in clarification.splitlines() if line.startswith("- ")]) == 2
+        len([line for line in clarification.splitlines() if re.match(r"^\d+\. ", line)])
+        == 2
     )
     assert "52 / 3.3" in clarification
     service.get_chat_messages.return_value = SimpleNamespace(
@@ -550,7 +552,7 @@ async def test_same_address_different_content_is_not_merged_and_choice_round_tri
         "Пункт 3.3 про линейный объект",
     )
     answer = answer_text(events)
-    options = [s[2:] for s in answer.splitlines() if s.startswith("- ")]
+    options = [s[2:] for s in answer.splitlines() if re.match(r"^\d+\. ", s)]
     assert len(options) == 2 and "линейного" in options[0]
     service.get_chat_messages.return_value = SimpleNamespace(
         messages=[{"role": "assistant", "content": answer}]
