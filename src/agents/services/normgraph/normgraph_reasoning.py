@@ -7,6 +7,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from src.agents.runtime.runner import run_structured
+from src.agents.services.normgraph.document_reference import explicit_document_names
 from src.agents.services.service_entities.normgraph_plan import (
     NormGraphCriticVerdict,
     NormGraphPlan,
@@ -77,7 +78,8 @@ class NormGraphRetrievalPlanner:
             "object": (plan.object or "").strip() or None,
             "subject": (plan.subject or "").strip() or None,
             "kind": (plan.kind or "").strip() or None,
-            "document_names": _clean_str_list(plan.document_names),
+            "document_names": explicit_document_names(user_query)
+            or _clean_str_list(plan.document_names),
             "tags": _clean_str_list(plan.tags),
             "limit": min(max(plan.limit, _LIMIT_MIN), _LIMIT_MAX),
             "neighbors_depth": min(

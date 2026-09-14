@@ -251,7 +251,7 @@ async def run(args):
                 if not chat_id:
                     break
             try:
-                async with asyncio.timeout(120):
+                async with asyncio.timeout(240):
                     judge = await evaluate(http, config, episode, row["turns"], context)
             except Exception as exc:
                 judge = {"verdict": "needs_review", "reason": type(exc).__name__}

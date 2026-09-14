@@ -40,3 +40,15 @@ async def test_planner_disables_thinking_and_requests_json_schema():
     assert client.calls[0]["think"] is False
     assert client.calls[0]["format"]["title"] == "NormGraphPlan"
     assert client.calls[0]["options"]["num_predict"] == 1024
+
+
+def test_document_version_is_not_part_of_exact_name_filter():
+    from src.agents.services.service_entities.normgraph_plan import NormGraphPlan
+
+    plan = NormGraphPlan(document_names=["EXAMPLE TEST NORM v2026"])
+    result = NormGraphRetrievalPlanner._clamp(
+        plan,
+        "Сопоставить запись из документа EXAMPLE TEST NORM v2026, пункт 1.1. "
+        "Укажи источники и версию. Документ EXAMPLE TEST NORM, версия 2026.",
+    )
+    assert result.document_names == ["EXAMPLE TEST NORM"]

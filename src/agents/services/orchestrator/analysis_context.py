@@ -143,9 +143,14 @@ class AnalysisContext:
                 "table",
                 "source_evidence",
                 "compliance_summary",
+                "compliance_result",
             }:
                 continue
-            preview = self.slice(a["id"], 0, 3)
+            # Short metric tables place deficit after counts/capacity/demand.
+            # Include every row when compact enough, still within the view budget.
+            rows = a["content"].get("rows", [])
+            limit = len(rows) if a["kind"] == "table" and len(rows) <= 20 else 3
+            preview = self.slice(a["id"], 0, max(3, limit))
             key = (a["fingerprint"], preview.get("scenario_id"))
             if key not in seen:
                 candidates.append(preview)
@@ -153,8 +158,21 @@ class AnalysisContext:
         candidates.sort(
             key=lambda p: (
                 0
-                if p in self.inspected
-                else 1 if p.get("name") == "provision_summary" else 2
+                if p.get("kind") == "compliance_summary"
+                else (
+                    1
+                    if p.get("kind") == "compliance_result"
+                    else (
+                        2
+                        if p in self.inspected
+                        else (
+                            3
+                            if p.get("name")
+                            in {"provision_summary", "provision_metrics"}
+                            else 4
+                        )
+                    )
+                )
             )
         )
         for preview in candidates:
@@ -202,6 +220,26 @@ class AnalysisContext:
             ),
             None,
         )
+        if a["kind"] in {"compliance_summary", "compliance_result"}:
+            if a["kind"] == "compliance_summary":
+                results = content.get("results", [])
+                compact = {k: v for k, v in content.items() if k != "results"}
+                compact["results"] = [
+                    self._compliance_fact(r) for r in results[offset : offset + limit]
+                ]
+            else:
+                results = [content]
+                compact = self._compliance_fact(content)
+            return {
+                "artifact_id": artifact_id,
+                "kind": a["kind"],
+                "scenario_id": scope,
+                "content": compact,
+                "offset": offset,
+                "stored_results": len(results),
+                "results_complete": offset + limit >= len(results),
+                "geometry_available_in_artifact": True,
+            }
         if a["kind"] == "table":
             rows = content.get("rows", [])
             return {
@@ -236,6 +274,28 @@ class AnalysisContext:
                 "complete": offset + limit * 100 >= len(text),
             }
         return {"artifact_id": artifact_id, "content": content}
+
+    @staticmethod
+    def _compliance_fact(result):
+        """Keep the verdict in the prompt regardless of the size of its geometry."""
+        facts = {
+            k: result[k]
+            for k in (
+                "restriction_id",
+                "template",
+                "verification_status",
+                "compliance_status",
+                "coverage",
+                "summary",
+                "missing_requirements",
+                "warnings",
+            )
+            if k in result
+        }
+        facts["source"] = {
+            k: v for k, v in (result.get("source") or {}).items() if k != "check_plan"
+        }
+        return facts
 
     def inspect(self, requests):
         previews = [self.slice(r.artifact_id, r.offset, r.limit) for r in requests]

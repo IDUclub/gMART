@@ -137,6 +137,8 @@ async def test_every_specialist_preserves_terminal_replay_and_evidence(
                     "objective": "Проверка контракта",
                     "requirements": [requirements],
                 }
+            elif "manifest" in payload:
+                response = {"issues": []}
             else:
                 goal = payload["goal"]["requirements"][0]
                 if goal["status"] == "pending":

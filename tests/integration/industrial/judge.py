@@ -11,6 +11,36 @@ BASE_RUBRIC = {
 }
 
 
+def judgment_schema(criteria):
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["criteria"],
+        "properties": {
+            "criteria": {
+                "type": "array",
+                "minItems": len(criteria),
+                "maxItems": len(criteria),
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["id", "verdict", "quote_id", "evidence_ids", "reason"],
+                    "properties": {
+                        "id": {"type": "string", "enum": list(criteria)},
+                        "verdict": {
+                            "type": "string",
+                            "enum": ["pass", "fail", "needs_review"],
+                        },
+                        "quote_id": {"type": ["string", "null"]},
+                        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                        "reason": {"type": "string", "minLength": 1},
+                    },
+                },
+            },
+        },
+    }
+
+
 def validate_judgment(review, criteria, answers, evidence):
     rows = review.get("criteria", []) if isinstance(review, dict) else []
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
@@ -139,7 +169,14 @@ async def evaluate(http, config, episode, turns, context):
         "temperature": 0,
         "max_tokens": 6000,
         "reasoning_effort": "medium",
-        "response_format": {"type": "json_object"},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "industrial_judgment",
+                "strict": True,
+                "schema": judgment_schema(rubric),
+            },
+        },
         "messages": [
             {
                 "role": "system",
@@ -150,6 +187,7 @@ async def evaluate(http, config, episode, turns, context):
                 '"reason":"конкретное обоснование с сопоставлением утверждения и данных"}]}. '
                 "Для КАЖДОГО pass, включая conversation и limitations, нужны quote_id и НЕПУСТОЙ evidence_ids. "
                 "Выбери подходящую точную цитату и подтверждающие её существующие артефакты. Не придумывай ID. "
+                "Для КАЖДОГО критерия обязателен непустой reason с конкретным обоснованием. "
                 "Отсутствующий обязательный вывод — fail. Недостаточная уверенность — needs_review. "
                 "Отрицательный вывод о проекте может быть правильным успешным анализом. "
                 "Числа сравнивай с артефактами, версии не смешивай. Не оценивай порядок вызовов агентов.",
@@ -190,6 +228,8 @@ async def evaluate(http, config, episode, turns, context):
         # is final; the reviewer must never be prompted to reconsider it to pass.
         if "criteria" in verdict or attempt == 1:
             break
+        if any(c.get("finish_reason") == "length" for c in raw.get("choices", [])):
+            request["max_tokens"] = 12000
         request["messages"].extend(
             [
                 {"role": "assistant", "content": content},
@@ -197,7 +237,7 @@ async def evaluate(http, config, episode, turns, context):
                     "role": "user",
                     "content": "Ошибка формата проверки: "
                     + verdict["reason"]
-                    + ". Исправь JSON и ссылки. Сохрани содержательные оценки fail/needs_review. Не меняй ответ пользователя и доказательства; все pass требуют непустые существующие evidence_ids и quote_id.",
+                    + ". Исправь JSON и ссылки. В КАЖДОМ критерии добавь непустой reason: сопоставь конкретное утверждение с данными. Сохрани содержательные оценки fail/needs_review. Не меняй ответ пользователя и доказательства; все pass требуют непустые существующие evidence_ids и quote_id.",
                 },
             ]
         )

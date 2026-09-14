@@ -105,6 +105,8 @@ def orchestrator(monkeypatch, fake_llm, fake_urban, state_store):
     svc.get_chat_messages = AsyncMock(return_value=SimpleNamespace(messages=[]))
     svc.add_single_message = AsyncMock()
     svc.add_complex_message = AsyncMock()
+    # Keep the LLM fact-check boundary hermetic; grounding has its own fixtures.
+    svc.goal_manager.validate_answer = AsyncMock()
     return svc
 
 

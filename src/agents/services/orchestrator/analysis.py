@@ -459,6 +459,16 @@ class AnalyticalRun:
                                         if comparisons
                                         else None
                                     )
+                                    if self.goal:
+                                        await s.goal_manager.validate_answer(
+                                            a["model"],
+                                            query,
+                                            review.answer,
+                                            self.context,
+                                            computed_artifacts=(
+                                                [comparison] if comparison else []
+                                            ),
+                                        )
                                 break
                             except ValueError as exc:
                                 if attempt == 2:
@@ -479,7 +489,7 @@ class AnalyticalRun:
                                 validation_error = str(exc)
                                 yield s._status(
                                     "reviewing",
-                                    "Исправляю ссылки на доказательства; полученные результаты сохранены…",
+                                    "Проверяю и исправляю итоговый вывод по доказательствам; полученные результаты сохранены…",
                                 )
                     finally:
                         self.budget.finalizing = False

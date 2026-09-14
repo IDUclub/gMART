@@ -48,6 +48,56 @@ async def test_judge_repairs_missing_proof_once_without_changing_failures():
     assert http.post.await_count == 2
     assert result["verdict"] == "fail"
     assert len(result["attempts"]) == 2
+    # The server must require a rationale, not merely parse any JSON object.
+    request = http.post.await_args.kwargs["json"]
+    assert request["response_format"]["type"] == "json_schema"
+    import jsonschema
+
+    schema = request["response_format"]["json_schema"]["schema"]
+    without_reasons = deepcopy(repaired)
+    for row in without_reasons:
+        row.pop("reason")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"criteria": without_reasons}, schema)
+
+
+@pytest.mark.asyncio
+async def test_truncated_judge_reply_gets_output_budget_without_lowering_reasoning():
+    import json
+    from unittest.mock import AsyncMock, Mock
+
+    from tests.integration.industrial.judge import BASE_RUBRIC, evaluate
+
+    final, context = sample()
+    rows = [
+        {"id": name, "verdict": "fail", "reason": "Вывод не подтверждён"}
+        for name in BASE_RUBRIC
+    ]
+    first = {"choices": [{"finish_reason": "length", "message": {"content": ""}}]}
+    second = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": json.dumps({"criteria": rows})},
+            }
+        ]
+    }
+    http = Mock(
+        post=AsyncMock(
+            side_effect=[Mock(json=lambda: first), Mock(json=lambda: second)]
+        )
+    )
+    result = await evaluate(
+        http,
+        {"LLM_BASE_URL": "http://model.test/v1", "LLM_MODEL": "m"},
+        {"rubric": []},
+        [{"query": "Оцени", "final": final}],
+        context,
+    )
+    request = http.post.await_args.kwargs["json"]
+    assert request["max_tokens"] == 12000
+    assert request["reasoning_effort"] == "medium"
+    assert result["verdict"] == "fail"
 
 
 def sample():

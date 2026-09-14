@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from src.agents.services.normgraph.document_reference import explicit_document_names
 from src.agents.services.normgraph.normgraph_reasoning import NormGraphRetrievalPlanner
 from src.agents.services.service_entities.normgraph_plan import PrimaryTool
 
@@ -257,7 +258,10 @@ class NormGraphRestrictionRetriever:
             user_query
         )
         version_match = re.search(
-            r"(?:верси[яию]|редакци[яию])\s*[«\"]?([\w.-]+)", query
+            # "Укажи версию." and "версию документа" are requests to report
+            # provenance, not literal version filters. Named labels need quotes.
+            r'(?:верси[яию]|редакци[яию])\s+(?:«([^»]+)»|"([^"]+)"|([vв]?\d[\w.-]*))',
+            query,
         )
         distances = {
             float(value.replace(",", "."))
@@ -308,7 +312,7 @@ class NormGraphRestrictionRetriever:
                 == document_name.casefold()
             ]
         if version_match:
-            version = version_match.group(1).rstrip(".")
+            version = next(part for part in version_match.groups() if part).rstrip(".")
             filtered = [
                 hit
                 for hit in filtered
@@ -328,15 +332,8 @@ class NormGraphRestrictionRetriever:
 
     @staticmethod
     def _explicit_document_name(query: str) -> str | None:
-        match = re.search(
-            r'\bдокумент(?:а|у|е|ом)?\s+(?:«([^»]+)»|"([^"]+)"|([A-ZА-ЯЁ0-9][\w.-]*(?:[ \t]+[A-ZА-ЯЁ0-9][\w.-]*)*))',
-            query,
-        )
-        return (
-            next((part.strip().rstrip(".") for part in match.groups() if part), None)
-            if match
-            else None
-        )
+        names = explicit_document_names(query)
+        return names[0] if names else None
 
     @classmethod
     def requires_temporary_distance(

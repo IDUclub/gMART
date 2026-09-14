@@ -392,3 +392,67 @@ async def test_false_completion_and_duplicate_are_repaired_without_replaying_too
     assert result["status"] == "completed"
     assert calls == 4
     assert len(data.calls) == 1
+
+
+async def test_unsupported_final_claim_is_repaired_without_replaying_calculation(
+    orchestrator, monkeypatch
+):
+    monkeypatch.setenv("ORCHESTRATOR_ANALYSIS_MODE", "goal")
+    goal = contract().model_copy(update={"requirements": contract().requirements[1:]})
+    orchestrator.goal_manager.create = AsyncMock(return_value=goal)
+    provision = FakePipeline([table(80)])
+    orchestrator.provision_service.run_provision_pipeline = provision
+    answers = iter(["Обеспеченность 100%.", "Обеспеченность 80%."])
+    views = []
+
+    async def review(model, query, agents, context, remaining, budget):
+        if not provision.calls:
+            return action("provision", "provision")
+        views.append(context)
+        return GoalDecision(
+            action="complete",
+            answer=next(answers),
+            evidence_ids=[a["id"] for a in context["artifacts"] if a["confirmed"]],
+        )
+
+    orchestrator.goal_manager.review = review
+    orchestrator.goal_manager.validate_answer = AsyncMock(
+        side_effect=[ValueError("Обеспеченность 100%: таблица подтверждает 80%."), None]
+    )
+    result = final(await run_pipeline(orchestrator, user_query="Сравни обеспеченность"))
+    assert result["status"] == "completed"
+    assert result["answer"] == "Обеспеченность 80%."
+    assert "80%" in views[-1]["review_validation_error"]
+    assert len(provision.calls) == 1
+
+
+async def test_grounding_failure_preserves_results_without_publishing_false_answer(
+    orchestrator, monkeypatch
+):
+    monkeypatch.setenv("ORCHESTRATOR_ANALYSIS_MODE", "goal")
+    goal = contract().model_copy(update={"requirements": contract().requirements[1:]})
+    orchestrator.goal_manager.create = AsyncMock(return_value=goal)
+    provision = FakePipeline([table(80)])
+    orchestrator.provision_service.run_provision_pipeline = provision
+
+    async def review(model, query, agents, context, remaining, budget):
+        if not provision.calls:
+            return action("provision", "provision")
+        return GoalDecision(
+            action="complete",
+            answer="Обеспеченность 100%.",
+            evidence_ids=[a["id"] for a in context["artifacts"] if a["confirmed"]],
+        )
+
+    orchestrator.goal_manager.review = review
+    orchestrator.goal_manager.validate_answer = AsyncMock(
+        side_effect=ValueError("Неверные 100%")
+    )
+    result = final(await run_pipeline(orchestrator, user_query="Сравни обеспеченность"))
+    assert result["status"] == "blocked"
+    assert "100%" not in result["answer"]
+    assert result["continue_from"]
+    assert result["missing"][0]["owner"] == "service"
+    assert any(a["confirmed"] and a["kind"] == "table" for a in result["artifacts"])
+    assert len(provision.calls) == 1
+    assert orchestrator.goal_manager.validate_answer.await_count == 3

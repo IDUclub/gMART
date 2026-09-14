@@ -121,8 +121,36 @@ class ProvisionPlanBuilder:
             schema["properties"][key]["items"]["enum"] = services_catalog
 
         def validate_scope(plan):
+            request = re.split(r"\n\nПодтвержд[её]нные результаты", user_query)[0]
+            if (
+                plan.mode == ProvisionPlanMode.EFFECTS
+                and re.search(
+                    r"(?:рассчит\w*|расч[её]т\w*|текущ\w*)\s+обеспечен", request, re.I
+                )
+                and not re.search(
+                    r"эффект|повлия|влияни|воздейств|изменится|изменятся|до\s*(?:и|/|—|-)\s*после",
+                    request,
+                    re.I,
+                )
+            ):
+                raise ValueError(
+                    "The request calculates provision in an existing scenario, not the effects of a change. Use provision/summary and preserve target_population; the words project/scenario do not request effects."
+                )
+            if (
+                plan.mode in {ProvisionPlanMode.PROVISION, ProvisionPlanMode.EFFECTS}
+                and not (plan.service_name or "").strip()
+            ):
+                raise ValueError(
+                    "Single-service calculation requires service_name from the current catalogue. Extract the named service; do not convert an incomplete model response into a user clarification."
+                )
+            if (
+                plan.mode == ProvisionPlanMode.NEEDS_CLARIFICATION
+                and not (plan.clarification_question or "").strip()
+            ):
+                raise ValueError(
+                    "needs_clarification requires a concrete missing input and a question. A request to calculate provision for named available services is provision/summary, not an unexplained clarification. Preserve the named services and population."
+                )
             if plan.mode == ProvisionPlanMode.SUMMARY and not plan.service_names:
-                request = re.split(r"\n\nПодтвержд[её]нные результаты", user_query)[0]
                 broad = re.search(
                     r"\b(?:все|всё|всем|всех|всеми|кажд\w*)\b.{0,80}(?:сервис|услуг)"
                     r"|(?:сводк|обзор)\w*\s*(?:по\s+)?обеспеченност\w*\s+(?:сервисами|услугами)\b"
@@ -180,8 +208,9 @@ class ProvisionPlanBuilder:
 эффектов, изменений или влияния проекта. Пример: «какая обеспеченность школами?».
 - "effects" — вопрос об эффектах, изменениях или влиянии проекта на обеспеченность одним \
 конкретным сервисом (сравнение до/после). Примеры: «как проект повлияет на обеспеченность школами?», \
-«рассчитай эффекты обеспеченности школами». Если из запроса про один сервис непонятно, \
-нужны текущая обеспеченность или эффекты — выбирай "effects".
+«рассчитай эффекты обеспеченности школами». Эффекты требуют явного запроса на влияние/изменение. \
+Расчёт обеспеченности готового сценария при заданном населении — "provision" (или "summary" для нескольких услуг). \
+Если изменение не задано, выбирай текущую обеспеченность; слова «проект» и «сценарий» сами по себе не означают эффекты.
 - "needs_clarification" — запрос не подходит ни под один режим, упомянутый сервис отсутствует \
 в доступных или запрос неоднозначен.
 

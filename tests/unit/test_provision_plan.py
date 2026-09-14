@@ -144,9 +144,7 @@ async def test_list_services_passes_through():
 
 
 @pytest.mark.asyncio
-async def test_clarification_without_question_gets_default_text():
+async def test_clarification_without_question_is_a_model_error():
     builder = build_builder({"mode": "needs_clarification"})
-    plan = await builder.build_plan("model", "запрос", CATALOG)
-    assert plan.mode == ProvisionPlanMode.NEEDS_CLARIFICATION
-    assert plan.clarification_question
-    assert "Школы" in plan.clarification_question
+    with pytest.raises(ValueError, match="requires a concrete missing input"):
+        await builder.build_plan("model", "запрос", CATALOG)

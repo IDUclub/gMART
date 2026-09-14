@@ -584,6 +584,110 @@ async def test_source_quote_supplies_entity_kind_when_description_omits_it(fake_
     ]
 
 
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"mode": "needs_clarification"},
+        {"mode": "provision", "service_name": None},
+        {"mode": "effects", "service_name": None},
+    ],
+)
+async def test_model_cannot_turn_an_empty_clarification_into_a_user_blocker(
+    fake_llm, invalid
+):
+    from src.agents.services.provision.provision_plan_builder import (
+        ProvisionPlanBuilder,
+    )
+
+    fake_llm.json_responses = [
+        json.dumps(invalid),
+        json.dumps(
+            {"mode": "provision", "service_name": "Школа", "target_population": 12000}
+        ),
+    ]
+    plan = await ProvisionPlanBuilder(fake_llm).build_plan(
+        "m",
+        "Расчёт обеспеченности и слои для услуги типа «Школа», население 12000.",
+        ["Школа", "Детский сад"],
+    )
+    assert plan.mode == "provision"
+    assert plan.service_name == "Школа"
+
+
+async def test_ready_synthesis_cannot_restart_a_satisfied_requirement(fake_llm):
+    fake_llm.json_responses = [
+        json.dumps(
+            {"action": "continue", "requirement_id": "done", "task": "Повторить"}
+        ),
+        json.dumps(
+            {
+                "action": "complete",
+                "answer": "Обнаружено одно нарушение.",
+                "evidence_ids": ["e1"],
+            }
+        ),
+    ]
+    view = {
+        "goal": {
+            "requirements": [
+                {"id": "done", "status": "satisfied", "entity_kind": "other"}
+            ]
+        },
+        "selected_evidence": [],
+    }
+    decision = await GoalManager(fake_llm).review("m", "Дай вывод", [], view, [], {})
+    assert decision.action == "complete"
+
+
+def test_large_compliance_geometry_cannot_hide_the_verdict_from_synthesis():
+    context = AnalysisContext()
+    result = {
+        "restriction_id": "norm-1",
+        "verification_status": "complete",
+        "compliance_status": "violated",
+        "coverage": {"checked_objects": 1, "unchecked_objects": 0},
+        "summary": {"violated_objects": 1, "passed_objects": 0},
+        "source": {"document_name": "TEST", "version": "2026", "clause_number": "1.1"},
+        "violated_features": {
+            "type": "FeatureCollection",
+            "features": [{"geometry": {"coordinates": [[30, 60]] * 5000}}],
+        },
+    }
+    aid = context.add_artifact(
+        {
+            "type": "compliance_summary",
+            "content": {"total_norms": 1, "violated_norms": 1, "results": [result]},
+        },
+        1,
+        "check",
+    )
+    context.finish(1, "Проверка", 17, "completed", "Выполнено", "check")
+    for i in range(8):
+        context.add_artifact(
+            {
+                "type": "source_evidence",
+                "content": {
+                    "system": "documents",
+                    "sources": [{"text": "Документ " * 150, "id": str(i)}],
+                },
+            },
+            1,
+            "doc" + str(i),
+        )
+        context.finish(1, "Источник", 17, "completed", "Документ", "doc" + str(i))
+    view = context.view(9000)
+    assert len(json.dumps(view, ensure_ascii=False).encode()) <= 9000
+    proof = next(p for p in view["selected_evidence"] if p["artifact_id"] == aid)
+    assert proof["scenario_id"] == 17
+    assert proof["content"]["violated_norms"] == 1
+    assert proof["content"]["results"][0]["summary"]["violated_objects"] == 1
+    assert "violated_features" not in proof["content"]["results"][0]
+    assert (
+        context.get(aid)["content"]["results"][0]["violated_features"]
+        == result["violated_features"]
+    )
+
+
 def test_comparison_covers_individual_and_combined_provision_tables():
     from src.agents.services.provision.provision_context import ProvisionContextBuilder
 
@@ -633,3 +737,128 @@ def test_comparison_covers_individual_and_combined_provision_tables():
         )
         == 2
     )
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "Укажи оба источника и версию.\n",
+        "Укажи версию документа и источник.\n",
+        "Сопоставь источники и укажи версию.\n",
+    ],
+)
+def test_request_to_report_version_does_not_filter_out_canonical_norm(prefix):
+    from src.agents.services.normgraph.normgraph_restriction_retriever import (
+        NormGraphRestrictionRetriever,
+    )
+
+    hit = {
+        "provenance": {
+            "name": "EXAMPLE TEST NORM",
+            "version": "2026",
+            "numbering": "1.1",
+        }
+    }
+    query = (
+        prefix
+        + "Проверь пункт 1.1 документа EXAMPLE TEST NORM, версия 2026: не менее 50 м."
+    )
+    assert NormGraphRestrictionRetriever._filter_explicit_references(
+        [hit], query, match_distance=False
+    ) == [hit]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {
+            "agent": "compliance",
+            "description": "Проверить соответствие социальной инфраструктуры",
+        },
+        {
+            "agent": "scenario_data",
+            "description": "Оценка пространственной реализуемости готового варианта",
+        },
+    ],
+)
+async def test_provision_assessment_does_not_invent_a_new_spatial_audit(
+    fake_llm, extra
+):
+    calculation = {
+        "id": "p",
+        "agent": "provision",
+        "scenario_id": 17,
+        "description": "Рассчитать обеспеченность школами",
+        "source_ids": [1],
+        "required_artifacts": ["table"],
+    }
+    redundant = {
+        **calculation,
+        **extra,
+        "id": "extra",
+        "required_artifacts": ["analysis_text"],
+    }
+    fake_llm.json_responses = [
+        json.dumps(
+            {
+                "objective": "Оценить обеспеченность",
+                "requirements": [calculation, redundant],
+            }
+        ),
+        json.dumps(
+            {"objective": "Оценить обеспеченность", "requirements": [calculation]}
+        ),
+    ]
+    goal = await GoalManager(fake_llm).create(
+        "m",
+        "Проверь социальную инфраструктуру: рассчитай обеспеченность школами, спрос, вместимость и дефицит.",
+        [],
+        17,
+    )
+    assert [r.agent for r in goal.requirements] == ["provision"]
+
+
+async def test_existing_scenario_provision_is_not_a_hypothetical_effect(fake_llm):
+    from src.agents.services.provision.provision_plan_builder import (
+        ProvisionPlanBuilder,
+    )
+
+    fake_llm.json_responses = [
+        '{"mode":"effects","service_name":"Школа","target_population":25000}',
+        '{"mode":"provision","service_name":"Школа","target_population":25000}',
+    ]
+    plan = await ProvisionPlanBuilder(fake_llm).build_plan(
+        "m",
+        "Рассчитать обеспеченность услугой «Школа» для готового сценария 17 при 25000 жителей; без создания или изменения объектов.",
+        ["Школа"],
+    )
+    assert plan.mode == "provision"
+
+
+async def test_goal_cannot_lose_explicit_buffer_behind_compliance_layer(fake_llm):
+    check = {
+        "id": "check",
+        "agent": "compliance",
+        "scenario_id": 17,
+        "description": "Проверить пункт и вернуть слой проверки",
+        "source_ids": [1],
+        "required_artifacts": ["compliance_summary", "compliance_result"],
+    }
+    buffer = {
+        **check,
+        "id": "zone",
+        "agent": "restriction",
+        "description": "Построить 50-метровую зону ограничения вокруг стоянки",
+        "required_artifacts": ["feature_collection"],
+    }
+    fake_llm.json_responses = [
+        json.dumps({"objective": "Проверка и буфер", "requirements": [check]}),
+        json.dumps({"objective": "Проверка и буфер", "requirements": [check, buffer]}),
+    ]
+    goal = await GoalManager(fake_llm).create(
+        "m",
+        "Проверь требование, верни число проверенных объектов, нарушений и слой проверки, а также 50-метровую зону ограничения вокруг стоянки.",
+        [],
+        17,
+    )
+    assert {r.agent for r in goal.requirements} == {"compliance", "restriction"}
