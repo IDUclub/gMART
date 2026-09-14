@@ -88,7 +88,8 @@ services:
       ORCHESTRATOR_STEPS: "24"
       ORCHESTRATOR_TOTAL_TOKENS: "1000000"
       PLANNING_REASONING_EFFORT: low
-      OLLAMA_API_URL: http://10.32.11.27:8001
+      # Required local placeholder; LLM_BACKEND=openai never calls Ollama.
+      OLLAMA_API_URL: http://localhost:11434
       IDU_MCP_SERVER: http://idu_mcp:8000/mcp
       OBJECTS_EFFECTS_MCP_SERVER: http://effects:80/effects/mcp
       DVD_MCP_SERVER: ${DVD_ORIGIN:-http://10.32.11.90:31002}/mcp
