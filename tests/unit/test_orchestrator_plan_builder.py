@@ -154,6 +154,19 @@ async def test_selected_scenario_reaches_planner_context(builder, fake_llm):
     assert "Выбранный scenario_id: 848" in fake_llm.chat_calls[0].messages[0]["content"]
 
 
+def test_a_base_comparison_goes_to_scenario_data_without_asking_for_an_id():
+    prompt = OrchestratorPlanBuilder._build_prompt(ALL_AGENTS, scenario_id=848)
+
+    for rule in (
+        "Сравнение выбранного сценария с базовым сценарием проекта — scenario_data",
+        "не спрашивай и не требуй его ID или название",
+        "task слова «с базовым сценарием»",
+        "«Сравни все показатели выбранного сценария с базовым сценарием проекта»",
+        "clarification_question никогда не просит ID",
+    ):
+        assert rule in prompt
+
+
 @pytest.mark.asyncio
 async def test_blank_task_is_repaired_before_dispatch(builder, fake_llm):
     fake_llm.json_responses = [

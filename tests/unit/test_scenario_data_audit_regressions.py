@@ -1,7 +1,5 @@
 """Regressions from real Urban MCP queries; no live boundaries."""
 
-import json
-
 import pytest
 
 from src.agents.services.scenario_data.scenario_data_evaluator import wants_layers
@@ -66,7 +64,7 @@ def test_root_card_preserves_zero_values():
         title="Проект",
     )
     assert table is not None
-    assert table["rows"] == [{"project_id": 604, "preparation": 0, "implementation": 0}]
+    assert table["rows"] == [{"preparation": 0, "implementation": 0}]
 
 
 def test_geometry_bearing_card_is_not_mistaken_for_geojson_feature():
@@ -77,10 +75,4 @@ def test_geometry_bearing_card_is_not_mistaken_for_geojson_feature():
         "geometry": {"type": "Point", "coordinates": [30, 60]},
     }
     table = ScenarioDataService._table_from_result(row, name="card", title="Город")
-    assert table["rows"][0]["territory_id"] == 17
-    assert table["rows"][0]["name"] == "Город"
-
-
-def test_nested_source_fields_are_not_cut_into_invalid_json():
-    value = {"id": 17, "name": "a" * 1200, "capacity": 0}
-    assert json.loads(ScenarioDataService._table_value(value)) == value
+    assert table["rows"] == [{"name": "Город"}]

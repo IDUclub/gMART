@@ -396,8 +396,27 @@ def scenario_labels(
             role = "Ваш сценарий"
         else:
             role = "Сценарий"
-        labels[sid] = f"{role} «{name}»" if name else f"{role} {sid}"
+        labels[sid] = f"{role} «{name}»" if name else f"{role} без названия"
     return labels
+
+
+INDICATOR_ROW_LABELS = {
+    "scenario": "Сценарий",
+    "indicator": "Показатель",
+    "value": "Значение",
+    "unit": "Ед.",
+    "status": "Статус",
+}
+
+
+def comparison_header(labels: list[str], *, pair: bool) -> str:
+    joiner = " → " if pair else ", "
+    return "Сравниваются: " + joiner.join(lower_first(label) for label in labels) + "."
+
+
+def absent_notes(missing: list[str], scenario_count: int) -> list[str]:
+    where = "сценария." if scenario_count == 1 else "сценариев."
+    return [f"«{name}» — такого показателя нет в данных {where}" for name in missing]
 
 
 def render_indicators(
@@ -442,7 +461,6 @@ def render_indicators(
                 rows.append(
                     {
                         "scenario": title(sid),
-                        "scenario_id": sid,
                         "indicator": name,
                         "value": None,
                         "unit": None,
@@ -454,11 +472,9 @@ def render_indicators(
             rows.append(
                 {
                     "scenario": title(sid),
-                    "scenario_id": sid,
-                    "indicator_id": f["indicator_id"],
                     "indicator": name,
                     "value": f["value"],
-                    "unit": f["unit"],
+                    "unit": unit_label(f["unit"]) if _unit(f) else None,
                     "status": "сохранённое значение",
                 }
             )
@@ -599,7 +615,11 @@ def indicator_comparison(
             return "в базовом сценарии" if full else "в базовом"
         if sid == selected:
             return "в вашем сценарии" if full else "в вашем"
-        return f"в сценарии «{names[sid]}»" if names.get(sid) else f"в сценарии {sid}"
+        return (
+            f"в сценарии «{names[sid]}»"
+            if names.get(sid)
+            else "в сценарии без названия"
+        )
 
     known = {
         sid: {f["indicator_id"]: f for f in facts} for sid, facts in scenarios.items()
@@ -703,11 +723,7 @@ def indicator_comparison(
     }
     if pair:
         column_labels |= {"difference": "Разница", "change_percent": "Изменение, %"}
-    absent_names = [
-        f"«{name}» — такого показателя нет в данных "
-        + ("сценария." if len(order) == 1 else "сценариев.")
-        for name in request.missing
-    ]
+    absent_names = absent_notes(request.missing, len(order))
     if len(order) == 1:
         sid = order[0]
         body = (
@@ -720,11 +736,7 @@ def indicator_comparison(
         )
         return "\n\n".join([*body, *absent_names]), rows, column_labels
 
-    header = (
-        "Сравниваются: "
-        + (" → " if pair else ", ").join(lower_first(labels[sid]) for sid in order)
-        + "."
-    )
+    header = comparison_header([labels[sid] for sid in order], pair=pair)
     if request.operation != "all":
         return "\n\n".join([header, *lines, *absent_names]), rows, column_labels
     counts = ", ".join(f"{where(sid)} — {len(scenarios[sid])}" for sid in order)

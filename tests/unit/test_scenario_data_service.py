@@ -280,11 +280,8 @@ def test_list_result_becomes_strict_table():
     assert table == {
         "name": "scenario_objects",
         "title": "Объекты",
-        "columns": [
-            {"key": "id", "label": "id"},
-            {"key": "name", "label": "name"},
-        ],
-        "rows": [{"id": 1, "name": "Школа"}],
+        "columns": [{"key": "name", "label": "Название"}],
+        "rows": [{"name": "Школа"}],
         "total_rows": 1,
         "complete": True,
     }
@@ -305,7 +302,7 @@ def test_scenario_object_table_keeps_all_788_rows():
 
 def test_oversized_table_is_explicitly_marked_as_partial():
     table = ScenarioDataService._table_from_result(
-        [{"id": index} for index in range(1001)],
+        [{"name": f"Объект {index}"} for index in range(1001)],
         name="scenario objects",
         title="Объекты",
     )
@@ -319,7 +316,7 @@ def test_oversized_table_is_explicitly_marked_as_partial():
 def test_paginated_table_uses_reported_total_to_mark_a_partial_page():
     table = ScenarioDataService._table_from_result(
         {
-            "items": [{"id": index} for index in range(100)],
+            "items": [{"name": f"Объект {index}"} for index in range(100)],
             "total": 788,
         },
         name="scenario objects",
@@ -332,7 +329,7 @@ def test_paginated_table_uses_reported_total_to_mark_a_partial_page():
     assert table["complete"] is False
 
 
-def test_table_keeps_domain_fields_when_properties_is_metadata():
+def test_table_keeps_domain_fields_and_drops_ids_and_free_form_properties():
     table = ScenarioDataService._table_from_result(
         [
             {
@@ -346,11 +343,7 @@ def test_table_keeps_domain_fields_when_properties_is_metadata():
     )
 
     assert table is not None
-    assert [column["key"] for column in table["columns"]] == [
-        "service_type_id",
-        "name",
-        "properties",
-    ]
+    assert table["columns"] == [{"key": "name", "label": "Название"}]
 
 
 def test_table_unwraps_geojson_feature_properties():
@@ -367,7 +360,7 @@ def test_table_unwraps_geojson_feature_properties():
     )
 
     assert table is not None
-    assert table["rows"] == [{"id": 1, "name": "Школа"}]
+    assert table["rows"] == [{"name": "Школа"}]
 
 
 async def test_draft_answer_retries_a_nonempty_length_completion(
