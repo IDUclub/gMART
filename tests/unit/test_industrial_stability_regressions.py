@@ -988,3 +988,67 @@ def test_normgraph_context_identifies_the_system_that_returned_the_record():
         ]
     )
     assert "Система источника: NormGraph" in text
+
+
+@pytest.mark.parametrize("source_agent", ["documents", "norms"])
+async def test_explicit_source_pair_is_completed_without_repeated_goal_generation(
+    fake_llm, source_agent
+):
+    draft = {
+        "objective": "Сравнить два источника",
+        "requirements": [
+            {
+                "id": "source",
+                "agent": source_agent,
+                "scenario_id": 17,
+                "description": "Получить нормативный первоисточник",
+                "source_ids": [1],
+                "required_artifacts": ["source_evidence", "analysis_text"],
+            }
+        ],
+    }
+    fake_llm.json_responses = [json.dumps(draft)] * 3
+    goal = await GoalManager(fake_llm).create(
+        "m",
+        "Сопоставь DVD и NormGraph по пункту 1.1 документа EXAMPLE, версия 2026.",
+        [],
+        17,
+    )
+    assert {r.agent for r in goal.requirements} == {"documents", "norms"}
+    assert len(fake_llm.json_responses) == 2
+    assert all(
+        "EXAMPLE" in r.source_quote and "2026" in r.source_quote
+        for r in goal.requirements
+    )
+
+
+def test_buffer_delegation_keeps_original_origin_when_goal_paraphrase_is_ambiguous():
+    source = (
+        "От школы до стоянки должно быть не менее 50 м. "
+        "Верни 50-метровую зону ограничения вокруг стоянки."
+    )
+    state = GoalState(
+        AnalysisContext(),
+        AnalysisGoal.model_validate(
+            {
+                "objective": "Проверить расстояние и вернуть зону",
+                "requirements": [
+                    {
+                        "id": "buffer",
+                        "agent": "restriction",
+                        "scenario_id": 17,
+                        "description": "Создать 50-метровую зону вокруг стоянки от здания школы.",
+                        "source_quote": source,
+                        "required_artifacts": ["feature_collection"],
+                    }
+                ],
+            }
+        ),
+    )
+    step = state.validate_decision(
+        GoalDecision(action="continue", requirement_id="buffer", task="Буфер от школы"),
+        {"restriction"},
+    ).steps[0]
+    assert source in step.task
+    assert step.scenario_id == 17
+    assert "Буфер от школы" not in step.task

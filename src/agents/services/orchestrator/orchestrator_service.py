@@ -462,6 +462,31 @@ class OrchestratorService(BaseLlmService):
                         if continue_from and context.query
                         else user_query
                     )
+                    # A failed goal call is still a resumable analytical run.
+                    # Preserve the inherited evidence and both user requests
+                    # before inference; the previous goal cannot stand in for
+                    # an as-yet uncreated goal for the follow-up.
+                    pending_query = (
+                        context.query + "\nУточнение: " + goal_query
+                        if context.query
+                        and context.query != goal_query
+                        and not continue_from
+                        else goal_query
+                    )
+                    pending = {
+                        **context.dump(),
+                        "goal": None,
+                        "query": pending_query,
+                        "scenario_id": scenario_id,
+                        "steps": [],
+                        "remaining": [],
+                    }
+                    for key in ("run:" + request_id, chat_id):
+                        pending_scope = context_scope(token, key)
+                        if pending_scope:
+                            await self.state_store.save_analysis_context(
+                                pending_scope, pending
+                            )
                     goal = await self.goal_manager.create(
                         model, goal_query, agents, scenario_id, history
                     )

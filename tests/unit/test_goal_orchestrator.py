@@ -456,3 +456,34 @@ async def test_grounding_failure_preserves_results_without_publishing_false_answ
     assert any(a["confirmed"] and a["kind"] == "table" for a in result["artifacts"])
     assert len(provision.calls) == 1
     assert orchestrator.goal_manager.validate_answer.await_count == 3
+
+
+async def test_goal_creation_failure_keeps_prior_artifacts_and_pending_request(
+    orchestrator, monkeypatch
+):
+    from src.agents.services.orchestrator.analysis_support import context_scope
+
+    monkeypatch.setenv("ORCHESTRATOR_ANALYSIS_MODE", "goal")
+    context = AnalysisContext()
+    context.query = "Исходный расчёт для 8000 жителей"
+    aid = context.add_artifact(table(80), 1, "prior-calc")
+    context.finish(1, "Расчёт", 772, "completed", "Сохранено", "prior-calc")
+    await orchestrator.state_store.save_analysis_context(
+        context_scope("tok", "existing-chat"), context.dump()
+    )
+    orchestrator.goal_manager.create = AsyncMock(side_effect=ValueError("Invalid goal"))
+    result = final(
+        await run_pipeline(
+            orchestrator,
+            chat_id="existing-chat",
+            user_query="Теперь сопоставь источники",
+        )
+    )
+    assert result["status"] == "blocked"
+    assert any(a["id"] == aid and a["confirmed"] for a in result["artifacts"])
+    saved = await orchestrator.state_store.get_analysis_context(
+        context_scope("tok", "run:" + result["continue_from"])
+    )
+    assert "8000" in saved["query"]
+    assert "сопоставь источники" in saved["query"]
+    assert saved["goal"] is None

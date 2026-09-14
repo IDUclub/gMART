@@ -343,7 +343,16 @@ class GoalState:
                     )
                 )
             if r.agent == "restriction" and not decision.support:
-                task = r.description
+                task = (
+                    "Выполни часть запроса, относящуюся к построению зон ограничений. "
+                    "Объект, вокруг которого требуется зона, радиус и целевые объекты бери из дословных условий пользователя ниже. "
+                    "Направление измерения расстояния в нормативной проверке не меняет явно указанный пользователем объект построения буфера. "
+                    "При расхождении с кратким описанием приоритет имеют дословные условия.\n"
+                    "Дословные условия пользователя: "
+                    + r.source_quote
+                    + "\nКраткое описание цели: "
+                    + r.description
+                )
             if r.agent == "provision" and not decision.support:
                 task = (
                     r.description
@@ -542,10 +551,40 @@ provision также возвращает расчётные feature_collection 
                 and re.search(r"NormGraph", query, re.I)
                 and re.search(r"сопостав|сравн", query, re.I)
             ):
-                if not {"documents", "norms"} <= {r.agent for r in goal.requirements}:
-                    raise ValueError(
-                        "Comparing DVD and NormGraph needs independent documents AND norms requirements. Neither specialist can supply the other source. Preserve document name/version/clause in each description; comparison itself belongs to objective."
+                # Both sources are explicit user requirements. Recover a missing
+                # source slot without asking the model to regenerate the entire
+                # multi-scenario goal (or fabricating any source content).
+                source_ids = list(
+                    {
+                        text: i
+                        for i, text in fragments.items()
+                        if re.search(
+                            r"DVD|NormGraph|документ|пункт|редакц|верси", text, re.I
+                        )
+                    }.values()
+                )
+                additions = []
+                used_ids = {r.id for r in goal.requirements}
+                for agent, system in (("documents", "DVD"), ("norms", "NormGraph")):
+                    if any(r.agent == agent for r in goal.requirements):
+                        continue
+                    rid = "source_" + agent
+                    while rid in used_ids:
+                        rid += "_2"
+                    used_ids.add(rid)
+                    additions.append(
+                        GoalDraftRequirement(
+                            id=rid,
+                            agent=agent,
+                            scenario_id=scenario_id,
+                            description=f"Получи нормативный первоисточник из {system} для сопоставления DVD и NormGraph; укажи текст, документ, редакцию и пункт.",
+                            source_ids=source_ids,
+                            required_artifacts=["analysis_text", "source_evidence"],
+                        )
                     )
+                goal = goal.model_copy(
+                    update={"requirements": [*goal.requirements, *additions]}
+                )
             requirements = []
             normalized = []
             objective = goal.objective
