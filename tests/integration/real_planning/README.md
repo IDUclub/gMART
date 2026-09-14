@@ -1,8 +1,8 @@
-# Real planning acceptance on dev
+# Real planning acceptance through local services
 
 The target is five partner scenarios, three independent two-turn conversations
 per scenario (15 episodes). The minimum requested milestone is 8 passed episodes;
-full acceptance requires 15. Runs use actual dev models and MCP services. Fixtures,
+full acceptance requires 15. Runs use the local updated services and actual remote models and MCP services. Fixtures,
 precomputed replacement plans and direct tool probes do not count.
 
 The cases cover industrial redevelopment, preinvestment capacity, education
@@ -10,8 +10,29 @@ infrastructure, comparison of three masterplans and revision after user feedback
 Their prompts and criteria are in `scenarios.py`. The default scenario is 772;
 use a different scenario only after verifying it belongs to the same project.
 
-Deploy the matching gMART revision and the ObjectEffectsAPI variant operation,
-then configure the three optional MCP URLs and PZZ REST URL. Run from gMART:
+Build and start the updated gMART Agents/IDU MCP, ObjectEffectsAPI and NormGraph
+locally. From the ICII workspace root:
+
+```bash
+docker compose --env-file integration/service-auth.env -f gMART/tests/integration/real_planning/compose.yaml up -d --build
+```
+
+This isolated Compose project exposes localhost ports 18000 (Agents/UI), 18002
+(IDU MCP), 18080 (Effects) and 18020 (NormGraph). It creates its own Redis and
+Neo4j data volume. It connects to the existing local ChatStorage on port 8010;
+`CHAT_STORAGE_ORIGIN` can override that address. DVD, Urban, the three planning
+services and inference remain external. Kafka is unconfigured. NormGraph starts
+with an empty graph; ingest/sync real source documents before claiming graph-based
+normative coverage. Existing containers and data volumes are preserved. `PLANNING_SUBNET` overrides the
+default 172.31.3.0/24 subnet when it overlaps another local route.
+
+The multi-specialist stand allows 1800 seconds, 120 model calls, 160 tool calls,
+24 orchestration steps and one million total tokens per turn. All specialists
+share these limits. Planning action selection defaults to low reasoning;
+`PLANNING_REASONING_EFFORT` overrides it. Timings and usage remain assessment data;
+these execution limits do not change the output acceptance criteria.
+
+Run the acceptance runner from gMART:
 
 ```bash
 uv run python -m tests.integration.real_planning.runner \
@@ -27,7 +48,7 @@ required for every series so failed attempts cannot be silently overwritten.
 The runner verifies the deployed application content hash against the checkout
 before executing and checks the application/configuration identity between
 turns. `/system/build-info` is authenticated and returns hashes only. This is
-not a fingerprint of every downstream service; record the GitOps image manifests
+not a fingerprint of every downstream service; record the local Docker image IDs
 with an assessment and avoid changing downstream versions during a series.
 
 Every episode saves input requests, raw SSE, parsed events, full confirmed

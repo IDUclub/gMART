@@ -1,4 +1,4 @@
-"""Live partner dialogues on dev. Every attempt is retained; no fixture fallback."""
+"""Live partner dialogues through the local deployment. Every attempt is retained; no fixture fallback."""
 
 import argparse
 import asyncio
@@ -146,7 +146,7 @@ async def run(args):
         initial = await fingerprint()
         if initial.get("application_sha256") != application_digest():
             raise ValueError(
-                "Dev application does not match this checkout; deploy this revision before acceptance"
+                "Local application does not match this checkout; deploy this revision before acceptance"
             )
         report["fingerprint"] = initial
         # Preserve real source identity and zoning versions before any dialogue.
@@ -194,7 +194,7 @@ async def run(args):
             for index, query in enumerate(episode["queries"], 1):
                 if await fingerprint() != initial:
                     raise RuntimeError(
-                        "Dev build/configuration changed during the series"
+                        "Local build/configuration changed during the series"
                     )
                 turn_dir = directory / f"turn-{index}"
                 turn_dir.mkdir()
@@ -314,7 +314,7 @@ async def run(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default="http://10.32.11.90:31004")
+    parser.add_argument("--base-url", default="http://localhost:18000")
     parser.add_argument("--urban-url", default="http://10.32.11.90:31001/api/v1")
     parser.add_argument("--auth-env", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
