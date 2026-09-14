@@ -5,7 +5,10 @@ import pytest
 
 from src.agents.common.exceptions.base_exceptions import AgentsUnauthorizedException
 from src.agents.dto.dvd_request_dto import DocumentQaRequestDTO
-from src.agents.routers.dvd_controller import stream_document_qa
+from src.agents.routers.dvd_controller import (
+    resolve_document_qa_token,
+    stream_document_qa,
+)
 from src.agents.services.dvd.dialogue import pending_question, resolve_reply
 from src.agents.services.dvd.runs import run_metadata, stream_document_run
 from src.agents.services.service_entities.dvd_plan import StructureRetrievalPlan
@@ -35,8 +38,9 @@ async def wait_terminal(store, request_id):
     raise AssertionError("producer did not finish")
 
 
+@pytest.mark.parametrize("token", [None, "alice-token"])
 async def test_reconnect_subscribes_once_and_replays_only_missing_events(
-    service, fake_llm
+    service, fake_llm, token
 ):
     entered, release = asyncio.Event(), asyncio.Event()
     fake_llm.json_responses = [plan_json()]
@@ -52,7 +56,7 @@ async def test_reconnect_subscribes_once_and_replays_only_missing_events(
     kwargs = dict(
         model="m",
         dvd_mcp_client=client,
-        token=None,
+        token=token,
         user_query="Что в п. 3.3?",
         temperature=0,
         persist_history=False,
@@ -78,6 +82,18 @@ async def test_reconnect_subscribes_once_and_replays_only_missing_events(
     assert left == right and all(e["event_id"] > 1 for e in left)
     assert len(client.calls) == 1
     assert left[-1]["content"]["done"] is True
+    if token:
+        assert (
+            await resolve_document_qa_token(
+                DocumentQaRequestDTO(
+                    request="Продолжи", request_id=request_id, after_event=1
+                ),
+                token=token,
+                dvd_mcp_client=SimpleNamespace(_user_id="alice"),
+                dvd_rag_service=service,
+            )
+            == token
+        )
     with pytest.raises(AgentsUnauthorizedException):
         await anext(
             stream_document_run(service, owner="bob", request_id=request_id, **kwargs)
