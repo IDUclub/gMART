@@ -451,9 +451,8 @@ class AnalyticalRun:
                                         raise ValueError(
                                             "Cannot finish an analysis without evidence"
                                         )
-                                    comparisons = (
-                                        review.comparisons
-                                        or self.context.provision_comparisons(query)
+                                    comparisons = self.context.provision_comparisons(
+                                        query, review.comparisons
                                     )
                                     comparison = (
                                         self.context.compare(comparisons)

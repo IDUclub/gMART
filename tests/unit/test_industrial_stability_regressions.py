@@ -582,3 +582,54 @@ async def test_source_quote_supplies_entity_kind_when_description_omits_it(fake_
         ("physical_objects", "Жилой дом"),
         ("physical_objects", "Парк"),
     ]
+
+
+def test_comparison_covers_individual_and_combined_provision_tables():
+    from src.agents.services.provision.provision_context import ProvisionContextBuilder
+
+    context = AnalysisContext()
+    builder = ProvisionContextBuilder()
+    for service in ("Кружок", "Секция"):
+        request = "before-" + service
+        context.add_artifact(
+            {
+                "type": "table",
+                "content": builder.build_provision_metrics_table(
+                    {"deficit": 40}, service
+                ),
+            },
+            1,
+            request,
+        )
+        context.finish(1, "Расчёт", 17, "completed", "Расчёт", request)
+    context.add_artifact(
+        {
+            "type": "table",
+            "content": builder.build_summary_table(
+                {
+                    "services": {
+                        str(i): {"name": service, "summary": {"deficit": 10}}
+                        for i, service in enumerate(("Кружок", "Секция"))
+                    }
+                }
+            ),
+        },
+        1,
+        "after",
+    )
+    context.finish(1, "Расчёт", 18, "completed", "Расчёт", "after")
+    specs = context.provision_comparisons("Сравни дефициты сценариев 17 и 18")
+    assert len(specs) == 2
+    rows = context.compare(specs)["content"]["rows"]
+    assert all(
+        r["before"] == "40" and r["after"] == "10" and r["delta"] == "-30" for r in rows
+    )
+    assert all(r["source_before"]["column"] == "value" for r in rows)
+    assert (
+        len(
+            context.provision_comparisons(
+                "Сравни дефициты сценариев 17 и 18", specs[:1]
+            )
+        )
+        == 2
+    )
