@@ -100,6 +100,8 @@ class OrchestratorService(BaseLlmService):
         normgraph_service: NormGraphRagService,
         app_config: AgentsAppConfig,
         scenario_data_service: ScenarioDataService | None = None,
+        planning_services: dict | None = None,
+        variant_provision_service=None,
     ) -> None:
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.state_store = state_store
@@ -109,6 +111,8 @@ class OrchestratorService(BaseLlmService):
         self.dvd_service = dvd_service
         self.normgraph_service = normgraph_service
         self.app_config = app_config
+        self.planning_services = planning_services or {}
+        self.variant_provision_service = variant_provision_service
         self.plan_builder = OrchestratorPlanBuilder(self.llm_client)
         self.goal_manager = GoalManager(self.llm_client)
 
@@ -696,10 +700,57 @@ class OrchestratorService(BaseLlmService):
         model: str,
         temperature: float,
         scenario_id: int | None,
+        input_artifacts: dict | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        if (
+            step.agent == OrchestratorAgent.PROVISION
+            and input_artifacts
+            and self.variant_provision_service
+        ):
+            return self.variant_provision_service.run(
+                token=token,
+                user_query=user_query,
+                scenario_id=scenario_id,
+                model=model,
+                temperature=temperature,
+                request_id=step_request_id,
+                input_artifacts=input_artifacts,
+                urban_mcp_client=urban_mcp_client,
+            )
+        if step.agent in self.planning_services:
+            return self.planning_services[step.agent].run(
+                token=token,
+                user_query=user_query,
+                scenario_id=scenario_id,
+                model=model,
+                temperature=temperature,
+                request_id=step_request_id,
+                input_artifacts=input_artifacts,
+                urban_mcp_client=urban_mcp_client,
+            )
         if step.agent == OrchestratorAgent.COMPLIANCE:
             if scenario_id is None:
                 raise ValueError("compliance step requires scenario_id")
+            from src.agents.services.planning.variant_compliance import (
+                contains_variant,
+                run_variant_compliance,
+            )
+
+            if input_artifacts and contains_variant(input_artifacts):
+                return run_variant_compliance(
+                    self.restriction_service,
+                    self.llm_client,
+                    input_artifacts,
+                    mcp_client=idu_mcp_client,
+                    normgraph_mcp_client=normgraph_mcp_client,
+                    token=token,
+                    temperature=temperature,
+                    model=model,
+                    user_query=user_query,
+                    scenario_id=scenario_id,
+                    request_id=step_request_id,
+                    persist_history=False,
+                )
             return self.restriction_service.run_compliance_pipeline(
                 mcp_client=idu_mcp_client,
                 normgraph_mcp_client=normgraph_mcp_client,

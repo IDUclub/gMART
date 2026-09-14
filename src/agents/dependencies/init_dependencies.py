@@ -21,6 +21,8 @@ from src.agents.services.normgraph.normgraph_a2a_service import NormGraphA2AServ
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 from src.agents.services.orchestrator.orchestrator_service import OrchestratorService
 from src.agents.services.pipeline_state import PipelineStateStore
+from src.agents.services.planning.planning_service import PlanningService
+from src.agents.services.planning.profiles import PROFILES, VARIANT_PROVISION
 from src.agents.services.provision.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provision.provsion_service import ProvisionService
 from src.agents.services.restriction.restriction_parser_service import (
@@ -126,6 +128,18 @@ def init_dependencies() -> dict[str, object]:
         urban_api_client,
         pipeline_state_store,
     )
+    planning_services = {
+        key: PlanningService(
+            app_config.OLLAMA_URL,
+            chat_storage_client,
+            urban_api_client,
+            profile=key,
+            mcp_url=getattr(app_config, key.upper() + "_MCP_URL"),
+            service_auth=service_auth,
+            pzz_api_url=app_config.PZZ_API_URL,
+        )
+        for key in PROFILES
+    }
     orchestrator_service = OrchestratorService(
         app_config.OLLAMA_URL,
         chat_storage_client,
@@ -137,6 +151,15 @@ def init_dependencies() -> dict[str, object]:
         normgraph_rag_service,
         app_config,
         scenario_data_service=scenario_data_service,
+        planning_services=planning_services,
+        variant_provision_service=PlanningService(
+            app_config.OLLAMA_URL,
+            chat_storage_client,
+            urban_api_client,
+            profile=VARIANT_PROVISION,
+            mcp_url=app_config.EFFECTS_MCP_URL,
+            service_auth=service_auth,
+        ),
     )
     return {
         "app_config": app_config,
@@ -152,6 +175,7 @@ def init_dependencies() -> dict[str, object]:
         "dvd_rag_service": dvd_rag_service,
         "normgraph_rag_service": normgraph_rag_service,
         "orchestrator_service": orchestrator_service,
+        "planning_services": planning_services,
         "a2a_service": A2AService(restriction_parser_service),
         "provision_a2a_service": ProvisionA2AService(provision_service),
         "dvd_a2a_service": DocumentQaA2AService(dvd_rag_service),

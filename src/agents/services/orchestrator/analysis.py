@@ -256,6 +256,26 @@ class AnalyticalRun:
                                 a["model"],
                                 a["temperature"],
                                 scenario_id,
+                                **(
+                                    {
+                                        "input_artifacts": {
+                                            item["id"]: item["content"]
+                                            for item in self.context.artifacts
+                                            if item["confirmed"]
+                                            and item["id"] in step.evidence_ids
+                                        }
+                                    }
+                                    if step.agent
+                                    in {
+                                        "genplanner",
+                                        "genbuilder",
+                                        "pzz",
+                                        "provision",
+                                        "compliance",
+                                    }
+                                    and step.evidence_ids
+                                    else {}
+                                ),
                             )
                             async with aclosing(
                                 stream_planned(f"orchestrator.{step.agent}", pipeline)

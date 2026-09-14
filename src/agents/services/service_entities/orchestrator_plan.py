@@ -16,6 +16,9 @@ class OrchestratorAgent(StrEnum):
     SCENARIO_DATA = "scenario_data"
     DOCUMENTS = "documents"
     NORMS = "norms"
+    GENPLANNER = "genplanner"
+    GENBUILDER = "genbuilder"
+    PZZ = "pzz"
 
 
 class OrchestratorPlanMode(StrEnum):

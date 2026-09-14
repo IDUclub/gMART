@@ -4,12 +4,24 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from fastapi.sse import EventSourceResponse
 
+from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.dependencies import get_simple_llm_service
 from src.agents.dto.llm_request_dto import SimpleRequestDTO
 from src.agents.schema.chunk_llm_response import ChunkLlmResponse
 from src.agents.services.simple_llm_service import SimpleLlmService
 
 llm_router = APIRouter(prefix="/llm", tags=["simple_llm"])
+
+
+@llm_router.post("/message", dependencies=[Depends(verify_bearer_token)])
+async def post_llm_message(
+    request_data: SimpleRequestDTO,
+    simple_llm_service: SimpleLlmService = Depends(get_simple_llm_service),
+):
+    """Accept substantial source material in a body instead of a URL query."""
+    return await simple_llm_service.generate_message(
+        request_data.request, request_data.model
+    )
 
 
 @llm_router.get("/available_models", response_model=list[str])

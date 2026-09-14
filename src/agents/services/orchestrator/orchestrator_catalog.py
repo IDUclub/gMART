@@ -145,6 +145,19 @@ AGENT_CATALOG: dict[OrchestratorAgent, AgentCatalogEntry] = {
 }
 
 
+from src.agents.services.planning.profiles import PROFILES
+
+for profile in PROFILES.values():
+    key = OrchestratorAgent(profile.key)
+    AGENT_CATALOG[key] = AgentCatalogEntry(
+        key=key,
+        title=profile.title,
+        description=profile.description,
+        examples=(),
+        requires_scenario_id=True,
+    )
+
+
 def available_agents(
     app_config: "AgentsAppConfig",
     scenario_id: int | None,
@@ -171,6 +184,10 @@ def available_agents(
         if (
             entry.key == OrchestratorAgent.SCENARIO_DATA
             and not app_config.URBAN_MCP_URL
+        ):
+            continue
+        if entry.key in PROFILES and not getattr(
+            app_config, entry.key.upper() + "_MCP_URL", None
         ):
             continue
         agents.append(entry)

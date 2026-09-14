@@ -135,6 +135,6 @@ class ServiceTokenAuth(httpx.Auth):
 
 
 async def service_mcp_client(
-    url: str, auth: KeycloakTokenClient, user_id: str
+    url: str, auth: KeycloakTokenClient, user_id: str, *, timeout: float | None = None
 ) -> Client:
-    return Client(url, auth=ServiceTokenAuth(auth, user_id))
+    return Client(url, auth=ServiceTokenAuth(auth, user_id), timeout=timeout)
