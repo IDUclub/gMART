@@ -112,3 +112,11 @@ stability. Source layers require their matching complete tables. Compliance
 requires complete passed/violated geometry tied to the correct source version,
 not just the expected violation count. Both the outer harness and the live
 runner reject existing output directories.
+
+`progress.scenario_progress(report, current_fingerprint, previous=())` tracks
+incremental milestones separately from full acceptance. A scenario requires
+all three formulations, two completed turns each, structural checks, exact
+replay and an independent passing judge. Obtain the current fingerprint from
+the immutable live checkout; previously accepted scenarios must pass again in
+the current report before a new milestone can be published. Three successful
+scenarios meet the intermediate half-scenarios target, not full 15/15 acceptance.
