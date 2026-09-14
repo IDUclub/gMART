@@ -2,8 +2,12 @@
 
 The target is five partner scenarios, three independent two-turn conversations
 per scenario (15 episodes). The minimum requested milestone is 8 passed episodes;
-full acceptance requires 15. Runs use the local updated services and actual remote models and MCP services. Fixtures,
-precomputed replacement plans and direct tool probes do not count.
+full acceptance requires 15. Runs use the local updated services and actual remote models and MCP services. Precomputed replacement plans and direct tool probes do not count. The user explicitly
+authorized mocks for missing normative inputs. `mock_normatives.json` supplies school
+(100 places/1000 residents, 15 minutes) and kindergarten (60 places/1000 residents,
+10 minutes) test values only where Urban API has no normative for that service.
+These illustrative values have no legal authority. Responses retain fixture identity
+and SHA256. Geometry, generation and ObjectNat calculations remain real.
 
 The cases cover industrial redevelopment, preinvestment capacity, education
 infrastructure, comparison of three masterplans and revision after user feedback.

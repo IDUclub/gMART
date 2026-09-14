@@ -19,6 +19,7 @@ from src.agents.runtime.budget import (
     BudgetExceeded,
     RunBudget,
     budget_scope,
+    configured_limits,
     current_budget,
 )
 from src.agents.runtime.runner import run_structured
@@ -29,6 +30,7 @@ from src.agents.services.planning.artifacts import (
     inspect_value,
     layer_values,
     prepare_building_blocks,
+    prepare_zoning_constraints,
     preview,
     propose_service,
     resolve_references,
@@ -107,6 +109,7 @@ LAYER_OPERATIONS = {
     "inspect_value": inspect_value,
     "select_layer": select_layer,
     "layer_values": layer_values,
+    "prepare_zoning_constraints": prepare_zoning_constraints,
     "summarize_layer": summarize_layer,
     "propose_service": propose_service,
     "compare_layer_coverage": compare_layer_coverage,
@@ -140,6 +143,19 @@ LAYER_TOOLS = [
                     "type": "array",
                     "items": {"type": ["string", "number", "boolean", "null"]},
                 },
+            },
+        ),
+        (
+            "prepare_zoning_constraints",
+            "Закрепить ВСЕ зоны кроме явно изменяемых типов из полного Urban слоя. "
+            "Для редевелопмента промышленности editable_zone_kinds=[industrial]. "
+            "Возвращает actual year/source и полный fixed_functional_zones_ids; передай список ссылкой $artifact.",
+            {
+                "editable_zone_kinds": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                }
             },
         ),
         (
@@ -336,7 +352,7 @@ class PlanningService(BaseLlmService):
         self.pzz_api_url = pzz_api_url
 
     async def run(self, **kwargs):
-        budget = current_budget.get() or RunBudget()
+        budget = current_budget.get() or RunBudget(configured_limits())
         with budget_scope(budget):
             try:
                 async with asyncio.timeout(budget.remaining_seconds):
@@ -553,6 +569,15 @@ class PlanningService(BaseLlmService):
                 ):
                     raise ValueError(
                         "Additional service layers must use artifact references"
+                    )
+                fixed_ids = (raw_args.get("functional_zones") or {}).get(
+                    "fixed_functional_zones_ids"
+                )
+                if fixed_ids and not (
+                    isinstance(fixed_ids, dict) and "$artifact" in fixed_ids
+                ):
+                    raise ValueError(
+                        "Preserved zone IDs must reference a complete artifact list, never a copied preview"
                     )
                 args = resolve_references(raw_args, values)
                 validate(args, catalogue[action.tool]["parameters"])

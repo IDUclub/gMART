@@ -43,6 +43,40 @@ def layer_values(layer, property_path):
     return [property_value(f, property_path) for f in layer["features"]]
 
 
+def prepare_zoning_constraints(layer, editable_zone_kinds):
+    """Derive preservation IDs from every feature of one actual zoning version."""
+    FeatureCollection.model_validate(layer)
+    if not editable_zone_kinds or not set(editable_zone_kinds) <= ZONE_KINDS:
+        raise ValueError("Explicit supported editable zone kinds are required")
+    fixed, editable, versions = [], [], set()
+    for feature in layer["features"]:
+        props = feature.get("properties") or {}
+        kind = (props.get("functional_zone_type") or {}).get("name")
+        identifier = props.get("functional_zone_id")
+        if not kind or not isinstance(identifier, int) or isinstance(identifier, bool):
+            raise ValueError(
+                "Use the full Urban functional-zone layer with type and ID"
+            )
+        versions.add((props.get("year"), props.get("source")))
+        (editable if kind in editable_zone_kinds else fixed).append(identifier)
+    if not editable or len(versions) != 1:
+        raise ValueError(
+            "One zoning version with at least one editable polygon is required"
+        )
+    year, source = versions.pop()
+    if not isinstance(year, int) or not source:
+        raise ValueError("Actual year/source are required")
+    return {
+        "year": year,
+        "source": source,
+        "fixed_functional_zones_ids": fixed,
+        "editable_functional_zones_ids": editable,
+        "fixed_count": len(fixed),
+        "editable_count": len(editable),
+        "source_feature_count": len(layer["features"]),
+    }
+
+
 def summarize_layer(layer, numeric_properties):
     """Return exact sums and explicit missing counts instead of sampled estimates."""
     FeatureCollection.model_validate(layer)

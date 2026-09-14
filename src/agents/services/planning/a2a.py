@@ -1,5 +1,7 @@
 """A2A adapters share the existing gMART task/event wire format."""
 
+from contextlib import aclosing
+
 from python_a2a.models.task import TaskState
 
 from src.agents.__version__ import APP_VERSION
@@ -61,7 +63,7 @@ class PlanningExecutor(ScenarioDataAgentExecutor):
         state = self.task_store.set_status(tid, TaskState.WAITING)
         yield self._status_update(tid, cid, state, final=False)
         try:
-            async for item in self.service.run(
+            pipeline = self.service.run(
                 token=token,
                 user_query=execution["user_query"],
                 scenario_id=execution["scenario_id"],
@@ -70,33 +72,35 @@ class PlanningExecutor(ScenarioDataAgentExecutor):
                 request_id=tid,
                 input_artifacts=execution["metadata"].get("input_artifacts"),
                 urban_mcp_client=urban_mcp_client,
-            ):
-                if (
-                    self.task_store.get_task(tid)["status"]["state"]
-                    == TaskState.CANCELED.value
-                ):
-                    return
-                if item["type"] in {"clarification", "error"}:
-                    content = item["content"]
-                    status = (
-                        TaskState.INPUT_REQUIRED
-                        if item["type"] == "clarification"
-                        else TaskState.FAILED
-                    )
-                    state = self.task_store.set_status(
-                        tid,
-                        status,
-                        self._agent_message(
-                            cid,
+            )
+            async with aclosing(pipeline):
+                async for item in pipeline:
+                    if (
+                        self.task_store.get_task(tid)["status"]["state"]
+                        == TaskState.CANCELED.value
+                    ):
+                        return
+                    if item["type"] in {"clarification", "error"}:
+                        content = item["content"]
+                        status = (
+                            TaskState.INPUT_REQUIRED
+                            if item["type"] == "clarification"
+                            else TaskState.FAILED
+                        )
+                        state = self.task_store.set_status(
                             tid,
-                            content.get("question") or content.get("message", ""),
-                        ),
-                    )
-                    yield self._status_update(tid, cid, state, final=True)
-                    return
-                event = self._pipeline_item_to_event(tid, cid, item)
-                if event:
-                    yield event
+                            status,
+                            self._agent_message(
+                                cid,
+                                tid,
+                                content.get("question") or content.get("message", ""),
+                            ),
+                        )
+                        yield self._status_update(tid, cid, state, final=True)
+                        return
+                    event = self._pipeline_item_to_event(tid, cid, item)
+                    if event:
+                        yield event
             state = self.task_store.set_status(tid, TaskState.COMPLETED)
             yield self._status_update(tid, cid, state, final=True)
         except Exception as exc:

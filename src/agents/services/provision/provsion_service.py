@@ -509,6 +509,34 @@ class ProvisionService(BaseLlmService):
         if not prov_out:
             return
         prov_result = prov_out[0]
+        normatives = {
+            str(sid): value["normative"]
+            for sid, value in (prov_result.data.get("services") or {}).items()
+            if value.get("normative")
+        }
+        if normatives:
+            yield await self._buf(
+                request_id,
+                {
+                    "type": "source_evidence",
+                    "content": {
+                        "name": "provision_normatives",
+                        "result": normatives,
+                        "scenario_id": scenario_id,
+                    },
+                },
+            )
+            if any(
+                n.get("source", {}).get("kind") == "test_mock"
+                for n in normatives.values()
+            ):
+                yield await self._buf(
+                    request_id,
+                    self._chunk(
+                        "Расчёт использует явно заданные мок-нормативы для технической оценки; "
+                        "это не проверка соответствия утверждённым нормативам."
+                    ),
+                )
 
         yield await self._buf(
             request_id,
@@ -635,6 +663,34 @@ class ProvisionService(BaseLlmService):
         if not prov_out:
             return
         prov_result = prov_out[0]
+        normatives = {
+            str(sid): value["normative"]
+            for sid, value in (prov_result.data.get("services") or {}).items()
+            if value.get("normative")
+        }
+        if normatives:
+            yield await self._buf(
+                request_id,
+                {
+                    "type": "source_evidence",
+                    "content": {
+                        "name": "provision_normatives",
+                        "result": normatives,
+                        "scenario_id": scenario_id,
+                    },
+                },
+            )
+            if any(
+                n.get("source", {}).get("kind") == "test_mock"
+                for n in normatives.values()
+            ):
+                yield await self._buf(
+                    request_id,
+                    self._chunk(
+                        "Расчёт использует явно заданные мок-нормативы для технической оценки; "
+                        "это не проверка соответствия утверждённым нормативам."
+                    ),
+                )
 
         yield await self._buf(
             request_id,
@@ -892,6 +948,34 @@ class ProvisionService(BaseLlmService):
             except PipelineSuspendedError:
                 return
             prov_result = prov_out[0]
+        normatives = {
+            str(sid): value["normative"]
+            for sid, value in (prov_result.data.get("services") or {}).items()
+            if value.get("normative")
+        }
+        if normatives:
+            yield await self._buf(
+                request_id,
+                {
+                    "type": "source_evidence",
+                    "content": {
+                        "name": "provision_normatives",
+                        "result": normatives,
+                        "scenario_id": scenario_id,
+                    },
+                },
+            )
+            if any(
+                n.get("source", {}).get("kind") == "test_mock"
+                for n in normatives.values()
+            ):
+                yield await self._buf(
+                    request_id,
+                    self._chunk(
+                        "Расчёт использует явно заданные мок-нормативы для технической оценки; "
+                        "это не проверка соответствия утверждённым нормативам."
+                    ),
+                )
             await self.state_store.save_checkpoint(
                 request_id, PipelineStep.CALCULATE_PROVISION, prov_result.data
             )

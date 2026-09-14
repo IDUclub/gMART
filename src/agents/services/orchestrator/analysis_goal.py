@@ -988,7 +988,10 @@ review_validation_error — обязательное исправление пр
                     schema,
                     agent_name=name,
                     retries=2 if name == "orchestrator.goal" else 1,
-                    unconstrained=True,
+                    unconstrained=(
+                        getattr(self.backend, "structured_transport", "chat")
+                        != "responses_function"
+                    ),
                     reasoning_effort=effort,
                     attempt_settings=(
                         OrchestratorPlanBuilder._analysis_attempt

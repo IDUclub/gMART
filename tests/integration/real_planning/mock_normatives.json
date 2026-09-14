@@ -1,0 +1,33 @@
+{
+  "id": "local-assessment-education-v1",
+  "source_kind": "test_mock",
+  "description": "Условные тестовые значения, разрешённые пользователем для технической оценки. Не утверждённые нормативы и не основание для юридического заключения.",
+  "territory_ids": [
+    1,
+    54,
+    58,
+    1955
+  ],
+  "normatives": [
+    {
+      "service_type": {
+        "id": 22
+      },
+      "year": 2026,
+      "radius_availability_meters": null,
+      "time_availability_minutes": 15,
+      "services_per_1000_normative": null,
+      "services_capacity_per_1000_normative": 100
+    },
+    {
+      "service_type": {
+        "id": 21
+      },
+      "year": 2026,
+      "radius_availability_meters": null,
+      "time_availability_minutes": 10,
+      "services_per_1000_normative": null,
+      "services_capacity_per_1000_normative": 60
+    }
+  ]
+}

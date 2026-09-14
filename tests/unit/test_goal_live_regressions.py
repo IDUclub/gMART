@@ -314,3 +314,31 @@ async def test_provision_failure_diagnosis_is_not_an_independent_specialist_goal
         ["provision", agent] if independent_spatial_check else ["provision"]
     )
     assert "причину" in goal.requirements[0].description
+
+
+@pytest.mark.parametrize(
+    "transport,constrained", [("chat", False), ("responses_function", True)]
+)
+async def test_goal_controller_uses_opted_in_structured_transport(
+    fake_llm, transport, constrained
+):
+    from pydantic import BaseModel
+
+    class Decision(BaseModel):
+        answer: str
+
+    fake_llm.structured_transport = transport
+    fake_llm.json_responses = ['{"answer":"ok"}']
+    complete = fake_llm.chat
+    calls = []
+
+    async def record(*args, **kwargs):
+        calls.append(kwargs)
+        return await complete(*args, **kwargs)
+
+    fake_llm.chat = record
+    result = await GoalManager(fake_llm)._call(
+        "m", "test", "Decide", {}, Decision, reasoning_effort="low"
+    )
+    assert result.answer == "ok"
+    assert bool(calls[0].get("format")) is constrained

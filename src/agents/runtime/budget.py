@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 
 class BudgetExceeded(RuntimeError):
@@ -25,6 +26,32 @@ class BudgetLimits:
     context_tokens: int = 32_768
     output_tokens: int = 16_384
     final_reserve: int = 16_384
+
+
+def configured_limits(tokens=None, seconds=None):
+    defaults = BudgetLimits()
+    changes = {}
+    for key in (
+        "total_tokens",
+        "model_calls",
+        "tool_calls",
+        "seconds",
+        "steps",
+        "context_tokens",
+        "output_tokens",
+    ):
+        value = int(
+            os.getenv("ORCHESTRATOR_" + key.upper(), str(getattr(defaults, key)))
+        )
+        if value <= 0:
+            raise ValueError(f"ORCHESTRATOR_{key.upper()} must be positive")
+        changes[key] = value
+    limits = replace(defaults, **changes)
+    return replace(
+        limits,
+        total_tokens=min(tokens or limits.total_tokens, limits.total_tokens),
+        seconds=min(seconds or limits.seconds, limits.seconds),
+    )
 
 
 @dataclass

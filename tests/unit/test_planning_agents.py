@@ -181,9 +181,24 @@ async def test_generation_uses_lossless_reference_and_explicit_target(
     assert any(e["type"] == "feature_collection" for e in events)
 
 
-async def test_a2a_clarification_is_input_required():
+@pytest.mark.parametrize(
+    "kind,status", [("clarification", "input-required"), ("error", "failed")]
+)
+async def test_a2a_terminal_closes_pipeline_in_the_budget_context(kind, status):
+    from src.agents.runtime.budget import RunBudget, budget_scope, current_budget
+
+    closed = []
+    original_budget = current_budget.get()
+
     async def run(**kwargs):
-        yield {"type": "clarification", "content": {"question": "Сколько жителей?"}}
+        with budget_scope(RunBudget()):
+            try:
+                yield {
+                    "type": kind,
+                    "content": {"question": "Сколько жителей?", "message": "Нет слоя"},
+                }
+            finally:
+                closed.append(True)
 
     service = SimpleNamespace(profile=PROFILES["genbuilder"], run=run)
     a2a = PlanningA2AService(service)
@@ -202,7 +217,9 @@ async def test_a2a_clarification_is_input_required():
         None,
         "token",
     )
-    assert result["result"]["status"]["state"] == "input-required"
+    assert result["result"]["status"]["state"] == status
+    assert closed == [True]
+    assert current_budget.get() is original_budget
 
 
 def test_all_features_are_selectable_beyond_preview():
@@ -439,3 +456,48 @@ def test_polygon_coverage_detects_lost_area():
     assert result["features_with_area_loss"] == 1
     assert result["lost_area_m2"] > 1
     assert compare_layer_coverage(before, before)["lost_area_m2"] == 0
+
+
+def test_zoning_constraints_include_every_unedited_feature():
+    from copy import deepcopy
+
+    from src.agents.services.planning.artifacts import prepare_zoning_constraints
+
+    layer = deepcopy(LAYER)
+    layer["features"] = [
+        dict(
+            deepcopy(LAYER["features"][0]),
+            properties={
+                "functional_zone_id": i,
+                "functional_zone_type": {
+                    "name": "industrial" if i == 19 else "recreation"
+                },
+                "year": 2024,
+                "source": "OSM",
+            },
+        )
+        for i in range(20)
+    ]
+    result = prepare_zoning_constraints(layer, ["industrial"])
+    assert result["fixed_functional_zones_ids"] == list(range(19))
+    assert result["editable_functional_zones_ids"] == [19]
+    assert result["source_feature_count"] == 20
+    layer["features"][0]["properties"]["year"] = 2023
+    with pytest.raises(ValueError, match="One zoning version"):
+        prepare_zoning_constraints(layer, ["industrial"])
+
+
+async def test_direct_specialist_uses_configured_limits(specialist, monkeypatch):
+    from src.agents.runtime.budget import current_budget
+
+    seen = []
+    monkeypatch.setenv("ORCHESTRATOR_CONTEXT_TOKENS", "65536")
+
+    async def run(**kwargs):
+        seen.append(current_budget.get().limits.context_tokens)
+        yield {"type": "chunk", "content": {"text": "ok"}}
+
+    service, _ = specialist
+    monkeypatch.setattr(service, "_run", run)
+    assert [e async for e in service.run()]
+    assert seen == [65536]

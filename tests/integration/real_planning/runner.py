@@ -1,4 +1,4 @@
-"""Live partner dialogues through the local deployment. Every attempt is retained; no fixture fallback."""
+"""Live partner dialogues through the local deployment. Every attempt is retained; only explicitly declared normative mocks are allowed."""
 
 import argparse
 import asyncio
@@ -72,6 +72,7 @@ async def judge(http, origin, model, episode, turns, artifacts, headers):
         "или невыполненное действие не названы недостатком исходных данных.",
         "continuity": "Учтены обе реплики и сохранённые результаты; ответы содержательны, "
         "не сводятся к описанию плана работы.",
+        "normative_mocks": "Для отсутствующих нормативов разрешён явный тестовый мок; он обозначен как условный, не как утверждённый норматив. Геометрия и вычисления должны быть реальными.",
         "limitations": "Unknown и непроверенные требования не выданы за соответствие; "
         "функциональное зонирование не подменяет юридические зоны ПЗЗ.",
     }
@@ -149,6 +150,9 @@ async def run(args):
                 "Local application does not match this checkout; deploy this revision before acceptance"
             )
         report["fingerprint"] = initial
+        mock_raw = Path(__file__).with_name("mock_normatives.json").read_bytes()
+        save(output / "mock_normatives.json", json.loads(mock_raw))
+        report["normative_mock_sha256"] = hashlib.sha256(mock_raw).hexdigest()
         # Preserve real source identity and zoning versions before any dialogue.
         headers = await user_headers(http, auth)
         source = {}
@@ -199,7 +203,8 @@ async def run(args):
                 turn_dir = directory / f"turn-{index}"
                 turn_dir.mkdir()
                 params = {
-                    "request": query,
+                    "request": query
+                    + "\nДля отсутствующих нормативов обеспеченности используй настроенный на локальном расчётном сервисе мок (школы: 100 мест/1000 жителей, 15 минут; детские сады: 60 мест/1000 жителей, 10 минут). Явно пометь условность результатов. Это тестовые значения, не юридические нормативы. Остальные вычисления выполняй на реальных данных.",
                     "scenario_id": args.scenario_id,
                     "model": args.model,
                     "temperature": 0,

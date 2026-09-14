@@ -1,11 +1,9 @@
 """User-facing recovery requests, scoped context and analysis configuration."""
 
 import hashlib
-import os
 import re
-from dataclasses import replace
 
-from src.agents.runtime.budget import BudgetLimits
+from src.agents.runtime.budget import configured_limits
 from src.agents.services.service_entities.orchestrator_plan import NeededInput
 from src.common.service_auth import user_id_from_jwt
 
@@ -21,32 +19,6 @@ def context_scope(token, chat_id):
     except Exception:
         identity = hashlib.sha256(token.encode()).hexdigest()
     return hashlib.sha256(f"{identity}:{chat_id}".encode()).hexdigest()
-
-
-def configured_limits(tokens=None, seconds=None):
-    defaults = BudgetLimits()
-    changes = {}
-    for key in (
-        "total_tokens",
-        "model_calls",
-        "tool_calls",
-        "seconds",
-        "steps",
-        "context_tokens",
-        "output_tokens",
-    ):
-        value = int(
-            os.getenv("ORCHESTRATOR_" + key.upper(), str(getattr(defaults, key)))
-        )
-        if value <= 0:
-            raise ValueError(f"ORCHESTRATOR_{key.upper()} must be positive")
-        changes[key] = value
-    limits = replace(defaults, **changes)
-    return replace(
-        limits,
-        total_tokens=min(tokens or limits.total_tokens, limits.total_tokens),
-        seconds=min(seconds or limits.seconds, limits.seconds),
-    )
 
 
 def missing_input(reason, detail=""):
