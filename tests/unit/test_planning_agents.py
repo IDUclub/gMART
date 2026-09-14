@@ -609,7 +609,15 @@ async def test_constrained_generation_passes_all_preserved_zones(
                     }
                 ),
             ),
-            PlanningAction(action="blocked", answer="stop"),
+            (
+                PlanningAction(action="blocked", answer="stop")
+                if synthetic
+                else PlanningAction(
+                    action="complete",
+                    answer="Генерация выполнена",
+                    evidence_ids=["test:result1"],
+                )
+            ),
         ]
     )
     monkeypatch.setattr(
@@ -620,6 +628,7 @@ async def test_constrained_generation_passes_all_preserved_zones(
         async for e in service.run(
             token=internal_user_context_jwt("u"),
             user_query="Перестрой промышленную часть",
+            request_id="test",
             input_artifacts={
                 "input": prepare_zoning_constraints(layer, ["industrial"])
             },
@@ -638,6 +647,8 @@ async def test_constrained_generation_passes_all_preserved_zones(
         }
         evidence = next(e["content"] for e in events if e["type"] == "source_evidence")
         assert evidence["result"]["generation_constraints"]["editable_count"] == 1
+        assert any(e["type"] == "chunk" for e in events)
+        assert any(e["type"] == "feature_collection" for e in events)
 
 
 def test_restore_existing_attributes_keeps_geometry_and_new_buildings():

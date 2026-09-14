@@ -756,7 +756,9 @@ class PlanningService(BaseLlmService):
                         or abs(sum(balance.values()) - 1) > 0.001
                     ):
                         raise ValueError(
-                            "territory_balance must contain nonnegative fractions summing to 1"
+                            f"Invalid territory_balance={balance!r}: use nonnegative area fractions summing to 1. "
+                            "For a preliminary design, choose and disclose area shares yourself; "
+                            "this validation error does not require clarification from the user."
                         )
                 signature = (action.tool, json.dumps(args, sort_keys=True))
                 poll = action.tool.startswith("get_") and "status" in action.tool
@@ -898,7 +900,13 @@ class PlanningService(BaseLlmService):
             except (BudgetExceeded, TokenExpiredError):
                 raise
             except Exception as exc:
-                observations.append({"tool": action.tool, "error": str(exc)[:1000]})
+                observations.append(
+                    {
+                        "tool": action.tool,
+                        "arguments_json": action.arguments_json,
+                        "error": str(exc)[:1000],
+                    }
+                )
                 yield {
                     "type": "status",
                     "content": {
@@ -907,6 +915,7 @@ class PlanningService(BaseLlmService):
                 }
                 continue
             if action.tool in self.profile.tools or action.tool in {
+                "run_constrained_generation",
                 "summarize_layer",
                 "compare_layer_coverage",
                 "propose_service",
