@@ -39,7 +39,9 @@ def envelope(arguments='{"value":42}'):
     }
 
 
-@pytest.mark.parametrize("first", [None, "incomplete", "invalid_schema"])
+@pytest.mark.parametrize(
+    "first", [None, "incomplete", "invalid_schema", "unexpected_action"]
+)
 async def test_responses_envelope_preserves_sdk_validation_and_budget(
     monkeypatch, first
 ):
@@ -58,6 +60,11 @@ async def test_responses_envelope_preserves_sdk_validation_and_budget(
         )
         assert payload["reasoning"]["effort"] == "low"
         if len(calls) == 1 and first:
+            if first == "unexpected_action":
+                return httpx.Response(
+                    200,
+                    json=response([dict(envelope(), name="unregistered_domain_tool")]),
+                )
             return httpx.Response(
                 200,
                 json=response(
@@ -87,7 +94,10 @@ async def test_responses_envelope_preserves_sdk_validation_and_budget(
             )
         assert answer.value == 42
         assert budget.model_calls == len(calls) == (2 if first else 1)
-        assert budget.tokens == 42 * len(calls)
+        if first != "unexpected_action":
+            assert budget.tokens == 42 * len(calls)
+        else:
+            assert budget.tokens >= 42 * len(calls)
         assert budget.tool_calls == 0
     finally:
         await adapter.client.close()
@@ -132,7 +142,7 @@ async def test_unexpected_calls_are_rejected_without_execution(monkeypatch, outp
                 [{"role": "user", "content": "test"}],
                 format=Answer.model_json_schema(),
             )
-        assert budget.model_calls == 1
+        assert budget.model_calls == 2
         assert budget.tool_calls == 0
     finally:
         await adapter.client.close()

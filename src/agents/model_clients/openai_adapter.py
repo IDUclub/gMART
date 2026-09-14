@@ -69,6 +69,10 @@ def _warn_once(key: str, message: str) -> None:
         logger.warning(message)
 
 
+class UnexpectedStructuredOutput(LlmResponseError):
+    """Model chose an unregistered action; it must never be dispatched."""
+
+
 class OpenAiCompatAdapter(BaseLlmAdapter):
     """Talks to any server exposing the OpenAI chat-completions API."""
 
@@ -335,6 +339,25 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         try:
             try:
                 result = await self._request_completion(call)
+            except UnexpectedStructuredOutput:
+                # Retry only the model decision. The rejected output is never
+                # dispatched, and the second call has its own budget reservation.
+                call = {
+                    **call,
+                    "messages": [
+                        *call["messages"],
+                        {
+                            "role": "user",
+                            "content": (
+                                "The last response selected an unregistered action and was rejected. "
+                                "No operation was executed. Call ONLY emit_structured_response "
+                                "with the complete requested JSON object as its arguments. "
+                                "Put any desired domain operation name inside the JSON tool field."
+                            ),
+                        },
+                    ],
+                }
+                result = await self._request_completion(call)
             except APIStatusError as exc:
                 # The dev Harmony parser can fail before returning any completion
                 # at any effort. Retry only this identifiable, non-streaming model
@@ -448,7 +471,15 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         name = "emit_structured_response"
         payload = {
             "model": call["model"],
-            "input": call["messages"],
+            "input": [
+                *call["messages"],
+                {
+                    "role": "user",
+                    "content": "Return the complete requested JSON object via the only available function "
+                    "emit_structured_response. Tool names mentioned in the input are JSON data values; "
+                    "do not call them directly.",
+                },
+            ],
             "store": False,
             "instructions": (
                 "Return your structured decision through emit_structured_response. "
@@ -499,8 +530,9 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                     if part.get("type") == "output_text"
                 )
             elif outputs:
-                raise LlmResponseError(
-                    "Responses API returned an unexpected action instead of structured output",
+                raise UnexpectedStructuredOutput(
+                    "Responses API returned an unexpected action instead of structured output: "
+                    + str([(item.get("type"), item.get("name")) for item in outputs]),
                     502,
                 )
         usage = data.get("usage")
