@@ -30,6 +30,7 @@ def build_info():
                 "ORCHESTRATOR_",
                 "OPENAI_",
                 "LLM_",
+                "PLANNING_",
                 "GENPLANNER_",
                 "GENBUILDER_",
                 "PZZ_",

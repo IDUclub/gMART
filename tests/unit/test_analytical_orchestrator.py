@@ -137,6 +137,33 @@ async def test_scenario_data_receives_task_without_control_context(orchestrator)
     assert second.calls[0]["user_query"] == task
 
 
+@pytest.mark.parametrize("agent", ["genplanner", "genbuilder", "pzz"])
+async def test_planning_delegation_preserves_user_constraints(orchestrator, agent):
+    query = (
+        "Редевелопмент промышленной части на 12000 жителей; сохранить парк и здания."
+    )
+    task = "Подготовь проектный вариант"
+    pipeline = FakePipeline([table()])
+    orchestrator.planning_services[agent] = SimpleNamespace(run=pipeline)
+    setattr(orchestrator.app_config, agent.upper() + "_MCP_URL", "http://planning")
+    orchestrator.plan_builder.build_plan = AsyncMock(
+        return_value=plan({"agent": agent, "task": task})
+    )
+
+    async def review(model, query, agents, context, remaining, budget):
+        return AnalysisReview(
+            action="complete",
+            answer="Готово",
+            evidence_ids=[a["id"] for a in context["artifacts"]],
+        )
+
+    orchestrator.plan_builder.review = review
+    await run_pipeline(orchestrator, user_query=query)
+    assert pipeline.calls
+    assert task in pipeline.calls[0]["user_query"]
+    assert query in pipeline.calls[0]["user_query"]
+
+
 async def test_native_dates_are_json_safe_in_evidence_and_terminal_replay(orchestrator):
     event = table()
     event["content"]["rows"][0]["created_at"] = datetime(

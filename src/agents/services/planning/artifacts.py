@@ -181,6 +181,20 @@ def resolve_references(value, artifacts):
     return value
 
 
+def inspect_value(value, offset=0, limit=6):
+    """Read a bounded page from full evidence, including past the initial preview."""
+    if offset < 0 or not 1 <= limit <= 6:
+        raise ValueError("Inspection requires offset >= 0 and 1 <= limit <= 6")
+    if isinstance(value, list):
+        return {
+            "items": deepcopy(value[offset : offset + limit]),
+            "offset": offset,
+            "total": len(value),
+            "complete": offset + limit >= len(value),
+        }
+    return {"value": deepcopy(value)}
+
+
 def preview(value, depth=0):
     if depth > 5:
         return {"omitted": True, "type": type(value).__name__}

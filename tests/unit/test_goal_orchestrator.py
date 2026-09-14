@@ -238,6 +238,38 @@ async def test_goal_source_text_is_bound_by_application_after_sdk_reference_repa
     assert len(fake_llm.chat_calls) == 2
 
 
+@pytest.mark.parametrize("subject", ["рекреационные зоны", "здания"])
+async def test_planning_goal_repairs_invented_physical_types(fake_llm, subject):
+    from src.agents.services.orchestrator.analysis_goal import GoalManager
+
+    generated = {
+        "id": "generated",
+        "agent": "genbuilder",
+        "description": "Создать застройку на 12000 жителей, сохранив парк и здания",
+        "source_ids": [1, 2],
+        "required_artifacts": ["table", "feature_collection"],
+    }
+    invalid = {
+        "id": "originals",
+        "agent": "scenario_data",
+        "description": "Получить исходные объекты для сохранения",
+        "subject": subject,
+        "entity_kind": "physical_objects",
+        "source_ids": [2],
+        "required_artifacts": ["feature_collection"],
+    }
+    fake_llm.json_responses = [
+        json.dumps({"objective": "Проект", "requirements": reqs}, ensure_ascii=False)
+        for reqs in ([invalid, generated], [generated])
+    ]
+    goal = await GoalManager(fake_llm).create(
+        "m", "Создай застройку на 12000 жителей. Сохрани парк и здания.", [], 772
+    )
+    assert len(fake_llm.chat_calls) == 2
+    assert len(goal.requirements) == 1
+    assert "Сохрани парк и здания" in goal.requirements[0].source_quote
+
+
 async def test_budget_stop_preserves_goal_and_completed_artifacts(
     orchestrator, monkeypatch
 ):

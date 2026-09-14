@@ -518,6 +518,12 @@ description — самодостаточные условия получения
 Не добавляй вспомогательный поиск нормативов к расчёту provision: этот специалист сам проверяет норматив. norms/documents нужны только если пользователь отдельно запросил исследование источников.
 Причину недоступности расчёта обеспеченности проверяет сам provision. Сохрани это условие в его description, не создавай отдельное требование restriction/compliance/scenario_data для диагностики расчёта.
 Контракты результатов: documents/norms возвращают analysis_text; restriction возвращает feature_collection; compliance возвращает compliance_summary и compliance_result; provision возвращает table. Сопоставление источников входит в objective, отдельного специалиста для него нет.
+Если доступны genplanner/genbuilder/pzz, используй их собственные контракты:
+genplanner создаёт/изменяет функциональные зоны и дороги, возвращает feature_collection и table; genbuilder оценивает вместимость и генерирует здания, возвращает feature_collection и table; pzz проверяет территориальные зоны и объекты, возвращает table и analysis_text.
+Для этих трёх специалистов entity_kind=other. Они сами читают исходные зоны, здания и справочники через Urban MCP. Сохранение парков, существующих зданий, целевое население и границы изменяемой территории — обязательные условия их проектного результата, а не дополнительные выборки scenario_data.
+Зоны и дороги одного варианта — единый результат genplanner: объедини их в одном requirement с условиями сохранения. Не создавай отдельную повторную генерацию только ради дорог или проверки сохранения того же варианта.
+Рекреационная функциональная зона — не тип физического объекта «рекреационные зоны», а здания вообще — не один тип «здания». Не создавай такие искусственные типы для scenario_data. Если пользователь просит только исходные функциональные зоны, используй scenario_data с entity_kind=other и точным описанием слоя.
+Для нескольких проектных вариантов сохрани отдельные требования с именем каждого варианта и его условиями. Проверки provision/compliance/pzz должны явно относиться к соответствующему проектному варианту; проверка исходного сценария не заменяет проверку новых слоёв.
 provision также возвращает расчётные feature_collection зданий, услуг и связей, если пользователь запросил слои: включи их в required_artifacts и description.
 Итоговую оценку проекта, вывод о достаточности мест и ограничения анализа составляет сам оркестратор. Это objective, НЕ отдельное requirement для documents, provision или scenario_data. documents ищет и анализирует документы, а не заменяет итоговый ответ оркестратора.
 Верни JSON по схеме."""
@@ -698,6 +704,21 @@ provision также возвращает расчётные feature_collection 
                 )
             )
             for r in normalized:
+                if (
+                    r.agent == "scenario_data"
+                    and r.entity_kind == "physical_objects"
+                    and re.search(r"рекреац|^здани[еяй]\b", r.subject.strip(), re.I)
+                    and any(
+                        item.agent in {"genplanner", "genbuilder"}
+                        for item in normalized
+                    )
+                ):
+                    raise ValueError(
+                        "Functional recreation zones and generic buildings are not singular "
+                        "physical-object catalogue types. Preserve the retention conditions "
+                        "and their source_ids in the genplanner/genbuilder project requirements; "
+                        "these specialists retrieve the required original layers themselves."
+                    )
                 if r.entity_kind != "other" and re.search(
                     r"[,;]|\sи\s", r.subject, re.I
                 ):
@@ -791,6 +812,8 @@ provision также возвращает расчётные feature_collection 
                     required = list(
                         dict.fromkeys(["compliance_summary", "compliance_result"])
                     )
+                elif r.agent == "pzz":
+                    required = ["table", "analysis_text"]
                 if (
                     r.agent == "scenario_data"
                     and not (r.scenario_id or scenario_id)

@@ -49,6 +49,19 @@ def test_preview_is_explicitly_partial_but_output_is_complete():
     assert events[1]["content"]["rows"][0]["residents"] == 4500
 
 
+def test_inspection_reaches_catalogue_entries_beyond_preview():
+    from src.agents.services.planning.artifacts import inspect_value
+
+    catalogue = [{"id": i, "name": f"zone {i}"} for i in range(20)]
+    assert not preview(catalogue)["complete"]
+    page = inspect_value(catalogue, offset=6)
+    assert [item["id"] for item in page["items"]] == list(range(6, 12))
+    assert page["total"] == 20 and not page["complete"]
+    assert inspect_value(catalogue, offset=18)["complete"]
+    page["items"][0]["id"] = -1
+    assert catalogue[6]["id"] == 6
+
+
 @pytest.mark.parametrize("key", PROFILES)
 def test_independent_cards_and_optional_catalogue(key):
     card = PlanningAgentCard(PROFILES[key]).get_agent_card("https://gmart.test")

@@ -210,6 +210,14 @@ class AnalyticalRun:
                         sid = s.state_store.new_request_id()
                         emitted_requests.add(sid)
                         query = step.task
+                        if step.agent in {"genplanner", "genbuilder", "pzz"}:
+                            query += (
+                                "\n\nИсходное задание пользователя (сохрани его целевые "
+                                "числа, территориальный охват и ограничения):\n"
+                                + self.context.query
+                                + "\nВыполни только порученный тебе шаг в рамках этого задания. "
+                                "Остальные шаги выполняют другие специалисты."
+                            )
                         if step.population_adjustment:
                             population = self.context.population(
                                 step.population_adjustment
@@ -220,7 +228,8 @@ class AnalyticalRun:
                         # indicator names or trigger a different retrieval workflow.
                         if (
                             self.context.completed
-                            and step.agent != "scenario_data"
+                            and step.agent
+                            not in {"scenario_data", "genplanner", "genbuilder", "pzz"}
                             and (not self.goal or step.evidence_ids)
                         ):
                             query += (
