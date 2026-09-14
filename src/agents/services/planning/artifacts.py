@@ -243,10 +243,19 @@ def preview(value, depth=0):
             }
         return {k: preview(v, depth + 1) for k, v in value.items()}
     if isinstance(value, list):
+        limit = (
+            32
+            if value
+            and all(
+                isinstance(v, dict) and {"id", "kind", "profile"} <= v.keys()
+                for v in value
+            )
+            else 6
+        )
         return {
-            "items": [preview(v, depth + 1) for v in value[:6]],
+            "items": [preview(v, depth + 1) for v in value[:limit]],
             "total": len(value),
-            "complete": len(value) <= 6,
+            "complete": len(value) <= limit,
         }
     if isinstance(value, str) and len(value) > 2500:
         return {"text": value[:2500], "truncated": True}

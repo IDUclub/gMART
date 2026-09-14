@@ -497,7 +497,6 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             ],
             "tool_choice": "auto",
             "parallel_tool_calls": False,
-            "text": {"format": {"type": "json_schema", **schema}},
         }
         for key in ("temperature", "top_p"):
             if key in call:

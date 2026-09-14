@@ -527,6 +527,17 @@ class PlanningService(BaseLlmService):
                         ),
                     )
                 )
+            for tool_name in ("list_zone_types", "get_default_forbidden_matrix"):
+                if tool_name in catalogue:
+                    initial.append(
+                        (
+                            tool_name,
+                            {},
+                            await client.execute_tool(
+                                tool_name, {}, meta={"scenario_id": scenario_id}
+                            ),
+                        )
+                    )
             for index, (tool_name, arguments, result) in enumerate(initial):
                 aid = f"{request_id}:context{index}"
                 values[aid] = jsonable_encoder(result)
@@ -827,7 +838,9 @@ class PlanningService(BaseLlmService):
                 observations.append({"tool": action.tool, "error": str(exc)[:1000]})
                 yield {
                     "type": "status",
-                    "content": {"text": f"{action.tool}: {type(exc).__name__}"},
+                    "content": {
+                        "text": f"{action.tool}: {type(exc).__name__}: {str(exc)[:500]}"
+                    },
                 }
                 continue
             if action.tool in self.profile.tools or action.tool in {

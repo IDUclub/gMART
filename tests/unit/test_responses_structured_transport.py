@@ -53,6 +53,7 @@ async def test_responses_envelope_preserves_sdk_validation_and_budget(
         payload = json.loads(request.content)
         calls.append(payload)
         assert payload["store"] is False
+        assert "text" not in payload  # One function schema; no concurrent text grammar.
         assert [tool["type"] for tool in payload["tools"]] == ["function"]
         assert (
             payload["tools"][0]["parameters"]["properties"]["value"]["type"]
