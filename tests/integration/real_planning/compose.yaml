@@ -75,6 +75,7 @@ services:
       <<: *auth
       LLM_BACKEND: openai
       OPENAI_BASE_URL: http://10.32.11.27:8001/v1
+      OPENAI_STRUCTURED_TRANSPORT: responses_function
       DEFAULT_LLM_MODEL: gpt-oss-20b
       PUBLIC_AGENTS_URL: http://localhost:18000
       ORCHESTRATOR_ANALYSIS_MODE: goal
@@ -87,7 +88,7 @@ services:
       ORCHESTRATOR_STEPS: "24"
       ORCHESTRATOR_TOTAL_TOKENS: "1000000"
       PLANNING_REASONING_EFFORT: low
-      OLLAMA_API_URL: http://localhost:11434
+      OLLAMA_API_URL: http://10.32.11.27:8001
       IDU_MCP_SERVER: http://idu_mcp:8000/mcp
       OBJECTS_EFFECTS_MCP_SERVER: http://effects:80/effects/mcp
       DVD_MCP_SERVER: ${DVD_ORIGIN:-http://10.32.11.90:31002}/mcp

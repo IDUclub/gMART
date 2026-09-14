@@ -134,7 +134,7 @@ async def run(args):
         "accepted": False,
     }
     save(output / "report.json", report)
-    async with httpx.AsyncClient(timeout=900, trust_env=False) as http:
+    async with httpx.AsyncClient(timeout=2100, trust_env=False) as http:
 
         async def fingerprint():
             response = await http.get(

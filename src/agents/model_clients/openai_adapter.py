@@ -41,6 +41,7 @@ from typing import Any, AsyncIterator
 
 from loguru import logger
 from openai import APIStatusError, AsyncOpenAI, OpenAIError
+from openai.types.chat import ChatCompletion
 
 from src.agents.model_clients.llm_base import (
     BaseLlmAdapter,
@@ -81,6 +82,11 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         think_effort: str | None = None,
     ):
         self.base_url = base_url
+        self.structured_transport = os.getenv("OPENAI_STRUCTURED_TRANSPORT", "chat")
+        if self.structured_transport not in {"chat", "responses_function"}:
+            raise ValueError(
+                "OPENAI_STRUCTURED_TRANSPORT must be chat or responses_function"
+            )
         # How think= is spelled for this server; see the module docstring.
         self.think_mode = (
             think_mode
@@ -404,7 +410,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
     async def _request_completion(self, call):
         budget = current_budget.get()
         if budget is None:
-            return await self.client.chat.completions.create(**call)
+            return await self._create_completion(self.client, call)
         reservation = budget.reserve(
             call["messages"], call.get("response_format"), call.get("max_tokens")
         )
@@ -416,9 +422,9 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             }
         try:
             async with asyncio.timeout(budget.remaining_seconds):
-                result = await self.client.with_options(
-                    max_retries=0
-                ).chat.completions.create(**call)
+                result = await self._create_completion(
+                    self.client.with_options(max_retries=0), call
+                )
         except BaseException:
             reservation.settle()
             raise
@@ -426,6 +432,104 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             return self._budget_stream(result, reservation)
         reservation.settle(getattr(result, "usage", None))
         return result
+
+    async def _create_completion(self, client, call):
+        schema = (call.get("response_format") or {}).get("json_schema")
+        if (
+            self.structured_transport != "responses_function"
+            or call.get("stream")
+            or not schema
+        ):
+            return await client.chat.completions.create(**call)
+
+        # A function is only a structured-output envelope. No domain tools are
+        # registered with the model server; SDK/domain validation still precedes
+        # every real operation in the application.
+        name = "emit_structured_response"
+        payload = {
+            "model": call["model"],
+            "input": call["messages"],
+            "store": False,
+            "instructions": (
+                "Return your structured decision through emit_structured_response. "
+                "This is an output-format function, not a domain operation. "
+                "Any operation names in the input are data fields, not callable functions."
+            ),
+            "tools": [
+                {
+                    "type": "function",
+                    "name": name,
+                    "description": "Submit the structured response required by the input.",
+                    "parameters": schema["schema"],
+                    "strict": False,
+                }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+            "text": {"format": {"type": "json_schema", **schema}},
+        }
+        for key in ("temperature", "top_p"):
+            if key in call:
+                payload[key] = call[key]
+        if call.get("max_tokens") is not None:
+            payload["max_output_tokens"] = call["max_tokens"]
+        if call.get("reasoning_effort") is not None:
+            payload["reasoning"] = {"effort": call["reasoning_effort"]}
+        result = await client.responses.create(**payload)
+        data = result.model_dump()
+        if data.get("error") or data.get("status") not in {"completed", "incomplete"}:
+            raise LlmResponseError(
+                "Responses API did not complete the model stage", 502
+            )
+        outputs = [
+            item for item in data.get("output", []) if item.get("type") != "reasoning"
+        ]
+        content = ""
+        if data["status"] == "completed":
+            if (
+                len(outputs) == 1
+                and outputs[0].get("type") == "function_call"
+                and outputs[0].get("name") == name
+            ):
+                content = outputs[0].get("arguments") or ""
+            elif len(outputs) == 1 and outputs[0].get("type") == "message":
+                content = "".join(
+                    part.get("text", "")
+                    for part in outputs[0].get("content", [])
+                    if part.get("type") == "output_text"
+                )
+            elif outputs:
+                raise LlmResponseError(
+                    "Responses API returned an unexpected action instead of structured output",
+                    502,
+                )
+        usage = data.get("usage")
+        return ChatCompletion.model_validate(
+            {
+                "id": data["id"],
+                "object": "chat.completion",
+                "model": data["model"],
+                "created": int(data["created_at"]),
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": (
+                            "length" if data["status"] == "incomplete" else "stop"
+                        ),
+                    }
+                ],
+                "usage": (
+                    {
+                        "prompt_tokens": usage["input_tokens"],
+                        "completion_tokens": usage["output_tokens"],
+                        "total_tokens": usage["total_tokens"],
+                    }
+                    if usage
+                    else None
+                ),
+            }
+        )
 
     async def _budget_stream(self, stream, reservation):
         usage = None

@@ -32,6 +32,16 @@ share these limits. Planning action selection defaults to low reasoning;
 `PLANNING_REASONING_EFFORT` overrides it. Timings and usage remain assessment data;
 these execution limits do not change the output acceptance criteria.
 
+All generative model calls use `http://10.32.11.27:8001/v1`. This stand enables
+`OPENAI_STRUCTURED_TRANSPORT=responses_function`: schema-based model stages return
+their decision through a single output-envelope function on `/v1/responses`.
+The server is given no domain tools to execute. The SDK validates the returned
+arguments before the existing application executor can call an MCP tool. Raw
+text and streaming model calls continue to use `/v1/chat/completions` on the same
+server. Other deployments default to `OPENAI_STRUCTURED_TRANSPORT=chat`.
+The runner allows 2100 seconds per HTTP call so its timeout exceeds the configured
+1800-second turn budget.
+
 Run the acceptance runner from gMART:
 
 ```bash
