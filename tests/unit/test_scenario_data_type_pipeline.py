@@ -126,6 +126,10 @@ async def test_ambiguous_objects_question_finishes_with_clarification(
         event["content"]["text"] for event in events if event.get("type") == "chunk"
     )
     assert "физические объекты" in text and "сервисы" in text
+    assert any(
+        e["type"] == "clarification_required" and e["content"]["text"] == text
+        for e in events
+    )
     assert mcp.load_calls == 0
     assert events[-1] == {"type": "chunk", "content": {"text": "", "done": True}}
 

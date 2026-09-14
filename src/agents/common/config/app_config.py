@@ -88,6 +88,10 @@ class AgentsAppConfig:
         synapse_run_ttl_seconds: int = 86400,
         synapse_a2a_client_id: str = "synapse",
         synapse_auth_audience: str | None = None,
+        genplanner_mcp_url: str | None = None,
+        genbuilder_mcp_url: str | None = None,
+        pzz_mcp_url: str | None = None,
+        pzz_api_url: str | None = None,
     ) -> None:
 
         if not ollama_api_url:
@@ -122,6 +126,10 @@ class AgentsAppConfig:
         # Optional so existing deployments keep starting. The scenario-data agent
         # is hidden from the orchestrator until this URL is configured.
         self.URBAN_MCP_URL = urban_mcp_url.rstrip("/") if urban_mcp_url else None
+        self.GENPLANNER_MCP_URL = genplanner_mcp_url or None
+        self.GENBUILDER_MCP_URL = genbuilder_mcp_url or None
+        self.PZZ_MCP_URL = pzz_mcp_url or None
+        self.PZZ_API_URL = pzz_api_url or None
         if not chat_storage_url:
             raise ValueError("CHAT_STORAGE_URL must be set")
         self.CHAT_STORAGE_URL = chat_storage_url
@@ -188,6 +196,10 @@ class AgentsAppConfig:
             "DVD_API_URL": self.DVD_API_URL or "",
             "NORM_GRAPH_MCP_URL": self.NORM_GRAPH_MCP_URL or "",
             "URBAN_MCP_URL": self.URBAN_MCP_URL or "",
+            "GENPLANNER_MCP_URL": self.GENPLANNER_MCP_URL or "",
+            "GENBUILDER_MCP_URL": self.GENBUILDER_MCP_URL or "",
+            "PZZ_MCP_URL": self.PZZ_MCP_URL or "",
+            "PZZ_API_URL": self.PZZ_API_URL or "",
             "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,
             "URBAN_API_URL": self.URBAN_API_URL,
             # This view feeds startup logs and /system/config. Connection URLs

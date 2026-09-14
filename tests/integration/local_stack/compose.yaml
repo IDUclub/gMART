@@ -1,0 +1,157 @@
+name: gmart-sdk-local
+
+x-auth: &auth
+  SERVICE_AUTH_SERVER_URL: ${SERVICE_AUTH_SERVER_URL:?}
+  SERVICE_AUTH_REALM: ${SERVICE_AUTH_REALM:?}
+  SERVICE_AUTH_CLIENT_ID: ${SERVICE_AUTH_CLIENT_ID:?}
+  SERVICE_AUTH_CLIENT_SECRET: ${SERVICE_AUTH_CLIENT_SECRET:?}
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:16389:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 12
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/local-integration
+    ports: ["127.0.0.1:17687:7687"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/7687"]
+      interval: 5s
+      retries: 30
+  qdrant:
+    image: qdrant/qdrant:latest
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+  mongo:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: integration
+      MONGO_INITDB_ROOT_PASSWORD: local-integration
+  effects:
+    build:
+      context: ${EFFECTS_CONTEXT:?}
+    environment:
+      <<: *auth
+      APP_ENV: example
+      URBAN_API: ${URBAN_API_ORIGIN:?}
+      MCP_URBAN_API: ${URBAN_API_ORIGIN:?}
+      PROMETHEUS_PORT: "9464"
+    ports: ["127.0.0.1:18080:80"]
+  dvd:
+    build:
+      context: ${DVD_CONTEXT:?}
+    environment:
+      DVD_SERVICE_AUTH_SERVER_URL: ${SERVICE_AUTH_SERVER_URL}
+      DVD_SERVICE_AUTH_REALM: ${SERVICE_AUTH_REALM}
+      DVD_SERVICE_AUTH_CLIENT_ID: ${SERVICE_AUTH_CLIENT_ID}
+      DVD_SERVICE_AUTH_CLIENT_SECRET: ${SERVICE_AUTH_CLIENT_SECRET}
+      DVD_QDRANT_URL: http://qdrant:6333
+      DVD_REDIS_URL: redis://redis:6379/1
+      DVD_MINIO_ENDPOINT: minio:9000
+      DVD_MINIO_SECURE: "false"
+      DVD_LLM_PROVIDER: openai
+      DVD_LLM_BASE_URL: ${LLM_BASE_URL:?}
+      DVD_LLM_MODEL: ${LLM_MODEL:?}
+      DVD_EMBEDDINGS_PROVIDER: giga
+      DVD_EMBEDDINGS_URL: ${EMBEDDINGS_ORIGIN:?}
+      DVD_EMBEDDINGS_MODEL: ${EMBEDDINGS_MODEL:?}
+      DVD_VECTOR_SIZE: ${VECTOR_SIZE:?}
+      DVD_URBAN_API_URL: ${URBAN_API_ORIGIN}
+      DVD_TAGGING_BACKFILL_INTERVAL: "0"
+    ports: ["127.0.0.1:18100:8000"]
+    depends_on:
+      redis: {condition: service_healthy}
+      qdrant: {condition: service_started}
+      minio: {condition: service_started}
+  normgraph:
+    build:
+      context: ${NORMGRAPH_CONTEXT:?}
+    environment:
+      NG_SERVICE_AUTH_SERVER_URL: ${SERVICE_AUTH_SERVER_URL}
+      NG_SERVICE_AUTH_REALM: ${SERVICE_AUTH_REALM}
+      NG_SERVICE_AUTH_CLIENT_ID: ${SERVICE_AUTH_CLIENT_ID}
+      NG_SERVICE_AUTH_CLIENT_SECRET: ${SERVICE_AUTH_CLIENT_SECRET}
+      NG_NEO4J_URI: bolt://neo4j:7687
+      NG_NEO4J_PASSWORD: local-integration
+      NG_DVD_BASE_URL: http://dvd:8000
+      NG_LLM_PROVIDER: openai_compatible
+      NG_LLM_BASE_URL: ${LLM_BASE_URL}
+      NG_LLM_MODEL: ${LLM_MODEL}
+      NG_EMBEDDINGS_PROVIDER: openai_compatible
+      NG_EMBEDDINGS_URL: ${EMBEDDINGS_ORIGIN}
+      NG_EMBEDDINGS_MODEL: ${EMBEDDINGS_MODEL}
+      NG_VECTOR_SIZE: ${VECTOR_SIZE}
+      NG_EXTRACT_CONCURRENCY: "2"
+    ports: ["127.0.0.1:18020:8020"]
+    depends_on:
+      neo4j: {condition: service_healthy}
+      dvd: {condition: service_healthy}
+  chatstorage:
+    build:
+      context: ${CHATSTORAGE_CONTEXT:?}
+    environment:
+      <<: *auth
+      MONGO_URL: mongo:27017
+      MONGO_USER: integration
+      MONGO_PASSWORD: local-integration
+      MONGO_DB: chat_history
+      IDU_MCP_URL: http://idu_mcp:8000/mcp
+      OBJECTS_EFFECTS_MCP_URL: http://effects:80/effects/mcp
+      DVD_MCP_URL: http://dvd:8000/mcp
+      NORM_GRAPH_MCP_URL: http://normgraph:8020/mcp
+      AUTH_SERVER_URL: ${SERVICE_AUTH_SERVER_URL}/realms/${SERVICE_AUTH_REALM}
+      AUTH_CLIENT_ID: ${SERVICE_AUTH_CLIENT_ID}
+      AUTH_VALID_AUDIENCES: ${AUTH_VALID_AUDIENCES:-urban-api,account}
+    ports: ["127.0.0.1:18010:8000"]
+    depends_on: [mongo]
+  idu_mcp:
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile-mcp
+    environment:
+      <<: *auth
+      URBAN_API_URL: ${URBAN_API_ORIGIN}/api
+      REDIS_URL: redis://redis:6379/2
+    ports: ["127.0.0.1:18002:8000"]
+    depends_on:
+      redis: {condition: service_healthy}
+  agents:
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile-agents
+    environment:
+      <<: *auth
+      LLM_BACKEND: openai
+      OPENAI_BASE_URL: ${LLM_BASE_URL}
+      DEFAULT_LLM_MODEL: ${LLM_MODEL}
+      ORCHESTRATOR_ANALYSIS_MODE: ${ORCHESTRATOR_ANALYSIS_MODE:-goal}
+      PUBLIC_AGENTS_URL: http://localhost:18000
+      ORCHESTRATOR_GOAL_REASONING_EFFORT: ${ORCHESTRATOR_GOAL_REASONING_EFFORT:-medium}
+      OLLAMA_API_URL: http://localhost:11434
+      IDU_MCP_SERVER: http://idu_mcp:8000/mcp
+      OBJECTS_EFFECTS_MCP_SERVER: http://effects:80/effects/mcp
+      DVD_MCP_SERVER: http://dvd:8000/mcp
+      DVD_API_URL: http://dvd:8000
+      NORM_GRAPH_MCP_SERVER: http://normgraph:8020/mcp
+      URBAN_MCP_SERVER: ${URBAN_MCP_ORIGIN:?}
+      URBAN_API_URL: ${URBAN_API_ORIGIN}/api
+      CHAT_STORAGE: http://chatstorage:8000
+      REDIS_URL: redis://redis:6379/0
+      FASTAPI_WORKERS: "1"
+      SYNAPSE_ENABLED: "false"
+    ports: ["127.0.0.1:18000:80"]
+    depends_on:
+      redis: {condition: service_healthy}
+      idu_mcp: {condition: service_started}
+      effects: {condition: service_started}
+      normgraph: {condition: service_started}
+      chatstorage: {condition: service_started}

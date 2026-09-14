@@ -25,7 +25,9 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
+from src.agents.runtime.runner import run_completion
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.orchestrator.analysis_support import context_scope
 from src.agents.services.pipeline_state import (
     PipelineStateStore,
     PipelineStatus,
@@ -126,6 +128,21 @@ class ProvisionService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
     ) -> AsyncGenerator:
+        if request_id:
+            stored = await self.state_store.get_state(request_id) or {}
+            if stored.get("status") in {
+                PipelineStatus.DONE,
+                PipelineStatus.FAILED,
+                PipelineStatus.CANCELLED,
+            }:
+                # Match the initial public stream without re-running any stage
+                # or scheduling the same assistant message in ChatStorage again.
+                for event in await self.state_store.get_buffered_events(
+                    request_id, owner=context_scope(token, "owner")
+                ):
+                    if event.get("type") != "tool_call":
+                        yield event
+                return
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
         model = await self.resolve_model(model)
@@ -205,7 +222,9 @@ class ProvisionService(BaseLlmService):
         )
         if is_reconnect:
             logger.info(f"Reconnect for request_id={request_id}, replaying events")
-            for event in await self.state_store.get_buffered_events(request_id):
+            for event in await self.state_store.get_buffered_events(
+                request_id, owner=context_scope(token_ref[0], "owner")
+            ):
                 yield event
             if not chat_id:
                 stored = await self.state_store.get_state(request_id)
@@ -256,6 +275,7 @@ class ProvisionService(BaseLlmService):
                 scenario_id=scenario_id,
                 model=model,
                 temperature=temperature,
+                owner=context_scope(token_ref[0], "owner"),
             )
 
         logger.info(f"Provision pipeline request_id={request_id} chat_id={chat_id}")
@@ -489,6 +509,35 @@ class ProvisionService(BaseLlmService):
         if not prov_out:
             return
         prov_result = prov_out[0]
+        normatives = {
+            str(sid): value["normative"]
+            for sid, value in (prov_result.data.get("services") or {}).items()
+            if value.get("normative")
+        }
+        if normatives:
+            yield await self._buf(
+                request_id,
+                {
+                    "type": "source_evidence",
+                    "content": {
+                        "name": "provision_normatives",
+                        "result": normatives,
+                        "scenario_id": scenario_id,
+                    },
+                },
+            )
+            if any(
+                n.get("source", {}).get("kind") == "test_mock"
+                for n in normatives.values()
+            ):
+                yield await self._buf(
+                    request_id,
+                    self._chunk(
+                        "Расчёт использует явно заданные мок-нормативы для технической оценки; "
+                        "это не проверка соответствия утверждённым нормативам.",
+                        done=False,
+                    ),
+                )
 
         yield await self._buf(
             request_id,
@@ -615,6 +664,35 @@ class ProvisionService(BaseLlmService):
         if not prov_out:
             return
         prov_result = prov_out[0]
+        normatives = {
+            str(sid): value["normative"]
+            for sid, value in (prov_result.data.get("services") or {}).items()
+            if value.get("normative")
+        }
+        if normatives:
+            yield await self._buf(
+                request_id,
+                {
+                    "type": "source_evidence",
+                    "content": {
+                        "name": "provision_normatives",
+                        "result": normatives,
+                        "scenario_id": scenario_id,
+                    },
+                },
+            )
+            if any(
+                n.get("source", {}).get("kind") == "test_mock"
+                for n in normatives.values()
+            ):
+                yield await self._buf(
+                    request_id,
+                    self._chunk(
+                        "Расчёт использует явно заданные мок-нормативы для технической оценки; "
+                        "это не проверка соответствия утверждённым нормативам.",
+                        done=False,
+                    ),
+                )
 
         yield await self._buf(
             request_id,
@@ -872,6 +950,35 @@ class ProvisionService(BaseLlmService):
             except PipelineSuspendedError:
                 return
             prov_result = prov_out[0]
+        normatives = {
+            str(sid): value["normative"]
+            for sid, value in (prov_result.data.get("services") or {}).items()
+            if value.get("normative")
+        }
+        if normatives:
+            yield await self._buf(
+                request_id,
+                {
+                    "type": "source_evidence",
+                    "content": {
+                        "name": "provision_normatives",
+                        "result": normatives,
+                        "scenario_id": scenario_id,
+                    },
+                },
+            )
+            if any(
+                n.get("source", {}).get("kind") == "test_mock"
+                for n in normatives.values()
+            ):
+                yield await self._buf(
+                    request_id,
+                    self._chunk(
+                        "Расчёт использует явно заданные мок-нормативы для технической оценки; "
+                        "это не проверка соответствия утверждённым нормативам.",
+                        done=False,
+                    ),
+                )
             await self.state_store.save_checkpoint(
                 request_id, PipelineStep.CALCULATE_PROVISION, prov_result.data
             )
@@ -929,7 +1036,7 @@ class ProvisionService(BaseLlmService):
             token, scenario_id
         )
         plan = await self.plan_builder.build_plan(
-            model, user_query, list(service_types), history
+            model, user_query, list(service_types), history, scenario_id=scenario_id
         )
         return plan, service_types
 
@@ -975,12 +1082,14 @@ class ProvisionService(BaseLlmService):
             {"role": "user", "content": user_query},
         ]
         response_buffer: list[str] = []
-        async for part in await self.llm_client.chat(
+        async for part in await run_completion(
+            self.llm_client,
             model,
             messages,
             think=False,
             options={"temperature": temperature},
             stream=True,
+            agent_name="provsion_service",
         ):
             part: LlmChatResponse
             if part.message.content:

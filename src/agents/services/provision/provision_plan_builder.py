@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from pydantic import ValidationError
 
-from src.agents.services.restriction.restriction_catalog import (
-    parse_catalog_prompt,
-    strip_json_fence,
-)
+from src.agents.runtime.runner import run_structured
+from src.agents.services.restriction.restriction_catalog import parse_catalog_prompt
 from src.agents.services.service_entities.provision_plan import (
     ProvisionPlan,
     ProvisionPlanMode,
@@ -37,14 +35,36 @@ class ProvisionPlanBuilder:
         user_query: str,
         services_catalog: list[str],
         history: list[dict] | None = None,
+        *,
+        scenario_id: int | None = None,
     ) -> ProvisionPlan:
         if not services_catalog:
             return ProvisionPlan(
                 mode=ProvisionPlanMode.NEEDS_CLARIFICATION,
                 clarification_question="В выбранном сценарии нет доступных сервисов для расчёта обеспеченности. Выберите сценарий с нужными сервисами.",
             )
-        raw = await self._request_plan(model, user_query, services_catalog, history)
+        raw = await self._request_plan(
+            model, user_query, services_catalog, history, scenario_id=scenario_id
+        )
         raw = self._canonicalize_plan(raw, services_catalog)
+        request = re.split(r"\n\nПодтвержд[её]нные результаты", user_query)[0]
+        # A general request for calculation layers covers the selected services;
+        # it must not disappear because the model left an optional list empty.
+        general_layers = any(
+            re.search(
+                r"(?<!не )(?:верни|верните|возвращай|покажи|приложи)\s+расч[её]тн\w*\s+сло\w*\s+(?:здани|для\s+всех)",
+                part,
+                re.I,
+            )
+            and not re.search(r"сло\w*[^.!?]*\bтолько\b", part, re.I)
+            for part in re.split(r"[.!?\n]", request)
+        )
+        if raw.mode == ProvisionPlanMode.SUMMARY and general_layers:
+            raw = raw.model_copy(
+                update={
+                    "layer_service_names": list(raw.service_names or services_catalog)
+                }
+            )
         if (
             raw.mode == ProvisionPlanMode.NEEDS_CLARIFICATION
             and not raw.clarification_question
@@ -111,9 +131,14 @@ class ProvisionPlanBuilder:
         services_catalog: list[str],
         history: list[dict] | None = None,
         _retries: int = 2,
+        *,
+        scenario_id: int | None = None,
     ) -> ProvisionPlan:
-        messages: list[dict] = [
-            {"role": "system", "content": self._build_prompt(services_catalog)},
+        prompt = self._build_prompt(services_catalog)
+        if scenario_id is not None:
+            prompt += f"\nТекущий вызов уже привязан приложением к scenario_id={scenario_id}. Каталог относится к этому сценарию. Рассчитывай только его; другие версии и сравнение обрабатывает оркестратор. Не спрашивай ID уже выбранного сценария."
+        messages = [
+            {"role": "system", "content": prompt},
             *(history or []),
             {"role": "user", "content": user_query},
         ]
@@ -121,37 +146,76 @@ class ProvisionPlanBuilder:
         schema["properties"]["service_name"]["enum"] = [*services_catalog, None]
         for key in ("service_names", "layer_service_names"):
             schema["properties"][key]["items"]["enum"] = services_catalog
-        for attempt in range(_retries + 1):
-            response = await self.llm_client.chat(
-                model=model,
-                options={"temperature": 0, "num_predict": 1024},
-                think=False,
-                format=schema,
-                messages=messages,
-            )
-            content = response["message"]["content"]
-            logger.debug(f"LLM provision plan response [{model}]: {content}")
-            try:
-                return ProvisionPlan.model_validate_json(strip_json_fence(content))
-            except (ValidationError, json.JSONDecodeError) as exc:
-                if attempt < _retries:
-                    logger.warning(
-                        f"LLM returned invalid provision plan JSON "
-                        f"(retries left: {_retries - attempt - 1}): {exc}"
+
+        def validate_scope(plan):
+            request = re.split(r"\n\nПодтвержд[её]нные результаты", user_query)[0]
+            if (
+                scenario_id is not None
+                and plan.mode == ProvisionPlanMode.NEEDS_CLARIFICATION
+                and re.search(
+                    r"(?:как(?:ой|ого|им|их|ие)|укаж|уточн|выбер)[^.?!]{0,70}сценари|сценари[^.?!]{0,30}(?:\bID\b|идентификатор)",
+                    plan.clarification_question or "",
+                    re.I,
+                )
+            ):
+                raise ValueError(
+                    f"Scenario ID is already bound by the caller: {scenario_id}. Select provision/summary for this scenario and the named services. Do not ask the user to re-enter it."
+                )
+            if (
+                plan.mode == ProvisionPlanMode.EFFECTS
+                and re.search(
+                    r"(?:рассчит\w*|расч[её]т\w*|текущ\w*)\s+обеспечен", request, re.I
+                )
+                and not re.search(
+                    r"эффект|повлия|влияни|воздейств|изменится|изменятся|до\s*(?:и|/|—|-)\s*после",
+                    request,
+                    re.I,
+                )
+            ):
+                raise ValueError(
+                    "The request calculates provision in an existing scenario, not the effects of a change. Use provision/summary and preserve target_population; the words project/scenario do not request effects."
+                )
+            if (
+                plan.mode in {ProvisionPlanMode.PROVISION, ProvisionPlanMode.EFFECTS}
+                and not (plan.service_name or "").strip()
+            ):
+                raise ValueError(
+                    "Single-service calculation requires service_name from the current catalogue. Extract the named service; do not convert an incomplete model response into a user clarification."
+                )
+            if (
+                plan.mode == ProvisionPlanMode.NEEDS_CLARIFICATION
+                and not (plan.clarification_question or "").strip()
+            ):
+                raise ValueError(
+                    "needs_clarification requires a concrete missing input and a question. A request to calculate provision for named available services is provision/summary, not an unexplained clarification. Preserve the named services and population."
+                )
+            if plan.mode == ProvisionPlanMode.SUMMARY and not plan.service_names:
+                broad = re.search(
+                    r"\b(?:все|всё|всем|всех|всеми|кажд\w*)\b.{0,80}(?:сервис|услуг)"
+                    r"|(?:сводк|обзор)\w*\s*(?:по\s+)?обеспеченност\w*\s+(?:сервисами|услугами)\b"
+                    r"|какими\s+(?:сервисами|услугами)\b|\ball\s+(?:services|amenities)\b",
+                    request,
+                    re.I,
+                )
+                if not broad:
+                    raise ValueError(
+                        "Empty service_names expands to EVERY service in the catalog, but the current request does not ask for all services. Select the requested service_name/service_names; a table or layer does not imply a full-catalog summary."
                     )
-                    messages.append({"role": "assistant", "content": content})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Твой предыдущий ответ содержит невалидный JSON. "
-                                "Верни только валидный JSON нужной структуры без markdown и пояснений."
-                            ),
-                        }
-                    )
-                else:
-                    raise ValueError("Model returned invalid provision plan") from exc
-        raise AssertionError("unreachable")
+            return plan
+
+        return await run_structured(
+            self.llm_client,
+            model,
+            messages,
+            ProvisionPlan,
+            schema=schema,
+            validate=validate_scope,
+            agent_name="provision.plan",
+            retries=_retries,
+            think=False,
+            options={"temperature": 0, "num_predict": 1024},
+            error_message="Model returned invalid provision plan",
+        )
 
     @staticmethod
     def _build_prompt(services_catalog: list[str]) -> str:
@@ -183,8 +247,9 @@ class ProvisionPlanBuilder:
 эффектов, изменений или влияния проекта. Пример: «какая обеспеченность школами?».
 - "effects" — вопрос об эффектах, изменениях или влиянии проекта на обеспеченность одним \
 конкретным сервисом (сравнение до/после). Примеры: «как проект повлияет на обеспеченность школами?», \
-«рассчитай эффекты обеспеченности школами». Если из запроса про один сервис непонятно, \
-нужны текущая обеспеченность или эффекты — выбирай "effects".
+«рассчитай эффекты обеспеченности школами». Эффекты требуют явного запроса на влияние/изменение. \
+Расчёт обеспеченности готового сценария при заданном населении — "provision" (или "summary" для нескольких услуг). \
+Если изменение не задано, выбирай текущую обеспеченность; слова «проект» и «сценарий» сами по себе не означают эффекты.
 - "needs_clarification" — запрос не подходит ни под один режим, упомянутый сервис отсутствует \
 в доступных или запрос неоднозначен.
 

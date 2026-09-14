@@ -23,6 +23,7 @@ from src.agents.routers.mcp_diagnostics_controller import mcp_diagnostics_router
 from src.agents.routers.norms_a2a_controller import norms_a2a_router
 from src.agents.routers.norms_controller import norms_router
 from src.agents.routers.orchestrator_controller import orchestrator_router
+from src.agents.routers.planning_controller import planning_routers
 from src.agents.routers.provision_a2a_controller import provision_a2a_router
 from src.agents.routers.provision_controller import provision_router
 from src.agents.routers.restriction_parser_controller import restriction_router
@@ -98,6 +99,8 @@ app.include_router(dvd_router)
 app.include_router(mcp_diagnostics_router)
 app.include_router(norms_router)
 app.include_router(orchestrator_router)
+for planning_router in planning_routers:
+    app.include_router(planning_router)
 app.include_router(scenario_data_router)
 app.include_router(scenario_data_a2a_router)
 app.include_router(token_refresh_router)

@@ -3,6 +3,8 @@ from datetime import datetime
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 
+from src.agents.common.auth.auth import verify_bearer_token
+from src.agents.common.build_info import build_info
 from src.agents.dependencies.dependencies import get_system_service
 from src.agents.schema.app_config_request import AppConfigRequest
 from src.agents.schema.app_config_response import AppConfigResponse
@@ -10,6 +12,12 @@ from src.agents.services.compilance.compliance_metrics import COMPLIANCE_METRICS
 from src.agents.services.synapse.system_service import SystemService
 
 system_router = APIRouter(prefix="/system", tags=["system"])
+
+
+@system_router.get("/build-info")
+async def get_build_info(token: str = Depends(verify_bearer_token)):
+    """Identify the exact application and configuration used by a live run."""
+    return build_info()
 
 
 @system_router.get("/compliance-metrics")

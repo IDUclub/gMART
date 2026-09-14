@@ -4,9 +4,10 @@ import json
 from typing import TypeVar
 
 from loguru import logger
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
-from src.agents.services.restriction.restriction_catalog import strip_json_fence
+from src.agents.runtime.runner import run_structured
+from src.agents.services.normgraph.document_reference import explicit_document_names
 from src.agents.services.service_entities.normgraph_plan import (
     NormGraphCriticVerdict,
     NormGraphPlan,
@@ -28,58 +29,18 @@ def _clean_str_list(values: list[str] | None) -> list[str] | None:
 
 
 async def _request_json(
-    llm_client,
-    model: str,
-    messages: list[dict],
-    model_cls: type[T],
-    retries: int = 2,
+    llm_client, model: str, messages: list[dict], model_cls: type[T], retries: int = 2
 ) -> T:
-    """
-    Ask the LLM for a JSON object and parse it into ``model_cls``.
-
-    Mirrors the structured-output convention used by RetrievalPlanner/AnswerCritic (DVD RAG
-    agent): temperature 0, strip markdown fences, retry by feeding the invalid response back
-    to the model.
-    """
-    for attempt in range(retries + 1):
-        response = await llm_client.chat(
-            model=model,
-            messages=messages,
-            # Reasoning models such as gpt-oss may spend the entire prediction
-            # budget in ``message.thinking`` and leave ``message.content`` empty.
-            # Planning/critique need deterministic machine-readable output, not
-            # a reasoning trace, so explicitly disable thinking and let Ollama
-            # constrain the response with the Pydantic JSON schema.
-            think=False,
-            format=model_cls.model_json_schema(),
-            options={"temperature": 0, "num_predict": 1024},
-        )
-        content = response["message"]["content"]
-        logger.debug(f"LLM {model_cls.__name__} response [{model}]: {content}")
-        try:
-            return model_cls.model_validate_json(strip_json_fence(content))
-        except (ValidationError, json.JSONDecodeError) as exc:
-            if attempt < retries:
-                logger.warning(
-                    f"LLM returned invalid {model_cls.__name__} JSON "
-                    f"(retries left: {retries - attempt - 1}): {exc}"
-                )
-                messages = [
-                    *messages,
-                    {"role": "assistant", "content": content},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Твой предыдущий ответ содержит невалидный JSON. "
-                            "Верни только валидный JSON нужной структуры без markdown и пояснений."
-                        ),
-                    },
-                ]
-            else:
-                raise ValueError(
-                    f"Model returned invalid {model_cls.__name__} JSON"
-                ) from exc
-    raise AssertionError("unreachable")
+    return await run_structured(
+        llm_client,
+        model,
+        messages,
+        model_cls,
+        agent_name=f"normgraph.{model_cls.__name__}",
+        retries=retries,
+        think=False,
+        options={"temperature": 0, "num_predict": 1024},
+    )
 
 
 class NormGraphRetrievalPlanner:
@@ -117,7 +78,8 @@ class NormGraphRetrievalPlanner:
             "object": (plan.object or "").strip() or None,
             "subject": (plan.subject or "").strip() or None,
             "kind": (plan.kind or "").strip() or None,
-            "document_names": _clean_str_list(plan.document_names),
+            "document_names": explicit_document_names(user_query)
+            or _clean_str_list(plan.document_names),
             "tags": _clean_str_list(plan.tags),
             "limit": min(max(plan.limit, _LIMIT_MIN), _LIMIT_MAX),
             "neighbors_depth": min(
@@ -232,6 +194,9 @@ class NormGraphAnswerCritic:
 - Ответ неполный или не отвечает на вопрос пользователя.
 - Не указаны источники (документ, редакция, номер пункта или restriction_id для каждого \
 приведённого ограничения), хотя они есть в контексте.
+Числовая метка [1] является ссылкой на заголовок [1] со всеми его реквизитами;
+не требуй повторять их только ради оформления. Если запрошена сама запись ограничения,
+проверь её restriction_id по id из контекста. Не требуй ID объектов, которых нет в источнике.
 - В контексте приведены противоречащие друг другу ограничения (раздел «Обнаруженные \
 противоречия»), но ответ их не упоминает.
 - В контексте недостаточно данных — тогда обязательно предложи refined_search_query и/или \

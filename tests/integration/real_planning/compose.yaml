@@ -1,0 +1,128 @@
+name: gmart-real-planning
+
+x-auth: &auth
+  SERVICE_AUTH_SERVER_URL: ${SERVICE_AUTH_SERVER_URL:?}
+  SERVICE_AUTH_REALM: ${SERVICE_AUTH_REALM:?}
+  SERVICE_AUTH_CLIENT_ID: ${GMART_SERVICE_AUTH_CLIENT_ID:?}
+  SERVICE_AUTH_CLIENT_SECRET: ${GMART_SERVICE_AUTH_CLIENT_SECRET:?}
+
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      retries: 12
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/local-planning
+    volumes: [neo4j_data:/data]
+    healthcheck:
+      test: [CMD, bash, -c, "</dev/tcp/127.0.0.1/7687"]
+      interval: 5s
+      retries: 30
+  effects:
+    build:
+      context: ../../../../ObjectEffectsAPI
+    environment:
+      <<: *auth
+      SERVICE_AUTH_CLIENT_ID: ${OBJECT_EFFECTS_SERVICE_AUTH_CLIENT_ID:?}
+      SERVICE_AUTH_CLIENT_SECRET: ${OBJECT_EFFECTS_SERVICE_AUTH_CLIENT_SECRET:?}
+      APP_ENV: example
+      URBAN_API: ${URBAN_API_ORIGIN:-http://10.32.11.90:31001}
+      MCP_URBAN_API: ${URBAN_API_ORIGIN:-http://10.32.11.90:31001}
+      PROMETHEUS_PORT: "9464"
+      TEST_SERVICE_NORMATIVES_FILE: /assessment/mock_normatives.json
+    volumes: ["./mock_normatives.json:/assessment/mock_normatives.json:ro"]
+    ports: ["127.0.0.1:18080:80"]
+  normgraph:
+    build:
+      context: ../../../../NormGraph
+    environment:
+      NG_SERVICE_AUTH_SERVER_URL: ${SERVICE_AUTH_SERVER_URL}
+      NG_SERVICE_AUTH_REALM: ${SERVICE_AUTH_REALM}
+      NG_SERVICE_AUTH_CLIENT_ID: ${NORMGRAPH_SERVICE_AUTH_CLIENT_ID:?}
+      NG_SERVICE_AUTH_CLIENT_SECRET: ${NORMGRAPH_SERVICE_AUTH_CLIENT_SECRET:?}
+      NG_NEO4J_URI: bolt://neo4j:7687
+      NG_NEO4J_PASSWORD: local-planning
+      NG_DVD_BASE_URL: ${DVD_ORIGIN:-http://10.32.11.90:31002}
+      NG_LLM_PROVIDER: openai_compatible
+      NG_LLM_BASE_URL: http://10.32.11.27:8001/v1
+      NG_LLM_MODEL: gpt-oss-20b
+      NG_EMBEDDINGS_PROVIDER: openai_compatible
+      NG_EMBEDDINGS_URL: ${EMBEDDINGS_ORIGIN:-http://10.32.2.3:8010}
+      NG_EMBEDDINGS_MODEL: ai-sage/Giga-Embeddings-instruct
+      NG_VECTOR_SIZE: "2048"
+      NG_EXTRACT_CONCURRENCY: "2"
+    ports: ["127.0.0.1:18020:8020"]
+    depends_on:
+      neo4j: {condition: service_healthy}
+  idu_mcp:
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile-mcp
+    environment:
+      <<: *auth
+      URBAN_API_URL: ${URBAN_API_ORIGIN:-http://10.32.11.90:31001}/api
+      REDIS_URL: redis://redis:6379/2
+    ports: ["127.0.0.1:18002:8000"]
+    depends_on:
+      redis: {condition: service_healthy}
+  agents:
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile-agents
+    environment:
+      <<: *auth
+      LLM_BACKEND: openai
+      OPENAI_BASE_URL: http://10.32.11.27:8001/v1
+      OPENAI_STRUCTURED_TRANSPORT: harmony_completion
+      DEFAULT_LLM_MODEL: gpt-oss-20b
+      PUBLIC_AGENTS_URL: http://localhost:18000
+      ORCHESTRATOR_ANALYSIS_MODE: goal
+      ORCHESTRATOR_GOAL_REASONING_EFFORT: low
+      ORCHESTRATOR_CONTROL_REASONING_EFFORT: low
+      ORCHESTRATOR_SYNTHESIS_REASONING_EFFORT: medium
+      ORCHESTRATOR_SECONDS: "1800"
+      ORCHESTRATOR_MODEL_CALLS: "120"
+      ORCHESTRATOR_TOOL_CALLS: "160"
+      ORCHESTRATOR_STEPS: "24"
+      ORCHESTRATOR_CONTEXT_TOKENS: "65536"
+      ORCHESTRATOR_TOTAL_TOKENS: "1000000"
+      PLANNING_REASONING_EFFORT: low
+      # Required local placeholder; LLM_BACKEND=openai never calls Ollama.
+      OLLAMA_API_URL: http://localhost:11434
+      IDU_MCP_SERVER: http://idu_mcp:8000/mcp
+      OBJECTS_EFFECTS_MCP_SERVER: http://effects:80/effects/mcp
+      DVD_MCP_SERVER: ${DVD_ORIGIN:-http://10.32.11.90:31002}/mcp
+      DVD_API_URL: ${DVD_ORIGIN:-http://10.32.11.90:31002}
+      NORM_GRAPH_MCP_SERVER: http://normgraph:8020/mcp
+      URBAN_MCP_SERVER: http://10.32.11.90:31054
+      GENPLANNER_MCP_SERVER: http://10.32.11.90:31052/mcp
+      GENBUILDER_MCP_SERVER: http://10.32.11.90:31007/mcp
+      PZZ_MCP_SERVER: http://10.32.11.90:31053/mcp
+      PZZ_API_URL: http://10.32.11.90:31009
+      TEST_PZZ_NORMATIVES_FILE: /assessment/mock_pzz_normatives.json
+      URBAN_API_URL: ${URBAN_API_ORIGIN:-http://10.32.11.90:31001}/api
+      CHAT_STORAGE: ${CHAT_STORAGE_ORIGIN:-http://host.docker.internal:8010}
+      REDIS_URL: redis://redis:6379/0
+      FASTAPI_WORKERS: "1"
+      SYNAPSE_ENABLED: "false"
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes: ["./mock_pzz_normatives.json:/assessment/mock_pzz_normatives.json:ro"]
+    ports: ["127.0.0.1:18000:80"]
+    depends_on:
+      redis: {condition: service_healthy}
+      idu_mcp: {condition: service_started}
+      effects: {condition: service_started}
+      normgraph: {condition: service_healthy}
+
+volumes:
+  neo4j_data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${PLANNING_SUBNET:-172.31.3.0/24}

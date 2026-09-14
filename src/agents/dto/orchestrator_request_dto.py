@@ -20,6 +20,23 @@ class OrchestratorRequestDTO(SimpleRequestDTO):
             replay the buffered events of an interrupted stream.
     """
 
+    budget_tokens: int | None = Field(
+        default=None,
+        ge=20000,
+        description="Shared token ceiling; capped by server configuration",
+    )
+    budget_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        description="Shared time ceiling; capped by server configuration",
+    )
+    continue_from: str | None = Field(
+        default=None,
+        min_length=36,
+        max_length=36,
+        description="Continue saved analysis in a new run; request_id remains replay-only",
+    )
+
     scenario_id: int | None = Field(
         default=None,
         examples=[772],

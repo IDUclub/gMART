@@ -1,0 +1,423 @@
+[
+  {
+    "type": "check_plan",
+    "content": {
+      "restriction_id": "synthetic-restriction",
+      "plan": {
+        "schema_version": "1.0",
+        "template": "distance_from_source",
+        "template_version": 1,
+        "params": {
+          "source_layer": "source",
+          "targets": [
+            "targets"
+          ],
+          "geometry_mode": "buffered",
+          "distance_m": 50.0,
+          "predicate": "intersects",
+          "violation_when": "matched",
+          "result_mode": "both"
+        },
+        "declared_requirements": {
+          "layers": [
+            {
+              "role": "source",
+              "entity": "здание школы",
+              "entity_type": "service",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            },
+            {
+              "role": "targets",
+              "entity": "открытая автомобильная стоянка",
+              "entity_type": "physical_object",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            }
+          ],
+          "attributes": []
+        },
+        "source": {
+          "restriction_id": "synthetic-restriction",
+          "document_name": null,
+          "clause_number": null,
+          "extraction_text": "Расстояние от здания школы до открытой автомобильной стоянки должно быть не менее 50 метров"
+        },
+        "planner_status": "auto"
+      }
+    }
+  },
+  {
+    "type": "requirement_resolution",
+    "content": {
+      "restriction_id": "synthetic-restriction",
+      "effective_requirements": {
+        "layers": [
+          {
+            "role": "source",
+            "entity": "здание школы",
+            "entity_type": "service",
+            "geometry_types": [
+              "Point",
+              "MultiPoint",
+              "Polygon",
+              "MultiPolygon"
+            ],
+            "required": true
+          },
+          {
+            "role": "targets",
+            "entity": "открытая автомобильная стоянка",
+            "entity_type": "physical_object",
+            "geometry_types": [
+              "Point",
+              "MultiPoint",
+              "Polygon",
+              "MultiPolygon"
+            ],
+            "required": true
+          }
+        ],
+        "attributes": []
+      },
+      "resolved_requirements": [
+        {
+          "role": "source",
+          "requirement_type": "layer",
+          "resolved": false,
+          "layer": null,
+          "field": null,
+          "unit": null,
+          "quality": null,
+          "derive": null,
+          "fill_rate": null,
+          "reason": "urban_catalog_entity_not_found"
+        },
+        {
+          "role": "targets",
+          "requirement_type": "layer",
+          "resolved": false,
+          "layer": null,
+          "field": null,
+          "unit": null,
+          "quality": null,
+          "derive": null,
+          "fill_rate": null,
+          "reason": "urban_catalog_entity_not_found"
+        }
+      ],
+      "missing_requirements": [
+        "catalog:source:service:not_found",
+        "catalog:targets:physical_object:not_found"
+      ]
+    }
+  },
+  {
+    "type": "compliance_result",
+    "content": {
+      "restriction_id": "synthetic-restriction",
+      "template": "distance_from_source",
+      "template_version": 1,
+      "verification_status": "unverifiable",
+      "compliance_status": "unknown",
+      "coverage": {
+        "applicable_objects": 0,
+        "checked_objects": 0,
+        "unchecked_objects": 0,
+        "fill_rate": 0.0
+      },
+      "summary": {
+        "violated_objects": 0,
+        "passed_objects": 0
+      },
+      "effective_requirements": {
+        "layers": [
+          {
+            "role": "source",
+            "entity": "здание школы",
+            "entity_type": "service",
+            "geometry_types": [
+              "Point",
+              "MultiPoint",
+              "Polygon",
+              "MultiPolygon"
+            ],
+            "required": true
+          },
+          {
+            "role": "targets",
+            "entity": "открытая автомобильная стоянка",
+            "entity_type": "physical_object",
+            "geometry_types": [
+              "Point",
+              "MultiPoint",
+              "Polygon",
+              "MultiPolygon"
+            ],
+            "required": true
+          }
+        ],
+        "attributes": []
+      },
+      "resolved_requirements": [
+        {
+          "role": "source",
+          "requirement_type": "layer",
+          "resolved": false,
+          "layer": null,
+          "field": null,
+          "unit": null,
+          "quality": null,
+          "derive": null,
+          "fill_rate": null,
+          "reason": "urban_catalog_entity_not_found"
+        },
+        {
+          "role": "targets",
+          "requirement_type": "layer",
+          "resolved": false,
+          "layer": null,
+          "field": null,
+          "unit": null,
+          "quality": null,
+          "derive": null,
+          "fill_rate": null,
+          "reason": "urban_catalog_entity_not_found"
+        }
+      ],
+      "missing_requirements": [
+        "catalog:source:service:not_found",
+        "catalog:targets:physical_object:not_found"
+      ],
+      "warnings": [],
+      "evidence_schema_version": "1.0",
+      "source": {
+        "restriction_id": "synthetic-restriction",
+        "document_name": null,
+        "clause_number": null,
+        "extraction_text": "Расстояние от здания школы до открытой автомобильной стоянки должно быть не менее 50 метров",
+        "planner_status": "auto",
+        "check_plan": {
+          "schema_version": "1.0",
+          "template": "distance_from_source",
+          "template_version": 1,
+          "params": {
+            "source_layer": "source",
+            "targets": [
+              "targets"
+            ],
+            "geometry_mode": "buffered",
+            "distance_m": 50.0,
+            "predicate": "intersects",
+            "violation_when": "matched",
+            "result_mode": "both"
+          },
+          "declared_requirements": {
+            "layers": [
+              {
+                "role": "source",
+                "entity": "здание школы",
+                "entity_type": "service",
+                "geometry_types": [
+                  "Point",
+                  "MultiPoint",
+                  "Polygon",
+                  "MultiPolygon"
+                ],
+                "required": true
+              },
+              {
+                "role": "targets",
+                "entity": "открытая автомобильная стоянка",
+                "entity_type": "physical_object",
+                "geometry_types": [
+                  "Point",
+                  "MultiPoint",
+                  "Polygon",
+                  "MultiPolygon"
+                ],
+                "required": true
+              }
+            ],
+            "attributes": []
+          },
+          "source": {
+            "restriction_id": "synthetic-restriction",
+            "document_name": null,
+            "clause_number": null,
+            "extraction_text": "Расстояние от здания школы до открытой автомобильной стоянки должно быть не менее 50 метров"
+          },
+          "planner_status": "auto"
+        }
+      },
+      "evidence": [],
+      "violated_features": null,
+      "passed_features": null
+    }
+  },
+  {
+    "type": "compliance_summary",
+    "content": {
+      "request_id": "synthetic-request",
+      "total_norms": 1,
+      "violated_norms": 0,
+      "passed_norms": 0,
+      "unverifiable_norms": 1,
+      "unsupported_norms": 0,
+      "not_applicable_norms": 0,
+      "partial_norms": 0,
+      "results": [
+        {
+          "restriction_id": "synthetic-restriction",
+          "template": "distance_from_source",
+          "template_version": 1,
+          "verification_status": "unverifiable",
+          "compliance_status": "unknown",
+          "coverage": {
+            "applicable_objects": 0,
+            "checked_objects": 0,
+            "unchecked_objects": 0,
+            "fill_rate": 0.0
+          },
+          "summary": {
+            "violated_objects": 0,
+            "passed_objects": 0
+          },
+          "effective_requirements": {
+            "layers": [
+              {
+                "role": "source",
+                "entity": "здание школы",
+                "entity_type": "service",
+                "geometry_types": [
+                  "Point",
+                  "MultiPoint",
+                  "Polygon",
+                  "MultiPolygon"
+                ],
+                "required": true
+              },
+              {
+                "role": "targets",
+                "entity": "открытая автомобильная стоянка",
+                "entity_type": "physical_object",
+                "geometry_types": [
+                  "Point",
+                  "MultiPoint",
+                  "Polygon",
+                  "MultiPolygon"
+                ],
+                "required": true
+              }
+            ],
+            "attributes": []
+          },
+          "resolved_requirements": [
+            {
+              "role": "source",
+              "requirement_type": "layer",
+              "resolved": false,
+              "layer": null,
+              "field": null,
+              "unit": null,
+              "quality": null,
+              "derive": null,
+              "fill_rate": null,
+              "reason": "urban_catalog_entity_not_found"
+            },
+            {
+              "role": "targets",
+              "requirement_type": "layer",
+              "resolved": false,
+              "layer": null,
+              "field": null,
+              "unit": null,
+              "quality": null,
+              "derive": null,
+              "fill_rate": null,
+              "reason": "urban_catalog_entity_not_found"
+            }
+          ],
+          "missing_requirements": [
+            "catalog:source:service:not_found",
+            "catalog:targets:physical_object:not_found"
+          ],
+          "warnings": [],
+          "evidence_schema_version": "1.0",
+          "source": {
+            "restriction_id": "synthetic-restriction",
+            "document_name": null,
+            "clause_number": null,
+            "extraction_text": "Расстояние от здания школы до открытой автомобильной стоянки должно быть не менее 50 метров",
+            "planner_status": "auto",
+            "check_plan": {
+              "schema_version": "1.0",
+              "template": "distance_from_source",
+              "template_version": 1,
+              "params": {
+                "source_layer": "source",
+                "targets": [
+                  "targets"
+                ],
+                "geometry_mode": "buffered",
+                "distance_m": 50.0,
+                "predicate": "intersects",
+                "violation_when": "matched",
+                "result_mode": "both"
+              },
+              "declared_requirements": {
+                "layers": [
+                  {
+                    "role": "source",
+                    "entity": "здание школы",
+                    "entity_type": "service",
+                    "geometry_types": [
+                      "Point",
+                      "MultiPoint",
+                      "Polygon",
+                      "MultiPolygon"
+                    ],
+                    "required": true
+                  },
+                  {
+                    "role": "targets",
+                    "entity": "открытая автомобильная стоянка",
+                    "entity_type": "physical_object",
+                    "geometry_types": [
+                      "Point",
+                      "MultiPoint",
+                      "Polygon",
+                      "MultiPolygon"
+                    ],
+                    "required": true
+                  }
+                ],
+                "attributes": []
+              },
+              "source": {
+                "restriction_id": "synthetic-restriction",
+                "document_name": null,
+                "clause_number": null,
+                "extraction_text": "Расстояние от здания школы до открытой автомобильной стоянки должно быть не менее 50 метров"
+              },
+              "planner_status": "auto"
+            }
+          },
+          "evidence": [],
+          "violated_features": null,
+          "passed_features": null
+        }
+      ]
+    }
+  }
+]

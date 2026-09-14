@@ -25,6 +25,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
+from src.agents.runtime.runner import run_completion
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
@@ -37,6 +38,7 @@ from src.agents.services.compilance.compliance_result_harness import (
 from src.agents.services.normgraph.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,
 )
+from src.agents.services.orchestrator.analysis_support import context_scope
 from src.agents.services.pipeline_state import (
     PipelineStateStore,
     PipelineStatus,
@@ -178,6 +180,21 @@ class RestrictionParserService(BaseLlmService):
         normgraph_mcp_client: NormGraphMcpClient | None = None,
         history_agent: str = "restrictions",
     ) -> AsyncGenerator:
+        if request_id:
+            stored = await self.state_store.get_state(request_id) or {}
+            if stored.get("status") in {
+                PipelineStatus.DONE,
+                PipelineStatus.FAILED,
+                PipelineStatus.CANCELLED,
+            }:
+                # Tool-call records are kept for history, but the public stream
+                # filters them on the initial run as well. Replay never persists.
+                for event in await self.state_store.get_buffered_events(
+                    request_id, owner=context_scope(token, "owner")
+                ):
+                    if event.get("type") != "tool_call":
+                        yield event
+                return
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
         model = await self.resolve_model(model)
@@ -265,7 +282,9 @@ class RestrictionParserService(BaseLlmService):
         )
         if is_reconnect:
             logger.info(f"Reconnect for request_id={request_id}, replaying events")
-            for event in await self.state_store.get_buffered_events(request_id):
+            for event in await self.state_store.get_buffered_events(
+                request_id, owner=context_scope(token_ref[0], "owner")
+            ):
                 yield event
             # Restore chat_id from persisted state so history is available
             # even if the client didn't re-send the query parameter.
@@ -320,6 +339,7 @@ class RestrictionParserService(BaseLlmService):
                 scenario_id=scenario_id,
                 model=model,
                 temperature=temperature,
+                owner=context_scope(token_ref[0], "owner"),
             )
 
         logger.info(
@@ -423,10 +443,8 @@ class RestrictionParserService(BaseLlmService):
 
         # A current distance condition must go through the request-scoped plan:
         # the canonical-plan audit below cannot represent a user's temporary rule.
-        explicit_distance = re.search(
-            r"\d+(?:[.,]\d+)?\s*[-–]?\s*(?:км\b|м\b|метр|километр)",
-            user_query.split("\n\nКонтекст — результаты предыдущих шагов:", 1)[0],
-            re.IGNORECASE,
+        explicit_distance = NormGraphRestrictionRetriever.requires_temporary_distance(
+            user_query, normgraph_restrictions
         )
         if (
             history_agent == "compliance"
@@ -1046,12 +1064,14 @@ class RestrictionParserService(BaseLlmService):
             {"role": "user", "content": user_query},
         ]
         response_buffer: list[str] = []
-        async for part in await self.llm_client.chat(
+        async for part in await run_completion(
+            self.llm_client,
             model,
             messages,
             think=False,
             options={"temperature": min(temperature, 0.4)},
             stream=True,
+            agent_name="restriction_parser_service",
         ):
             part: LlmChatResponse
             if part.message.content:
@@ -1089,12 +1109,14 @@ class RestrictionParserService(BaseLlmService):
             {"role": "user", "content": user_query},
         ]
         response_buffer: list[str] = []
-        async for part in await self.llm_client.chat(
+        async for part in await run_completion(
+            self.llm_client,
             model,
             messages,
             think=False,
             options={"temperature": temperature},
             stream=True,
+            agent_name="restriction_parser_service",
         ):
             part: LlmChatResponse
             if part.message.content:
@@ -1116,12 +1138,14 @@ class RestrictionParserService(BaseLlmService):
         """Answer from the persisted result without invoking compliance tools."""
 
         response_buffer: list[str] = []
-        async for part in await self.llm_client.chat(
+        async for part in await run_completion(
+            self.llm_client,
             model,
             prepared.messages,
             think=False,
             options={"temperature": min(temperature, 0.2)},
             stream=True,
+            agent_name="restriction_parser_service",
         ):
             part: LlmChatResponse
             if part.message.content:

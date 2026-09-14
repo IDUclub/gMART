@@ -196,6 +196,7 @@ async def resolve_document_qa_token(
             user_request.request_id,
             user_request.after_event,
             dvd_mcp_client._user_id,
+            token=token,
         )
         return token
 

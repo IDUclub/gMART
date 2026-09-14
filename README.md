@@ -8,6 +8,9 @@
 
 ## Documentation
 
+- [Agents SDK execution and migration](docs/agents-sdk-migration.md)
 - [Frontend integration guide](docs/frontend-service.md)
 - [Synapse frontend integration](docs/integrations/synapse-front.md)
 - [Synapse architecture and backend integration](docs/synapse-integration.md)
+
+Analytical orchestration: [budget, context, continuation and artifacts](docs/analytical-orchestrator.md).

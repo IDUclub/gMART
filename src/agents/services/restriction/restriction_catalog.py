@@ -5,8 +5,8 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from pydantic import ValidationError
 
+from src.agents.runtime.runner import run_structured
 from src.agents.services.service_entities.restriction_plan import (
     BufferRule,
     EntityRef,
@@ -237,58 +237,26 @@ class RestrictionPlanBuilder:
         _retries: int = 2,
         _messages: list[dict] | None = None,
     ) -> RestrictionPlan:
-        # On a repair retry ``_messages`` carries the full conversation so far
-        # (system prompt + history + user query + the model's invalid answer +
-        # the fix instruction). Rebuilding it from ``prompt`` alone — as the old
-        # code did — discarded the invalid answer, the fix instruction AND the
-        # user query, turning the "repair" into a blind re-roll.
-        if _messages is not None:
-            messages = _messages
-        else:
-            messages = [{"role": "system", "content": prompt}]
-            if history:
-                messages.extend(history)
-            if user_query:
-                messages.append({"role": "user", "content": user_query})
-        response = await self.llm_client.chat(
-            model=model,
-            think=False,
-            format=RestrictionPlan.model_json_schema(),
-            options={
-                "temperature": 0,
-                "num_predict": 4096,
-                "num_ctx": 16384,
-            },
-            messages=messages,
+        messages = (
+            _messages
+            if _messages is not None
+            else [
+                {"role": "system", "content": prompt},
+                *(history or []),
+                *([{"role": "user", "content": user_query}] if user_query else []),
+            ]
         )
-        content = response["message"]["content"]
-        logger.debug(f"LLM plan response [{model}]: {content}")
-        try:
-            return RestrictionPlan.model_validate_json(strip_json_fence(content))
-        except (ValidationError, json.JSONDecodeError) as e:
-            if _retries > 0:
-                logger.warning(
-                    f"LLM returned invalid plan JSON (retries left: {_retries}), asking model to fix it. Error: {e}"
-                )
-                messages.append({"role": "assistant", "content": content})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "Твой предыдущий ответ содержит невалидный или неполный JSON. "
-                            "Верни тот же план целиком в виде валидного JSON без markdown и без пояснений. "
-                            "Убедись, что JSON полный — все скобки и кавычки закрыты."
-                        ),
-                    }
-                )
-                return await self._request_plan(
-                    model=model,
-                    prompt=prompt,
-                    _retries=_retries - 1,
-                    _messages=messages,
-                )
-            logger.exception(e)
-            raise ValueError("Model returned invalid restriction plan") from e
+        return await run_structured(
+            self.llm_client,
+            model,
+            messages,
+            RestrictionPlan,
+            agent_name="restriction.plan",
+            retries=_retries,
+            think=False,
+            options={"temperature": 0, "num_predict": 4096, "num_ctx": 16384},
+            error_message="Model returned invalid restriction plan",
+        )
 
     @staticmethod
     def _plan_cache_key(

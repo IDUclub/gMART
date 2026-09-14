@@ -93,9 +93,11 @@ async def test_summary_with_only_unknown_names_needs_clarification():
 
 
 @pytest.mark.asyncio
-async def test_summary_without_names_means_full_catalog():
+async def test_explicit_all_services_summary_without_names_means_full_catalog():
     builder = build_builder({"mode": "summary"})
-    plan = await builder.build_plan("model", "запрос", CATALOG)
+    plan = await builder.build_plan(
+        "model", "Сводка обеспеченности по всем услугам", CATALOG
+    )
     assert plan.mode == ProvisionPlanMode.SUMMARY
     assert plan.service_names == []
 
@@ -107,7 +109,12 @@ async def test_target_population_is_preserved(mode):
     if mode == "provision":
         plan_payload["service_name"] = "Школы"
     builder = build_builder(plan_payload)
-    plan = await builder.build_plan("model", "запрос", CATALOG)
+    query = (
+        "Рассчитай обеспеченность по всем услугам"
+        if mode == "summary"
+        else "Рассчитай обеспеченность школами"
+    )
+    plan = await builder.build_plan("model", query, CATALOG)
     assert plan.target_population == 25000
 
 
@@ -137,9 +144,7 @@ async def test_list_services_passes_through():
 
 
 @pytest.mark.asyncio
-async def test_clarification_without_question_gets_default_text():
+async def test_clarification_without_question_is_a_model_error():
     builder = build_builder({"mode": "needs_clarification"})
-    plan = await builder.build_plan("model", "запрос", CATALOG)
-    assert plan.mode == ProvisionPlanMode.NEEDS_CLARIFICATION
-    assert plan.clarification_question
-    assert "Школы" in plan.clarification_question
+    with pytest.raises(ValueError, match="requires a concrete missing input"):
+        await builder.build_plan("model", "запрос", CATALOG)

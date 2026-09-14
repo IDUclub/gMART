@@ -167,6 +167,9 @@ class ComplianceTemplateExecutor:
         layers, retrieval_calls = await self._retrieve_layers(
             mcp_client, requirements, scenario_id
         )
+        from src.agents.services.planning.variant_compliance import apply_variant_layers
+
+        layers = await apply_variant_layers(mcp_client, layers, requirements)
         resolution = self.data_gate.resolve(plan, layers, requirements)
         timings_ms["requirements_resolution"] = (
             perf_counter() - resolution_started

@@ -11,6 +11,19 @@ from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic
 
 
+async def test_malformed_source_label_is_rejected_with_exact_correction():
+    llm = AsyncMock()
+    context = DvdContextBuilder().build_context(
+        [{"name": "LOCAL SDK TEST", "numbering": "1.1", "text": "Не менее 50 метров."}]
+    )
+    verdict = await AnswerCritic(llm).review(
+        "m", "Текст пункта 1.1?", context, "Не менее 50 метров. [N1]"
+    )
+    assert not verdict.satisfied
+    assert "[N1]" in verdict.critique and "[1]" in verdict.critique
+    llm.chat.assert_not_called()
+
+
 def test_bibliography_is_not_a_retrieval_source():
     context = DvdContextBuilder().build_context(
         [

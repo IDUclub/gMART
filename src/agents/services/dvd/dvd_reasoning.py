@@ -6,10 +6,10 @@ import re
 from typing import Any, TypeVar
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
-from src.agents.services.restriction.restriction_catalog import strip_json_fence
+from src.agents.runtime.runner import run_structured
 from src.agents.services.service_entities.dvd_plan import (
     CriticVerdict,
     RetrievalPlan,
@@ -19,6 +19,7 @@ from src.agents.services.service_entities.dvd_plan import (
 
 from .clarification import parse_choice, selected_choice
 from .context_reducer import cost, current_context_window
+from .dvd_context import source_records
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -75,71 +76,33 @@ async def _request_json(
     max_tokens: int = 1024,
     reasoning_effort: str | None = None,
 ) -> T:
-    """
-    Ask the LLM for a JSON object and parse it into ``model_cls``.
-
-    Mirrors the structured-output convention used by ProvisionPlanBuilder: temperature 0,
-    strip markdown fences, retry by feeding the invalid response back to the model.
-    """
-    adapter = TypeAdapter(model_cls)
-    model_name = (
-        "RetrievalPlan"
-        if model_cls is RetrievalPlan
-        else getattr(model_cls, "__name__", "structured response")
-    )
-    schema = adapter.json_schema()
-    for attempt in range(retries + 1):
-        # The schema is a decoding constraint, not another message. Reserving its
-        # serialized UTF-8 size rejected the existing planner even with no history.
+    def budget(attempt, conversation):
         available = (
-            current_context_window() - sum(cost(m["content"]) for m in messages) - 256
+            current_context_window()
+            - sum(cost(m["content"]) for m in conversation)
+            - 256
         )
         if available < 128:
             raise ValueError("structured request exceeds configured context window")
-        response = await llm_client.chat(
-            model=model,
-            think=False,
-            format=schema,
-            options={
+        return {
+            "options": {
                 "temperature": 0,
                 "num_predict": min(max_tokens, available),
                 "num_ctx": current_context_window(),
-            },
-            messages=messages,
-            **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
-        )
-        content = response["message"]["content"]
-        logger.debug(f"LLM {model_name} response [{model}]: {content}")
-        try:
-            return adapter.validate_json(strip_json_fence(content))
-        except (ValidationError, json.JSONDecodeError) as exc:
-            validation_details = (
-                json.dumps(
-                    exc.errors(include_url=False), ensure_ascii=False, default=str
-                )
-                if isinstance(exc, ValidationError)
-                else str(exc)
-            )
-            if attempt < retries:
-                logger.warning(
-                    f"LLM returned invalid {model_name} JSON "
-                    f"(retries left: {retries - attempt - 1}): {exc}"
-                )
-                messages = [
-                    *messages,
-                    {"role": "assistant", "content": content},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Твой предыдущий JSON нарушает схему: "
-                            f"{validation_details}. Исправь указанные поля и верни "
-                            "только валидный JSON нужной структуры без markdown и пояснений."
-                        ),
-                    },
-                ]
-            else:
-                raise ValueError(f"Model returned invalid {model_name} JSON") from exc
-    raise AssertionError("unreachable")
+            }
+        }
+
+    return await run_structured(
+        llm_client,
+        model,
+        messages,
+        model_cls,
+        agent_name=f"documents.{getattr(model_cls, '__name__', 'retrieval')}",
+        retries=retries,
+        think=False,
+        attempt_settings=budget,
+        **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
+    )
 
 
 class RetrievalPlanner:
@@ -377,6 +340,13 @@ class AnswerCritic:
 
         source = normalize(context)
         defects = []
+        labels = [label for label in source_records(context) if label != "unlabelled"]
+        for label in dict.fromkeys(re.findall(r"\[N\d*\]", answer)):
+            defects.append(
+                f"Неверная метка источника {label}. Копируй метки из заголовков "
+                f"без букв: {', '.join(labels) or 'доступных меток нет'}. "
+                "Выбирай только источник, подтверждающий утверждение."
+            )
         for acronym, expansion in re.findall(
             r"\b([А-ЯЁA-Z]{2,})\s*\(([^()\n]+)\)", answer
         ):

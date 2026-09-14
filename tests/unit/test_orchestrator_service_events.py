@@ -9,6 +9,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from src.agents.services.orchestrator.analysis_support import (
+    context_scope,
+)
 from tests.helpers import events_of_type, types_of
 
 
@@ -72,6 +75,8 @@ RESTRICTION_EVENTS = [
 
 @pytest.fixture
 def orchestrator(monkeypatch, fake_llm, fake_urban, state_store):
+    # Retain the previous execution mode as the baseline for contract regressions.
+    monkeypatch.setenv("ORCHESTRATOR_ANALYSIS_MODE", "plan")
     monkeypatch.setattr(
         "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
@@ -100,6 +105,8 @@ def orchestrator(monkeypatch, fake_llm, fake_urban, state_store):
     svc.get_chat_messages = AsyncMock(return_value=SimpleNamespace(messages=[]))
     svc.add_single_message = AsyncMock()
     svc.add_complex_message = AsyncMock()
+    # Keep the LLM fact-check boundary hermetic; grounding has its own fixtures.
+    svc.goal_manager.validate_answer = AsyncMock()
     return svc
 
 
@@ -527,6 +534,7 @@ async def test_reconnect_replays_buffered_events_only(
     await state_store.create(
         request_id,
         chat_id="chat-xyz",
+        owner=context_scope("tok", "owner"),
         user_query="запрос",
         scenario_id=772,
         model="m",

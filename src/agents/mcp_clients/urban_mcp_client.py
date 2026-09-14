@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from src.agents.common.exceptions.token_exceptions import TokenExpiredError
 from src.agents.mcp_clients.base_mcp_client import _is_token_expired
+from src.agents.runtime.tools import execute_planned
 
 URBAN_MCP_GROUPS = (
     "projects",
@@ -308,6 +309,12 @@ class UrbanMcpClient:
         meta: dict[str, Any] | None = None,
     ) -> Any:
         self.get_tool(group, tool_name)
+        return await execute_planned(
+            f"urban.{group}.{tool_name}",
+            lambda: self._execute_transport(group, tool_name, arguments, meta),
+        )
+
+    async def _execute_transport(self, group, tool_name, arguments, meta):
         try:
             async with self._clients[group] as client:
                 result = await client.call_tool(tool_name, arguments, meta=meta or {})

@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from src.agents.services.normgraph.document_reference import explicit_document_names
 from src.agents.services.normgraph.normgraph_reasoning import NormGraphRetrievalPlanner
 from src.agents.services.service_entities.normgraph_plan import PrimaryTool
 
@@ -58,6 +59,11 @@ class NormGraphRestrictionRetriever:
         # decide how many persisted norms an audit checks.
         if retrieve_all:
             hits, arguments = await self._retrieve_all(client)
+            scoped = self._filter_explicit_references(
+                hits, user_query, match_distance=False
+            )
+            if scoped is not None:
+                hits = scoped
             return self._result(
                 hits, arguments, "search_restrictions", retain_unsupported
             )
@@ -241,13 +247,22 @@ class NormGraphRestrictionRetriever:
 
     @staticmethod
     def _filter_explicit_references(
-        hits: list[dict[str, Any]], user_query: str
+        hits: list[dict[str, Any]], user_query: str, *, match_distance: bool = True
     ) -> list[dict[str, Any]] | None:
         """Narrow broad vector results by explicit document/clause/distance references."""
 
         query = user_query.casefold()
         clause_match = re.search(r"(?:пункт(?:а|е|у)?|п\.)\s*(\d+(?:\.\d+)*)", query)
         document_match = re.search(r"\bсп\s*(\d+(?:\.\d+)+)", query)
+        document_name = NormGraphRestrictionRetriever._explicit_document_name(
+            user_query
+        )
+        version_match = re.search(
+            # "Укажи версию." and "версию документа" are requests to report
+            # provenance, not literal version filters. Named labels need quotes.
+            r'(?:верси[яию]|редакци[яию])\s+(?:«([^»]+)»|"([^"]+)"|([vв]?\d[\w.-]*))',
+            query,
+        )
         distances = {
             float(value.replace(",", "."))
             for value in re.findall(
@@ -255,7 +270,13 @@ class NormGraphRestrictionRetriever:
                 query,
             )
         }
-        if not clause_match and not document_match and not distances:
+        if (
+            not clause_match
+            and not document_match
+            and not document_name
+            and not version_match
+            and not (match_distance and distances)
+        ):
             return None
 
         filtered = hits
@@ -281,7 +302,26 @@ class NormGraphRestrictionRetriever:
                     str((hit.get("provenance") or {}).get("name") or "").casefold(),
                 )
             ]
-        if distances:
+        if document_name and not document_match:
+            filtered = [
+                hit
+                for hit in filtered
+                if str((hit.get("provenance") or {}).get("name") or "")
+                .strip()
+                .casefold()
+                == document_name.casefold()
+            ]
+        if version_match:
+            version = next(part for part in version_match.groups() if part).rstrip(".")
+            filtered = [
+                hit
+                for hit in filtered
+                if str((hit.get("provenance") or {}).get("version") or "")
+                .strip()
+                .casefold()
+                == version
+            ]
+        if match_distance and distances:
             filtered = [
                 hit
                 for hit in filtered
@@ -289,3 +329,43 @@ class NormGraphRestrictionRetriever:
                 and float((hit.get("value") or {})["number"]) in distances
             ]
         return filtered
+
+    @staticmethod
+    def _explicit_document_name(query: str) -> str | None:
+        names = explicit_document_names(query)
+        return names[0] if names else None
+
+    @classmethod
+    def requires_temporary_distance(
+        cls, query: str, hits: list[dict[str, Any]]
+    ) -> bool:
+        """A quoted, scoped canonical value is not a request to override its plan."""
+        query = query.split("\n\nКонтекст — результаты предыдущих шагов:", 1)[0]
+        distances = {
+            float(n.replace(",", "."))
+            * (1000 if unit.casefold().startswith("к") else 1)
+            for n, unit in re.findall(
+                r"(?<!\d)(\d+(?:[.,]\d+)?)\s*[-–]?\s*(км\b|м\b|метр\w*|километр\w*)",
+                query,
+                re.I,
+            )
+        }
+        if not distances:
+            return False
+        if re.search(
+            r"\b(?:вместо|временн\w*|override)\b|\b(?:замен|измен|увелич|уменьш)\w*\s+(?:расстоян|радиус|норм|услов|значен|\d)",
+            query,
+            re.I,
+        ):
+            return True
+        if not re.search(r"(?:пункт(?:а|е|у)?|п\.)\s*\d", query, re.I) or not (
+            cls._explicit_document_name(query) or re.search(r"\bсп\s*\d", query, re.I)
+        ):
+            return True
+        scoped = (
+            cls._filter_explicit_references(hits, query, match_distance=False) or []
+        )
+        canonical_values = {
+            float(hit["value"]["number"]) for hit in scoped if cls.is_canonical(hit)
+        }
+        return not distances.issubset(canonical_values)

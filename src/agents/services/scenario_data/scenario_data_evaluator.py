@@ -26,7 +26,7 @@ from typing import Any
 
 from loguru import logger
 
-from src.agents.services.restriction.restriction_catalog import strip_json_fence
+from src.agents.runtime.runner import run_structured
 from src.agents.services.scenario_data.scenario_data_aggregate import (
     bounded_public_observation_context,
 )
@@ -367,14 +367,17 @@ class ScenarioDataEvaluator:
             },
         ]
         try:
-            response = await self.llm_client.chat(
-                model=model,
-                messages=messages,
+            payload = await run_structured(
+                self.llm_client,
+                model,
+                messages,
+                dict[str, Any],
+                schema=_JUDGE_SCHEMA,
+                agent_name="scenario_data.critic",
+                retries=0,
                 think=False,
-                format=_JUDGE_SCHEMA,
                 options={"temperature": 0, "num_predict": 400},
             )
-            payload = json.loads(strip_json_fence(response["message"]["content"]))
             verdict = payload.get("sufficient")
             if not isinstance(verdict, bool):
                 # No usable opinion. Treating that as a rejection would let a malformed judge

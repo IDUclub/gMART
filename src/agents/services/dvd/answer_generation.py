@@ -13,6 +13,8 @@ from collections.abc import Callable
 
 from loguru import logger
 
+from src.agents.runtime.runner import run_completion
+
 from .context_reducer import DvdContextReducer, cost
 
 _CONTINUE = (
@@ -143,7 +145,8 @@ class DvdAnswerGenerator:
             pieces = []
             reason = None
             terminal = False
-            async for part in await self.llm_client.chat(
+            async for part in await run_completion(
+                self.llm_client,
                 model,
                 messages,
                 think=False,
@@ -153,6 +156,7 @@ class DvdAnswerGenerator:
                     "num_predict": budget,
                     "num_ctx": self.reducer.window,
                 },
+                agent_name="answer_generation",
             ):
                 if part.message.content:
                     pieces.append(part.message.content)

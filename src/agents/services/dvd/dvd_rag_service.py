@@ -38,8 +38,10 @@ from src.agents.services.dvd.dialogue import (
 )
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
+from src.agents.services.orchestrator.analysis_support import context_scope
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.service_entities.dvd_plan import validate_retrieval_plan
+from src.agents.services.source_evidence import source_event
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
@@ -121,7 +123,9 @@ class DvdRagService(BaseLlmService):
             logger.info(
                 f"DVD QA reconnect request_id={request_id}, replaying buffered events"
             )
-            for event in await self.state_store.get_buffered_events(request_id):
+            for event in await self.state_store.get_buffered_events(
+                request_id, owner=context_scope(token, "owner")
+            ):
                 yield event
             stored = await self.state_store.get_state(request_id) or {}
             if stored.get("status") == PipelineStatus.FAILED:
@@ -196,6 +200,7 @@ class DvdRagService(BaseLlmService):
                 scenario_id=scenario_id,
                 model=model,
                 temperature=temperature,
+                owner=context_scope(token, "owner"),
             )
 
         history: list[dict] = []
@@ -583,6 +588,8 @@ class DvdRagService(BaseLlmService):
             )
 
             if verdict.satisfied:
+                if sources := source_event("documents", hits):
+                    yield await self._buf(request_id, sources)
                 yield await self._buf(
                     request_id, self._chunk(draft, done=False, iteration=iteration)
                 )
@@ -674,7 +681,8 @@ class DvdRagService(BaseLlmService):
             "- Не выдумывай нормы, цифры и положения, которых нет во фрагментах.\n"
             "- На узкий вопрос дай краткий прямой ответ. Не превращай его в общий "
             "обзор других типов объектов и не добавляй непрошенные альтернативные режимы. "
-            "Ссылки оформляй метками [N] после утверждения; не дублируй реквизиты "
+            "Ссылки копируй ТОЧНО из заголовков фрагментов: [1], [2] и т.д. "
+            "Не добавляй буквы: метки [N1] или [N] неверны. Не дублируй реквизиты "
             "документов и номера таблиц, если они не нужны для ответа на вопрос.\n"
             "- Не расшифровывай сокращения, если расшифровки нет в источниках. "
             "Не называй номер пункта номером таблицы. Метаданные ссылки должны "
@@ -687,6 +695,9 @@ class DvdRagService(BaseLlmService):
             "Если прямых данных о предмете вопроса нет, честно сообщи об их недостаточности "
             "в предоставленных фрагментах; не заполняй пробел аналогиями.\n"
             "- Если данных во фрагментах недостаточно — прямо сообщи об этом.\n"
+            "- Если запрошен исходный текст найденного пункта, процитируй его "
+            "дословно с меткой источника. Не утверждай, что текста нет, когда "
+            "он приведён во фрагменте с указанным документом и номером пункта.\n"
             "- Ссылайся на источники: название документа, редакцию и номер пункта "
             "(можно через номера [1], [2]… из фрагментов).\n"
             "- Отвечай на русском языке, ясно и по существу.\n\n"

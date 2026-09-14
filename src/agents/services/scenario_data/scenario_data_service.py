@@ -24,7 +24,9 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient, UrbanMcpTool
+from src.agents.runtime.runner import run_completion
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.orchestrator.analysis_support import context_scope
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.scenario_data.scenario_data_aggregate import (
@@ -67,6 +69,7 @@ from src.agents.services.scenario_data.scenario_data_read import (
     broad_data_query,
 )
 from src.agents.services.scenario_data.scenario_data_selection import (
+    ScenarioEntityRequest,
     may_select_entities,
     selection_candidates,
     verified_entity_records,
@@ -80,6 +83,7 @@ from src.agents.services.scenario_data.scenario_data_types import (
     distribution_answer,
     distribution_table,
 )
+from src.agents.services.service_entities.orchestrator_plan import EntitySelection
 from src.agents.services.service_entities.scenario_data_action import (
     ScenarioDataActionKind,
 )
@@ -175,6 +179,7 @@ class ScenarioDataService(BaseLlmService):
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
+        entity_selection: EntitySelection | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Run the pipeline and always release its distributed chat lock."""
 
@@ -190,6 +195,7 @@ class ScenarioDataService(BaseLlmService):
                 chat_id=chat_id,
                 request_id=request_id,
                 persist_history=persist_history,
+                entity_selection=entity_selection,
             ),
         ):
             yield event
@@ -269,12 +275,15 @@ class ScenarioDataService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
         force_analytics: bool = False,
+        entity_selection: EntitySelection | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
         model = await self.resolve_model(model)
         if request_id is not None and await self.state_store.exists(request_id):
-            for event in await self.state_store.get_buffered_events(request_id):
+            for event in await self.state_store.get_buffered_events(
+                request_id, owner=context_scope(token, "owner")
+            ):
                 yield event
             return
 
@@ -324,6 +333,7 @@ class ScenarioDataService(BaseLlmService):
             scenario_id=scenario_id,
             model=model,
             temperature=temperature,
+            owner=context_scope(token, "owner"),
         )
 
         history: list[dict] = []
@@ -364,19 +374,28 @@ class ScenarioDataService(BaseLlmService):
             | ToolCallPartRequest
             | StructuredPartRequest
         ] = []
-        broad_requested = not force_analytics and broad_data_query(user_query)
+        # A typed selection is already an explicit scope contract. Descriptive
+        # words such as "context" must not send it through a broader read plan.
+        broad_requested = (
+            not entity_selection
+            and not force_analytics
+            and broad_data_query(user_query)
+        )
         type_intent = (
             None
-            if broad_requested
+            if broad_requested or entity_selection
             else classify_type_query(
                 user_query,
                 history,
                 scenario_selected=scenario_id is not None,
             )
         )
-        analytics_requested = force_analytics or (
-            not broad_requested
-            and (indicator_query(user_query) or is_comparison(user_query))
+        analytics_requested = not entity_selection and (
+            force_analytics
+            or (
+                not broad_requested
+                and (indicator_query(user_query) or is_comparison(user_query))
+            )
         )
         if analytics_requested:
             type_intent = None
@@ -390,6 +409,10 @@ class ScenarioDataService(BaseLlmService):
             clarification = type_intent.clarification
         if clarification:
             clarification = sanitize_public_answer(clarification)
+            yield await self._buf(
+                request_id,
+                {"type": "clarification_required", "content": {"text": clarification}},
+            )
             yield await self._buf(
                 request_id,
                 self._status("planning", "Уточняю параметры запроса…"),
@@ -573,7 +596,7 @@ class ScenarioDataService(BaseLlmService):
         if (
             type_intent is None
             and scenario_id is not None
-            and may_select_entities(user_query)
+            and (entity_selection or may_select_entities(user_query))
         ):
             handled = []
             async for event in self._run_entity_query_pipeline(
@@ -588,6 +611,7 @@ class ScenarioDataService(BaseLlmService):
                 chat_id=chat_id,
                 persist_history=persist_history,
                 handled=handled,
+                entity_selection=entity_selection,
             ):
                 yield event
             if handled:
@@ -915,6 +939,7 @@ class ScenarioDataService(BaseLlmService):
         chat_id,
         persist_history,
         handled,
+        entity_selection=None,
     ):
         """Select a verified type, fetch once, and derive every artifact from it."""
         named = {(tool.group, tool.name): tool for tool in tools}
@@ -925,6 +950,13 @@ class ScenarioDataService(BaseLlmService):
             ),
             "service_type": ("GetScenarioServiceTypes", "GetScenarioServices"),
         }
+        if entity_selection:
+            domain = (
+                "service_type"
+                if entity_selection.kind == "services"
+                else "physical_object_type"
+            )
+            domains = {domain: domains[domain]}
         if any(
             ("projects", name) not in named
             for pair in domains.values()
@@ -985,7 +1017,13 @@ class ScenarioDataService(BaseLlmService):
         artifacts = []
         try:
             mapper = UrbanTypeMapper(self.llm_client)
-            request = await mapper.classify_scenario_entity_request(model, user_query)
+            request = (
+                ScenarioEntityRequest(
+                    operation="map", requested_type=entity_selection.subject
+                )
+                if entity_selection
+                else await mapper.classify_scenario_entity_request(model, user_query)
+            )
             if request.operation == "unsupported":
                 return
             catalogues = {}
@@ -1011,6 +1049,7 @@ class ScenarioDataService(BaseLlmService):
                     "physical_object_type": "GetPhysicalObjectTypes",
                     "service_type": "GetServiceTypes",
                 }
+                global_names = {k: v for k, v in global_names.items() if k in domains}
                 if all(
                     ("dictionaries", name) in named for name in global_names.values()
                 ):
@@ -1103,6 +1142,18 @@ class ScenarioDataService(BaseLlmService):
                             raise ValueError(
                                 "Geometry response is not a FeatureCollection"
                             )
+                        unique_features = {}
+                        for feature in geo["features"]:
+                            identity = str(feature["properties"][id_field])
+                            if (
+                                identity in unique_features
+                                and unique_features[identity] != feature
+                            ):
+                                raise ValueError(
+                                    "Conflicting geometry records for one entity"
+                                )
+                            unique_features[identity] = feature
+                        geo = {**geo, "features": list(unique_features.values())}
                         artifacts.append(
                             {
                                 "type": "feature_collection",
@@ -1660,7 +1711,9 @@ class ScenarioDataService(BaseLlmService):
             }
             if attempt:
                 call["reasoning_effort"] = "medium"
-            response = await self.llm_client.chat(**call)
+            response = await run_completion(
+                self.llm_client, **call, agent_name="scenario_data_service"
+            )
             answer = sanitize_public_answer(response["message"]["content"] or "")
             done_reason = response.get("done_reason")
             if answer and done_reason != "length":

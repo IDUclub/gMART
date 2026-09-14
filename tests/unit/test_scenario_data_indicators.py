@@ -457,6 +457,11 @@ async def test_wrong_scenario_result_does_not_emit_a_table_or_wrong_values(
         e["content"].get("text", "") for e in events if e["type"] == "chunk"
     )
     assert "Не удалось подтвердить" in answer
+    assert any(e["type"] == "pipeline_failed" for e in events)
+    request_id = next(
+        e["content"]["request_id"] for e in events if e["type"] == "pipeline_started"
+    )
+    assert (await state_store.get_state(request_id))["status"] == "failed"
 
 
 def test_scenarios_are_labelled_by_role_and_name():

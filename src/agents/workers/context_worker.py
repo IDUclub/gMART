@@ -10,11 +10,11 @@ from typing import Any
 
 from idu_service_auth import KeycloakTokenClient
 from loguru import logger
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
 from src.agents.model_clients.factory import build_llm_adapter
-from src.agents.services.restriction.restriction_catalog import strip_json_fence
+from src.agents.runtime.runner import run_structured
 from src.common.service_auth import build_service_auth, service_auth_lifespan
 
 
@@ -128,19 +128,18 @@ class ContextWorker:
 Верни JSON {{summary, structured}}. summary — компактный русский текст; structured содержит
 массивы verified_facts, user_decisions, mappings, datasets, completed_tasks, open_questions,
 failed_attempts. Общий ответ не должен превышать примерно 6000 токенов."""
-        response = await self.llm.chat(
-            model=job["model"],
-            messages=[{"role": "system", "content": prompt}],
+        return await run_structured(
+            self.llm,
+            job["model"],
+            [{"role": "system", "content": prompt}],
+            ContextContent,
+            agent_name="context.summary",
+            retries=0,
             think=False,
-            format=ContextContent.model_json_schema(),
             options={"temperature": 0, "num_predict": 6000},
             reasoning_effort="medium",
+            error_message="invalid context summary",
         )
-        raw = (response.get("message") or {}).get("content") or ""
-        try:
-            return ContextContent.model_validate(json.loads(strip_json_fence(raw)))
-        except (ValidationError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError(f"invalid context summary: {exc}") from exc
 
     @staticmethod
     def _compact_tail(messages: list[dict]) -> list[dict]:

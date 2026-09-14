@@ -10,6 +10,7 @@ from src.agents.common.exceptions.base_exceptions import (
     AgentsNotFound,
     AgentsUnauthorizedException,
 )
+from src.agents.services.orchestrator.analysis_support import context_scope
 from src.agents.services.pipeline_state import PIPELINE_TTL, PipelineStatus
 
 _tasks: set[asyncio.Task] = set()
@@ -19,7 +20,7 @@ async def run_metadata(store, request_id):
     return await store.get_document_run(request_id)
 
 
-async def validate_resume(store, request_id, after_event, owner):
+async def validate_resume(store, request_id, after_event, owner, *, token=None):
     if not request_id:
         if after_event:
             raise AgentsInputException("after_event requires request_id")
@@ -33,7 +34,9 @@ async def validate_resume(store, request_id, after_event, owner):
         raise AgentsUnauthorizedException(
             "Этот запрос принадлежит другому пользователю."
         )
-    if after_event > len(await store.get_buffered_events(request_id)):
+    if after_event > len(
+        await store.get_buffered_events(request_id, owner=context_scope(token, "owner"))
+    ):
         raise AgentsInputException("after_event exceeds the event journal")
 
 
@@ -115,7 +118,10 @@ async def stream_document_run(
     service, *, request_id=None, after_event=0, owner=None, **kwargs
 ):
     store = service.state_store
-    await validate_resume(store, request_id, after_event, owner)
+    pipeline_owner = context_scope(kwargs.get("token"), "owner")
+    await validate_resume(
+        store, request_id, after_event, owner, token=kwargs.get("token")
+    )
     if request_id:
         meta = await run_metadata(store, request_id)
     else:
@@ -131,7 +137,7 @@ async def stream_document_run(
     try:
         while True:
             meta = await run_metadata(store, request_id)
-            events = await store.get_buffered_events(request_id)
+            events = await store.get_buffered_events(request_id, owner=pipeline_owner)
             for index, event in enumerate(events[cursor:], cursor + 1):
                 cursor = index
                 yield {**event, "event_id": index}

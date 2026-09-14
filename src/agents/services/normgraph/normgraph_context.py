@@ -76,7 +76,10 @@ class NormGraphContextBuilder:
         if len(excerpt) > self.MAX_EXCERPT_CHARS:
             excerpt = excerpt[: self.MAX_EXCERPT_CHARS].rstrip() + " […]"
 
-        body_lines = [line for line in (triple, excerpt) if line]
+        body_lines = [
+            "Система источника: NormGraph",
+            *[line for line in (triple, excerpt) if line],
+        ]
         body = "\n".join(body_lines)
         return f"{header}\n{body}" if body else header
 

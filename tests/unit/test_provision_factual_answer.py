@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from src.agents.services.pipeline_state import PipelineStatus
 from src.agents.services.provision.provision_context import ProvisionContextBuilder
 from src.agents.services.provision.provsion_service import ProvisionService
@@ -54,7 +56,10 @@ def test_failed_service_is_reported_without_zero_deficit():
     assert "Дефицит (чел): 0" not in answer
 
 
-async def test_missing_calculation_emits_error_instead_of_completed_answer():
+@pytest.mark.parametrize(
+    "normative", [None, {"source": {"kind": "test_mock", "fixture_id": "test-v1"}}]
+)
+async def test_missing_calculation_emits_error_instead_of_completed_answer(normative):
     service = object.__new__(ProvisionService)
     service.state_store = SimpleNamespace(set_status=AsyncMock())
     service._buf = AsyncMock(side_effect=lambda _id, event: event)
@@ -64,7 +69,11 @@ async def test_missing_calculation_emits_error_instead_of_completed_answer():
             SimpleNamespace(
                 data={
                     "services": {
-                        "22": {"name": "Школа", "error": "Нет расчётных данных"}
+                        "22": {
+                            "name": "Школа",
+                            "error": "Нет расчётных данных",
+                            "normative": normative,
+                        }
                     }
                 },
                 tool_calls=[],
@@ -94,3 +103,12 @@ async def test_missing_calculation_emits_error_instead_of_completed_answer():
     assert any(e["type"] == "error" for e in events)
     assert not any(e["type"] == "chunk" and e["content"]["done"] for e in events)
     service.state_store.set_status.assert_awaited_with("r", PipelineStatus.FAILED)
+
+    if normative:
+        assert any(e["type"] == "source_evidence" for e in events)
+        assert any(
+            e["type"] == "chunk"
+            and "мок-нормативы" in e["content"]["text"]
+            and not e["content"]["done"]
+            for e in events
+        )

@@ -34,12 +34,14 @@ planner's JSON valid.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any, AsyncIterator
 
 from loguru import logger
 from openai import APIStatusError, AsyncOpenAI, OpenAIError
+from openai.types.chat import ChatCompletion
 
 from src.agents.model_clients.llm_base import (
     BaseLlmAdapter,
@@ -47,7 +49,9 @@ from src.agents.model_clients.llm_base import (
     LlmGenerateResponse,
     LlmMessage,
     LlmResponseError,
+    closing_stream,
 )
+from src.agents.runtime.budget import current_budget
 
 THINK_REASONING_EFFORT = "reasoning_effort"
 THINK_CHAT_TEMPLATE = "chat_template"
@@ -65,6 +69,10 @@ def _warn_once(key: str, message: str) -> None:
         logger.warning(message)
 
 
+class UnexpectedStructuredOutput(LlmResponseError):
+    """Model chose an unregistered action; it must never be dispatched."""
+
+
 class OpenAiCompatAdapter(BaseLlmAdapter):
     """Talks to any server exposing the OpenAI chat-completions API."""
 
@@ -78,6 +86,15 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         think_effort: str | None = None,
     ):
         self.base_url = base_url
+        self.structured_transport = os.getenv("OPENAI_STRUCTURED_TRANSPORT", "chat")
+        if self.structured_transport not in {
+            "chat",
+            "responses_function",
+            "harmony_completion",
+        }:
+            raise ValueError(
+                "OPENAI_STRUCTURED_TRANSPORT must be chat, responses_function or harmony_completion"
+            )
         # How think= is spelled for this server; see the module docstring.
         self.think_mode = (
             think_mode
@@ -266,6 +283,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             ),
             done=True,
             done_reason=finish_reason,
+            usage=getattr(completion, "usage", None),
         )
 
     @classmethod
@@ -300,6 +318,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                 ),
                 done=finish_reason is not None,
                 done_reason=finish_reason,
+                usage=getattr(chunk, "usage", None),
             )
         if not finished:
             # EOF is terminal for consumers, but is not proof that the model
@@ -322,7 +341,48 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
     ) -> LlmChatResponse | AsyncIterator[LlmChatResponse]:
         call = self._build(model, messages, stream, think, format, options, kwargs)
         try:
-            result = await self.client.chat.completions.create(**call)
+            try:
+                result = await self._request_completion(call)
+            except UnexpectedStructuredOutput:
+                # Retry only the model decision. The rejected output is never
+                # dispatched, and the second call has its own budget reservation.
+                call = {
+                    **call,
+                    "messages": [
+                        *call["messages"],
+                        {
+                            "role": "user",
+                            "content": (
+                                "The last response selected an unregistered action and was rejected. "
+                                "No operation was executed. Call ONLY emit_structured_response "
+                                "with the complete requested JSON object as its arguments. "
+                                "Put any desired domain operation name inside the JSON tool field."
+                            ),
+                        },
+                    ],
+                }
+                result = await self._request_completion(call)
+            except APIStatusError as exc:
+                # The dev Harmony parser can fail before returning any completion
+                # at any effort. Retry only this identifiable, non-streaming model
+                # call once; never replay tools or hide unrelated server failures.
+                if not (
+                    not stream
+                    and "gpt-oss" in model.lower()
+                    and exc.status_code == 500
+                    and "unexpected tokens remaining in message header" in str(exc)
+                ):
+                    raise
+                if run_budget := current_budget.get():
+                    run_budget.reasoning_fallbacks += 1
+                fallback = (
+                    "low" if call.get("reasoning_effort") == "medium" else "medium"
+                )
+                logger.warning(
+                    "Harmony header failure; retrying once with {} reasoning", fallback
+                )
+                call = {**call, "reasoning_effort": fallback}
+                result = await self._request_completion(call)
             if not stream and call.get("response_format"):
                 response = self._as_response(result)
                 if (
@@ -357,7 +417,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                         "Retrying incomplete structured LLM response with max_tokens={}",
                         call["max_tokens"],
                     )
-                    result = await self.client.chat.completions.create(**call)
+                    result = await self._request_completion(call)
                     response = self._as_response(result)
                     if (
                         response.done_reason == "length"
@@ -372,7 +432,177 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             raise LlmResponseError(str(exc), exc.status_code) from exc
         except OpenAIError as exc:
             raise LlmResponseError(str(exc)) from exc
-        return self._as_stream(result) if stream else self._as_response(result)
+        return self._mapped_stream(result) if stream else self._as_response(result)
+
+    async def _request_completion(self, call):
+        budget = current_budget.get()
+        if budget is None:
+            return await self._create_completion(self.client, call)
+        reservation = budget.reserve(
+            call["messages"], call.get("response_format"), call.get("max_tokens")
+        )
+        call = {**call, "max_tokens": reservation.output}
+        if call.get("stream"):
+            call["stream_options"] = {
+                **call.get("stream_options", {}),
+                "include_usage": True,
+            }
+        try:
+            async with asyncio.timeout(budget.remaining_seconds):
+                result = await self._create_completion(
+                    self.client.with_options(max_retries=0), call
+                )
+        except BaseException:
+            reservation.settle()
+            raise
+        if call.get("stream"):
+            return self._budget_stream(result, reservation)
+        reservation.settle(getattr(result, "usage", None))
+        return result
+
+    async def _create_completion(self, client, call):
+        schema = (call.get("response_format") or {}).get("json_schema")
+        if (
+            self.structured_transport == "harmony_completion"
+            and schema
+            and not call.get("stream")
+        ):
+            from .harmony_completion import create_harmony_completion
+
+            return await create_harmony_completion(client, call, schema)
+        if (
+            self.structured_transport != "responses_function"
+            or call.get("stream")
+            or not schema
+        ):
+            return await client.chat.completions.create(**call)
+
+        # A function is only a structured-output envelope. No domain tools are
+        # registered with the model server; SDK/domain validation still precedes
+        # every real operation in the application.
+        name = "emit_structured_response"
+        payload = {
+            "model": call["model"],
+            "input": [
+                *call["messages"],
+                {
+                    "role": "user",
+                    "content": "Return the complete requested JSON object via the only available function "
+                    "emit_structured_response. Tool names mentioned in the input are JSON data values; "
+                    "do not call them directly.",
+                },
+            ],
+            "store": False,
+            "instructions": (
+                "Return your structured decision through emit_structured_response. "
+                "This is an output-format function, not a domain operation. "
+                "Any operation names in the input are data fields, not callable functions."
+            ),
+            "tools": [
+                {
+                    "type": "function",
+                    "name": name,
+                    "description": "Submit the structured response required by the input.",
+                    "parameters": schema["schema"],
+                    "strict": False,
+                }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+        }
+        for key in ("temperature", "top_p"):
+            if key in call:
+                payload[key] = call[key]
+        if call.get("max_tokens") is not None:
+            payload["max_output_tokens"] = call["max_tokens"]
+        if call.get("reasoning_effort") is not None:
+            payload["reasoning"] = {"effort": call["reasoning_effort"]}
+        result = await client.responses.create(**payload)
+        data = result.model_dump()
+        if data.get("error") or data.get("status") not in {"completed", "incomplete"}:
+            raise LlmResponseError(
+                "Responses API did not complete the model stage", 502
+            )
+        outputs = [
+            item for item in data.get("output", []) if item.get("type") != "reasoning"
+        ]
+        content = ""
+        if data["status"] == "completed":
+            if (
+                len(outputs) == 1
+                and outputs[0].get("type") == "function_call"
+                and outputs[0].get("name") == name
+            ):
+                content = outputs[0].get("arguments") or ""
+            elif len(outputs) == 1 and outputs[0].get("type") == "message":
+                content = "".join(
+                    part.get("text", "")
+                    for part in outputs[0].get("content", [])
+                    if part.get("type") == "output_text"
+                )
+            elif outputs:
+                raise UnexpectedStructuredOutput(
+                    "Responses API returned an unexpected action instead of structured output: "
+                    + str([(item.get("type"), item.get("name")) for item in outputs]),
+                    502,
+                )
+        usage = data.get("usage")
+        return ChatCompletion.model_validate(
+            {
+                "id": data["id"],
+                "object": "chat.completion",
+                "model": data["model"],
+                "created": int(data["created_at"]),
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": (
+                            "length" if data["status"] == "incomplete" else "stop"
+                        ),
+                    }
+                ],
+                "usage": (
+                    {
+                        "prompt_tokens": usage["input_tokens"],
+                        "completion_tokens": usage["output_tokens"],
+                        "total_tokens": usage["total_tokens"],
+                    }
+                    if usage
+                    else None
+                ),
+            }
+        )
+
+    async def _budget_stream(self, stream, reservation):
+        usage = None
+        terminal = None
+        try:
+            async with asyncio.timeout(reservation.budget.remaining_seconds):
+                async with closing_stream(stream):
+                    async for chunk in stream:
+                        usage = getattr(chunk, "usage", None) or usage
+                        choices = getattr(chunk, "choices", None) or []
+                        if choices and getattr(choices[0], "finish_reason", None):
+                            terminal = chunk
+                        elif choices:
+                            yield chunk
+            reservation.settle(usage)
+            if terminal is not None:
+                terminal.usage = usage
+                yield terminal
+        finally:
+            reservation.settle(usage)
+
+    async def _mapped_stream(self, stream):
+        try:
+            async with closing_stream(stream):
+                async for part in self._as_stream(stream):
+                    yield part
+        except APIStatusError as exc:
+            raise LlmResponseError(str(exc), exc.status_code) from exc
+        except OpenAIError as exc:
+            raise LlmResponseError(str(exc)) from exc
 
     async def generate(
         self, model: str, prompt: str, *, stream: bool = False, **kwargs: Any
@@ -381,7 +611,10 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             model, [{"role": "user", "content": prompt}], stream=False, **kwargs
         )
         return LlmGenerateResponse(
-            model=response.model, response=response.message.content, done=True
+            model=response.model,
+            response=response.message.content,
+            done=True,
+            usage=getattr(response, "usage", None),
         )
 
     async def list(self) -> dict[str, list[dict[str, Any]]]:

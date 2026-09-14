@@ -1,5 +1,6 @@
 from src.agents.model_clients.factory import build_llm_adapter
 from src.agents.model_clients.llm_base import BaseLlmAdapter
+from src.agents.runtime.runner import run_completion
 
 
 class BaseLlmClient:
@@ -24,7 +25,9 @@ class BaseLlmClient:
 
     async def execute_request(self, model: str, messages: list[dict]):
 
-        async for part in await self.llm_client.chat(model, messages, stream=True):
+        async for part in await run_completion(
+            self.llm_client, model, messages, stream=True, agent_name="base_client"
+        ):
             yield {
                 "type": "chunk",
                 "content": {"text": part.message.content, "done": part.done},
