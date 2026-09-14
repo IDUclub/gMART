@@ -1,3 +1,21 @@
+## v0.19.0 (2026-09-14)
+
+### Feat
+
+- **scenario-data**: show Russian tables without ids and summarize comparisons
+- retrieve document structure and reduce large contexts in parallel (#171)
+
+### Fix
+
+- preserve document clarifications and recover interrupted streams (#183)
+- resolve and rank document clause clarifications (#182)
+- preserve document choices across RAG clarification turns (#181)
+- validate DVD retrieval plan modes (#180)
+- adapt RAG answer budgets and resume truncated drafts (#177)
+- ground document answers and detect deployed model context (#175)
+- budget RAG summaries and reject incomplete evidence (#174)
+- align scoped RAG parameters with DVD MCP contract (#173)
+
 ## v0.18.1 (2026-09-08)
 
 ### Fix
