@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from decimal import Decimal, InvalidOperation
 
 from fastapi.encoders import jsonable_encoder
@@ -359,3 +360,72 @@ class AnalysisContext:
             "query": self.query,
             "goal": self.goal,
         }
+
+    def provision_comparisons(self, query):
+        """Derive requested comparisons from actual cells, with scenario provenance."""
+        from src.agents.services.service_entities.orchestrator_plan import (
+            MetricComparison,
+        )
+
+        if not re.search(r"сравн|сопостав|изменени\w*\s+дефицит", query, re.I):
+            return []
+        scopes = {
+            (c["request_id"], c["step"]): c["scenario_id"]
+            for c in self.completed
+            if c["status"] == "completed"
+        }
+        sources = {}
+        for a in self.artifacts:
+            sid = scopes.get((a["request_id"], a["step"]))
+            if (
+                not a["confirmed"]
+                or a["kind"] != "table"
+                or a["content"].get("name") != "provision_summary"
+                or not sid
+            ):
+                continue
+            if not re.search(rf"(?<!\d){sid}(?!\d)", query):
+                continue
+            for index, row in enumerate(a["content"].get("rows", [])):
+                if row.get("service"):
+                    sources[(sid, row["service"])] = (a["id"], index, row)
+        ordered = sorted(
+            {sid for sid, _ in sources}, key=lambda sid: query.find(str(sid))
+        )
+        if len(ordered) < 2:
+            return []
+        metrics = (
+            ["deficit"]
+            if re.search(r"дефицит", query, re.I)
+            else ["capacity", "demand", "deficit", "surplus", "balance"]
+        )
+        specs = []
+        for service in sorted({service for _, service in sources}):
+            if (ordered[0], service) not in sources:
+                continue
+            for sid in ordered[1:]:
+                if (sid, service) not in sources:
+                    continue
+                before, after = sources[(ordered[0], service)], sources[(sid, service)]
+                for metric in metrics:
+                    if metric not in before[2] or metric not in after[2]:
+                        continue
+                    specs.append(
+                        MetricComparison.model_validate(
+                            {
+                                "name": f"{service}: {metric}, {ordered[0]} → {sid}",
+                                "unit": "чел",
+                                "before": {
+                                    "artifact_id": before[0],
+                                    "row": before[1],
+                                    "column": metric,
+                                },
+                                "after": {
+                                    "artifact_id": after[0],
+                                    "row": after[1],
+                                    "column": metric,
+                                },
+                            }
+                        )
+                    )
+        return specs

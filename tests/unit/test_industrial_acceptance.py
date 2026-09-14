@@ -88,6 +88,38 @@ def test_judge_cannot_pass_with_invented_quote_or_uncertain_criterion():
     )
 
 
+def test_judge_reference_decoding_does_not_accept_fabricated_proof():
+    from tests.integration.industrial.judge import decode_references
+
+    quotes, aliases = {"Q1": "Дефицит 400."}, {"E1": "actual-source"}
+    review = {
+        "criteria": [
+            {
+                "id": "grounding",
+                "verdict": "pass",
+                "quote_id": "Q1",
+                "evidence_ids": ["E1"],
+                "reason": "400 соответствует таблице",
+            }
+        ]
+    }
+    decoded = decode_references(review, quotes, aliases)
+    assert (
+        validate_judgment(
+            decoded, ["grounding"], list(quotes.values()), {"actual-source": {}}
+        )["verdict"]
+        == "pass"
+    )
+    review["criteria"][0]["evidence_ids"] = ["E99"]
+    decoded = decode_references(review, quotes, aliases)
+    assert (
+        validate_judgment(
+            decoded, ["grounding"], list(quotes.values()), {"actual-source": {}}
+        )["verdict"]
+        == "needs_review"
+    )
+
+
 def test_fifteen_independent_episodes_required_on_identical_build():
     report = {
         "preflight_passed": True,

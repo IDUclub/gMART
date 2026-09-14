@@ -163,7 +163,9 @@ class AnalyticalRun:
             - self.budget.tokens
             - self.budget.limits.final_reserve
         )
-        view = self.context.view(max_chars=max(2000, min(9000, room, remaining)))
+        if self.goal:
+            room -= token_bound(self.goal.view(for_model=True))
+        view = self.context.view(max_chars=max(2000, min(24000, room, remaining)))
         if self.goal:
             view["goal"] = self.goal.view(for_model=True)
         return view
@@ -449,9 +451,13 @@ class AnalyticalRun:
                                         raise ValueError(
                                             "Cannot finish an analysis without evidence"
                                         )
+                                    comparisons = (
+                                        review.comparisons
+                                        or self.context.provision_comparisons(query)
+                                    )
                                     comparison = (
-                                        self.context.compare(review.comparisons)
-                                        if review.comparisons
+                                        self.context.compare(comparisons)
+                                        if comparisons
                                         else None
                                     )
                                 break

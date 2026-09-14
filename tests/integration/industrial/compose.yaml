@@ -14,8 +14,15 @@ services:
   idu_mcp:
     environment:
       URBAN_API_URL: http://industrial_sources:8090/api
+  dvd:
+    environment:
+      DVD_URBAN_API_URL: http://industrial_sources:8090
   agents:
     environment:
-      ORCHESTRATOR_GOAL_REASONING_EFFORT: low
+      ORCHESTRATOR_GOAL_REASONING_EFFORT: medium
+      ORCHESTRATOR_CONTEXT_TOKENS: 65536
+      ORCHESTRATOR_MODEL_CALLS: 120
+      ORCHESTRATOR_TOOL_CALLS: 160
+      ORCHESTRATOR_TOTAL_TOKENS: 800000
       URBAN_API_URL: http://industrial_sources:8090/api
       URBAN_MCP_SERVER: http://industrial_sources:8090

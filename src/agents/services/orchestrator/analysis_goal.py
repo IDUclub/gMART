@@ -65,11 +65,20 @@ class GoalRequirement(GoalResult):
 class GoalDraftRequirement(GoalResult):
     source_ids: list[int] = Field(min_length=1, max_length=12)
 
+    @model_validator(mode="before")
+    @classmethod
+    def specialist_result_kind(cls, value):
+        if isinstance(value, dict) and value.get("agent") != "scenario_data":
+            # The output's domain (services) is not an instruction to perform
+            # typed retrieval instead of the explicitly selected calculation.
+            return {**value, "entity_kind": "other"}
+        return value
+
 
 class AnalysisGoal(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    objective: str = Field(min_length=1, max_length=2000)
+    objective: str = Field(min_length=1, max_length=8000)
     requirements: list[GoalRequirement] = Field(min_length=1, max_length=32)
 
     @model_validator(mode="after")
@@ -313,6 +322,8 @@ class GoalState:
             if r.agent == "provision" and not decision.support:
                 task = (
                     r.description
+                    + "\nУсловия расчёта из запроса: "
+                    + r.source_quote
                     + "\nПроверь возможность расчёта вызовом расчётного сервиса. Наличие норматива проверяет сервис; не предполагай его отсутствие по истории анализа."
                 )
                 if "feature_collection" in r.required_artifacts:
@@ -484,8 +495,87 @@ provision также возвращает расчётные feature_collection 
                 raise ValueError(
                     "A goal requires results or a concrete clarification_question"
                 )
+            if (
+                re.search(r"DVD", query, re.I)
+                and re.search(r"NormGraph", query, re.I)
+                and re.search(r"сопостав|сравн", query, re.I)
+            ):
+                if not {"documents", "norms"} <= {r.agent for r in goal.requirements}:
+                    raise ValueError(
+                        "Comparing DVD and NormGraph needs independent documents AND norms requirements. Neither specialist can supply the other source. Preserve document name/version/clause in each description; comparison itself belongs to objective."
+                    )
             requirements = []
+            normalized = []
+            objective = goal.objective
             for r in goal.requirements:
+                quote = "\n".join(fragments.get(i, "") for i in r.source_ids)
+                if re.search(
+                    r"(?:оцен\w*|вывод\w*)[^.]*достаточ|итогов\w*\s+оцен|ограничения\s+(?:вывода|анализа)",
+                    r.description,
+                    re.I,
+                ) and any(
+                    item.id != r.id
+                    and item.agent == "provision"
+                    and (item.scenario_id or scenario_id)
+                    == (r.scenario_id or scenario_id)
+                    for item in goal.requirements
+                ):
+                    objective += "\n" + r.description
+                    continue
+                if re.search(r"уже\s+задан", quote, re.I) and not re.search(
+                    r"получ|покаж|прилож|верни|таблиц|сло[йиёв]", quote, re.I
+                ):
+                    continue
+                names = list(dict.fromkeys(re.findall(r"«([^»]+)»", r.description)))
+                physical = bool(re.search(r"физическ\w*\s+объект", r.description, re.I))
+                services = bool(re.search(r"услуг\w*\s+тип", r.description, re.I))
+                if (
+                    r.agent == "scenario_data"
+                    and services
+                    and re.search(r"рассчит|расч[её]тн", quote, re.I)
+                    and not re.search(r"исходн|выборк|список", quote, re.I)
+                ):
+                    continue
+                filtered = re.search(
+                    r"адрес|радиус|вместимост|мощност|фильтр|старше|младше|больше|меньше",
+                    r.description,
+                    re.I,
+                )
+                if (
+                    r.agent == "scenario_data"
+                    and r.entity_kind == "other"
+                    and names
+                    and (physical or services)
+                    and not filtered
+                ):
+                    for i, subject in enumerate(names):
+                        normalized.append(
+                            r.model_copy(
+                                update={
+                                    "id": f"{r.id[:58]}_{i}",
+                                    "subject": subject,
+                                    "entity_kind": (
+                                        "physical_objects" if physical else "services"
+                                    ),
+                                    "description": f"Получить полную таблицу и слой типа «{subject}» в сценарии {r.scenario_id or scenario_id}.",
+                                    "required_artifacts": [
+                                        "table",
+                                        "feature_collection",
+                                    ],
+                                }
+                            )
+                        )
+                else:
+                    normalized.append(r)
+            documentary_scope = list(
+                dict.fromkeys(
+                    f
+                    for f in fragments.values()
+                    if re.search(r"документ", f, re.I)
+                    and re.search(r"верс|редакц", f, re.I)
+                )
+            )
+            for r in normalized:
                 if r.entity_kind != "other" and re.search(
                     r"[,;]|\sи\s", r.subject, re.I
                 ):
@@ -595,7 +685,18 @@ provision также возвращает расчётные feature_collection 
                             "scenario_id": r.scenario_id or scenario_id,
                             "required_artifacts": required,
                             "source_quote": "\n".join(
-                                fragments[i] for i in r.source_ids
+                                dict.fromkeys(
+                                    [
+                                        *(fragments[i] for i in r.source_ids),
+                                        *(
+                                            documentary_scope
+                                            if r.agent
+                                            in {"documents", "norms", "compliance"}
+                                            and len(documentary_scope) == 1
+                                            else []
+                                        ),
+                                    ]
+                                )
                             ),
                         }
                     )
@@ -629,9 +730,7 @@ provision также возвращает расчётные feature_collection 
                     )
                 else:
                     merged[key] = r
-            return AnalysisGoal(
-                objective=goal.objective, requirements=list(merged.values())
-            )
+            return AnalysisGoal(objective=objective, requirements=list(merged.values()))
 
         return await self._call(
             model,
@@ -644,7 +743,9 @@ provision также возвращает расчётные feature_collection 
                 "agents": [
                     {"key": a.key, "description": a.description} for a in agents
                 ],
-                "history": history or [],
+                "current_request_fragment_count": len(
+                    [t for t in re.split(r"(?<=[.!?])\s+|\n+", query) if t.strip()]
+                ),
             },
             GoalDraft,
             validate=validate,

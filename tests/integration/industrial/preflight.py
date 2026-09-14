@@ -146,6 +146,7 @@ async def run(config, output):
                     document_names=["LOCAL SDK TEST"],
                     version="2026",
                     limit=3,
+                    scenario_id=91001,
                 )
                 save(output / "document-search.json", result)
                 if not any(

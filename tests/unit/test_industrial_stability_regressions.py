@@ -189,3 +189,175 @@ async def test_followup_can_cite_prior_service_and_layer_conditions(fake_llm):
     )
     assert "школами" in goal.requirements[0].source_quote
     assert "feature_collection" in goal.requirements[0].required_artifacts
+
+
+async def test_zone_layer_resolves_required_source_and_year_from_catalogue(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    from unittest.mock import AsyncMock
+
+    from src.agents.services.scenario_data.scenario_data_service import (
+        ScenarioDataService,
+    )
+    from tests.unit.test_scenario_data_read import read_plan
+
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *a, **k: fake_llm,
+    )
+    source = make_tool(
+        "GetScenarioFunctionalZoneSources",
+        "projects",
+        {"scenario_id": {"type": "integer"}},
+    )
+    zones = make_tool(
+        "GetScenarioFunctionalZones",
+        "projects",
+        {
+            "scenario_id": {"type": "integer"},
+            "source": {"type": "string"},
+            "year": {"type": "integer"},
+        },
+    )
+    zones.input_schema["required"] = ["scenario_id", "source", "year"]
+    fake_llm.json_responses = [
+        read_plan(
+            zones, {"scenario_id": 17, "source": "survey", "year": 2024}
+        ).model_dump_json()
+    ]
+    mcp = AsyncMock()
+    mcp.load_tools.return_value = [source, zones]
+    layer = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [30, 60]},
+                "properties": {"source": "survey", "year": 2024},
+            }
+        ],
+    }
+    mcp.execute_tool.side_effect = [[{"source": "survey", "year": 2024}], layer]
+    service = ScenarioDataService("http://llm", None, fake_urban, state_store)
+    events = [
+        e
+        async for e in service.run_scenario_data_pipeline(
+            mcp,
+            "t",
+            "m",
+            0,
+            "Покажи функциональные зоны сценария 17",
+            scenario_id=17,
+            persist_history=False,
+        )
+    ]
+    assert [c.args[1] for c in mcp.execute_tool.await_args_list] == [
+        source.name,
+        zones.name,
+    ]
+    assert any(
+        e["type"] == "feature_collection"
+        and e["content"]["feature_collection"] == layer
+        for e in events
+    )
+
+
+async def test_goal_creation_does_not_copy_large_assistant_history(fake_llm):
+    from src.agents.runtime.budget import RunBudget, budget_scope
+
+    fake_llm.json_responses = [
+        json.dumps(
+            {
+                "objective": "Повторить расчёт",
+                "requirements": [
+                    {
+                        "id": "p",
+                        "agent": "provision",
+                        "source_ids": [1],
+                        "description": "Обеспеченность школами",
+                        "required_artifacts": ["table"],
+                    }
+                ],
+            }
+        )
+    ]
+    with budget_scope(RunBudget()):
+        result = await GoalManager(fake_llm).create(
+            "m",
+            "Рассчитай обеспеченность школами.",
+            [],
+            17,
+            [{"role": "assistant", "content": "large saved artifact " * 4000}],
+        )
+    assert result.requirements[0].agent == "provision"
+
+
+async def test_model_combined_physical_selection_is_split_without_extra_read(fake_llm):
+    fake_llm.json_responses = [
+        json.dumps(
+            {
+                "objective": "Исходные объекты",
+                "requirements": [
+                    {
+                        "id": "physical",
+                        "agent": "scenario_data",
+                        "source_ids": [1],
+                        "description": "Получить физические объекты типов «Жилой дом» и «Парк».",
+                        "required_artifacts": ["table", "feature_collection"],
+                    }
+                ],
+            }
+        )
+    ]
+    result = await GoalManager(fake_llm).create(
+        "m", "Покажи физические объекты типов «Жилой дом» и «Парк».", [], 17
+    )
+    assert [(r.entity_kind, r.subject) for r in result.requirements] == [
+        ("physical_objects", "Жилой дом"),
+        ("physical_objects", "Парк"),
+    ]
+
+
+def test_provision_comparison_uses_real_scoped_cells_and_excludes_other_scenarios():
+    context = AnalysisContext()
+    for sid, deficit in [(17, 700), (18, 0), (19, 999)]:
+        context.add_artifact(
+            {
+                "type": "table",
+                "content": {
+                    "name": "provision_summary",
+                    "title": "Обеспеченность",
+                    "columns": [
+                        {"key": "service", "label": "Услуга"},
+                        {"key": "deficit", "label": "Дефицит"},
+                    ],
+                    "rows": [{"service": "Школа", "deficit": deficit}],
+                },
+            },
+            1,
+            str(sid),
+        )
+        context.finish(1, "Расчёт", sid, "completed", "Расчёт", str(sid))
+    specs = context.provision_comparisons("Сравни дефициты сценариев 17 и 18")
+    result = context.compare(specs)
+    assert len(result["content"]["rows"]) == 1
+    row = result["content"]["rows"][0]
+    assert (row["before"], row["after"], row["delta"]) == ("700", "0", "-700")
+    assert context.provision_comparisons("Рассчитай сценарий 18") == []
+
+
+def test_draft_calculation_domain_cannot_be_confused_with_retrieval_kind():
+    from src.agents.services.orchestrator.analysis_goal import GoalDraftRequirement
+
+    r = GoalDraftRequirement.model_validate(
+        {
+            "id": "p",
+            "agent": "provision",
+            "subject": "Школа",
+            "entity_kind": "services",
+            "description": "Рассчитать школы",
+            "source_ids": [1],
+            "required_artifacts": ["table"],
+        }
+    )
+    assert r.agent == "provision" and r.entity_kind == "other"

@@ -50,9 +50,14 @@ python -m tests.integration.industrial.preflight --env-file <local-stack.env> --
 python tests/integration/local_stack/harness.py --suite industrial --mode full --env-file <local-stack.env> --output <new-series-directory>
 ```
 
-The overlay changes the Urban source URLs and uses low reasoning for goal
-formation (medium exhausted two 8192-token responses in the first diagnostic).
+The overlay changes all Urban source URLs, including DVD's scenario-to-project
+lookup. Preflight searches the seeded clause through DVD with scenario scope,
+exercising both its Urban dependency and the remote embedding endpoint.
+Goal formation uses medium reasoning and allows up to 16384 output tokens.
 Ready analytical synthesis keeps high reasoning; the separate judge uses medium.
+The test vLLM advertises a 65536-token model window; this overlay uses that bound,
+800000 total tokens, 120 model calls and 160 tool calls with the existing 600-second
+deadline. Bounds are admission ceilings, not mandatory expenditure.
 Model/embedding endpoints,
 specialists, calculators, storage and authorization remain on the configured
 local stack. `--episodes 1` runs a diagnostic episode and **cannot** report overall

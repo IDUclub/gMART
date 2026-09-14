@@ -479,7 +479,88 @@ class UrbanReadWorkflow:
         persist_history,
     ):
         host = self.host
+        catalogue = tools
         tools = scoped_tools(tools, query)
+        zone_tool = next(
+            (t for t in tools if t.name == "GetScenarioFunctionalZones"), None
+        )
+        source_tool = next(
+            (t for t in catalogue if t.name == "GetScenarioFunctionalZoneSources"), None
+        )
+        if zone_tool and source_tool and selected is not None:
+            # Resolve required selectors from the actual catalogue, never guess
+            # a year or confuse the selected scenario with its parent project.
+            arguments = {"scenario_id": selected}
+            source_tool.validate_arguments(arguments, require_all=True)
+            yield await host._buf(
+                request_id,
+                host._tool_call_event(
+                    {
+                        "group": source_tool.group,
+                        "tool_name": source_tool.name,
+                        "arguments": arguments,
+                    },
+                    f"URBAN_MCP/{source_tool.group}",
+                ),
+            )
+            box = []
+            async for event in host._retryable_operation(
+                request_id,
+                client,
+                token_ref,
+                lambda: client.execute_tool(
+                    source_tool.group,
+                    source_tool.name,
+                    arguments,
+                    meta={"scenario_id": selected},
+                ),
+                box,
+                retry_transient=True,
+            ):
+                yield await host._buf(request_id, event)
+            options = data_rows(host._unwrap_result(box[0]))
+            parts.append(
+                ToolCallPartRequest(
+                    kind="tool_call",
+                    mcp_source=f"URBAN_MCP/{source_tool.group}",
+                    payload=ToolCallPayload(
+                        execution_mode="sequential",
+                        calls=[
+                            ToolCall(
+                                step=len(parts) + 1,
+                                tool_name=source_tool.name,
+                                arguments=arguments,
+                            )
+                        ],
+                    ),
+                )
+            )
+            years = set(re.findall(r"\b(?:19|20)\d{2}\b", query))
+            if years:
+                options = [o for o in options if str(o.get("year")) in years]
+            named_options = [
+                o
+                for o in options
+                if str(o.get("source", "")).casefold() in query.casefold()
+            ]
+            options = named_options or options
+            if (
+                len(options) != 1
+                or not options[0].get("source")
+                or not isinstance(options[0].get("year"), int)
+            ):
+                yield await host._buf(
+                    request_id,
+                    {
+                        "type": "clarification_required",
+                        "content": {
+                            "text": "Для функциональных зон нужно выбрать источник и год из каталога: "
+                            + json.dumps(options, ensure_ascii=False),
+                        },
+                    },
+                )
+                return
+            query += f"\nПодтверждённые параметры каталога: источник {options[0]['source']}, год {options[0]['year']}. Сценарий {selected}."
         named = {tool.name: tool for tool in tools}
         try:
             plan = await asyncio.wait_for(
