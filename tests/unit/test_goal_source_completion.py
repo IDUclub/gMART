@@ -16,8 +16,9 @@ from tests.unit.test_orchestrator_service_events import (
 
 
 @pytest.mark.parametrize("owner", ["service", "user"])
+@pytest.mark.parametrize("with_operation_evidence", [False, True])
 async def test_ready_sources_reject_invented_service_blocker_but_allow_user_criteria(
-    orchestrator, monkeypatch, owner
+    orchestrator, monkeypatch, owner, with_operation_evidence
 ):
     monkeypatch.setenv("ORCHESTRATOR_ANALYSIS_MODE", "goal")
     goal = AnalysisGoal.model_validate(
@@ -43,6 +44,19 @@ async def test_ready_sources_reject_invented_service_blocker_but_allow_user_crit
         pipeline = FakePipeline(
             [
                 source_event(name, [{"id": name, "text": "Synthetic source: >= 50 m"}]),
+                *(
+                    [
+                        {
+                            "type": "source_evidence",
+                            "content": {
+                                "name": "provision_normatives",
+                                "result": {"source_kind": "test_mock"},
+                            },
+                        }
+                    ]
+                    if with_operation_evidence
+                    else []
+                ),
                 {"type": "chunk", "content": {"text": ">= 50 m", "done": True}},
             ]
         )

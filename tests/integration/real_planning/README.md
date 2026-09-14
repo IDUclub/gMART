@@ -89,3 +89,10 @@ threshold or rewrite failed attempts to reach the requested count.
 `POST /llm/message` accepts the independent review material in a JSON body rather
 than a long URL. The evaluator uses a separate context on the configured model;
 it is not an independent human expert or a different model family.
+
+The PZZ service remains on the server at `10.32.11.90:31053`; do not deploy PZZ
+locally. Its source checkout may be read for contract verification. For missing
+legal rules, the local gMART adapter can prepare explicit `ТЕСТ-*` zone labels
+and `mock_pzz_normatives.json` descriptions on unchanged real geometry. These
+are synthetic test rules, not a mapping to actual legal zones. The external
+PZZ must execute its own comparison; a queued or failed task is not a pass.

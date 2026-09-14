@@ -663,10 +663,13 @@ class AnalyticalRun:
             origin = os.getenv("PUBLIC_AGENTS_URL", "").rstrip("/")
             links = []
             for artifact in sources:
-                label = (
-                    "Пункты документов"
-                    if artifact["content"]["system"] == "documents"
-                    else "Ограничения NormGraph"
+                content = artifact["content"]
+                label = {
+                    "documents": "Пункты документов",
+                    "norms": "Ограничения NormGraph",
+                }.get(
+                    content.get("system"),
+                    content.get("name") or "Результат инструмента",
                 )
                 url = f"{origin}/orchestrator/runs/{quote(request_id, safe='')}/artifacts/{quote(artifact['id'], safe='')}"
                 links.append(f"[{label}: сохранённые первоисточники]({url})")

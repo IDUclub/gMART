@@ -39,6 +39,7 @@ from src.agents.services.planning.artifacts import (
     summarize_layer,
 )
 from src.agents.services.planning.profiles import PROFILES, PlanningProfile
+from src.agents.services.planning.test_normatives import prepare_test_pzz_inputs
 from src.common.service_auth import (
     ServiceTokenAuth,
     service_mcp_client,
@@ -428,6 +429,43 @@ class PlanningService(BaseLlmService):
                     )
         if self.profile.key == "pzz" and self.pzz_api_url:
             tools.append(UPLOAD_TOOL)
+        test_pzz_fixture = (
+            os.getenv("TEST_PZZ_NORMATIVES_FILE") if self.profile.key == "pzz" else None
+        )
+        if test_pzz_fixture:
+            tools.extend(
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "prepare_test_pzz_inputs",
+                            "description": "Применить явно заданный МОК нормативов PZZ к реальным зонам и зданиям без изменения геометрии. Только техническая оценка; не юридическое заключение. Возвращает zones, buildings, descriptions, provenance. Оба слоя через $artifact.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "layer": {"type": "object"},
+                                    "buildings": {"type": "object"},
+                                },
+                                "required": ["layer", "buildings"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "upload_zone_descriptions",
+                            "description": "Загрузить полный descriptions из prepare_test_pzz_inputs через ссылку $artifact; полученный upload_id передай как descriptions_upload_id в submit_building_pzz_check_task.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"value": {"type": "array"}},
+                                "required": ["value"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                ]
+            )
         catalogue = {t["function"]["name"]: t["function"] for t in tools}
         if not self.profile.required_tools <= catalogue.keys():
             yield {
@@ -440,6 +478,72 @@ class PlanningService(BaseLlmService):
             return
         values = dict(input_artifacts or {})
         observations = []
+        if self.profile.key == "genplanner" and scenario_id and urban_mcp_client:
+            # Bound context is known by the application. Resolve its available
+            # data before asking the model for design decisions, so source IDs
+            # and zoning versions are not mistaken for missing user parameters.
+            source = await execute_planned(
+                "urban.functional_zone_sources",
+                lambda: self.urban_api_client.json_handler.get(
+                    f"/v1/scenarios/{scenario_id}/functional_zone_sources",
+                    auth_token=token,
+                ),
+            )
+            initial = [
+                (
+                    "GetScenarioFunctionalZoneSources",
+                    {"scenario_id": scenario_id},
+                    source,
+                )
+            ]
+            for tool_name, arguments in [
+                ("GetScenarioById", {"scenario_id": scenario_id})
+            ]:
+                tool = urban_tools.get(tool_name)
+                if tool:
+                    initial.append(
+                        (
+                            tool_name,
+                            arguments,
+                            await urban_mcp_client.execute_tool(
+                                tool.group, tool.name, arguments
+                            ),
+                        )
+                    )
+            if source and "GetScenarioFunctionalZones" in urban_tools:
+                version = max(source, key=lambda item: item["year"])
+                arguments = {
+                    "scenario_id": scenario_id,
+                    "year": version["year"],
+                    "source": version["source"],
+                }
+                tool = urban_tools["GetScenarioFunctionalZones"]
+                initial.append(
+                    (
+                        tool.name,
+                        arguments,
+                        await urban_mcp_client.execute_tool(
+                            tool.group, tool.name, arguments
+                        ),
+                    )
+                )
+            for index, (tool_name, arguments, result) in enumerate(initial):
+                aid = f"{request_id}:context{index}"
+                values[aid] = jsonable_encoder(result)
+                observations.append(
+                    {"tool": tool_name, "arguments": arguments, "result_id": aid}
+                )
+                yield {
+                    "type": "source_evidence",
+                    "content": {
+                        "name": "genplanner_context",
+                        "tool": tool_name,
+                        "arguments": arguments,
+                        "result_id": aid,
+                        "result": values[aid],
+                        "scenario_id": scenario_id,
+                    },
+                }
         successful = set()
         calls = set()
         prompt = (
@@ -476,6 +580,14 @@ class PlanningService(BaseLlmService):
                 ensure_ascii=False,
             )
         )
+        if test_pzz_fixture:
+            prompt += (
+                "\nДля этого локального технического испытания пользователь разрешил мок нормативов. "
+                "Используй prepare_test_pzz_inputs на реальных проектных слоях, затем upload_layer для "
+                "его zones/buildings и upload_zone_descriptions для descriptions. В проверку передай "
+                "все три upload_id. Укажи в ответе и таблицах, что это МОК, не реальные юридические ПЗЗ. "
+                "Не заменяй новые проектные слои исходным сохранённым сценарием."
+            )
         for number in range(24):
             state = {
                 "scenario_id": scenario_id,
@@ -548,6 +660,7 @@ class PlanningService(BaseLlmService):
                     "existing_buildings",
                     "layer",
                     "generated_buildings",
+                    "buildings",
                     "before",
                     "after",
                 ):
@@ -635,6 +748,10 @@ class PlanningService(BaseLlmService):
                     await asyncio.sleep(2)
                 if action.tool in LAYER_OPERATIONS:
                     result = LAYER_OPERATIONS[action.tool](**args)
+                elif action.tool == "prepare_test_pzz_inputs":
+                    result = prepare_test_pzz_inputs(
+                        **args, fixture_path=test_pzz_fixture
+                    )
                 elif action.tool == "prepare_building_blocks":
                     result = prepare_building_blocks(**args)
                 elif action.tool == "GetScenarioFunctionalZoneSources":
@@ -648,7 +765,9 @@ class PlanningService(BaseLlmService):
                 elif action.tool in urban_tools:
                     t = urban_tools[action.tool]
                     result = await urban_mcp_client.execute_tool(t.group, t.name, args)
-                elif action.tool == "upload_layer":
+                elif action.tool in {"upload_layer", "upload_zone_descriptions"}:
+                    is_layer = action.tool == "upload_layer"
+                    upload_value = args["layer"] if is_layer else args["value"]
                     async with httpx.AsyncClient(
                         auth=ServiceTokenAuth(self.service_auth, user_id), timeout=60
                     ) as http:
@@ -658,9 +777,17 @@ class PlanningService(BaseLlmService):
                                 self.pzz_api_url.rstrip("/") + "/uploads",
                                 files={
                                     "file": (
-                                        "layer.geojson",
-                                        json.dumps(args["layer"]).encode(),
-                                        "application/geo+json",
+                                        (
+                                            "layer.geojson"
+                                            if is_layer
+                                            else "test_normatives.json"
+                                        ),
+                                        json.dumps(upload_value).encode(),
+                                        (
+                                            "application/geo+json"
+                                            if is_layer
+                                            else "application/json"
+                                        ),
                                     )
                                 },
                             ),

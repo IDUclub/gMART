@@ -501,3 +501,46 @@ async def test_direct_specialist_uses_configured_limits(specialist, monkeypatch)
     monkeypatch.setattr(service, "_run", run)
     assert [e async for e in service.run()]
     assert seen == [65536]
+
+
+def test_pzz_mock_changes_only_explicit_test_attributes(tmp_path):
+    from copy import deepcopy
+
+    from src.agents.services.planning.test_normatives import prepare_test_pzz_inputs
+
+    fixture = tmp_path / "pzz.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "id": "test-v1",
+                "source_kind": "test_mock",
+                "description": "Synthetic rules",
+                "zones": {
+                    "residential": {
+                        "zone_code": "ТЕСТ-Ж",
+                        "zone_name": "МОК",
+                        "main": [],
+                        "conditional": [],
+                        "auxiliary": [],
+                    }
+                },
+            }
+        )
+    )
+    zones = deepcopy(LAYER)
+    zones["features"][0]["properties"]["territory_zone_name"] = "residential"
+    buildings = deepcopy(LAYER)
+    buildings["features"][0]["properties"]["building_type"] = "medium"
+    result = prepare_test_pzz_inputs(zones, buildings, fixture)
+    assert (
+        result["zones"]["features"][0]["geometry"] == zones["features"][0]["geometry"]
+    )
+    assert "zone_code" not in zones["features"][0]["properties"]
+    assert (
+        result["buildings"]["features"][0]["properties"]["physical_object_type_id"] == 4
+    )
+    assert result["provenance"]["kind"] == "test_mock"
+    assert result["provenance"]["legal_compliance_claim"] is False
+    zones["features"][0]["properties"]["territory_zone_name"] = "unknown"
+    with pytest.raises(ValueError, match="No explicit test normative"):
+        prepare_test_pzz_inputs(zones, buildings, fixture)

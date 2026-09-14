@@ -153,6 +153,9 @@ async def run(args):
         mock_raw = Path(__file__).with_name("mock_normatives.json").read_bytes()
         save(output / "mock_normatives.json", json.loads(mock_raw))
         report["normative_mock_sha256"] = hashlib.sha256(mock_raw).hexdigest()
+        pzz_mock_raw = Path(__file__).with_name("mock_pzz_normatives.json").read_bytes()
+        save(output / "mock_pzz_normatives.json", json.loads(pzz_mock_raw))
+        report["pzz_normative_mock_sha256"] = hashlib.sha256(pzz_mock_raw).hexdigest()
         # Preserve real source identity and zoning versions before any dialogue.
         headers = await user_headers(http, auth)
         source = {}

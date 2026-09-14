@@ -1,0 +1,119 @@
+{
+  "id": "local-assessment-pzz-v1",
+  "source_kind": "test_mock",
+  "description": "Условные коды и разрешённые использования для технической оценки PZZ. Геометрия исходная; эти коды не являются юридическими зонами, заключение не подтверждает соответствие реальным ПЗЗ.",
+  "zones": {
+    "residential": {
+      "zone_code": "ТЕСТ-Ж",
+      "zone_name": "МОК: residential",
+      "main": [
+        {
+          "vri_code": "2.1",
+          "vri_name": "Индивидуальная жилая застройка"
+        },
+        {
+          "vri_code": "2.5",
+          "vri_name": "Среднеэтажная жилая застройка"
+        },
+        {
+          "vri_code": "2.6",
+          "vri_name": "Многоэтажная жилая застройка"
+        },
+        {
+          "vri_code": "3.5.1",
+          "vri_name": "Дошкольное, начальное и среднее общее образование"
+        }
+      ],
+      "conditional": [],
+      "auxiliary": []
+    },
+    "business": {
+      "zone_code": "ТЕСТ-ОД",
+      "zone_name": "МОК: business",
+      "main": [
+        {
+          "vri_code": "4.1",
+          "vri_name": "Деловое управление"
+        },
+        {
+          "vri_code": "4.4",
+          "vri_name": "Магазины"
+        },
+        {
+          "vri_code": "3.5.1",
+          "vri_name": "Дошкольное, начальное и среднее общее образование"
+        }
+      ],
+      "conditional": [],
+      "auxiliary": []
+    },
+    "industrial": {
+      "zone_code": "ТЕСТ-П",
+      "zone_name": "МОК: industrial",
+      "main": [
+        {
+          "vri_code": "6.0",
+          "vri_name": "Производственная деятельность"
+        },
+        {
+          "vri_code": "6.9",
+          "vri_name": "Склады"
+        }
+      ],
+      "conditional": [],
+      "auxiliary": []
+    },
+    "recreation": {
+      "zone_code": "ТЕСТ-Р",
+      "zone_name": "МОК: recreation",
+      "main": [
+        {
+          "vri_code": "5.0",
+          "vri_name": "Отдых (рекреация)"
+        },
+        {
+          "vri_code": "5.1",
+          "vri_name": "Спорт"
+        }
+      ],
+      "conditional": [],
+      "auxiliary": []
+    },
+    "agriculture": {
+      "zone_code": "ТЕСТ-СХ",
+      "zone_name": "МОК: agriculture",
+      "main": [
+        {
+          "vri_code": "1.0",
+          "vri_name": "Сельскохозяйственное использование"
+        }
+      ],
+      "conditional": [],
+      "auxiliary": []
+    },
+    "special": {
+      "zone_code": "ТЕСТ-С",
+      "zone_name": "МОК: special",
+      "main": [
+        {
+          "vri_code": "12.1",
+          "vri_name": "Ритуальная деятельность"
+        }
+      ],
+      "conditional": [],
+      "auxiliary": []
+    },
+    "transport": {
+      "zone_code": "ТЕСТ-Т",
+      "zone_name": "МОК: transport",
+      "main": [
+        {
+          "vri_code": "7.2",
+          "vri_name": "Автомобильный транспорт"
+        }
+      ],
+      "conditional": [],
+      "auxiliary": []
+    }
+  }
+}

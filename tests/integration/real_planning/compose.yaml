@@ -103,12 +103,14 @@ services:
       GENBUILDER_MCP_SERVER: http://10.32.11.90:31007/mcp
       PZZ_MCP_SERVER: http://10.32.11.90:31053/mcp
       PZZ_API_URL: http://10.32.11.90:31009
+      TEST_PZZ_NORMATIVES_FILE: /assessment/mock_pzz_normatives.json
       URBAN_API_URL: ${URBAN_API_ORIGIN:-http://10.32.11.90:31001}/api
       CHAT_STORAGE: ${CHAT_STORAGE_ORIGIN:-http://host.docker.internal:8010}
       REDIS_URL: redis://redis:6379/0
       FASTAPI_WORKERS: "1"
       SYNAPSE_ENABLED: "false"
     extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes: ["./mock_pzz_normatives.json:/assessment/mock_pzz_normatives.json:ro"]
     ports: ["127.0.0.1:18000:80"]
     depends_on:
       redis: {condition: service_healthy}
