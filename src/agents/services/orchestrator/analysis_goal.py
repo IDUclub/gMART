@@ -70,7 +70,7 @@ class AnalysisGoal(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     objective: str = Field(min_length=1, max_length=2000)
-    requirements: list[GoalRequirement] = Field(min_length=1, max_length=12)
+    requirements: list[GoalRequirement] = Field(min_length=1, max_length=32)
 
     @model_validator(mode="after")
     def unique(self):
@@ -80,7 +80,7 @@ class AnalysisGoal(BaseModel):
 
 
 class GoalDraft(AnalysisGoal):
-    requirements: list[GoalDraftRequirement] = Field(min_length=0, max_length=12)
+    requirements: list[GoalDraftRequirement] = Field(min_length=0, max_length=32)
     clarification_question: str | None = None
 
 
@@ -299,6 +299,15 @@ class GoalState:
                 )
             # Typed retrieval never depends on a freely rewritten routing prompt.
             task = decision.task or r.description
+            if not decision.support:
+                task = r.description
+                if decision.task and decision.task != r.description:
+                    task += (
+                        "\nУточнение действия (не отменяет условия выше): "
+                        + decision.task
+                    )
+            if r.agent in {"documents", "norms", "compliance"} and not decision.support:
+                task += "\nОбласть источника из запроса пользователя: " + r.source_quote
             if r.agent == "restriction" and not decision.support:
                 task = r.description
             if r.agent == "provision" and not decision.support:
@@ -432,9 +441,15 @@ class GoalManager:
         self.backend = backend
 
     async def create(self, model, query, agents, scenario_id, history=None):
+        prior_requests = [
+            m["content"] for m in (history or []) if m.get("role") == "user"
+        ]
+        # Prior user conditions remain citable even when the new message only
+        # says "same services". Current request still takes precedence.
+        source_text = "\n".join([query, *prior_requests])
         fragments = {
             i: text
-            for i, text in enumerate(re.split(r"(?<=[.!?])\s+|\n+", query), 1)
+            for i, text in enumerate(re.split(r"(?<=[.!?])\s+|\n+", source_text), 1)
             if text.strip()
         }
         prompt = """Выдели цель и обязательные результаты запроса. Не составляй план действий.
@@ -449,6 +464,10 @@ entity_kind services/physical_objects означает полную выборк
 required_artifacts: table для таблицы/количества, feature_collection для слоя, analysis_text для текстового исследования/расчёта, compliance_summary для проверки соответствия.
 Когда нужны таблица И слой, оба обязательны. Расчёт обеспеченности — отдельное требование agent=provision, entity_kind=other.
 Сопоставление полученных результатов и финальные выводы делает оркестратор; не передавай сравнение списков агенту scenario_data.
+Каждый сценарий требует собственного результата. Не объединяй разные сценарии в одном requirement provision/compliance/restriction. Для provision можно объединить явно названные услуги одного сценария, но не создавай второй расчёт тех же услуг под названием «социальная инфраструктура».
+Не создавай отдельные исходные выборки услуг, если запрошены только расчётные слои provision. Фраза «зонирование и здания уже заданы» — условие анализа, не запрос всех объектов. Запрашивай функциональные зоны только когда пользователь просит их показать.
+Не называй ID сценария ID проекта. Для слоя функциональных зон пиши «функциональные зоны сценария <ID>».
+История содержит предыдущие условия пользователя. Сохрани типы услуг, расчётные слои, документ и ограничения при продолжении, если текущий запрос их не отменяет. Результаты из истории можно повторно использовать; не спрашивай уже названные типы.
 description — самодостаточные условия получения результата на русском, без указания порядка шагов. Для scenario_data не добавляй слово «сравни» или чужие типы объектов.
 Не добавляй фиксированные значения результатов. Не делай вывод об отсутствии данных до вызова сервиса.
 Не добавляй вспомогательный поиск нормативов к расчёту provision: этот специалист сам проверяет норматив. norms/documents нужны только если пользователь отдельно запросил исследование источников.
@@ -467,6 +486,24 @@ provision также возвращает расчётные feature_collection 
                 )
             requirements = []
             for r in goal.requirements:
+                if r.entity_kind != "other" and re.search(
+                    r"[,;]|\sи\s", r.subject, re.I
+                ):
+                    raise ValueError(
+                        "Typed selection requires ONE catalogue type per requirement, not a list. Split the named types into separate requirements."
+                    )
+                if (
+                    r.entity_kind == "other"
+                    and r.agent == "scenario_data"
+                    and re.search(
+                        r"(?:оцен\w*|вывод\w*)[^.]*достаточ|итогов\w*\s+оцен|ограничения\s+(?:вывода|анализа)",
+                        r.description,
+                        re.I,
+                    )
+                ):
+                    raise ValueError(
+                        "Final assessment and sufficiency conclusions belong to objective; keep the source/calculation requirements and remove the redundant assessment requirement."
+                    )
                 if any(i not in fragments for i in r.source_ids):
                     raise ValueError(
                         "source_ids must refer to existing request_fragments"
@@ -545,7 +582,7 @@ provision также возвращает расчётные feature_collection 
                     r.agent == "provision"
                     and re.search(
                         r"(?<!не )\b(?:верни|верните|возвращай|возвращайте|покажи|покажите|приложи|приложите|нужны)\s+расч[её]тн\w*\s+сло",
-                        query,
+                        source_text,
                         re.I,
                     )
                     and "feature_collection" not in required
@@ -638,6 +675,8 @@ continue: requirement_id из goal и конкретный task на русск�
 Если результат неполный, разрешена одна новая формулировка для недостающих артефактов. Повтор без новых данных не является прогрессом.
 inspect: artifact_id, offset, limit; _catalog даёт каталог. Полные таблицы/слои хранятся отдельно. Выборка не является всем набором.
 complete: допустимо только когда все требования satisfied. Дай ответ на исходный запрос с evidence_ids. Для числового сравнения используй comparisons со ссылками на реальные числовые ячейки таблиц; приложение проверит единицы и посчитает разности. Текстовое сравнение источников дай в answer, comparisons оставь пустым.
+Проверяй содержимое таблиц, а не только успешность выполнения шагов. Положительный дефицит означает нехватку мест: нельзя одновременно написать «полностью удовлетворяет требованиям». Сохранение домов/парков и одинаковое население — условия сравнения. Не выбирай лучший вариант без заданных критериев. Если запрошена таблица изменения дефицитов, comparisons обязательны для всех указанных пар и услуг; бери значения из строк соответствующего сценария, не из суммарной строки контекста.
+Указывай точные document_name, version и пункт из source_evidence. Синтетическая норма подтверждает только результат этого испытания. Выполненный расчёт или отсутствие нарушений по одному пункту не доказывают полную пригодность или законность проекта.
 blocked: опиши конкретно missing, reason, question, example, owner (user/service/budget). Сначала выполни оставшиеся доступные требования. Сохрани частичные результаты, не объявляй успех. Не придумывай причину отсутствия данных: используй blocker сервиса. Не проси токены/секреты.
 Не считай гипотезу доказанной причиной; используй hypotheses. Не изменяй сценарии.
 review_validation_error — обязательное исправление предыдущего решения, без повторного выполнения успешных действий.
@@ -687,7 +726,11 @@ review_validation_error — обязательное исправление пр
                     ),
                     options={
                         "temperature": 0,
-                        "num_predict": 16384 if effort == "high" else 8192,
+                        "num_predict": (
+                            16384
+                            if effort == "high" or name == "orchestrator.goal"
+                            else 8192
+                        ),
                     },
                     **kwargs,
                 )

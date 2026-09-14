@@ -89,6 +89,16 @@ def scoped_tools(tools, query):
                 for t in candidates
                 if "Scenario" not in t.name and "Context" not in t.name
             ]
+    elif re.search(r"функциональн.*зон", q) and not re.search(
+        r"справочник|тип\w*\s+зон", q
+    ):
+        candidates = [t for t in tools if "FunctionalZones" in t.name]
+        if re.search(r"контекст|окружен", q):
+            candidates = [t for t in candidates if "Context" in t.name]
+        elif territory and not scenario:
+            candidates = [t for t in candidates if "Territory" in t.name]
+        else:
+            candidates = [t for t in candidates if "Scenario" in t.name]
     elif indicators:
         candidates = [
             t

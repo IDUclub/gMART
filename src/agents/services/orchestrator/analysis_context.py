@@ -92,10 +92,14 @@ class AnalysisContext:
 
     def index(self):
         result = []
+        scopes = {
+            (c["request_id"], c["step"]): c["scenario_id"] for c in self.completed
+        }
         for a in self.artifacts:
             c = a["content"]
             entry = {k: a[k] for k in ("id", "kind", "step", "request_id", "confirmed")}
             entry["title"] = c.get("title") or c.get("name") or a["kind"]
+            entry["scenario_id"] = scopes.get((a["request_id"], a["step"]))
             if a["kind"] == "table":
                 entry.update(
                     columns=c.get("columns", []),
@@ -129,10 +133,36 @@ class AnalysisContext:
             "prior_request": self.query[:1000],
             "prior_request_truncated": len(self.query) > 1000,
         }
+        # Reserve space for actual results before catalogue metadata. A long
+        # sequence of layers must not hide earlier calculation rows and sources.
+        candidates = list(self.inspected)
+        seen = set()
+        for a in reversed(self.artifacts):
+            if not a["confirmed"] or a["kind"] not in {
+                "table",
+                "source_evidence",
+                "compliance_summary",
+            }:
+                continue
+            preview = self.slice(a["id"], 0, 3)
+            key = (a["fingerprint"], preview.get("scenario_id"))
+            if key not in seen:
+                candidates.append(preview)
+                seen.add(key)
+        candidates.sort(
+            key=lambda p: (
+                0
+                if p in self.inspected
+                else 1 if p.get("name") == "provision_summary" else 2
+            )
+        )
+        for preview in candidates:
+            if size(view) + size(preview) < max_chars // 2:
+                view["selected_evidence"].append(preview)
         for entry in reversed(self.index()):
             entry = {k: v for k, v in entry.items() if k != "columns"}
             entry["title"] = entry["title"][:100]
-            if size(view) + size(entry) <= max_chars // 2:
+            if size(view) + size(entry) <= max_chars * 3 // 4:
                 view["artifacts"].insert(0, entry)
             else:
                 view["omitted_artifacts"] += 1
@@ -142,15 +172,13 @@ class AnalysisContext:
                 "summary": item["summary"][:800],
                 "summary_truncated": len(item["summary"]) > 800,
             }
-            if size(view) + size(candidate) > max_chars * 3 // 4:
+            if size(view) + size(candidate) > max_chars - 32:
                 view["omitted_summaries"] += 1
             else:
                 view["completed"].insert(0, candidate)
-        previews = list(self.inspected)
-        for a in reversed(self.artifacts):
-            if a["confirmed"] and a["kind"] == "table":
-                previews.append(self.slice(a["id"], 0, 3))
-        for preview in previews:
+        for preview in candidates:
+            if preview in view["selected_evidence"]:
+                continue
             if size(view) + size(preview) <= max_chars - 32:
                 view["selected_evidence"].append(preview)
         return view
@@ -165,10 +193,21 @@ class AnalysisContext:
             }
         a = self.get(artifact_id)
         content = a["content"]
+        scope = next(
+            (
+                c["scenario_id"]
+                for c in self.completed
+                if c["request_id"] == a["request_id"] and c["step"] == a["step"]
+            ),
+            None,
+        )
         if a["kind"] == "table":
             rows = content.get("rows", [])
             return {
                 "artifact_id": artifact_id,
+                "name": content.get("name"),
+                "title": content.get("title"),
+                "scenario_id": scope,
                 "offset": offset,
                 "rows": rows[offset : offset + limit],
                 "stored_rows": len(rows),

@@ -133,6 +133,41 @@ async def run(config, output):
     if not source["passed"]:
         return False
     async with httpx.AsyncClient(timeout=120, trust_env=False) as http:
+        documents = {"name": "real_document_search", "passed": False}
+        try:
+            from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
+
+            headers = await headers_for(http, config)
+            async with Client(
+                StreamableHttpTransport("http://localhost:18100/mcp", headers=headers)
+            ) as client:
+                result = await DvdMcpClient(client).search(
+                    "Расстояние от здания школы до открытой автомобильной стоянки",
+                    document_names=["LOCAL SDK TEST"],
+                    version="2026",
+                    limit=3,
+                )
+                save(output / "document-search.json", result)
+                if not any(
+                    h.get("name") == "LOCAL SDK TEST"
+                    and str(h.get("version")) == "2026"
+                    and h.get("numbering") == "1.1"
+                    for h in result.get("hits", [])
+                ):
+                    raise ValueError(
+                        "Seeded clause is not available through real DVD search"
+                    )
+                documents["passed"] = True
+        except Exception as exc:
+            documents["error"] = type(exc).__name__ + ": " + str(exc)[:250]
+        report["cases"].append(documents)
+        save(output / "report.json", report)
+        print(
+            f"Documents: {'PASS' if documents['passed'] else documents['error']}",
+            flush=True,
+        )
+        if not documents["passed"]:
+            return False
         for sid in EXPECTED:
             row = {"scenario_id": sid, "passed": False}
             try:

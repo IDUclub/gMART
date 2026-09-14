@@ -406,10 +406,11 @@ class OrchestratorService(BaseLlmService):
             # Full historical tables never enter the prompt. Their loss-aware
             # index and selected evidence replace unbounded dialogue history.
             history = [
+                {"role": "user", "content": context.query},
                 {
                     "role": "assistant",
                     "content": json.dumps(context.view(), ensure_ascii=False),
-                }
+                },
             ]
         elif saved and context.query:
             history = [{"role": "user", "content": context.query}]

@@ -21,7 +21,7 @@ class BudgetLimits:
     model_calls: int = 60
     tool_calls: int = 80
     seconds: float = 600
-    steps: int = 12
+    steps: int = 32
     context_tokens: int = 32_768
     output_tokens: int = 16_384
     final_reserve: int = 16_384
