@@ -29,7 +29,7 @@ def main():
     if args.mode != "deterministic" and not args.env_file:
         parser.error("Live checks require --env-file")
     output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=False)
     report = {
         "mode": args.mode,
         "suite": args.suite,

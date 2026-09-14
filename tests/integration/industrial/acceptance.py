@@ -43,6 +43,60 @@ def provision_rows(artifacts):
     return rows
 
 
+def complete_spatial_result(result, sid, violations):
+    if not (
+        result.get("verification_status") == "complete"
+        and result.get("compliance_status") == ("violated" if violations else "passed")
+        and result.get("coverage", {}).get("applicable_objects") == 1
+        and result.get("coverage", {}).get("checked_objects") == 1
+        and result.get("coverage", {}).get("unchecked_objects") == 0
+        and result.get("summary", {}).get("violated_objects") == violations
+        and result.get("summary", {}).get("passed_objects") == 1 - violations
+    ):
+        return False
+    # Either direction of the school/parking distance check is valid. The
+    # returned object must still be a real object of this source version.
+    expected = [
+        (domain, f)
+        for domain, type_id in (
+            ("physical_object", 5),
+            ("physical_object", 7),
+            ("service", 22),
+        )
+        for f in entities(sid, domain, type_id)["features"]
+    ]
+    for status, count in (("violated", violations), ("passed", 1 - violations)):
+        layer = result.get(status + "_features") or {}
+        features = layer.get("features")
+        if (
+            layer.get("type") != "FeatureCollection"
+            or not isinstance(features, list)
+            or len(features) != count
+        ):
+            return False
+        for f in features:
+            try:
+                props = f["properties"]
+                if (
+                    props.get("restriction_id") != result["restriction_id"]
+                    or props.get("compliance_status") != status
+                ):
+                    return False
+                if not any(
+                    props.get(domain + "_id") == wanted["properties"][domain + "_id"]
+                    and props.get("source_version")
+                    == wanted["properties"]["source_version"]
+                    and shape(f["geometry"]).equals_exact(
+                        shape(wanted["geometry"]), 1e-7
+                    )
+                    for domain, wanted in expected
+                ):
+                    return False
+            except (KeyError, ValueError, TypeError):
+                return False
+    return True
+
+
 def verify_result(final, context, contract):
     checks = []
 
@@ -161,6 +215,22 @@ def verify_result(final, context, contract):
             except (KeyError, ValueError):
                 continue
         check(f"source_layer:{sid}:{domain}:{type_id}", found)
+        check(
+            f"source_table:{sid}:{domain}:{type_id}",
+            any(
+                len(a["content"].get("rows", [])) == len(wanted)
+                and all(
+                    any(
+                        row.get(domain + "_id") == w["properties"][domain + "_id"]
+                        and row.get("source_version")
+                        == w["properties"]["source_version"]
+                        for row in a["content"].get("rows", [])
+                    )
+                    for w in wanted
+                )
+                for a in scoped(context, sid, "table")
+            ),
+        )
     for expected in contract.get("population", []):
         sid = expected["scenario_id"]
         rows = [
@@ -306,11 +376,7 @@ def verify_result(final, context, contract):
         check(
             f"compliance:{sid}",
             any(
-                c.get("coverage", {}).get("checked_objects") == 1
-                and c.get("coverage", {}).get("unchecked_objects") == 0
-                and c.get("summary", {}).get("violated_objects")
-                == expected["violations"]
-                and c.get("compliance_status") != "unknown"
+                complete_spatial_result(c, sid, expected["violations"])
                 and c.get("restriction_id") in restriction_ids
                 for c in results
             ),

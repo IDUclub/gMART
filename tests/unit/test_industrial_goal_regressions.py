@@ -8,6 +8,73 @@ from src.agents.services.orchestrator.analysis_goal import (
 )
 
 
+def test_spatial_distance_survives_controller_rewording():
+    goal = AnalysisGoal.model_validate(
+        {
+            "objective": "Проверить проект",
+            "requirements": [
+                {
+                    "id": "zone",
+                    "agent": "restriction",
+                    "scenario_id": 91001,
+                    "description": "Создать 50-метровую зону вокруг открытой автомобильной стоянки",
+                    "source_quote": "Верни 50-метровую зону вокруг стоянки",
+                    "required_artifacts": ["feature_collection"],
+                }
+            ],
+        }
+    )
+    state = GoalState(AnalysisContext(), goal)
+    decision = GoalDecision(
+        action="continue",
+        requirement_id="zone",
+        task="Получить feature_collection для стоянки",
+    )
+    assert "50" in state.validate_decision(decision, {"restriction"}).steps[0].task
+    support = decision.model_copy(update={"support": True, "agent": "scenario_data"})
+    assert (
+        state.validate_decision(support, {"restriction", "scenario_data"}).steps[0].task
+        == decision.task
+    )
+
+
+def test_controller_recovery_finishes_unattempted_work_before_repeating():
+    goal = AnalysisGoal.model_validate(
+        {
+            "objective": "Два независимых расчёта",
+            "requirements": [
+                {
+                    "id": name,
+                    "agent": "provision",
+                    "scenario_id": sid,
+                    "description": "Рассчитать обеспеченность школами",
+                    "source_quote": "Нужны оба сценария",
+                    "required_artifacts": ["table"],
+                }
+                for name, sid in (("before", 91003), ("after", 91004))
+            ],
+        }
+    )
+    state = GoalState(AnalysisContext(), goal)
+    step = state.validate_decision(
+        GoalDecision(action="continue", requirement_id="before"), {"provision"}
+    ).steps[0]
+    state.record(step, "r1", "completed")  # The specialist emitted no required table.
+    assert state.recovery_decision({"provision"}).requirement_id == "after"
+    step = state.validate_decision(
+        GoalDecision(action="continue", requirement_id="after"), {"provision"}
+    ).steps[0]
+    state.record(step, "r2", "completed")
+    assert state.recovery_decision({"provision"}) is None
+
+
+def test_controller_stagnation_does_not_invent_missing_user_inputs():
+    from src.agents.services.orchestrator.analysis_support import missing_input
+
+    blocker = missing_input("stalled")
+    assert blocker.owner == "service"
+
+
 def test_required_calculation_layers_survive_controller_task_rewording():
     goal = AnalysisGoal.model_validate(
         {

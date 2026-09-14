@@ -299,6 +299,8 @@ class GoalState:
                 )
             # Typed retrieval never depends on a freely rewritten routing prompt.
             task = decision.task or r.description
+            if r.agent == "restriction" and not decision.support:
+                task = r.description
             if r.agent == "provision" and not decision.support:
                 task = (
                     r.description
@@ -352,7 +354,7 @@ class GoalState:
             if (
                 r["status"] == "pending"
                 and r["agent"] in available
-                and r["current_attempts"] < 2
+                and r["current_attempts"] == 0
             ):
                 return GoalDecision(action="continue", requirement_id=r["id"])
         blockers = self.blockers()

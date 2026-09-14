@@ -133,6 +133,16 @@ def test_correct_geometry_with_stale_source_version_is_rejected():
             "content": {"name": "Парк", "feature_collection": layer},
         }
     )
+    context["artifacts"].append(
+        {
+            "id": "park-table",
+            "request_id": "r",
+            "step": 1,
+            "kind": "table",
+            "confirmed": True,
+            "content": {"rows": [deepcopy(f["properties"]) for f in layer["features"]]},
+        }
+    )
     contract = {
         "source_layers": [
             {"scenario_id": 91001, "domain": "physical_object", "type_id": 8}
@@ -144,6 +154,7 @@ def test_correct_geometry_with_stale_source_version_is_rejected():
 
 
 def test_matching_violation_count_from_another_norm_cannot_pass():
+    from tests.integration.industrial.control import entities
     from tests.unit.test_harness_source_oracle import records
 
     final, context = sample()
@@ -151,6 +162,10 @@ def test_matching_violation_count_from_another_norm_cannot_pass():
     wrong = deepcopy(sources["norms"][0])
     wrong.update(id="wrong", value={"number": 100, "operator": ">=", "unit": "м"})
     sources["norms"].append(wrong)
+    layer = entities(91001, "physical_object", 7)
+    layer["features"][0]["properties"].update(
+        restriction_id="restriction", compliance_status="violated"
+    )
     for system, rows in sources.items():
         context["artifacts"].append(
             {
@@ -170,10 +185,17 @@ def test_matching_violation_count_from_another_norm_cannot_pass():
             "confirmed": True,
             "kind": "compliance_result",
             "content": {
-                "restriction_id": "wrong",
-                "coverage": {"checked_objects": 1, "unchecked_objects": 0},
-                "summary": {"violated_objects": 1},
+                "restriction_id": "restriction",
+                "verification_status": "complete",
+                "coverage": {
+                    "applicable_objects": 1,
+                    "checked_objects": 1,
+                    "unchecked_objects": 0,
+                },
+                "summary": {"violated_objects": 1, "passed_objects": 0},
                 "compliance_status": "violated",
+                "violated_features": layer,
+                "passed_features": {"type": "FeatureCollection", "features": []},
             },
         }
     )
@@ -181,4 +203,7 @@ def test_matching_violation_count_from_another_norm_cannot_pass():
         "sources": True,
         "compliance": [{"scenario_id": 91001, "violations": 1}],
     }
+    assert verify_result(final, context, contract)["passed"]
+    context["artifacts"][-1]["content"]["restriction_id"] = "wrong"
+    layer["features"][0]["properties"]["restriction_id"] = "wrong"
     assert not verify_result(final, context, contract)["passed"]
