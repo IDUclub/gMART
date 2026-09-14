@@ -29,9 +29,12 @@ class DvdMcpClient(BaseMcpClient):
     pipeline.
     """
 
-    def __init__(self, mcp_client: McpClient, mcp_url: str = "") -> None:
+    def __init__(
+        self, mcp_client: McpClient, mcp_url: str = "", *, user_id: str | None = None
+    ) -> None:
         super().__init__(mcp_client)
         self._mcp_url = mcp_url
+        self._user_id = user_id
 
     @staticmethod
     def tool_name_for_kind(kind: str) -> str:
@@ -45,6 +48,7 @@ class DvdMcpClient(BaseMcpClient):
         limit: int = 10,
         context_height: int = 0,
         name: str | None = None,
+        doc_id: str | None = None,
         version: str | None = None,
         tags: list[str] | None = None,
         document_names: list[str] | None = None,
@@ -82,6 +86,8 @@ class DvdMcpClient(BaseMcpClient):
         }
         if name:
             arguments["name"] = name
+        if doc_id:
+            arguments["doc_id"] = doc_id
         if version:
             arguments["version"] = version
         if tags:
@@ -97,6 +103,8 @@ class DvdMcpClient(BaseMcpClient):
         if scenario_id is not None:
             arguments["scenario_id"] = str(scenario_id)
         if project_id is not None or scenario_id is not None:
+            # IDU_DVD injects identity from X-User-Id in the authenticated
+            # transport. It is not an argument in the public MCP tool schema.
             arguments["include_shared"] = include_shared
             arguments["include_inherited"] = include_inherited
         result = await self.execute_tool(tool_name, arguments)
@@ -125,6 +133,18 @@ class DvdMcpClient(BaseMcpClient):
         if hasattr(obj, "__dict__"):
             return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
         return obj
+
+    async def search_fragments(
+        self, request: dict[str, Any], *, mode: str = "structure"
+    ) -> dict[str, Any]:
+        """One page; caller must consume next_cursor without changing the selectors."""
+        tool = "search_structure" if mode == "structure" else "search_fragment_names"
+        result = await self.execute_tool(tool, {"request": request})
+        normalized = self._normalize(result)
+        normalized["candidates"] = [
+            self._to_dict(x) for x in normalized.get("candidates", [])
+        ]
+        return normalized
 
     @classmethod
     def _normalize(cls, result: Any) -> dict[str, Any]:

@@ -6,8 +6,10 @@ import json
 
 import pytest
 
-from src.agents.services.orchestrator_catalog import AGENT_CATALOG
-from src.agents.services.orchestrator_plan_builder import OrchestratorPlanBuilder
+from src.agents.services.orchestrator.orchestrator_catalog import AGENT_CATALOG
+from src.agents.services.orchestrator.orchestrator_plan_builder import (
+    OrchestratorPlanBuilder,
+)
 from src.agents.services.service_entities.orchestrator_plan import (
     MAX_PLAN_STEPS,
     OrchestratorAgent,
@@ -72,13 +74,17 @@ async def test_unavailable_agent_downgrades_to_clarification(builder, fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_steps_truncated_to_max(builder, fake_llm):
+async def test_excess_steps_require_clarification_without_dropping_work(
+    builder, fake_llm
+):
     steps = [
         {"agent": "provision", "task": f"задача {i}"} for i in range(MAX_PLAN_STEPS + 2)
     ]
     fake_llm.json_responses = [orchestration_plan_json(steps)]
     plan = await builder.build_plan("m", "много задач", ALL_AGENTS)
-    assert len(plan.steps) == MAX_PLAN_STEPS
+    assert plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION
+    assert not plan.steps
+    assert "разделите" in plan.clarification_question
 
 
 @pytest.mark.asyncio
@@ -122,8 +128,10 @@ async def test_history_is_passed_to_the_llm(builder, fake_llm):
     await builder.build_plan("m", "а теперь уточни", ALL_AGENTS, history=history)
     messages = fake_llm.chat_calls[0].messages
     assert messages[0]["role"] == "system"
-    assert messages[1:3] == history
-    assert messages[-1] == {"role": "user", "content": "а теперь уточни"}
+    assert len(messages) == 2
+    request = json.loads(messages[-1]["content"])
+    assert request["completed_dialogue_context"] == history
+    assert request["current_request"] == "а теперь уточни"
 
 
 @pytest.mark.asyncio
@@ -133,3 +141,38 @@ async def test_planner_runs_deterministically(builder, fake_llm):
     ]
     await builder.build_plan("m", "ограничения на школы", ALL_AGENTS)
     assert fake_llm.chat_calls[0].options["temperature"] == 0
+
+
+@pytest.mark.asyncio
+async def test_selected_scenario_reaches_planner_context(builder, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [{"agent": "provision", "task": "Обеспеченность школами"}]
+        )
+    ]
+    await builder.build_plan("m", "Обеспеченность школами", ALL_AGENTS, scenario_id=848)
+    assert "Выбранный scenario_id: 848" in fake_llm.chat_calls[0].messages[0]["content"]
+
+
+def test_a_base_comparison_goes_to_scenario_data_without_asking_for_an_id():
+    prompt = OrchestratorPlanBuilder._build_prompt(ALL_AGENTS, scenario_id=848)
+
+    for rule in (
+        "Сравнение выбранного сценария с базовым сценарием проекта — scenario_data",
+        "не спрашивай и не требуй его ID или название",
+        "task слова «с базовым сценарием»",
+        "«Сравни все показатели выбранного сценария с базовым сценарием проекта»",
+        "clarification_question никогда не просит ID",
+    ):
+        assert rule in prompt
+
+
+@pytest.mark.asyncio
+async def test_blank_task_is_repaired_before_dispatch(builder, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json([{"agent": "documents", "task": "   "}]),
+        orchestration_plan_json([{"agent": "documents", "task": "Найди текст нормы"}]),
+    ]
+    plan = await builder.build_plan("m", "Найди текст нормы", ALL_AGENTS)
+    assert len(fake_llm.chat_calls) == 2
+    assert plan.steps[0].task == "Найди текст нормы"

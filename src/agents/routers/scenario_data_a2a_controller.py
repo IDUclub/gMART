@@ -8,12 +8,16 @@ from fastapi.sse import EventSourceResponse
 
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.dependencies import (
+    a2a_urban_mcp_client,
     get_scenario_data_a2a_service,
     get_urban_mcp_client,
+    resolve_a2a_caller,
 )
 from src.agents.dto.a2a_dto import A2AJsonRpcPayloadDTO
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
-from src.agents.services.scenario_data_a2a_service import ScenarioDataA2AService
+from src.agents.services.scenario_data.scenario_data_a2a_service import (
+    ScenarioDataA2AService,
+)
 
 scenario_data_a2a_router = APIRouter(
     prefix="/scenario-data", tags=["scenario-data", "a2a"]
@@ -46,6 +50,10 @@ async def handle_scenario_data_a2a_json_rpc(
     token: str = Depends(verify_bearer_token),
 ):
     payload_data = _payload_to_plain_data(payload)
+    caller = await resolve_a2a_caller(payload_data, token)
+    if caller.is_synapse:
+        urban_mcp_client = await a2a_urban_mcp_client(caller.user_id)
+    token = caller.pipeline_token
     if service.is_streaming_request(payload_data):
         return EventSourceResponse(
             _stream_json_rpc_events(service, payload_data, urban_mcp_client, token)

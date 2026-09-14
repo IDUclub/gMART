@@ -1,4 +1,4 @@
-from src.agents.services.compliance_metrics import ComplianceMetrics
+from src.agents.services.compilance.compliance_metrics import ComplianceMetrics
 from src.agents.services.service_entities.compliance import (
     ComplianceResult,
     ComplianceSummary,

@@ -29,6 +29,18 @@ class AgentsBaseException(Exception):
         return f"Exception: {self.message} \n {self.error_input}"
 
 
+class PipelineStorageUnavailable(AgentsBaseException):
+    """Pipeline state could not be persisted after bounded connection retries."""
+
+    status_code = 503
+
+    def __init__(self):
+        super().__init__(
+            "Не удалось сохранить состояние запроса. Хранилище временно недоступно. "
+            "Автоматический повтор расчёта не выполнялся; повторите запрос позже."
+        )
+
+
 class AgentsInputException(AgentsBaseException):
     """
     Raised when input is invalid (400 Bad Request).

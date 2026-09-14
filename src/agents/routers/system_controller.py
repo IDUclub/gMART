@@ -6,8 +6,8 @@ from fastapi.responses import FileResponse
 from src.agents.dependencies.dependencies import get_system_service
 from src.agents.schema.app_config_request import AppConfigRequest
 from src.agents.schema.app_config_response import AppConfigResponse
-from src.agents.services.compliance_metrics import COMPLIANCE_METRICS
-from src.agents.services.system_service import SystemService
+from src.agents.services.compilance.compliance_metrics import COMPLIANCE_METRICS
+from src.agents.services.synapse.system_service import SystemService
 
 system_router = APIRouter(prefix="/system", tags=["system"])
 

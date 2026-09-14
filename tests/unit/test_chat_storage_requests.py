@@ -65,6 +65,40 @@ async def test_add_message_uses_metadata_field():
 
 
 @pytest.mark.asyncio
+async def test_synapse_message_uses_space_user_and_source_event_id():
+    handler = AsyncMock()
+    handler.post.return_value = {"chat_id": "chat-1", "message_id": "message-1"}
+    client = ChatStorageApiClient(handler)
+
+    await client.add_single_message(
+        None,
+        "chat-1",
+        "system",
+        "delegation completed",
+        space="synapse",
+        user_id="user-1",
+        source_event_id="event-1",
+        provider="synapse",
+    )
+
+    handler.post.assert_awaited_once_with(
+        endpoint="/api/v1/chat_history/chat-1/message",
+        auth_token=None,
+        params={"space": "synapse"},
+        user_id="user-1",
+        data={
+            "role": "system",
+            "content": "delegation completed",
+            "metadata": {
+                "provider": "synapse",
+                "source_event_id": "event-1",
+            },
+            "source_event_id": "event-1",
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_add_parts_message_serializes_datetime_values():
     handler = AsyncMock()
     handler.post.return_value = {"chat_id": "chat-1", "message_id": "message-1"}

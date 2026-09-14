@@ -23,7 +23,7 @@ from src.agents.common.exceptions.a2a_exceptions import (
     A2ATaskNotFoundError,
 )
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
-from src.agents.services.restriction_parser_service import (
+from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
 

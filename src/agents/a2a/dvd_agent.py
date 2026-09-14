@@ -6,6 +6,7 @@ from python_a2a.models.agent import AgentCard, AgentSkill
 from python_a2a.server.a2a_server import A2AServer
 
 from src.agents.__version__ import APP_VERSION
+from src.agents.a2a.a2a_format import synapse_compatible_agent_card
 
 
 class DocumentQaA2AAgent(A2AServer):
@@ -18,7 +19,7 @@ class DocumentQaA2AAgent(A2AServer):
         )
 
     def get_agent_card(self, base_url: str) -> dict[str, Any]:
-        return self._build_agent_card(base_url).to_dict()
+        return synapse_compatible_agent_card(self._build_agent_card(base_url).to_dict())
 
     @staticmethod
     def _build_agent_card(base_url: str) -> AgentCard:

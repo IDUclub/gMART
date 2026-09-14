@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+
 from tests.helpers import (
     FakeDvdMcpClient,
     answer_text,
@@ -37,7 +39,108 @@ async def _run(service, mcp, **overrides):
 # ---------------------------------------------------------------------------
 # Iterative loop behaviour
 # ---------------------------------------------------------------------------
+async def test_incomplete_sources_stop_before_drafting(service, fake_llm, fake_mcp):
+    from src.agents.services.dvd.context_reducer import PreparedContext
+
+    fake_llm.json_responses = [plan_json()]
+    service.context_reducer.prepare = AsyncMock(
+        return_value=PreparedContext(
+            "[1] partial", failed_parts=["round-1/part-1: [1] (output_truncated)"]
+        )
+    )
+    events = await _run(service, fake_mcp)
+    assert events_of_type(events, "error")
+    assert not statuses(events, "answer_drafting")
+    assert not any(call.stream for call in fake_llm.chat_calls)
+    assert final_chunk(events) is None
+    service._schedule_persist_answer.assert_not_called()
+    request_id = events_of_type(events, "pipeline_started")[0]["content"]["request_id"]
+    assert (await service.state_store.get_state(request_id))["status"] == "failed"
+    calls = len(fake_mcp.search_calls)
+    replay = await _run(service, fake_mcp, request_id=request_id)
+    assert replay == events
+    assert len(fake_mcp.search_calls) == calls
+
+
+async def test_incomplete_review_is_controlled_failure(service, fake_llm, fake_mcp):
+    from src.agents.services.dvd.context_reducer import PreparedContext
+
+    fake_llm.json_responses = [plan_json()]
+    fake_llm.answer_texts = ["Unverified [1]"]
+    service.context_reducer.prepare = AsyncMock(
+        side_effect=[
+            PreparedContext("[1] source"),
+            PreparedContext(
+                "partial", failed_parts=["round-1/part-1: [1] (coverage_mismatch)"]
+            ),
+        ]
+    )
+    events = await _run(service, fake_mcp)
+    assert events_of_type(events, "error")
+    assert final_chunk(events) is None
+    service._schedule_persist_answer.assert_not_called()
+
+
+async def test_exhausted_answer_is_failed_and_replayed_without_partial_success(
+    service,
+    fake_llm,
+    fake_mcp,
+):
+    from tests.unit.test_dvd_answer_budget import InterruptedModel
+
+    fake_llm.json_responses = [plan_json()]
+    # Keep the real planner/loop/state store; replace only the generation boundary.
+    service.llm_client = InterruptedModel([("Partial ", "length")] * 3)
+    events = await _run(service, fake_mcp)
+    assert events_of_type(events, "error")
+    assert not events_of_type(events, "chunk")
+    service._schedule_persist_answer.assert_not_called()
+    request_id = events_of_type(events, "pipeline_started")[0]["content"]["request_id"]
+    assert (await service.state_store.get_state(request_id))["status"] == "failed"
+    assert await _run(service, fake_mcp, request_id=request_id) == events
+
+
+async def test_critic_receives_assembled_continuation_before_answer_is_emitted(
+    service,
+    fake_llm,
+    fake_mcp,
+):
+    from tests.unit.test_dvd_answer_budget import InterruptedModel
+
+    fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+    service.llm_client = InterruptedModel(
+        [("Не менее ", "length"), ("Не менее 15 м [1].", "stop")]
+    )
+    events = await _run(service, fake_mcp)
+    assert answer_text(events) == "Не менее 15 м [1]."
+    assert "Не менее 15 м [1]." in fake_llm.chat_calls[-1].messages[-1]["content"]
+    review_index = next(
+        i
+        for i, e in enumerate(events)
+        if e["type"] == "status" and e["content"].get("status") == "self_review"
+    )
+    answer_index = next(i for i, e in enumerate(events) if e["type"] == "chunk")
+    assert review_index < answer_index
+
+
 class TestLoop:
+    async def test_later_draft_retains_all_previous_corrections(
+        self, service, fake_llm, fake_mcp
+    ):
+        fake_llm.json_responses = [
+            plan_json(),
+            verdict_json(satisfied=False, critique="Исправь ссылку на таблицу"),
+            plan_json(),
+            verdict_json(satisfied=False, critique="Сохрани область применения"),
+            plan_json(),
+            verdict_json(satisfied=True),
+        ]
+        fake_llm.answer_texts = ["d1", "d2", "d3"]
+        await _run(service, fake_mcp)
+        third_draft = [c for c in fake_llm.chat_calls if c.stream][2]
+        assert "Исправь ссылку на таблицу" in third_draft.messages[0]["content"]
+        assert "Сохрани область применения" in third_draft.messages[0]["content"]
+
     async def test_accept_on_first_iteration(self, service, fake_llm, fake_mcp):
         fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
         fake_llm.answer_texts = ["Ответ со ссылкой [1]."]
@@ -77,7 +180,7 @@ class TestLoop:
             2
         ].messages[0]["content"]
         assert "второй" in second_plan_prompt and "нет пункта" in second_plan_prompt
-        # drafts are tagged with their iteration
+        # Only the accepted draft is exposed; rejected/partial drafts stay private.
         draft_iters = sorted(
             {
                 e["content"]["iteration"]
@@ -85,11 +188,11 @@ class TestLoop:
                 if e["type"] == "chunk" and e["content"]["text"]
             }
         )
-        assert draft_iters == [1, 2]
+        assert draft_iters == [2]
         collected = service._schedule_persist_answer.call_args.args[2]
         assert collected["final_answer"] == "Черновик 2 [1]"
 
-    async def test_max_iterations_accepts_last_without_critic(
+    async def test_max_iterations_does_not_accept_rejected_final_draft(
         self, service, fake_llm, fake_mcp
     ):
         fake_llm.json_responses = [
@@ -97,19 +200,17 @@ class TestLoop:
             verdict_json(satisfied=False, critique="ещё", refined_search_query="r1"),
             plan_json(),
             verdict_json(satisfied=False, critique="ещё", refined_search_query="r2"),
-            plan_json(),  # 3rd iteration: no critic call, accepted unconditionally
+            plan_json(),
+            verdict_json(satisfied=False, critique="Нет доказательств"),
         ]
         fake_llm.answer_texts = ["d1", "d2", "d3"]
 
-        events = await _run(service, fake_mcp)
-
+        with pytest.raises(ValueError, match="не прошёл проверку"):
+            await _run(service, fake_mcp)
         assert len(fake_mcp.search_calls) == 3
-        assert final_chunk(events)["iteration"] == 3
-        collected = service._schedule_persist_answer.call_args.args[2]
-        assert collected["final_answer"] == "d3"
-        # 3 plans + 2 verdicts = 5 non-stream LLM calls (critic skipped on the last round)
+        service._schedule_persist_answer.assert_not_called()
         non_stream = [c for c in fake_llm.chat_calls if not c.stream]
-        assert len(non_stream) == 5
+        assert len(non_stream) == 6
 
     async def test_no_hits_triggers_requery(self, service, fake_llm):
         mcp = FakeDvdMcpClient(hits_per_call=[[], [{"name": "A", "text": "норма"}]])
@@ -489,7 +590,7 @@ async def test_persist_answer_builds_toolcall_and_text_parts(
         "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,
     )
-    from src.agents.services.dvd_rag_service import DvdRagService
+    from src.agents.services.dvd.dvd_rag_service import DvdRagService
 
     svc = DvdRagService("http://x", Mock(), fake_urban, state_store)
     svc.add_complex_message = AsyncMock()

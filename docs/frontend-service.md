@@ -8,6 +8,10 @@
 > `/scenario-data/a2a`) описан в
 > [frontend-scenario-data.md](frontend-scenario-data.md).
 
+> Интеграция с Synapse через gMART — выбор workflow/run configuration, запуск,
+> SSE reconnect, отмена и история — описана в
+> [integrations/synapse-front.md](integrations/synapse-front.md).
+
 ## Назначение сервиса
 
 `agents` — FastAPI-сервис, который даёт фронтенду HTTP-интерфейс к LLM-агентам и геопространственному пайплайну ограничений. Для построения слоёв сервис обращается к `idu_mcp`, а `idu_mcp` уже работает с Urban API и геометрическими инструментами.

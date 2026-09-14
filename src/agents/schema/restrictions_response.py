@@ -36,6 +36,10 @@ class TextResponse(BaseModel):
     done: bool
 
 
+class ClarificationContent(BaseModel):
+    question: str
+
+
 class FeatureCollectionResponse(BaseModel):
     name: str
     feature_collection: FeatureCollection
@@ -115,6 +119,7 @@ class RestrictionsResponse(BaseModel):
     type: Literal[
         "status",
         "chunk",
+        "clarification",
         "feature_collection",
         "error",
         "service_event",
@@ -131,6 +136,7 @@ class RestrictionsResponse(BaseModel):
     content: (
         StatusResponse
         | TextResponse
+        | ClarificationContent
         | FeatureCollectionResponse
         | SseBaseError
         | ServiceEvent

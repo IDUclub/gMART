@@ -10,8 +10,11 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     TablePartRequest,
 )
 from src.agents.schema.provision_response import ProvisionResponse
-from src.agents.services.provision_tool_executor import ProvisionToolExecutor
-from src.agents.services.provsion_service import POPULATION_HINT, ProvisionService
+from src.agents.services.provision.provision_tool_executor import ProvisionToolExecutor
+from src.agents.services.provision.provsion_service import (
+    POPULATION_HINT,
+    ProvisionService,
+)
 
 TABLE_EVENT = {
     "type": "table",
@@ -105,7 +108,7 @@ async def test_tool_executor_omits_absent_target_population():
 class FakeStreamingLlm:
     """Yields two chunks; the second is the terminal one (done=True)."""
 
-    async def chat(self, model, messages, options=None, stream=True):
+    async def chat(self, model, messages, options=None, stream=True, **kwargs):
         async def stream_parts():
             yield SimpleNamespace(
                 message=SimpleNamespace(content="Анализ. "), done=False

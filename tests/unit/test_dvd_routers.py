@@ -8,7 +8,9 @@ a fake, so the routing / DTO parsing / SSE serialization / DI wiring are exercis
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
+import fakeredis.aioredis
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -22,17 +24,19 @@ from src.agents.dependencies.dependencies import (
 )
 from src.agents.routers.dvd_a2a_controller import dvd_a2a_router
 from src.agents.routers.dvd_controller import dvd_router
-from src.agents.services.dvd_a2a_service import DocumentQaA2AService
+from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
+from src.agents.services.pipeline_state import PipelineStateStore
 
 
-class FakeStateStore:
+class FakeStateStore(PipelineStateStore):
     """Serves the pipeline states the public-access guard inspects on reconnect."""
 
     def __init__(self, states: dict[str, dict] | None = None) -> None:
+        super().__init__(fakeredis.aioredis.FakeRedis(decode_responses=True))
         self.states = states or {}
 
     async def get_state(self, request_id: str) -> dict | None:
-        return self.states.get(request_id)
+        return self.states.get(request_id) or await super().get_state(request_id)
 
 
 class FakeRagService:
@@ -44,12 +48,26 @@ class FakeRagService:
 
     async def run_document_qa_pipeline(self, model=None, **kwargs):
         self.calls.append(kwargs)
-        yield {"type": "pipeline_started", "content": {"request_id": "rid-1"}}
-        yield {"type": "status", "content": {"status": "searching", "text": "ищу"}}
-        yield {
-            "type": "chunk",
-            "content": {"text": "Ответ", "done": True, "iteration": 1},
-        }
+        request_id = kwargs.get("request_id") or "rid-1"
+        await self.state_store.create(
+            request_id,
+            chat_id=None,
+            user_query="test",
+            scenario_id=None,
+            model="test",
+            temperature=0,
+        )
+        events = [
+            {"type": "pipeline_started", "content": {"request_id": request_id}},
+            {"type": "status", "content": {"status": "searching", "text": "ищу"}},
+            {
+                "type": "chunk",
+                "content": {"text": "Ответ", "done": True, "iteration": 1},
+            },
+        ]
+        for event in events:
+            await self.state_store.buffer_event(request_id, event)
+            yield event
 
 
 def _parse_sse(text: str) -> list[dict]:
@@ -67,7 +85,9 @@ def _build_client(token: str | None, rag_service: FakeRagService) -> TestClient:
     app.add_middleware(ExceptionHandlerMiddleware)
     app.dependency_overrides[verify_bearer_token] = lambda: "test-token"
     app.dependency_overrides[optional_bearer_token] = lambda: token
-    app.dependency_overrides[get_dvd_mcp_client] = lambda: object()
+    app.dependency_overrides[get_dvd_mcp_client] = lambda: SimpleNamespace(
+        _user_id="test-user"
+    )
     app.dependency_overrides[get_dvd_rag_service] = lambda: rag_service
     app.dependency_overrides[get_dvd_a2a_service] = lambda: DocumentQaA2AService(
         rag_service
@@ -97,6 +117,42 @@ def anonymous_client(rag_service):
 
 
 class TestQaStream:
+    def test_expired_reconnect_returns_http_404(self, client):
+        response = client.get(
+            "/documents/qa/stream", params={"request": "test", "request_id": "x" * 36}
+        )
+        assert response.status_code == 404
+
+    def test_resume_cursor_requires_existing_event(self, client):
+        assert (
+            client.get(
+                "/documents/qa/stream", params={"request": "test", "after_event": 1}
+            ).status_code
+            == 400
+        )
+        first = client.get("/documents/qa/stream", params={"request": "test"})
+        request_id = _parse_sse(first.text)[0]["content"]["request_id"]
+        assert (
+            client.get(
+                "/documents/qa/stream",
+                params={
+                    "request": "test",
+                    "request_id": request_id,
+                    "after_event": 999,
+                },
+            ).status_code
+            == 400
+        )
+
+    def test_anonymous_cannot_read_authenticated_shared_run(self, client, rag_service):
+        first = client.get("/documents/qa/stream", params={"request": "test"})
+        request_id = _parse_sse(first.text)[0]["content"]["request_id"]
+        client.app.dependency_overrides[optional_bearer_token] = lambda: None
+        response = client.get(
+            "/documents/qa/stream", params={"request": "test", "request_id": request_id}
+        )
+        assert response.status_code == 401
+
     def test_streams_events_as_sse(self, client):
         resp = client.get("/documents/qa/stream", params={"request": "Какие нормы?"})
         assert resp.status_code == 200
@@ -160,17 +216,18 @@ class TestPublicQaStream:
         assert resp.status_code == 401
 
     def test_anonymous_reconnect_to_a_public_pipeline_is_allowed(self, rag_service):
-        request_id = "r" * 36
-        rag_service.state_store.states[request_id] = {
-            "scenario_id": None,
-            "chat_id": None,
-        }
         with _build_client(None, rag_service) as anonymous_client:
+            first = anonymous_client.get(
+                "/documents/qa/stream", params={"request": "Какие нормы?"}
+            )
+            request_id = _parse_sse(first.text)[0]["content"]["request_id"]
             resp = anonymous_client.get(
                 "/documents/qa/stream",
                 params={"request": "Какие нормы?", "request_id": request_id},
             )
         assert resp.status_code == 200
+        assert _parse_sse(resp.text) == _parse_sse(first.text)
+        assert len(rag_service.calls) == 1
 
 
 class TestA2A:

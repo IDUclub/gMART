@@ -15,6 +15,21 @@ def make_config(**kwargs):
     return AgentsAppConfig(**values)
 
 
+@pytest.mark.parametrize(
+    "redis_url",
+    [
+        "redis://:private-password@redis:6379/0",
+        "rediss://private-user:private%40password@redis:6379/1",
+        "redis://redis:6379/0?password=private-password",
+    ],
+)
+def test_redis_credentials_are_hidden_in_public_config_and_startup_repr(redis_url):
+    config = make_config(redis_url=redis_url)
+    assert config.REDIS_URL == redis_url
+    assert config.to_dict()["REDIS_URL"] == "[REDACTED]"
+    assert "private" not in repr({"app_config": config})
+
+
 def test_dvd_api_url_is_derived_from_mcp_url():
     config = make_config(dvd_mcp_url="http://dvd:8100/mcp/")
 
@@ -44,3 +59,33 @@ def test_remote_openai_compatible_endpoint_on_another_host_is_allowed():
     config = make_config(openai_base_url="http://a6k4.dgx:8001/v1")
 
     assert config.OPENAI_BASE_URL == "http://a6k4.dgx:8001/v1"
+
+
+def test_synapse_secrets_are_required_only_when_enabled_and_never_exposed():
+    disabled = make_config()
+    assert disabled.SYNAPSE_ENABLED is False
+
+    with pytest.raises(ValueError, match="SYNAPSE_SERVICE_PASSWORD"):
+        make_config(synapse_enabled=True)
+
+    enabled = make_config(
+        synapse_enabled=True,
+        synapse_api_url="http://synapse:8000",
+        synapse_service_email="service@example.test",
+        synapse_service_password="top-secret",
+        synapse_workflow_id="workflow-id",
+        synapse_run_config_id="run-config-id",
+    )
+    public = enabled.to_dict()
+    assert public["SYNAPSE_A2A_CLIENT_ID"] == "synapse"
+    assert "SYNAPSE_SERVICE_PASSWORD" not in public
+    assert "top-secret" not in repr(enabled)
+
+    user_selectable = make_config(
+        synapse_enabled=True,
+        synapse_api_url="http://synapse:8000",
+        synapse_service_email="service@example.test",
+        synapse_service_password="top-secret",
+    )
+    assert user_selectable.SYNAPSE_WORKFLOW_ID is None
+    assert user_selectable.SYNAPSE_RUN_CONFIG_ID is None

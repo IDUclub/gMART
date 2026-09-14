@@ -20,6 +20,8 @@ This document covers the **A2A** surface of the agents app. The REST/SSE surface
 frontend is documented in [`frontend-service.md`](frontend-service.md) and
 [`frontend-document-qa.md`](frontend-document-qa.md). Scenario-data REST/SSE and
 A2A details are in [`frontend-scenario-data.md`](frontend-scenario-data.md).
+The Synapse gateway frontend contract is documented in
+[`integrations/synapse-front.md`](integrations/synapse-front.md).
 The executable-norm compliance REST/SSE contract, CheckPlan registry and review
 API are documented in [`compliance-agent.md`](compliance-agent.md).
 
@@ -292,6 +294,8 @@ gMART состоит из двух разворачиваемых приложе
 [`frontend-document-qa.md`](frontend-document-qa.md). REST/SSE- и A2A-контракт
 городских данных описан в
 [`frontend-scenario-data.md`](frontend-scenario-data.md).
+Интеграция frontend с Synapse через gMART описана в
+[`integrations/synapse-front.md`](integrations/synapse-front.md).
 Исполнение нормативных CheckPlan, compliance SSE и экспертное ревью описаны в
 [`compliance-agent.md`](compliance-agent.md).
 

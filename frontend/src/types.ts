@@ -1,5 +1,6 @@
 export type AgentId =
   | "orchestrator"
+  | "synapse"
   | "restrictions"
   | "compliance"
   | "provision"
@@ -32,12 +33,50 @@ export type LayerData = {
   count: number;
 };
 export type StreamEvent = { type: string; content: any };
+export type SynapseRunStatus =
+  "starting" | "running" | "done" | "failed" | "cancelled" | "start_unknown";
+export type SynapseRun = {
+  request_id: string;
+  chat_id: string | null;
+  synapse_project_id: string | null;
+  run_id: string | null;
+  workflow_id?: string | null;
+  run_config_id?: string | null;
+  status: SynapseRunStatus;
+  events_url: string;
+  last_event_id?: string | null;
+  last_stream_id?: string | null;
+  error?: string | null;
+};
+export type SynapseConfigurationOption = {
+  id: string;
+  name: string;
+  description: string;
+  is_default: boolean;
+};
+export type SynapseWorkflowOption = SynapseConfigurationOption & {
+  display_name?: string | null;
+  execution_mode?: string | null;
+};
+export type SynapseConfigurationOptions = {
+  workflows: SynapseWorkflowOption[];
+  run_configurations: SynapseConfigurationOption[];
+  default_workflow_id?: string | null;
+  default_run_config_id?: string | null;
+};
+export type SynapseEvent = {
+  type: "synapse_event";
+  source_type: string;
+  source_event_id: string;
+  stream_id?: string | null;
+  request_id: string;
+  synapse_project_id: string;
+  run_id?: string | null;
+  timestamp?: string | null;
+  content: Record<string, any>;
+};
 export type VerificationStatus =
-  | "complete"
-  | "partial"
-  | "unverifiable"
-  | "not_applicable"
-  | "unsupported";
+  "complete" | "partial" | "unverifiable" | "not_applicable" | "unsupported";
 export type ComplianceStatus = "passed" | "violated" | "unknown";
 export type ComplianceEvidence = {
   object_ref: Record<string, any>;

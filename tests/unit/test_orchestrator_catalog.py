@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.agents.services.orchestrator_catalog import available_agents
+from src.agents.services.orchestrator.orchestrator_catalog import (
+    AGENT_CATALOG,
+    available_agents,
+)
 from src.agents.services.service_entities.orchestrator_plan import OrchestratorAgent
 
 
@@ -25,6 +28,7 @@ def keys(agents) -> set[OrchestratorAgent]:
 def test_all_agents_available_with_scenario_and_urls():
     assert keys(available_agents(config(), scenario_id=772)) == {
         OrchestratorAgent.RESTRICTION,
+        OrchestratorAgent.COMPLIANCE,
         OrchestratorAgent.PROVISION,
         OrchestratorAgent.SCENARIO_DATA,
         OrchestratorAgent.DOCUMENTS,
@@ -56,6 +60,15 @@ def test_scenario_data_excluded_without_urban_mcp_url():
     assert OrchestratorAgent.SCENARIO_DATA not in keys(
         available_agents(config(urban=None), scenario_id=772)
     )
+
+
+def test_scenario_data_finds_the_project_base_scenario_itself():
+    entry = AGENT_CATALOG[OrchestratorAgent.SCENARIO_DATA]
+
+    assert "с базовым сценарием проекта" in entry.description
+    assert "агент находит сам" in entry.description
+    assert "явно указанные сценарии" not in entry.description
+    assert "Сравни показатели сценария с базовым сценарием" in entry.examples
 
 
 def test_no_agents_without_scenario_and_urls():

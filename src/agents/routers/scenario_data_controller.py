@@ -13,7 +13,7 @@ from src.agents.dependencies.dependencies import (
 from src.agents.dto.scenario_data_request_dto import ScenarioDataRequestDTO
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 from src.agents.schema.scenario_data_response import ScenarioDataResponse
-from src.agents.services.scenario_data_service import ScenarioDataService
+from src.agents.services.scenario_data.scenario_data_service import ScenarioDataService
 
 scenario_data_router = APIRouter(prefix="/scenario-data", tags=["scenario-data"])
 
@@ -32,6 +32,36 @@ async def stream_scenario_data(
 ) -> AsyncIterable[ScenarioDataResponse]:
     async for chunk in stream_with_error_handling(
         service.run_scenario_data_pipeline,
+        request,
+        service,
+        user_request.model,
+        rerun=False,
+        continue_on_disconnect=True,
+        urban_mcp_client=urban_mcp_client,
+        token=token,
+        user_query=user_request.request,
+        scenario_id=user_request.scenario_id,
+        chat_id=user_request.chat_id,
+        request_id=user_request.request_id,
+        temperature=user_request.temperature,
+    ):
+        yield ScenarioDataResponse(**chunk)
+
+
+@scenario_data_router.get(
+    "/indicators/stream",
+    response_class=EventSourceResponse,
+    summary="Answer with scenario indicators compared with the project base scenario",
+)
+async def stream_scenario_indicators(
+    request: Request,
+    user_request: Annotated[ScenarioDataRequestDTO, Depends(ScenarioDataRequestDTO)],
+    token: str = Depends(verify_bearer_token),
+    urban_mcp_client: UrbanMcpClient = Depends(get_urban_mcp_client),
+    service: ScenarioDataService = Depends(get_scenario_data_service),
+) -> AsyncIterable[ScenarioDataResponse]:
+    async for chunk in stream_with_error_handling(
+        service.run_indicator_comparison_pipeline,
         request,
         service,
         user_request.model,

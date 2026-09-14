@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Callable
 
 from fastmcp import Client as McpClient
@@ -37,6 +37,7 @@ class UrbanMcpTool:
     description: str
     input_schema: dict[str, Any]
     tags: tuple[str, ...]
+    output_fields: dict[str, str] = field(default_factory=dict)
 
     def validate_arguments(
         self, arguments: dict[str, Any], *, require_all: bool = False
@@ -103,6 +104,37 @@ def _schema_type(schema: dict[str, Any]) -> str:
     return " | ".join(types) or "any"
 
 
+def _output_field_descriptions(schema: Any) -> dict[str, str]:
+    """Map output field names to their schema descriptions, nested models included."""
+
+    found: dict[str, str] = {}
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            for name, child in properties.items():
+                if isinstance(child, dict):
+                    description = str(child.get("description") or "").strip()
+                    if description:
+                        found.setdefault(str(name), description)
+                visit(child)
+        for key in ("items", "anyOf", "oneOf", "allOf", "additionalProperties"):
+            visit(node.get(key))
+        for key in ("$defs", "definitions"):
+            definitions = node.get(key)
+            if isinstance(definitions, dict):
+                visit(list(definitions.values()))
+
+    visit(schema)
+    return found
+
+
 def _is_unresolved_plan_reference(value: Any) -> bool:
     if isinstance(value, str):
         stripped = value.strip()
@@ -115,6 +147,8 @@ def _is_unresolved_plan_reference(value: Any) -> bool:
 
 
 def _matches_declared_type(value: Any, schema: dict[str, Any]) -> bool:
+    if "enum" in schema and value not in schema["enum"]:
+        return False
     variants = schema.get("anyOf") or schema.get("oneOf") or []
     if variants:
         return any(
@@ -252,6 +286,9 @@ class UrbanMcpClient:
             description=str(getattr(tool, "description", None) or ""),
             input_schema=_plain(getattr(tool, "inputSchema", None) or {}),
             tags=tuple(str(tag) for tag in tags),
+            output_fields=_output_field_descriptions(
+                _plain(getattr(tool, "outputSchema", None) or {})
+            ),
         )
 
     def get_tool(self, group: str, tool_name: str) -> UrbanMcpTool:

@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import Request
 from loguru import logger
 
+from src.agents.common.exceptions.base_exceptions import PipelineStorageUnavailable
 from src.agents.model_clients.base_client import BaseLlmClient
 
 StreamGenerator = Callable[..., AsyncIterator[dict[str, Any]]]
@@ -99,6 +100,11 @@ async def stream_with_error_handling(
     except asyncio.CancelledError:
         logger.info("Stream cancelled")
         raise
+
+    except PipelineStorageUnavailable as exc:
+        logger.error("Pipeline storage unavailable; the pipeline will not be rerun")
+        yield {"type": "error", "content": {"message": exc.message, "traceback": ""}}
+        return
 
     except Exception as exc:
         logger.opt(exception=exc).error("Unhandled exception while running pipeline")

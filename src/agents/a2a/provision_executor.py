@@ -13,7 +13,7 @@ from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
-from src.agents.services.provsion_service import ProvisionService
+from src.agents.services.provision.provsion_service import ProvisionService
 
 A2AData = dict[str, Any]
 A2AEventData = dict[str, Any]

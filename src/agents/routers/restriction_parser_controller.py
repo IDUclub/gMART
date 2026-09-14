@@ -15,7 +15,7 @@ from src.agents.dependencies.dependencies import (
 from src.agents.dto.restriction_request_dto import RestrictionRequestDTO
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.schema.restrictions_response import RestrictionsResponse
-from src.agents.services.restriction_parser_service import (
+from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
 
