@@ -30,6 +30,8 @@ both project and context; the expected totals explicitly account for this.
 `preflight.py` contains independently worked literal capacity/demand/deficit
 expectations. It calls the real ObjectEffectsAPI and checks returned layers.
 Expectations are not generated from actual service responses.
+Before calculations it verifies the control MCP through the application's actual
+UrbanMcpClient, including structured catalogue, table and geometry responses.
 
 The spatial check uses synthetic document LOCAL SDK TEST, version 2026, clause
 1.1, school-to-open-parking distance >= 50 m. Seed it with the existing
@@ -92,3 +94,11 @@ Kinds: `unavailable` (503), `unauthorized` (401), `missing_normative` (requires
 Both HTTP and MCP use the same fault boundary. No writes to real Urban API are
 needed. Fault profiles belong to separate runs; they must not be enabled for the
 positive fifteen-episode acceptance.
+
+The first full measurement and subsequent fixes are documented in
+`docs/diagnostics/2026-09-14-industrial-harness.md`. The measured orchestrator did
+not meet 15/15; passing infrastructure checks are not a claim of analytical
+stability. Source layers require their matching complete tables. Compliance
+requires complete passed/violated geometry tied to the correct source version,
+not just the expected violation count. Both the outer harness and the live
+runner reject existing output directories.
