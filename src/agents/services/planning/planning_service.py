@@ -35,6 +35,7 @@ from src.agents.services.planning.artifacts import (
     preview,
     propose_service,
     resolve_references,
+    restore_existing_building_attributes,
     result_events,
     select_layer,
     summarize_layer,
@@ -473,25 +474,16 @@ class PlanningService(BaseLlmService):
             constrained["name"] = "run_constrained_generation"
             constrained["description"] = (
                 "Реальная генерация зон/дорог с сохранением всех неизменяемых зон. "
-                "Передай layer ссылкой $artifact на полный исходный слой и editable_zone_kinds "
-                "(например [industrial]). Программа извлечёт year/source и полный список "
+                "Передай constraints ссылкой $artifact на ВЕСЬ результат prepare_zoning_constraints. "
+                "Программа передаст year/source и полный список "
                 "закреплённых ID. Доли territory_balance выбери как проектное допущение."
             )
             params = constrained["parameters"]
             params["properties"].pop("functional_zones", None)
-            params["properties"].update(
-                {
-                    "layer": {"type": "object"},
-                    "editable_zone_kinds": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                    },
-                }
-            )
+            params["properties"]["constraints"] = {"type": "object"}
             params["required"] = [
                 k for k in params.get("required", []) if k != "functional_zones"
-            ] + ["layer", "editable_zone_kinds"]
+            ] + ["constraints"]
             catalogue[constrained["name"]] = constrained
         if not self.profile.required_tools <= catalogue.keys():
             yield {
@@ -698,6 +690,7 @@ class PlanningService(BaseLlmService):
                     "layer",
                     "generated_buildings",
                     "buildings",
+                    "constraints",
                     "before",
                     "after",
                 ):
@@ -837,9 +830,20 @@ class PlanningService(BaseLlmService):
                         result = response.json()
                 elif action.tool == "run_constrained_generation":
                     resolved = dict(args)
-                    constraints = prepare_zoning_constraints(
-                        resolved.pop("layer"), resolved.pop("editable_zone_kinds")
-                    )
+                    constraints = resolved.pop("constraints")
+                    fixed = constraints["fixed_functional_zones_ids"]
+                    editable = constraints["editable_functional_zones_ids"]
+                    if (
+                        not editable
+                        or set(fixed) & set(editable)
+                        or len(set(fixed + editable))
+                        != constraints["source_feature_count"]
+                        or len(fixed) != constraints["fixed_count"]
+                        or len(editable) != constraints["editable_count"]
+                    ):
+                        raise ValueError(
+                            "Use the complete prepare_zoning_constraints result"
+                        )
                     resolved["functional_zones"] = {
                         key: constraints[key]
                         for key in ("year", "source", "fixed_functional_zones_ids")
@@ -859,6 +863,16 @@ class PlanningService(BaseLlmService):
                         action.tool, args, meta={"scenario_id": scenario_id}
                     )
                 result = jsonable_encoder(result)
+                if (
+                    self.profile.key == "genbuilder"
+                    and action.tool.startswith("generate_")
+                    and args.get("existing_buildings")
+                    and isinstance(result, dict)
+                    and result.get("type") == "FeatureCollection"
+                ):
+                    result = restore_existing_building_attributes(
+                        result, args["existing_buildings"]
+                    )
                 aid = f"{request_id}:result{number + 1}"
                 values[aid] = result
                 observations.append(

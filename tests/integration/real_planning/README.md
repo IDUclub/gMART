@@ -99,3 +99,10 @@ legal rules, the local gMART adapter can prepare explicit `ТЕСТ-*` zone labe
 and `mock_pzz_normatives.json` descriptions on unchanged real geometry. These
 are synthetic test rules, not a mapping to actual legal zones. The external
 PZZ must execute its own comparison; a queued or failed task is not a pass.
+
+The building adapter restores unchanged-object attributes from the actual input
+layer by `physical_object_id`; it never replaces generated geometry. The PZZ
+assessment adapter serializes known building types as numeric catalogue IDs in
+`building_type`, retaining the original value separately. This prevents PZZ's
+auto-selected column from unnecessarily invoking semantic type inference for
+GenBuilder's `low`/`medium`/`high` labels. Missing source attributes remain missing.

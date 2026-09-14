@@ -7,6 +7,7 @@ import pytest
 from src.agents.services.orchestrator.orchestrator_catalog import available_agents
 from src.agents.services.planning.a2a import PlanningA2AService, PlanningAgentCard
 from src.agents.services.planning.artifacts import (
+    prepare_zoning_constraints,
     preview,
     resolve_references,
     result_events,
@@ -539,6 +540,12 @@ def test_pzz_mock_changes_only_explicit_test_attributes(tmp_path):
     assert (
         result["buildings"]["features"][0]["properties"]["physical_object_type_id"] == 4
     )
+    assert result["buildings"]["features"][0]["properties"]["building_type"] == 4
+    assert (
+        result["buildings"]["features"][0]["properties"]["original_building_type"]
+        == "medium"
+    )
+    assert buildings["features"][0]["properties"]["building_type"] == "medium"
     assert result["provenance"]["kind"] == "test_mock"
     assert result["provenance"]["legal_compliance_claim"] is False
     zones["features"][0]["properties"]["territory_zone_name"] = "unknown"
@@ -597,8 +604,7 @@ async def test_constrained_generation_passes_all_preserved_zones(
                     {
                         "project_id": 604,
                         "territory_balance": {"1": 1},
-                        "layer": {"$artifact": "input"},
-                        "editable_zone_kinds": ["industrial"],
+                        "constraints": {"$artifact": "input"},
                         "test": synthetic,
                     }
                 ),
@@ -614,7 +620,9 @@ async def test_constrained_generation_passes_all_preserved_zones(
         async for e in service.run(
             token=internal_user_context_jwt("u"),
             user_query="Перестрой промышленную часть",
-            input_artifacts={"input": layer},
+            input_artifacts={
+                "input": prepare_zoning_constraints(layer, ["industrial"])
+            },
         )
     ]
     if synthetic:
@@ -630,3 +638,42 @@ async def test_constrained_generation_passes_all_preserved_zones(
         }
         evidence = next(e["content"] for e in events if e["type"] == "source_evidence")
         assert evidence["result"]["generation_constraints"]["editable_count"] == 1
+
+
+def test_restore_existing_attributes_keeps_geometry_and_new_buildings():
+    from copy import deepcopy
+
+    from src.agents.services.planning.artifacts import (
+        restore_existing_building_attributes,
+    )
+
+    existing = deepcopy(LAYER)
+    existing["features"][0]["properties"] = {
+        "physical_object_id": 7,
+        "physical_object_type": {"physical_object_type_id": 4},
+        "building": {"floors": 5},
+    }
+    generated = deepcopy(LAYER)
+    generated["features"][0]["properties"] = {
+        "physical_object_id": 7,
+        "is_excluded": True,
+        "floors_count": 0,
+        "building_type": None,
+    }
+    new = deepcopy(LAYER["features"][0])
+    new["properties"] = {"building_type": "medium", "floors_count": 5}
+    generated["features"].append(new)
+    existing["features"][0]["properties"]["object_geometry_id"] = 10
+    duplicate = deepcopy(existing["features"][0])
+    duplicate["properties"]["object_geometry_id"] = 11
+    existing["features"].append(duplicate)
+    result = restore_existing_building_attributes(generated, existing)
+    assert [f["geometry"] for f in result["features"]] == [
+        f["geometry"] for f in generated["features"]
+    ]
+    assert result["features"][0]["properties"]["floors_count"] == 5
+    assert result["features"][0]["properties"]["physical_object_type"] == {
+        "physical_object_type_id": 4
+    }
+    assert result["features"][1] == new
+    assert generated["features"][0]["properties"]["floors_count"] == 0

@@ -16,6 +16,41 @@ ZONE_KINDS = {
 }
 
 
+def restore_existing_building_attributes(generated, existing):
+    """Recover source attributes lost in GenBuilder's unchanged-object placeholders."""
+    FeatureCollection.model_validate(generated)
+    FeatureCollection.model_validate(existing)
+    source = {}
+    for feature in existing["features"]:
+        props = feature.get("properties") or {}
+        identifier = props.get("physical_object_id")
+        if identifier is not None:
+            # One physical object can have several Urban geometries. GenBuilder
+            # retains only the object ID; do not assign an arbitrary geometry ID.
+            attributes = {k: v for k, v in props.items() if k != "object_geometry_id"}
+            if identifier in source and source[identifier] != attributes:
+                raise ValueError(
+                    "Conflicting attributes for an existing physical object"
+                )
+            source[identifier] = attributes
+    result = deepcopy(generated)
+    for feature in result["features"]:
+        props = feature.get("properties") or {}
+        identifier = props.get("physical_object_id")
+        if props.get("is_excluded") and identifier in source:
+            restored = deepcopy(source[identifier])
+            building = restored.get("building") or {}
+            restored.update(
+                {
+                    "is_excluded": True,
+                    "attribute_source": "existing_buildings_by_physical_object_id",
+                    "floors_count": building.get("floors"),
+                }
+            )
+            feature["properties"] = restored
+    return result
+
+
 def property_value(feature, path):
     value = feature.get("properties") or {}
     for key in path:

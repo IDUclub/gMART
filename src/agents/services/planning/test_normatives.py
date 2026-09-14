@@ -59,6 +59,8 @@ def prepare_test_pzz_inputs(layer, buildings, fixture_path):
             identifier = 4
         if identifier is not None:
             props["physical_object_type_id"] = identifier
+            props["original_building_type"] = props.get("building_type")
+            props["building_type"] = identifier
         feature["properties"] = props
     if not used or not objects["features"]:
         raise ValueError("Real zone and building layers must be nonempty")

@@ -38,7 +38,7 @@ PROFILES = {
         "и назови её в ответе; не придумывай год или источник. "
         "Промышленные зоны определяются по фактическому functional_zone_type.name=industrial, "
         "а не запрашиваются у пользователя по ID. При изменении только промышленной части закрепи "
-        "все остальные типы зон: используй run_constrained_generation с полным исходным layer через $artifact и editable_zone_kinds=[industrial]. Этот инструмент сам извлечёт полный список сохраняемых ID, year/source. "
+        "все остальные типы зон: вызови prepare_zoning_constraints с полным исходным layer и editable_zone_kinds=[industrial], затем run_constrained_generation с constraints через $artifact на весь результат prepare_zoning_constraints. Не копируй отдельные поля constraints. "
         "Прочитай properties_sample слоя, чтобы выбрать существующие пути полей. "
         "Для сохранения парка/закреплённых зон используй functional_zones с фактическими "
         "year/source и fixed_functional_zones_ids. Не утверждай, что сохранил объекты, "
