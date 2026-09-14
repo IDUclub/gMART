@@ -61,11 +61,12 @@
 - Новый probe вызывает настоящий обработчик compliance, реальные NormGraph,
   Redis и IDU MCP без вызова LLM: исходный вариант 91001 имеет одно нарушение,
   исправленный 91006 — ноль, в обоих проверен один объект.
-- Graphify обновлён: 6019 узлов, 15107 связей. Это AST-обновление без вызовов модели.
+  Проверены также исходная геометрия, идентификаторы, версия и оба слоя результата.
+- Graphify обновлён: 6025 узлов, 15117 связей. Это AST-обновление без вызовов модели.
 
 Логи и полные ответы лежат в `output/industrial/` исходной рабочей копии:
 `stability-candidate-unit-04.log`, `stability-linux-unit-04.log`,
-`stability-canonical-preflight-03/`, `stability-graphify-update.log`.
+`stability-canonical-preflight-03/`, `stability-graphify-update-final.log`.
 
 ## Живая приёмка
 

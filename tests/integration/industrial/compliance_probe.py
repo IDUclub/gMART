@@ -20,6 +20,8 @@ from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
 
+from .acceptance import complete_spatial_result
+
 
 async def verify_compliance_transport(headers):
     # This route must not use a model: the document clause already has a saved
@@ -59,11 +61,8 @@ async def verify_compliance_transport(headers):
                 rows = [
                     e["content"] for e in events if e["type"] == "compliance_result"
                 ]
-                if (
-                    len(rows) != 1
-                    or rows[0]["verification_status"] != "complete"
-                    or rows[0]["coverage"]["checked_objects"] != 1
-                    or rows[0]["summary"]["violated_objects"] != violations
+                if len(rows) != 1 or not complete_spatial_result(
+                    rows[0], sid, violations
                 ):
                     raise ValueError(
                         f"Canonical compliance routing/coverage failed for {sid}: {rows}"
