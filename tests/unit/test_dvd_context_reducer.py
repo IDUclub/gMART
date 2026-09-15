@@ -7,6 +7,12 @@ import pytest
 from src.agents.services.dvd.context_reducer import DvdContextReducer, cost, split_text
 
 
+@pytest.fixture(autouse=True)
+def small_model_window(monkeypatch):
+    # Exercise reduction regardless of the production fallback window.
+    monkeypatch.setenv("DVD_CONTEXT_WINDOW_TOKENS", "8192")
+
+
 class Summarizer:
     def __init__(self, fail=False):
         self.active = self.peak = 0

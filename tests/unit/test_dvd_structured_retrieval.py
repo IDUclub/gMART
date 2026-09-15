@@ -453,6 +453,7 @@ async def test_large_retrieval_flows_through_parallel_reducer(service, fake_llm)
 
     llm = Summarizer()
     service.context_reducer.llm_client = llm
+    service.context_reducer.configured_window = 8192
     fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
     fake_llm.answer_texts = ["Условие FACT1 и исключение FACT2 [1] [2]."]
     client = Pages(
@@ -483,6 +484,7 @@ async def test_large_retrieval_flows_through_parallel_reducer(service, fake_llm)
 async def test_partial_failure_prevents_drafting_and_persistence(service, fake_llm):
     from tests.unit.test_dvd_context_reducer import Summarizer
 
+    service.context_reducer.configured_window = 8192
     service.context_reducer.llm_client = Summarizer(fail=True)
     service.context_reducer.retries = 0
     fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]

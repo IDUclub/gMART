@@ -22,6 +22,7 @@ from src.agents.services.service_entities.dvd_plan import (
 from .clarification import parse_choice, selected_choice
 from .context_reducer import cost, current_context_window
 from .dvd_context import source_records
+from .request_budget import check_request
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -92,6 +93,7 @@ async def _request_json(
     )
     schema = adapter.json_schema()
     for attempt in range(retries + 1):
+        check_request(messages, schema)
         # The schema is a decoding constraint, not another message. Reserving its
         # serialized UTF-8 size rejected the existing planner even with no history.
         available = (

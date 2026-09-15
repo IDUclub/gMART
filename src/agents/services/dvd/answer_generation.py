@@ -14,6 +14,7 @@ from collections.abc import Callable
 from loguru import logger
 
 from .context_reducer import DvdContextReducer, cost
+from .request_budget import check_request, request_chars, request_limit
 
 _CONTINUE = (
     "Продолжи незавершённый ответ. Начни с ТОЧНОГО повторения указанного ниже "
@@ -112,11 +113,23 @@ class DvdAnswerGenerator:
                     "answer_generation_incomplete: no_budget_growth"
                 )
             allowance = self.reducer.window - fixed_cost - budget
+            character_allowance = request_limit() - request_chars(
+                build_messages("") + continuation
+            )
+            if character_allowance < 512:
+                raise AnswerGenerationError("answer_generation_no_character_room")
             evidence = context
-            if cost(evidence) > allowance:
+            if (
+                cost(evidence) > allowance
+                or request_chars(build_messages(evidence) + continuation)
+                > request_limit()
+            ):
                 try:
                     prepared = await self.reducer.prepare(
-                        model, question, context, budget_limit=allowance
+                        model,
+                        question,
+                        context,
+                        budget_limit=min(allowance, character_allowance),
                     )
                 except ValueError as exc:
                     raise AnswerGenerationError(
@@ -126,6 +139,12 @@ class DvdAnswerGenerator:
                     raise AnswerGenerationError("answer_generation_context_incomplete")
                 evidence = prepared.text
             messages = build_messages(evidence) + continuation
+            try:
+                check_request(messages)
+            except ValueError as exc:
+                raise AnswerGenerationError(
+                    "answer_generation_no_character_room"
+                ) from exc
             input_cost = message_cost(messages)
             if input_cost + budget > self.reducer.window:
                 raise AnswerGenerationError("answer_generation_no_context_room")
