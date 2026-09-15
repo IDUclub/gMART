@@ -81,7 +81,7 @@ async def test_full_quote_retains_paginated_condition_even_if_explanation_omits_
             dict(hits=[child], total=2, complete=True),
         ]
     )
-    events = await run(service, client, "Что написано в пункте 10.6 СП 55?")
+    events = await run(service, client, "Что написано в пункте 10.6 СП 55? Объясни.")
     answer = answer_text(events)
     assert "Пункт перечисляет меры экономии энергии [1]." in answer
     assert "> " + root["text"] in answer

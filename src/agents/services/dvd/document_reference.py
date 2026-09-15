@@ -88,8 +88,15 @@ def wants_full_quote(query: str) -> bool:
 
 
 def quote_only(query: str) -> bool:
-    return bool(
-        re.search(
-            r"процитир|только\s+(?:цитат|текст)|без\s+(?:объяснен|пояснен)", query, re.I
-        )
+    explicit = re.search(
+        r"процитир|только\s+(?:цитат|текст)|без\s+(?:объяснен|пояснен)", query, re.I
     )
+    asks_text = re.search(
+        r"что\s+(?:написано|сказано|говорится|содержится)", query, re.I
+    )
+    asks_explanation = re.search(
+        r"объясн|поясн|разъясн|смысл|означа|примен|сравн|почему|зачем|кратк|резюм",
+        query,
+        re.I,
+    )
+    return bool(explicit or (asks_text and not asks_explanation))

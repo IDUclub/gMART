@@ -158,3 +158,14 @@ export function oldestServerSequence(messages: Message[]): number | null {
   }
   return null;
 }
+
+export function finalizeSseExchange(
+  exchange: { answer: string; finalized: boolean } | null,
+  fallbackAnswer?: string,
+): boolean {
+  if (!exchange || exchange.finalized) return false;
+  if (!exchange.answer.trim() && fallbackAnswer)
+    exchange.answer = fallbackAnswer;
+  exchange.finalized = true;
+  return true;
+}

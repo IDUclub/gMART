@@ -140,7 +140,7 @@ def render_question(pending):
         if c.get("entity_kind") == "document":
             lines.append(f"- **Вариант {number}: этот документ**")
             continue
-        hierarchy = c.get("hierarchy") or []
+        hierarchy = [n for n in c.get("hierarchy") or [] if n.get("type") != "document"]
         if hierarchy:
             keys = tuple(n.get("id") for n in hierarchy[:-1])
             common = 0
@@ -224,7 +224,8 @@ def resolve_reply(query, pending):
         return None
     options = pending["options"]
     ordinal = re.fullmatch(
-        r"(?:вариант\s*)?(\d+)(?:[.)]|\s+вариант)?", normalized(query)
+        r"(?:вариант\s*)?(\d+)(?:[.)]|\s+вариант|\s*:\s*.+)?",
+        normalized(query).replace("**", "").removeprefix("- "),
     )
     index = (
         int(ordinal[1])

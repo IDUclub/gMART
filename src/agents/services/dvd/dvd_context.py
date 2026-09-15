@@ -180,7 +180,20 @@ class DvdContextBuilder:
         """Render every retrieved source in order without model rewriting."""
         blocks = []
         for index, hit in enumerate(self.ordered_hits(hits), 1):
-            rendered = self._format_hit(index, {**hit, "id": None})
+            rendered = self._format_hit(
+                index,
+                {
+                    **hit,
+                    "id": None,
+                    "breadcrumb": None,
+                    "fragment_name": (
+                        hit.get("fragment_name")
+                        if hit.get("type")
+                        in {"section", "chapter", "article", "appendix", "table"}
+                        else None
+                    ),
+                },
+            )
             header, _, body = rendered.partition("\n")
             if not body:
                 raise ValueError("Cannot quote a fragment without source text")
