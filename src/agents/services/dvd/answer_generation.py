@@ -13,6 +13,8 @@ from collections.abc import Callable
 
 from loguru import logger
 
+from src.agents.model_clients.context_budget import remaining_output_tokens
+
 from .context_reducer import DvdContextReducer, cost
 
 _CONTINUE = (
@@ -59,19 +61,9 @@ class DvdAnswerGenerator:
     def __init__(self, reducer: DvdContextReducer, *, llm_client=None):
         self.reducer = reducer
         self.llm_client = reducer.llm_client if llm_client is None else llm_client
-        self.maximum = reducer.output_tokens
-        self.minimum = min(
-            int(os.getenv("DVD_ANSWER_MIN_TOKENS", "4096")), self.maximum
-        )
         self.retries = int(os.getenv("DVD_ANSWER_RETRIES", "2"))
-        if self.minimum < 128 or not 0 <= self.retries <= 4:
-            raise ValueError("invalid DVD answer budget or retries")
-
-    def initial_budget(self, context: str, question: str) -> int:
-        # A heuristic, not a tokenizer count: larger evidence/questions allow
-        # more reasoning and synthesis. Exact fit is checked on every request.
-        extra = ((cost(context) + cost(question) + 4095) // 4096) * 512
-        return min(self.maximum, self.minimum + extra)
+        if not 0 <= self.retries <= 4:
+            raise ValueError("invalid DVD answer retries")
 
     async def generate(
         self,
@@ -83,10 +75,7 @@ class DvdAnswerGenerator:
         *,
         iteration: int,
     ) -> str:
-        desired = self.initial_budget(context, question)
         prefix = ""
-        previous_budget = 0
-        previous_progress = False
         for attempt in range(self.retries + 1):
             continuation = (
                 [
@@ -101,22 +90,32 @@ class DvdAnswerGenerator:
                 if prefix
                 else []
             )
-            fixed_cost = message_cost(build_messages("") + continuation)
-            # Keep at least a small evidence allowance. Never truncate history,
-            # instructions or the prefix to make a request appear to fit.
-            budget = min(desired, self.reducer.window - fixed_cost - 512)
-            if budget < 128:
-                raise AnswerGenerationError("answer_generation_no_context_room")
-            if attempt and budget <= previous_budget and not previous_progress:
-                raise AnswerGenerationError(
-                    "answer_generation_incomplete: no_budget_growth"
-                )
-            allowance = self.reducer.window - fixed_cost - budget
             evidence = context
-            if cost(evidence) > allowance:
+            messages = build_messages(evidence) + continuation
+            budget = await remaining_output_tokens(
+                self.llm_client,
+                model,
+                messages,
+                self.reducer.window,
+            )
+            if budget < 128:
+                # Only evidence can be reduced. Preserve instructions, history
+                # and every visible continuation prefix.
+                fixed_available = await remaining_output_tokens(
+                    self.llm_client,
+                    model,
+                    build_messages("") + continuation,
+                    self.reducer.window,
+                )
+                allowance = fixed_available - self.reducer.window // 4
+                if allowance < 512:
+                    raise AnswerGenerationError("answer_generation_no_context_room")
                 try:
                     prepared = await self.reducer.prepare(
-                        model, question, context, budget_limit=allowance
+                        model,
+                        question,
+                        context,
+                        budget_limit=allowance,
                     )
                 except ValueError as exc:
                     raise AnswerGenerationError(
@@ -124,11 +123,17 @@ class DvdAnswerGenerator:
                     ) from exc
                 if prepared.failed_parts:
                     raise AnswerGenerationError("answer_generation_context_incomplete")
-                evidence = prepared.text
-            messages = build_messages(evidence) + continuation
-            input_cost = message_cost(messages)
-            if input_cost + budget > self.reducer.window:
-                raise AnswerGenerationError("answer_generation_no_context_room")
+                context = prepared.text
+                messages = build_messages(context) + continuation
+                budget = await remaining_output_tokens(
+                    self.llm_client,
+                    model,
+                    messages,
+                    self.reducer.window,
+                )
+                if budget < 128:
+                    raise AnswerGenerationError("answer_generation_no_context_room")
+            input_cost = self.reducer.window - budget
             logger.info(
                 "DVD answer model={} iteration={} attempt={} input_upper_estimate={} "
                 "output_budget={} window={} prefix_bytes={}",
@@ -195,8 +200,6 @@ class DvdAnswerGenerator:
             if prefix and not boundary_valid:
                 # Keep the known prefix and retry; guessing whitespace/word
                 # boundaries can alter numbers or join unrelated statements.
-                previous_budget, previous_progress = budget, False
-                desired = min(self.maximum, max(desired, budget * 2))
                 logger.warning(
                     "DVD answer continuation overlap mismatch iteration={} attempt={}",
                     iteration,
@@ -205,8 +208,6 @@ class DvdAnswerGenerator:
                 continue
             if reason in {"length", "max_tokens"}:
                 prefix = assembled if assembled.strip() else ""
-                previous_budget, previous_progress = budget, progress
-                desired = min(self.maximum, max(desired, budget * 2))
                 continue
             if not (reason == "stop" or terminal):
                 raise AnswerGenerationError(

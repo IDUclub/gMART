@@ -40,6 +40,7 @@ import { appendLatestVisibleLayer } from "./layerState";
 import {
   appendIterationChunk,
   appendSseExchange,
+  finalizeSseExchange,
   CHAT_PAGE_SIZE,
   mergeMessageWindow,
   oldestServerSequence,
@@ -910,10 +911,7 @@ export default function App() {
   }
   function finalizeActiveExchange(fallbackAnswer?: string) {
     const exchange = activeExchangeRef.current;
-    if (!exchange || exchange.finalized) return;
-    if (!exchange.answer.trim() && fallbackAnswer)
-      exchange.answer = fallbackAnswer;
-    exchange.finalized = true;
+    if (!exchange || !finalizeSseExchange(exchange, fallbackAnswer)) return;
 
     const id = chatIdRef.current;
     if (!id) return;
@@ -1153,8 +1151,16 @@ export default function App() {
       setRightTab("compliance");
       setResultOpen(true);
     }
-    if (event.type === "warning" || event.type === "error")
-      updateStatus(event.content?.message || "Ошибка выполнения", "warning");
+    if (event.type === "warning" || event.type === "error") {
+      const message = event.content?.message || "Ошибка выполнения";
+      updateStatus(message, "warning");
+      if (event.type === "error") {
+        updateSseAnswer((current) =>
+          current ? `${current}\n\n${message}` : message,
+        );
+        finalizeActiveExchange(message);
+      }
+    }
     if (event.type === "service_event" && event.content?.event?.chat_id) {
       const id = String(event.content.event.chat_id);
       chatIdRef.current = id;
@@ -3293,6 +3299,7 @@ function labelStatus(s: string) {
         response_analysis: "Считаю результат",
         answer_review: "Проверяю результат",
         answer_retry: "Дополняю данные",
+        context_check: "Проверяю контекст диалога",
         retrieval_planning: "Планирую поиск",
         context_processing: "Обрабатываю источники частями",
         searching: "Ищу источники",

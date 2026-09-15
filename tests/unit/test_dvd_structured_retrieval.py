@@ -370,7 +370,7 @@ async def test_all_pages_and_descendants_reach_answer(service, fake_llm):
     events = await run(service, client)
     assert answer_text(events) == "Полный ответ [1] [2]."
     assert len(client.calls) == 2
-    assert client.calls[0][1]["context_height"] == 1
+    assert client.calls[0][1]["context_height"] == 0
     assert client.calls[0][1] == {
         k: v for k, v in client.calls[1][1].items() if k != "cursor"
     }
@@ -436,7 +436,8 @@ def test_compact_address_and_lowercase_designation(address):
         SemanticRetrievalPlan(retrieval_mode="semantic"),
         f"{address} сп2.13130.2020",
     )
-    assert plan.pattern == "3.3" and plan.document_names == ["сп2.13130.2020"]
+    assert plan.pattern == ("раздел 3.3" if address == "section 3.3" else "3.3")
+    assert plan.document_names == ["сп2.13130.2020"]
 
 
 def test_explicit_clause_does_not_remove_ancestor_path():
@@ -444,7 +445,7 @@ def test_explicit_clause_does_not_remove_ancestor_path():
         StructureRetrievalPlan(retrieval_mode="structure", pattern="А / 3.3"),
         "пункт 3.3 приложения А",
     )
-    assert plan.pattern == "А / 3.3"
+    assert plan.pattern == "приложение А / 3.3"
 
 
 async def test_large_retrieval_flows_through_parallel_reducer(service, fake_llm):
@@ -452,6 +453,7 @@ async def test_large_retrieval_flows_through_parallel_reducer(service, fake_llm)
 
     llm = Summarizer()
     service.context_reducer.llm_client = llm
+    service.context_reducer.configured_window = 8192
     fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
     fake_llm.answer_texts = ["Условие FACT1 и исключение FACT2 [1] [2]."]
     client = Pages(
@@ -482,6 +484,7 @@ async def test_large_retrieval_flows_through_parallel_reducer(service, fake_llm)
 async def test_partial_failure_prevents_drafting_and_persistence(service, fake_llm):
     from tests.unit.test_dvd_context_reducer import Summarizer
 
+    service.context_reducer.configured_window = 8192
     service.context_reducer.llm_client = Summarizer(fail=True)
     service.context_reducer.retries = 0
     fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]

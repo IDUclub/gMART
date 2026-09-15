@@ -7,6 +7,12 @@ import pytest
 from src.agents.services.dvd.context_reducer import DvdContextReducer, cost, split_text
 
 
+@pytest.fixture(autouse=True)
+def small_model_window(monkeypatch):
+    # Exercise reduction regardless of the production fallback window.
+    monkeypatch.setenv("DVD_CONTEXT_WINDOW_TOKENS", "8192")
+
+
 class Summarizer:
     def __init__(self, fail=False):
         self.active = self.peak = 0
@@ -179,14 +185,17 @@ async def test_retry_tells_model_why_summary_was_rejected():
     assert "incomplete" in llm.calls[1][0]["content"]
 
 
-async def test_reducer_and_openai_adapter_recover_reasoning_only_completion(
+async def test_reducer_and_openai_adapter_use_full_window_despite_legacy_cap(
     monkeypatch,
 ):
-    """Exercise the real reducer -> schema translation -> bounded retry seam."""
+    """A legacy small output cap must no longer starve reasoning."""
+    from unittest.mock import AsyncMock
+
     from tests.unit.test_llm_adapters import _adapter_with, _Choice, _Completion, _Delta
 
     monkeypatch.setenv("DVD_SUMMARY_MAX_TOKENS", "1536")
     adapter, _ = _adapter_with(None)
+    adapter.client.post = AsyncMock(return_value={"count": 1000})
     calls = []
 
     async def create(**request):
@@ -220,4 +229,5 @@ async def test_reducer_and_openai_adapter_recover_reasoning_only_completion(
         "gpt-oss-20b", "School distance?", "[1] Standard\nSchool distance: 500 m.", 1200
     )
     assert "[1] Standard\nSchool distance: 500 m." in summary
-    assert len(calls) == 2 and calls[1]["max_tokens"] > calls[0]["max_tokens"]
+    assert len(calls) == 1 and calls[0]["max_tokens"] == 8192 - 1000 - 256
+    await adapter.client.close()

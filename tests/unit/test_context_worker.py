@@ -43,3 +43,31 @@ async def test_context_worker_folds_all_tail_pages():
 
     assert content.summary == "base/1/2"
     assert worker.api.after_values == [None, 1]
+
+
+async def test_document_summary_uses_remaining_window_and_retains_document_intent(
+    fake_llm,
+):
+    import json
+
+    worker = ContextWorker.__new__(ContextWorker)
+    worker.llm = fake_llm
+    fake_llm.json_responses = [
+        json.dumps({"summary": "СП 55, выбран раздел 3", "structured": {}})
+    ]
+    result = await worker._summarize(
+        {"model": "gpt-oss-20b", "target_seq": 2, "prompt_version": "documents-v1"},
+        ContextContent(summary="", structured={}),
+        [
+            {
+                "seq": 1,
+                "role": "user",
+                "parts": [{"kind": "text", "payload": {"text": "СП 55 пункт 3"}}],
+            }
+        ],
+    )
+    call = fake_llm.chat_calls[-1]
+    assert call.options["num_ctx"] == 32000
+    assert 6000 < call.options["num_predict"] < 32000
+    assert "исходный вопрос" in call.messages[0]["content"]
+    assert "СП 55" in result.summary

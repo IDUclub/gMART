@@ -75,6 +75,12 @@ class BaseLlmAdapter(ABC):
         """Deployed server limit, when exposed; unknown backends return None."""
         return None
 
+    async def model_input_tokens(
+        self, model: str, messages: list[dict], *, reasoning_effort: str | None = None
+    ) -> int | None:
+        """Rendered prompt tokens, when the provider exposes its tokenizer."""
+        return None
+
     @abstractmethod
     async def chat(
         self,

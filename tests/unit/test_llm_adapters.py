@@ -561,3 +561,120 @@ async def test_structured_retry_respects_remaining_context_window():
         )
     assert len(calls.calls) == 2
     assert 1024 < calls.calls[1]["max_tokens"] <= 3000 - 256
+
+
+async def test_tokenizer_keeps_proxy_prefix_and_counts_rendered_messages():
+    from unittest.mock import AsyncMock
+
+    adapter = OpenAiCompatAdapter("http://vllm:8000/llm/v1")
+    adapter.client.post = AsyncMock(return_value={"count": 1234})
+    try:
+        messages = [{"role": "user", "content": "Длинный русский текст"}]
+        assert (
+            await adapter.model_input_tokens(
+                "gpt-oss-20b", messages, reasoning_effort="medium"
+            )
+            == 1234
+        )
+        args = adapter.client.post.call_args
+        assert args.args[0] == "http://vllm:8000/llm/tokenize"
+        assert args.kwargs["body"]["messages"] == messages
+        assert args.kwargs["body"]["add_generation_prompt"] is True
+        assert args.kwargs["body"]["reasoning_effort"] == "medium"
+    finally:
+        await adapter.client.close()
+
+
+@pytest.mark.parametrize("count", [None, True, -1, "100"])
+async def test_invalid_token_count_uses_conservative_fallback(count):
+    from unittest.mock import AsyncMock
+
+    from src.agents.model_clients.context_budget import (
+        estimated_input_tokens,
+        remaining_output_tokens,
+    )
+
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    adapter.client.post = AsyncMock(return_value={"count": count})
+    messages = [{"role": "user", "content": "вопрос"}]
+    try:
+        assert await remaining_output_tokens(
+            adapter, "m", messages, 32000
+        ) == 32000 - estimated_input_tokens(messages)
+    finally:
+        await adapter.client.close()
+
+
+async def test_unavailable_tokenizer_uses_conservative_fallback():
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from openai import APIConnectionError
+
+    from src.agents.model_clients.context_budget import (
+        estimated_input_tokens,
+        remaining_output_tokens,
+    )
+
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    adapter.client.post = AsyncMock(
+        side_effect=APIConnectionError(
+            request=httpx.Request("POST", "http://vllm:8000/tokenize")
+        )
+    )
+    messages = [{"role": "user", "content": "вопрос"}]
+    try:
+        assert await remaining_output_tokens(
+            adapter, "m", messages, 32000
+        ) == 32000 - estimated_input_tokens(messages)
+    finally:
+        await adapter.client.close()
+
+
+async def test_planner_allows_reasoning_to_use_entire_remaining_context():
+    from unittest.mock import AsyncMock
+
+    from src.agents.services.dvd.dvd_reasoning import RetrievalPlanner
+    from tests.helpers import plan_json
+
+    adapter, calls = _adapter_with(
+        _Completion([_Choice(message=_Delta(plan_json()), finish_reason="stop")])
+    )
+    adapter.client.post = AsyncMock(return_value={"count": 3000})
+    try:
+        plan = await RetrievalPlanner(adapter).build_plan(
+            "gpt-oss-20b", "Что написано в СП 55 пункт 3?"
+        )
+        assert plan.pattern == "3"
+        assert calls.calls[0]["max_tokens"] == 32000 - 3000 - 256
+        assert calls.calls[0]["reasoning_effort"] == "low"
+    finally:
+        await adapter.client.close()
+
+
+async def test_tokenizer_response_is_parsed_by_real_sdk():
+    import httpx
+    from openai import AsyncOpenAI
+
+    def respond(request):
+        assert request.url.path == "/tokenize"
+        return httpx.Response(
+            200, json={"count": 73, "tokens": [1, 2], "max_model_len": 65536}
+        )
+
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    await adapter.client.close()
+    adapter.client = AsyncOpenAI(
+        base_url=adapter.base_url,
+        api_key="unused",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+    )
+    try:
+        assert (
+            await adapter.model_input_tokens(
+                "gpt-oss-20b", [{"role": "user", "content": "q"}]
+            )
+            == 73
+        )
+    finally:
+        await adapter.client.close()

@@ -50,12 +50,12 @@ async def answer(service):
     ]
 
 
-async def test_length_continues_visible_prefix_with_larger_budget():
+async def test_length_continues_visible_prefix_with_remaining_window():
     service = service_for([("Не менее ", "length"), ("Не менее 15 м [1].", "stop")])
     events = await answer(service)
     assert "".join(e["content"]["text"] for e in events) == "Не менее 15 м [1]."
     first, second = service.llm_client.calls
-    assert second["options"]["num_predict"] > first["options"]["num_predict"]
+    assert second["options"]["num_predict"] < first["options"]["num_predict"]
     assert {"role": "assistant", "content": "Не менее "} in second["messages"]
     assert all(not e["content"]["done"] for e in events)
 
@@ -65,7 +65,7 @@ async def test_reasoning_only_length_restarts_without_empty_assistant_message():
     assert (await answer(service))[0]["content"]["text"] == "Не менее 15 м [1]."
     first, second = service.llm_client.calls
     assert first["messages"] == second["messages"]
-    assert second["options"]["num_predict"] > first["options"]["num_predict"]
+    assert second["options"]["num_predict"] == first["options"]["num_predict"]
 
 
 async def test_exhausted_retries_do_not_emit_partial_answer():
@@ -85,18 +85,16 @@ async def test_content_filter_is_not_retried_as_token_exhaustion():
     assert len(service.llm_client.calls) == 1
 
 
-def test_dynamic_budget_grows_with_evidence_and_respects_explicit_cap(monkeypatch):
-    generator = DvdAnswerGenerator(DvdContextReducer(None))
-    assert generator.initial_budget("short", "q") < generator.initial_budget(
-        "x" * 32000, "q"
-    )
-    assert generator.initial_budget("x" * 200000, "q") == generator.maximum
+async def test_generation_uses_all_remaining_tokens_even_with_legacy_cap(monkeypatch):
     monkeypatch.setenv("DVD_ANSWER_MAX_TOKENS", "1536")
-    generator = DvdAnswerGenerator(DvdContextReducer(None))
-    assert generator.initial_budget("x" * 32000, "q") == 1536
+    service = service_for([("15 м [1].", "stop")])
+    await answer(service)
+    call = service.llm_client.calls[0]
+    assert call["options"]["num_predict"] == 32000 - message_cost(call["messages"])
+    assert call["options"]["num_predict"] > 16384
 
 
-async def test_retry_reduces_evidence_to_reserve_larger_output_and_keeps_history():
+async def test_oversized_evidence_is_reduced_and_history_survives_continuation():
     service = service_for([("Rule: ", "length"), ("Rule: 15 m [1].", "stop")])
     service.context_reducer.configured_window = 16384
     service.context_reducer.prepare = AsyncMock(
@@ -114,7 +112,7 @@ async def test_retry_reduces_evidence_to_reserve_larger_output_and_keeps_history
     result = await DvdAnswerGenerator(service.context_reducer).generate(
         "m",
         "q",
-        "x" * 8000,
+        "x" * 20000,
         0,
         messages,
         iteration=1,
@@ -122,7 +120,7 @@ async def test_retry_reduces_evidence_to_reserve_larger_output_and_keeps_history
     assert result == "Rule: 15 m [1]."
     service.context_reducer.prepare.assert_awaited_once()
     first, second = service.llm_client.calls
-    assert second["options"]["num_predict"] > first["options"]["num_predict"]
+    assert second["options"]["num_predict"] < first["options"]["num_predict"]
     assert second["messages"][0]["content"] == "[1] 15 m"
     assert history in second["messages"]
     for call in service.llm_client.calls:
@@ -163,9 +161,9 @@ async def test_failed_reduction_never_uses_incomplete_evidence():
 async def test_reasoning_only_failure_stops_at_hard_cap(monkeypatch):
     monkeypatch.setenv("DVD_ANSWER_MAX_TOKENS", "1536")
     service = service_for([("", "length")] * 10)
-    with pytest.raises(ValueError, match="no_budget_growth"):
+    with pytest.raises(ValueError, match="retries_exhausted"):
         await answer(service)
-    assert len(service.llm_client.calls) == 1
+    assert len(service.llm_client.calls) == 3
 
 
 async def test_eof_without_terminal_event_is_not_a_complete_answer():

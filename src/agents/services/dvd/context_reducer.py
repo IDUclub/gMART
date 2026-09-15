@@ -18,13 +18,19 @@ from dataclasses import dataclass, field
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
+from src.agents.model_clients.context_budget import remaining_output_tokens
+
 from .dvd_context import SOURCE_SEPARATOR, source_records
 
+MAX_CONTEXT_WINDOW_TOKENS = 32000
 _MODEL_WINDOW = ContextVar("dvd_model_window", default=None)
 
 
 def current_context_window() -> int:
-    return _MODEL_WINDOW.get() or int(os.getenv("DVD_CONTEXT_WINDOW_TOKENS", "8192"))
+    return _MODEL_WINDOW.get() or min(
+        MAX_CONTEXT_WINDOW_TOKENS,
+        int(os.getenv("DVD_CONTEXT_WINDOW_TOKENS", str(MAX_CONTEXT_WINDOW_TOKENS))),
+    )
 
 
 class SourceEvidence(BaseModel):
@@ -91,23 +97,17 @@ class DvdContextReducer:
         self.llm_client = llm_client
         configured = window_tokens or os.getenv("DVD_CONTEXT_WINDOW_TOKENS")
         self.configured_window = int(configured) if configured else None
-        self.output_tokens = int(os.getenv("DVD_ANSWER_MAX_TOKENS", "16384"))
-        # Reasoning consumes completion tokens too. A short summary is not a small
-        # generation budget; keep this independent of the final answer length.
-        self.summary_output_tokens = int(os.getenv("DVD_SUMMARY_MAX_TOKENS", "4096"))
         self.concurrency = int(concurrency or os.getenv("DVD_CONTEXT_CONCURRENCY", "4"))
         self.retries = retries
-        if (
-            self.window < 4096
-            or self.output_tokens < 128
-            or self.summary_output_tokens < 256
-            or not 1 <= self.concurrency <= 16
-        ):
+        if self.window < 4096 or not 1 <= self.concurrency <= 16:
             raise ValueError("invalid DVD context budget or concurrency")
 
     @property
     def window(self) -> int:
-        return _MODEL_WINDOW.get() or self.configured_window or 8192
+        return _MODEL_WINDOW.get() or min(
+            self.configured_window or MAX_CONTEXT_WINDOW_TOKENS,
+            MAX_CONTEXT_WINDOW_TOKENS,
+        )
 
     @asynccontextmanager
     async def model_window(self, model: str):
@@ -115,7 +115,10 @@ class DvdContextReducer:
         reported = await resolver(model) if resolver else None
         if type(reported) is not int or reported < 4096:
             reported = None
-        selected = self.configured_window or reported or 8192
+        selected = min(
+            self.configured_window or MAX_CONTEXT_WINDOW_TOKENS,
+            MAX_CONTEXT_WINDOW_TOKENS,
+        )
         if reported:
             selected = min(selected, reported)
         token = _MODEL_WINDOW.set(selected)
@@ -131,7 +134,7 @@ class DvdContextReducer:
         # Reserve answer tokens, chat framing and the drafting/review system prompt.
         # Preliminary reduction; drafting reserves its dynamically selected
         # budget against the actual messages and may reduce again if necessary.
-        reserve = min(self.output_tokens, self.window // 4)
+        reserve = self.window // 4
         available = self.window - reserve - 2300 - cost(user_query)
         available -= cost(json.dumps(history or [], ensure_ascii=False))
         if available < 512:
@@ -180,9 +183,18 @@ class DvdContextReducer:
         *,
         budget_limit: int | None = None,
     ) -> PreparedContext:
-        budget = (
-            self.budget(user_query, history) if budget_limit is None else budget_limit
-        )
+        if budget_limit is None:
+            available = await remaining_output_tokens(
+                self.llm_client,
+                model,
+                [*(history or []), {"role": "user", "content": user_query}],
+                self.window,
+            )
+            # This reserve only controls evidence reduction; generation receives
+            # all actual space left after the final messages have been assembled.
+            budget = available - self.window // 4 - 2300
+        else:
+            budget = budget_limit
         if budget < 512:
             raise ValueError("context budget is too small")
         result = PreparedContext(context)
@@ -326,8 +338,12 @@ class DvdContextReducer:
                 for key, items in spans.items()
             },
         }
-        available = (
-            self.window - cost(system) - cost(user) - cost(json.dumps(schema)) - 256
+        available = await remaining_output_tokens(
+            self.llm_client,
+            model,
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            self.window,
+            schema=schema,
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")
@@ -341,7 +357,7 @@ class DvdContextReducer:
             ],
             options={
                 "temperature": 0,
-                "num_predict": min(self.summary_output_tokens, available),
+                "num_predict": available,
                 "num_ctx": self.window,
             },
         )
@@ -419,8 +435,12 @@ class DvdContextReducer:
         schema["$defs"]["SourceEvidence"]["properties"]["source_id"]["enum"] = list(
             records
         )
-        available = (
-            self.window - cost(system) - cost(user) - cost(json.dumps(schema)) - 256
+        available = await remaining_output_tokens(
+            self.llm_client,
+            model,
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            self.window,
+            schema=schema,
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")
@@ -434,7 +454,7 @@ class DvdContextReducer:
             ],
             options={
                 "temperature": 0,
-                "num_predict": min(self.summary_output_tokens, available),
+                "num_predict": available,
                 "num_ctx": self.window,
             },
         )

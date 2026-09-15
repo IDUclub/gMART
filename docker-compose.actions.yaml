@@ -5,14 +5,13 @@ services:
     restart: always
     ports:
       - "80:80"
-    environment:
+    environment: &agents-environment
       OLLAMA_API_URL: ${OLLAMA_API_URL}
       IDU_MCP_SERVER: ${IDU_MCP_SERVER}
       OBJECTS_EFFECTS_MCP_SERVER: ${OBJECTS_EFFECTS_MCP_SERVER}
       DVD_MCP_SERVER: ${DVD_MCP_SERVER}
       DVD_API_URL: ${DVD_API_URL:-}
-      DVD_CONTEXT_WINDOW_TOKENS: ${DVD_CONTEXT_WINDOW_TOKENS:-8192}
-      DVD_ANSWER_MAX_TOKENS: ${DVD_ANSWER_MAX_TOKENS:-1536}
+      DVD_CONTEXT_WINDOW_TOKENS: ${DVD_CONTEXT_WINDOW_TOKENS:-32000}
       DVD_CONTEXT_CONCURRENCY: ${DVD_CONTEXT_CONCURRENCY:-4}
       DVD_RETRIEVAL_MAX_PAGES: ${DVD_RETRIEVAL_MAX_PAGES:-100}
       NORM_GRAPH_MCP_SERVER: ${NORM_GRAPH_MCP_SERVER}
@@ -45,6 +44,16 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  context_worker:
+    image: ${AGENTS_IMAGE}
+    restart: always
+    command: ["python", "-m", "src.agents.workers.context_worker"]
+    environment: *agents-environment
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      disable: true
 
   idu_mcp:
     image: ${MCP_IMAGE}
