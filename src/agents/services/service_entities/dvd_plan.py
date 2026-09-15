@@ -56,6 +56,8 @@ class _BaseRetrievalPlan(BaseModel):
     version: str | None = None
     include_children: bool = True
     allow_multiple: bool = False
+    rank_by_relevance: bool = False
+    include_shared: bool = True
 
     @field_validator(
         "pattern", "name_query", "doc_id", "version", "block", mode="before"

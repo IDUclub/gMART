@@ -138,7 +138,11 @@ class DvdMcpClient(BaseMcpClient):
         self, request: dict[str, Any], *, mode: str = "structure"
     ) -> dict[str, Any]:
         """One page; caller must consume next_cursor without changing the selectors."""
-        tool = "search_structure" if mode == "structure" else "search_fragment_names"
+        tool = {
+            "structure": "search_structure",
+            "name": "search_fragment_names",
+            "filtered": "search_filtered",
+        }[mode]
         result = await self.execute_tool(tool, {"request": request})
         normalized = self._normalize(result)
         normalized["candidates"] = [

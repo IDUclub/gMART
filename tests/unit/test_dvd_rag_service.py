@@ -267,6 +267,8 @@ class TestLoop:
         # and are recorded in the emitted tool_call arguments
         tool_calls = events_of_type(events, "tool_call")
         args = tool_calls[0]["content"]["tool_calls"][0]["function"]["arguments"]
+        assert args["request"]["rank_by_relevance"]
+        args = args["request"]
         assert args["document_names"] == ["СП 42.13330"]
         assert args["block"] == "amendment"
         assert args["types"] == ["clause"]

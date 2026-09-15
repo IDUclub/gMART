@@ -19,12 +19,13 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
 from .dvd_context import SOURCE_SEPARATOR, source_records
+from .request_budget import check_request, request_chars, request_limit
 
 _MODEL_WINDOW = ContextVar("dvd_model_window", default=None)
 
 
 def current_context_window() -> int:
-    return _MODEL_WINDOW.get() or int(os.getenv("DVD_CONTEXT_WINDOW_TOKENS", "8192"))
+    return _MODEL_WINDOW.get() or int(os.getenv("DVD_CONTEXT_WINDOW_TOKENS", "65536"))
 
 
 class SourceEvidence(BaseModel):
@@ -107,7 +108,7 @@ class DvdContextReducer:
 
     @property
     def window(self) -> int:
-        return _MODEL_WINDOW.get() or self.configured_window or 8192
+        return _MODEL_WINDOW.get() or self.configured_window or 65536
 
     @asynccontextmanager
     async def model_window(self, model: str):
@@ -115,7 +116,7 @@ class DvdContextReducer:
         reported = await resolver(model) if resolver else None
         if type(reported) is not int or reported < 4096:
             reported = None
-        selected = self.configured_window or reported or 8192
+        selected = self.configured_window or reported or 65536
         if reported:
             selected = min(selected, reported)
         token = _MODEL_WINDOW.set(selected)
@@ -134,6 +135,14 @@ class DvdContextReducer:
         reserve = min(self.output_tokens, self.window // 4)
         available = self.window - reserve - 2300 - cost(user_query)
         available -= cost(json.dumps(history or [], ensure_ascii=False))
+        # The evidence budget is conservative bytes; the final guards count actual
+        # Unicode characters, including instructions, history and output schemas.
+        characters = (
+            request_limit()
+            - request_chars([*(history or []), {"role": "user", "content": user_query}])
+            - 6000
+        )
+        available = min(available, characters)
         if available < 512:
             raise ValueError(
                 "question/history leaves no document context budget; shorten history or configure a larger model window"
@@ -183,6 +192,7 @@ class DvdContextReducer:
         budget = (
             self.budget(user_query, history) if budget_limit is None else budget_limit
         )
+        budget = min(budget, request_limit() - len(user_query) - 6000)
         if budget < 512:
             raise ValueError("context budget is too small")
         result = PreparedContext(context)
@@ -331,6 +341,13 @@ class DvdContextReducer:
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")
+        check_request(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            schema,
+        )
         response = await self.llm_client.chat(
             model=model,
             think=False,
@@ -424,6 +441,13 @@ class DvdContextReducer:
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")
+        check_request(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            schema,
+        )
         response = await self.llm_client.chat(
             model=model,
             think=False,

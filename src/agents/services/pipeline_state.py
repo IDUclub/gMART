@@ -138,6 +138,22 @@ class PipelineStateStore:
         )
         return json.loads(raw) if raw else None
 
+    async def get_document_scope(self, chat_id: str) -> dict:
+        raw = await self._retry(self._redis.get, self._key(chat_id, "document_scope"))
+        return json.loads(raw) if raw else {}
+
+    async def set_document_scope(self, chat_id: str, scope: dict) -> None:
+        key = self._key(chat_id, "document_scope")
+        if scope:
+            await self._retry(
+                self._redis.setex,
+                key,
+                PIPELINE_TTL,
+                json.dumps(scope, ensure_ascii=False),
+            )
+        else:
+            await self._retry(self._redis.delete, key)
+
     async def get_document_run(self, request_id: str) -> dict | None:
         raw = await self._retry(self._redis.get, self._key(request_id, "document_run"))
         return json.loads(raw) if raw else None
