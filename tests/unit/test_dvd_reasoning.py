@@ -118,3 +118,13 @@ async def test_critic_does_not_approve_on_invalid_json(fake_llm):
     verdict = await AnswerCritic(fake_llm).review("m", "q", "ctx", "answer")
     assert verdict.satisfied is False
     assert len(fake_llm.chat_calls) == 3
+
+
+async def test_short_sp_designation_wins_over_unscoped_llm_plan(fake_llm):
+    fake_llm.json_responses = [plan_json(document_names=None)]
+    plan = await RetrievalPlanner(fake_llm).build_plan(
+        "m", "Что написано в пункте 3.3 СП 55?", history=[]
+    )
+    assert plan.retrieval_mode == "structure"
+    assert plan.pattern == "3.3"
+    assert plan.document_names == ["СП 55"]

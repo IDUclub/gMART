@@ -9,6 +9,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
+from src.agents.services.dvd.document_reference import parse_reference
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.dvd_plan import (
     CriticVerdict,
@@ -19,6 +20,7 @@ from src.agents.services.service_entities.dvd_plan import (
 
 from .clarification import parse_choice, selected_choice
 from .context_reducer import cost, current_context_window
+from .dvd_context import source_records
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -180,26 +182,17 @@ class RetrievalPlanner:
             block = None
         # A concrete address is an identifier, not a semantic search phrase. The
         # explicit user token wins over an LLM paraphrase (and over later critiques).
-        address = re.search(
-            r"(?:пункт[а-я]*|подпункт[а-я]*|п\.|раздел[а-я]*|section|clause)\s*"
-            r"([А-ЯA-Zа-яa-z]?\d+(?:\.[\d*?]+)*(?:\s*[–—-]\s*\d+(?:\.\d+)*)?)",
-            user_query,
-            re.I,
-        )
-        designations = [
-            m[1]
-            for m in re.finditer(
-                r"\b((?:ГОСТ(?:\s+Р)?|СП|СНиП|СанПиН|СН|ТСН|НПБ|ISO|EN)\s*\d+(?:[.\-]\d+){1,5})",
-                user_query,
-                re.I,
-            )
-            if not (address and m.start() < address.end() and m.end() > address.start())
-        ]
-        pattern = address[1] if address else (plan.pattern or "").strip() or None
-        if address and pattern and re.search(r"\d\?$", pattern):
-            pattern = pattern[:-1]  # Sentence punctuation, not an explicit 3.? mask.
-        if address and plan.pattern and "/" in plan.pattern:
-            if plan.pattern.rsplit("/", 1)[-1].strip() == address[1].strip():
+        reference = parse_reference(user_query)
+        designations = reference.document_names
+        pattern = reference.pattern or (plan.pattern or "").strip() or None
+        # Keep a supplied complete path when the literal query only names its leaf.
+        if (
+            reference.pattern
+            and "/" not in reference.pattern
+            and plan.pattern
+            and "/" in plan.pattern
+        ):
+            if plan.pattern.rsplit("/", 1)[-1].strip() == reference.pattern:
                 pattern = plan.pattern.strip()
         mode = (
             "structure"
@@ -214,6 +207,8 @@ class RetrievalPlanner:
             ),
             "kind": SearchKind.ALL if mode != "semantic" else plan.kind,
         }
+        if reference.pattern:
+            updates.update(include_children=True, name_query=None, types=None)
         if designations:
             updates["document_names"] = list(dict.fromkeys(designations))
         return validate_retrieval_plan(
@@ -377,6 +372,28 @@ class AnswerCritic:
 
         source = normalize(context)
         defects = []
+        # Application labels must point at retrieved sources. Do not reinterpret
+        # bibliography markers inside the verbatim quotation as generated links.
+        explanation = answer.split("Полная цитата:", 1)[0]
+        generated = "\n".join(
+            line
+            for line in explanation.splitlines()
+            if not line.lstrip().startswith(">")
+        )
+        known_labels = set(source_records(context)) - {"unlabelled"}
+        for label in re.findall(r"\[(?:N|\d+)\]", generated):
+            if label == "[N]" or (known_labels and label not in known_labels):
+                defects.append(
+                    f"Ссылка {label} отсутствует среди источников. Используй конкретные доступные метки, например [1], вместо шаблона [N]."
+                )
+        if "Полная цитата:" in answer and re.search(
+            r"(?:\b(?:нет|отсутствует|не\s+содерж[а-яё]*)\s+(?:\w+\s+){0,2}(?:текст[а-я]*|содержани[а-я]*)\b|\b(?:сам\s+)?текст\b[^!?\n]{0,100}(?:не\s+(?:привед[её]н|предоставлен|представлен)|отсутствует))",
+            explanation,
+            re.I,
+        ):
+            defects.append(
+                "Полный текст уже приведён в цитате. Не утверждай, что сам текст отсутствует; объясни имеющуюся формулировку без выдуманных требований."
+            )
         for acronym, expansion in re.findall(
             r"\b([А-ЯЁA-Z]{2,})\s*\(([^()\n]+)\)", answer
         ):
@@ -426,6 +443,13 @@ Do not approve a mostly correct answer that contains even one unsupported assert
 For example, if a source only uses an acronym, an invented parenthetical expansion
 in the answer is an unsupported claim even when its main conclusion is correct.
 If the source says clause 27.3 and table 31.3, citing TABLE 27.3 is unsupported.
+
+Distinguish application citation labels in excerpt HEADERS from bibliography
+references inside source TEXT. For example, if excerpt [1] contains a reference
+[6], an answer may say "позиция 6 библиографии документа" and cite excerpt [1].
+This correctly attributes the cross-reference; do not require application label
+[6] or confuse the bibliography position with a clause number. The referenced
+external document's actual requirements are not available from that reference.
 
 Hard rejection rules:
 1. A rule for one building type MUST NOT be transferred to another type. A house,
