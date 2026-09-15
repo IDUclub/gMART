@@ -6,54 +6,57 @@ from src.agents.services.dvd.context_reducer import (
     DvdContextReducer,
     current_context_window,
 )
-from src.agents.services.dvd.dvd_reasoning import _request_json
-from src.agents.services.dvd.request_budget import (
-    check_request,
-    request_chars,
-    request_limit,
-)
+from src.agents.services.dvd.dvd_reasoning import RetrievalPlanner, _request_json
 from src.agents.services.service_entities.dvd_plan import CriticVerdict
+from tests.helpers import plan_json, verdict_json
 
 
-def test_full_unicode_request_includes_history_sources_and_schema(monkeypatch):
-    monkeypatch.delenv("DVD_REQUEST_MAX_CHARS", raising=False)
-    messages = [
-        {"role": "system", "content": "Источники: " + "Я" * 15000},
-        {"role": "assistant", "content": "история"},
-        {"role": "user", "content": "вопрос"},
-    ]
-    assert request_limit() == 32000
-    assert request_chars(messages) < 16000
-    check_request(messages)
-    with pytest.raises(ValueError, match="character_limit"):
-        check_request(messages, {"description": "С" * 18000})
+async def test_legacy_character_limit_no_longer_rejects_model_input(monkeypatch):
+    monkeypatch.setenv("DVD_REQUEST_MAX_CHARS", "4096")
+    monkeypatch.delenv("DVD_CONTEXT_WINDOW_TOKENS", raising=False)
+    llm = AsyncMock()
+    llm.chat.return_value = {"message": {"content": verdict_json()}}
+    await _request_json(
+        llm, "m", [{"role": "user", "content": "Я" * 5000}], CriticVerdict
+    )
+    call = llm.chat.call_args.kwargs
+    assert call["options"]["num_predict"] == 32000 - 10000 - 64 - 256
+    assert call["options"]["num_ctx"] == 32000
 
 
 async def test_oversized_planning_is_rejected_before_model_call():
     llm = AsyncMock()
-    with pytest.raises(ValueError, match="character_limit"):
+    with pytest.raises(ValueError, match="context window"):
         await _request_json(
             llm, "m", [{"role": "user", "content": "я" * 32000}], CriticVerdict
         )
     llm.chat.assert_not_called()
 
 
-async def test_fallback_window_increased_but_server_cap_is_respected(monkeypatch):
+@pytest.mark.parametrize("server_window", [None, 16384, 65536])
+@pytest.mark.parametrize("configured", [None, "8192", "131072"])
+async def test_window_cap_respects_smaller_server_and_configuration(
+    monkeypatch, server_window, configured
+):
     monkeypatch.delenv("DVD_CONTEXT_WINDOW_TOKENS", raising=False)
-    assert current_context_window() == 65536
+    if configured:
+        monkeypatch.setenv("DVD_CONTEXT_WINDOW_TOKENS", configured)
     llm = AsyncMock()
-    llm.model_context_window.return_value = 16384
+    llm.model_context_window.return_value = server_window
     reducer = DvdContextReducer(llm)
+    default = min(int(configured or 32000), 32000)
+    assert current_context_window() == default
     async with reducer.model_window("m"):
-        assert current_context_window() == 16384
-    assert current_context_window() == 65536
+        expected = min(default, server_window or 32000)
+        assert current_context_window() == reducer.window == expected
+    assert current_context_window() == default
 
 
 @pytest.mark.parametrize("method", ["_summarize", "_select_evidence"])
-async def test_evidence_calls_enforce_whole_request_limit(method):
+async def test_evidence_calls_enforce_context_window(method):
     llm = AsyncMock()
     reducer = DvdContextReducer(llm, window_tokens=131072)
-    with pytest.raises(ValueError, match="character_limit"):
+    with pytest.raises(ValueError, match="context_budget_exhausted"):
         await getattr(reducer, method)("m", "q", "[1] Source\n" + "x" * 32000, 40000)
     llm.chat.assert_not_called()
 
@@ -66,7 +69,7 @@ async def test_answer_checks_history_and_instructions_before_sending():
 
     llm = AsyncMock()
     generator = DvdAnswerGenerator(DvdContextReducer(llm, window_tokens=131072))
-    with pytest.raises(AnswerGenerationError, match="character_room"):
+    with pytest.raises(AnswerGenerationError, match="context_room"):
         await generator.generate(
             "m",
             "q",
@@ -79,3 +82,36 @@ async def test_answer_checks_history_and_instructions_before_sending():
             iteration=1,
         )
     llm.chat.assert_not_called()
+
+
+async def test_planner_uses_remaining_tokens_and_ignores_legacy_caps(monkeypatch):
+    monkeypatch.setenv("DVD_PLANNER_MAX_TOKENS", "1024")
+    monkeypatch.setenv("DVD_REQUEST_MAX_CHARS", "32000")
+    monkeypatch.delenv("DVD_CONTEXT_WINDOW_TOKENS", raising=False)
+    llm = AsyncMock()
+    llm.model_input_tokens.return_value = 8000
+    llm.chat.return_value = {"message": {"content": plan_json()}}
+    await RetrievalPlanner(llm).build_plan(
+        "gpt-oss-20b",
+        "Что написано в СП 55 пункт 3?",
+        history=[{"role": "user", "content": "История " * 5000}],
+    )
+    call = llm.chat.call_args.kwargs
+    assert call["options"]["num_predict"] == 32000 - 8000 - 256
+    assert call["options"]["num_ctx"] == 32000
+    assert sum(len(m["content"]) for m in call["messages"]) > 32000
+
+
+async def test_reasoning_output_is_bounded_by_remaining_window(monkeypatch):
+    monkeypatch.setenv("DVD_CONTEXT_WINDOW_TOKENS", "8192")
+    llm = AsyncMock()
+    llm.chat.return_value = {"message": {"content": verdict_json()}}
+    await _request_json(
+        llm,
+        "m",
+        [{"role": "user", "content": "x" * 6000}],
+        CriticVerdict,
+    )
+    assert (
+        128 <= llm.chat.call_args.kwargs["options"]["num_predict"] <= 8192 - 6000 - 256
+    )

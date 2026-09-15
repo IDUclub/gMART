@@ -125,6 +125,39 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                     return window
         return None
 
+    async def model_input_tokens(self, model, messages, *, reasoning_effort=None):
+        # vLLM exposes /tokenize beside /v1. Keep a reverse-proxy path prefix.
+        endpoint = self.base_url.rstrip("/").removesuffix("/v1") + "/tokenize"
+        call = self._build(
+            model,
+            messages,
+            False,
+            False,
+            None,
+            None,
+            {"reasoning_effort": reasoning_effort} if reasoning_effort else {},
+        )
+        body = {"model": model, "messages": messages, "add_generation_prompt": True}
+        if call.get("reasoning_effort"):
+            body["reasoning_effort"] = call["reasoning_effort"]
+        body.update(call.get("extra_body") or {})
+        try:
+            result = await self.client.post(
+                endpoint,
+                cast_to=dict[str, Any],
+                body=body,
+                options={"timeout": 5, "max_retries": 0},
+            )
+            count = result.get("count") if isinstance(result, dict) else None
+            if type(count) is int and count >= 0:
+                return count
+        except OpenAIError as exc:
+            _warn_once(
+                "tokenizer:" + self.base_url,
+                f"Model tokenizer unavailable ({type(exc).__name__}); using conservative input estimate",
+            )
+        return None
+
     @staticmethod
     def _reasoning(part: Any) -> str | None:
         """The reasoning trace, whichever name the server gives it.

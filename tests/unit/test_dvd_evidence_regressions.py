@@ -98,9 +98,9 @@ async def test_reported_model_window_avoids_unnecessary_reduction(monkeypatch):
     source = "[1] Source\n" + "text " * 4000
     async with reducer.model_window("m"):
         result = await reducer.prepare("m", "q", source)
-        assert reducer.window == 65536 and result.text == source
+        assert reducer.window == 32000 and result.text == source
         llm.chat.assert_not_called()
-    assert reducer.window == 65536
+    assert reducer.window == 32000
 
 
 async def test_explicit_window_is_capped_by_server_and_is_task_local(monkeypatch):
@@ -141,7 +141,7 @@ async def test_invalid_metadata_uses_fallback_without_changing_explicit_cap(
         SimpleNamespace(model_context_window=AsyncMock(return_value=window))
     )
     async with reducer.model_window("m"):
-        assert reducer.window == 65536
+        assert reducer.window == 32000
     reducer = DvdContextReducer(reducer.llm_client, window_tokens=16384)
     async with reducer.model_window("m"):
         assert reducer.window == 16384
