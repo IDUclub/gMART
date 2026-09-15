@@ -325,11 +325,24 @@ class AnswerCritic:
         user_query: str,
         context: str,
         answer: str,
+        *,
+        require_answer: bool = False,
     ) -> CriticVerdict:
         if defects := self._literal_defects(context, answer):
             return CriticVerdict(satisfied=False, critique="; ".join(defects))
         messages: list[dict] = [
-            {"role": "system", "content": self._prompt()},
+            {
+                "role": "system",
+                "content": self._prompt()
+                + (
+                    "\nThis is an answer from conversation context BEFORE retrieval. "
+                    "Reject refusals and claims that evidence is insufficient: they mean "
+                    "the agent must search, not finish this turn. The answer must actually "
+                    "address the user's question using the supplied source text."
+                    if require_answer
+                    else ""
+                ),
+            },
             {"role": "user", "content": self._payload(user_query, context, answer)},
         ]
         try:
@@ -443,6 +456,12 @@ Return JSON only: {json.dumps(structure, ensure_ascii=False)}
 First inspect every assertion and list evidence defects; only then decide satisfied.
 Judge material factual correctness and whether the user's actual request is answered.
 Accept faithful paraphrases, concise answers and ordinary introductory wording.
+A summary may describe the subject visible in a set of excerpts without a literal
+sentence stating that subject. For example, a section headed "Термины и определения"
+followed by definitions supports "Раздел объясняет используемые термины" and a list
+of examples actually present. This is a supported synthesis, not an invented norm.
+Saying definitions help interpret terms used later in the document is ordinary
+reading guidance; do not flag that alone as invented legal applicability.
 Do not reject style, formatting, a lack of optional detail or failure to enumerate
 all retrieved excerpts when the user did not request a full quotation/list.
 A brief introduction followed by a full verbatim quotation satisfies completeness;
