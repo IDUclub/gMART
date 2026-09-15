@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from typing import Any, TypeVar
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from src.agents.model_clients.context_budget import remaining_output_tokens
 from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
 from src.agents.services.dvd.document_reference import parse_reference, wants_full_quote
 from src.agents.services.dvd.retrieval_scope import apply_scope
@@ -20,9 +20,8 @@ from src.agents.services.service_entities.dvd_plan import (
 )
 
 from .clarification import parse_choice, selected_choice
-from .context_reducer import cost, current_context_window
+from .context_reducer import current_context_window
 from .dvd_context import source_records
-from .request_budget import check_request
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -76,7 +75,6 @@ async def _request_json(
     messages: list[dict],
     model_cls: Any,
     retries: int = 2,
-    max_tokens: int = 1024,
     reasoning_effort: str | None = None,
 ) -> T:
     """
@@ -93,11 +91,12 @@ async def _request_json(
     )
     schema = adapter.json_schema()
     for attempt in range(retries + 1):
-        check_request(messages, schema)
-        # The schema is a decoding constraint, not another message. Reserving its
-        # serialized UTF-8 size rejected the existing planner even with no history.
-        available = (
-            current_context_window() - sum(cost(m["content"]) for m in messages) - 256
+        available = await remaining_output_tokens(
+            llm_client,
+            model,
+            messages,
+            current_context_window(),
+            reasoning_effort=reasoning_effort,
         )
         if available < 128:
             raise ValueError("structured request exceeds configured context window")
@@ -107,12 +106,14 @@ async def _request_json(
             format=schema,
             options={
                 "temperature": 0,
-                "num_predict": min(max_tokens, available),
+                "num_predict": available,
                 "num_ctx": current_context_window(),
             },
             messages=messages,
             **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
         )
+        if response.get("done_reason") in {"length", "max_tokens"}:
+            raise ValueError("structured_output_exhausted_context_window")
         content = response["message"]["content"]
         logger.debug(f"LLM {model_name} response [{model}]: {content}")
         try:
@@ -171,7 +172,12 @@ class RetrievalPlanner:
             *(history or []),
             {"role": "user", "content": user_query},
         ]
-        plan = await _request_json(self.llm_client, model, messages, RetrievalPlan)
+        plan = await _request_json(
+            self.llm_client,
+            model,
+            messages,
+            RetrievalPlan,
+        )
         plan = self._clamp(plan, user_query)
         plan = apply_scope(plan, user_query, history=history)
         logger.info(f"DVD retrieval plan: {plan.model_dump_json(ensure_ascii=False)}")
@@ -332,7 +338,6 @@ class AnswerCritic:
                 model,
                 messages,
                 EvidenceAudit,
-                max_tokens=int(os.getenv("DVD_REVIEW_MAX_TOKENS", "4096")),
                 reasoning_effort=(
                     "medium"
                     if isinstance(self.llm_client, OpenAiCompatAdapter)
