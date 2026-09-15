@@ -9,6 +9,7 @@ class DvdStatusResponse(BaseModel):
     """Status update for a stage of the iterative RAG pipeline."""
 
     status: Literal[
+        "context_check",
         "retrieval_planning",
         "searching",
         "context_processing",

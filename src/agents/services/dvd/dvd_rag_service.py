@@ -21,6 +21,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
+from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.dvd.answer_generation import (
     AnswerGenerationError,
@@ -33,6 +34,14 @@ from src.agents.services.dvd.clarification import (
     selected_choice,
 )
 from src.agents.services.dvd.context_reducer import DvdContextReducer
+from src.agents.services.dvd.conversation_evidence import (
+    ConversationEvidence,
+    compact_hits,
+    quotation_target,
+    recover_quotation,
+    refers_to_context,
+    source_context,
+)
 from src.agents.services.dvd.dialogue import (
     pending_question,
     render_question,
@@ -97,6 +106,7 @@ class DvdRagService(BaseLlmService):
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.planner = RetrievalPlanner(self.llm_client)
         self.critic = AnswerCritic(self.llm_client)
+        self.conversation_evidence = ConversationEvidence(self.llm_client)
         self.context_builder = DvdContextBuilder()
         self.context_reducer = DvdContextReducer(self.llm_client)
         self.state_store = state_store
@@ -238,6 +248,18 @@ class DvdRagService(BaseLlmService):
         collected["document_scope"] = (
             await self.state_store.get_document_scope(chat_id) if chat_id else {}
         ) or collected.get("summary_document_scope", {})
+        collected["scenario_id"] = scenario_id
+        if chat_id and collected.get("chat_context_access"):
+            collected["cached_evidence"] = await self.state_store.get_document_evidence(
+                chat_id
+            )
+            if (
+                not collected["cached_evidence"]
+                and collected.get("chat_scenario_id") == scenario_id
+            ):
+                collected["cached_evidence"] = recover_quotation(
+                    collected.get("verbatim_history", history), scenario_id
+                )
         if resets_scope(user_query):
             collected["document_scope"] = {}
             if chat_id:
@@ -254,7 +276,13 @@ class DvdRagService(BaseLlmService):
             )
             if pending and CLARIFICATION in last_answer:
                 reply = resolve_reply(user_query, pending)
-                if reply and reply.get("unresolved"):
+                if (reply and reply.get("unresolved")) or (
+                    reply is None
+                    and refers_to_context(user_query)
+                    and not parse_reference(user_query).pattern
+                    and not parse_reference(user_query).document_names
+                    and not resets_scope(user_query)
+                ):
                     async for event in self._finish_retrieval(
                         request_id, collected, render_question(pending), 1
                     ):
@@ -340,6 +368,18 @@ class DvdRagService(BaseLlmService):
                 "",
             )
             intent_query = original + "\n" + user_query
+
+        if not progress and not collected.get("reply_plan"):
+            async for event in self._answer_from_context(
+                model, user_query, history, collected, request_id
+            ):
+                yield event
+            if collected.get("newly_completed"):
+                return
+        # A new retrieval replaces the conversation's active source set. Clear it
+        # even on not-found/clarification so a later pronoun cannot use stale sources.
+        if collected.get("chat_id") and collected.get("chat_context_access"):
+            await self.state_store.set_document_evidence(collected["chat_id"], None)
 
         for iteration in range(start_iteration, self.MAX_ITERATIONS + 1):
             final_iteration = iteration
@@ -602,6 +642,18 @@ class DvdRagService(BaseLlmService):
                 )
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
+
+            if collected.get("chat_id") and collected.get("chat_context_access"):
+                await self.state_store.set_document_evidence(
+                    collected["chat_id"],
+                    {
+                        "hits": compact_hits(hits),
+                        "plan": plan.model_dump(),
+                        "question": intent_query,
+                        "scenario_id": scenario_id,
+                        "complete": bool(search_result.get("complete", False)),
+                    },
+                )
 
             quotation = None
             if plan.retrieval_mode == "structure" and wants_full_quote(intent_query):
@@ -1038,6 +1090,129 @@ class DvdRagService(BaseLlmService):
             },
         )
 
+    async def _answer_from_context(self, model, query, history, collected, request_id):
+        snapshot = collected.get("cached_evidence")
+        yield await self._buf(
+            request_id,
+            self._status(
+                "context_check", "Проверяю, достаточно ли уже полученного контекста…"
+            ),
+        )
+        if not self.conversation_evidence.applicable(
+            query, snapshot, collected.get("scenario_id")
+        ):
+            return
+        if quote_only(query) and (target := quotation_target(query, snapshot)):
+            hits, pattern = target
+            snapshot = {
+                **snapshot,
+                "plan": {**snapshot["plan"], "pattern": pattern},
+                "question": query,
+            }
+            await self.state_store.set_document_evidence(collected["chat_id"], snapshot)
+            async for event in self._finish_retrieval(
+                request_id, collected, self.context_builder.full_quote(hits), 1
+            ):
+                yield event
+            return
+        refetch_selected = True
+        try:
+            correction = None
+            for _ in range(2):
+                assessment = await self.conversation_evidence.assess(
+                    model, query, history, snapshot, correction=correction
+                )
+                numbers = set(assessment.source_numbers)
+                valid = numbers and all(
+                    1 <= n <= len(snapshot["hits"]) for n in numbers
+                )
+                logger.info(
+                    "DVD context assessment action={} sources={}",
+                    assessment.action,
+                    assessment.source_numbers,
+                )
+                if assessment.action == "clarify" and valid and len(numbers) > 1:
+                    candidates = [
+                        h for i, h in enumerate(snapshot["hits"], 1) if i in numbers
+                    ]
+                    pending = pending_question(
+                        validate_retrieval_plan(snapshot["plan"]), candidates, query
+                    )
+                    await self.state_store.set_document_question(
+                        collected["chat_id"], pending
+                    )
+                    async for event in self._finish_retrieval(
+                        request_id, collected, render_question(pending), 1
+                    ):
+                        yield event
+                    return
+                if (
+                    assessment.action == "answer"
+                    and assessment.answer.strip()
+                    and valid
+                ):
+                    context = source_context(snapshot["hits"])
+                    yield await self._buf(
+                        request_id,
+                        self._status(
+                            "self_review",
+                            "Проверяю ответ по сохранённым исходным текстам…",
+                        ),
+                    )
+                    verdict = await self.critic.review(
+                        model, query, context, assessment.answer, require_answer=True
+                    )
+                    if verdict.satisfied:
+                        reference = parse_reference(query)
+                        snapshot = {**snapshot, "question": query}
+                        if reference.pattern:
+                            snapshot["plan"] = {
+                                **snapshot["plan"],
+                                "pattern": reference.pattern,
+                            }
+                        await self.state_store.set_document_evidence(
+                            collected["chat_id"], snapshot
+                        )
+                        async for event in self._finish_retrieval(
+                            request_id, collected, assessment.answer, 1
+                        ):
+                            yield event
+                        return
+                if assessment.action == "search":
+                    refetch_selected = False
+                if (
+                    assessment.action != "answer"
+                    or not valid
+                    or not assessment.answer.strip()
+                ):
+                    break
+                if verdict.refined_search_query:
+                    refetch_selected = False
+                    break
+                # Repair wording/factual defects against the same sources before
+                # paying the cost of retrieving those sources again.
+                correction = {"answer": assessment.answer, "critique": verdict.critique}
+        except (ValueError, LlmResponseError) as exc:
+            logger.warning("DVD context assessment could not complete: {}", exc)
+        # A contextual rewrite still refers to the last selected structural target
+        # if evidence is incomplete or the answer fails its audit. Fetch that target
+        # explicitly rather than vector-searching the words 'объясни этот пункт'.
+        reference = parse_reference(query)
+        if (
+            refetch_selected
+            and refers_to_context(query)
+            and not reference.pattern
+            and not reference.document_names
+        ):
+            previous = snapshot.get("plan") or {}
+            if previous.get("pattern"):
+                collected["reply_plan"] = {
+                    **previous,
+                    "rank_by_relevance": False,
+                    "include_children": True,
+                    "search_query": query,
+                }
+
     async def _load_dialogue_context(self, token, chat_id, user_query, collected=None):
         """Read published summary on every turn, retaining uncovered and recent text."""
         context, messages = {}, []
@@ -1045,11 +1220,19 @@ class DvdRagService(BaseLlmService):
         # and a history outage must not discard the summary's fresh tail.
         try:
             context = await self.chat_storage_client.get_context(token, chat_id)
+            if context and collected is not None:
+                collected["chat_context_access"] = True
         except Exception as exc:
             logger.warning(f"DVD QA: failed to fetch chat summary: {exc}")
         try:
             chat = await self.get_chat_messages(token, chat_id)
             messages = list(chat.messages)
+            if collected is not None:
+                collected["chat_context_access"] = True
+                chat_scenario = getattr(chat, "scenario_id", None)
+                collected["chat_scenario_id"] = (
+                    int(chat_scenario) if chat_scenario is not None else None
+                )
         except Exception as exc:
             logger.warning(f"DVD QA: failed to fetch chat history: {exc}")
         content = context.get("content") or {}
@@ -1087,6 +1270,8 @@ class DvdRagService(BaseLlmService):
         history = self.build_llm_history(
             messages, max_messages=max(len(messages), 10), current_user_query=user_query
         )
+        if collected is not None:
+            collected["verbatim_history"] = [dict(m) for m in history]
         for message in history:
             if (
                 message["role"] == "assistant"
@@ -1103,7 +1288,7 @@ class DvdRagService(BaseLlmService):
                     explanation
                     + "\nБыл приведён полный исходный текст: "
                     + source
-                    + "\nДля нового ответа заново извлеки нужный пункт из документа."
+                    + "\nСначала используй сохранённые исходные тексты; поиск нужен, если их недостаточно."
                 ).strip()
         if published:
             history.insert(

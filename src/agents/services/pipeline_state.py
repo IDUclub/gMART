@@ -154,6 +154,24 @@ class PipelineStateStore:
         else:
             await self._retry(self._redis.delete, key)
 
+    async def get_document_evidence(self, chat_id: str) -> dict | None:
+        raw = await self._retry(
+            self._redis.get, self._key(chat_id, "document_evidence")
+        )
+        return json.loads(raw) if raw else None
+
+    async def set_document_evidence(self, chat_id: str, evidence: dict | None) -> None:
+        key = self._key(chat_id, "document_evidence")
+        if evidence is None:
+            await self._retry(self._redis.delete, key)
+        else:
+            await self._retry(
+                self._redis.setex,
+                key,
+                PIPELINE_TTL,
+                json.dumps(evidence, ensure_ascii=False),
+            )
+
     async def get_document_run(self, request_id: str) -> dict | None:
         raw = await self._retry(self._redis.get, self._key(request_id, "document_run"))
         return json.loads(raw) if raw else None

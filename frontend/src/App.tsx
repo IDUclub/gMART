@@ -3299,6 +3299,7 @@ function labelStatus(s: string) {
         response_analysis: "Считаю результат",
         answer_review: "Проверяю результат",
         answer_retry: "Дополняю данные",
+        context_check: "Проверяю контекст диалога",
         retrieval_planning: "Планирую поиск",
         context_processing: "Обрабатываю источники частями",
         searching: "Ищу источники",
