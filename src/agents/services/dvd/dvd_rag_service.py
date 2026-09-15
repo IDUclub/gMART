@@ -39,6 +39,11 @@ from src.agents.services.dvd.dialogue import (
 from src.agents.services.dvd.document_reference import quote_only, wants_full_quote
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
+from src.agents.services.dvd.retrieval_scope import (
+    apply_scope,
+    document_scope,
+    resets_scope,
+)
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.service_entities.dvd_plan import validate_retrieval_plan
 
@@ -227,6 +232,13 @@ class DvdRagService(BaseLlmService):
                 logger.warning(f"DVD QA: failed to persist user question: {exc}")
 
         collected["chat_id"] = chat_id
+        collected["document_scope"] = (
+            await self.state_store.get_document_scope(chat_id) if chat_id else {}
+        )
+        if resets_scope(user_query):
+            collected["document_scope"] = {}
+            if chat_id:
+                await self.state_store.set_document_scope(chat_id, {})
         if original_chat_id and not is_reconnect:
             pending = await self.state_store.get_document_question(original_chat_id)
             last_answer = next(
@@ -250,6 +262,7 @@ class DvdRagService(BaseLlmService):
                         )
                     return
                 if reply:
+                    collected["original_question"] = pending.get("question")
                     collected["reply_plan"] = reply["plan"]
                     collected["selected_candidate_ids"] = reply.get("selected_ids")
                 else:
@@ -307,7 +320,7 @@ class DvdRagService(BaseLlmService):
             "selected_choice"
         ) or selected_choice(user_query, history)
 
-        intent_query = user_query
+        intent_query = collected.get("original_question") or user_query
         if collected.get("selected_choice"):
             original = next(
                 (
@@ -338,6 +351,9 @@ class DvdRagService(BaseLlmService):
                     model, user_query, history, prev_critique, prev_query
                 )
             )
+            plan = apply_scope(
+                plan, user_query, collected.get("document_scope"), history
+            )
             locked = collected.get("retrieval_constraints") or progress.get(
                 "retrieval_constraints"
             )
@@ -364,16 +380,45 @@ class DvdRagService(BaseLlmService):
                         "block",
                         "include_children",
                         "allow_multiple",
+                        "rank_by_relevance",
+                        "include_shared",
                     )
                 }
                 collected["retrieval_constraints"] = locked
 
-            if plan.retrieval_mode != "semantic":
+            if plan.doc_id or plan.document_names:
+                scope = {
+                    key: getattr(plan, key)
+                    for key in ("doc_id", "document_names", "version", "include_shared")
+                    if getattr(plan, key) is not None
+                }
+                collected["document_scope"] = scope
+                if collected.get("chat_id"):
+                    await self.state_store.set_document_scope(
+                        collected["chat_id"], scope
+                    )
+            if not plan.include_shared and scenario_id is None:
+                async for event in self._finish_retrieval(
+                    request_id,
+                    collected,
+                    "Для поиска в ваших документах выберите проект или сценарий.",
+                    iteration,
+                ):
+                    yield event
+                return
+            if (
+                plan.retrieval_mode != "semantic"
+                or plan.document_names
+                or plan.doc_id
+                or not plan.include_shared
+            ):
                 yield await self._buf(
                     request_id,
                     self._status(
                         "searching",
-                        "Ищу по структуре и наименованию, сохраняя заданные ограничения…",
+                        "Ищу в выбранной области, сохраняя фильтры"
+                        + self._filter_note(plan)
+                        + "…",
                     ),
                 )
                 search_result = await self._retrieve_fragments(
@@ -396,6 +441,13 @@ class DvdRagService(BaseLlmService):
                         + user_query
                     )
                     pending = pending_question(plan, candidates, question)
+                    scope = document_scope(
+                        [c for option in pending["options"] for c in option["members"]]
+                    )
+                    if scope and collected.get("chat_id"):
+                        await self.state_store.set_document_scope(
+                            collected["chat_id"], scope
+                        )
                     answer = render_question(pending)
                     if collected.get("chat_id"):
                         await self.state_store.set_document_question(
@@ -422,6 +474,25 @@ class DvdRagService(BaseLlmService):
                     await self.state_store.set_document_question(
                         collected["chat_id"], None
                     )
+                # Top-k can contain one document even when several scopes matched.
+                # Persist resolved identities, never infer scope from that ranking.
+                scope = (
+                    document_scope(
+                        search_result.get("candidates")
+                        or (
+                            hits
+                            if plan.retrieval_mode != "semantic"
+                            and not plan.rank_by_relevance
+                            else []
+                        )
+                    )
+                    if search_result.get("candidates_complete", True)
+                    else {}
+                )
+                if scope and collected.get("chat_id"):
+                    await self.state_store.set_document_scope(
+                        collected["chat_id"], scope
+                    )
                 context = self.context_builder.build_context(hits)
             else:
                 context = None
@@ -447,7 +518,7 @@ class DvdRagService(BaseLlmService):
                 if scenario_id is not None:
                     search_args.update(
                         scenario_id=str(scenario_id),
-                        include_shared=True,
+                        include_shared=plan.include_shared,
                         include_inherited=True,
                     )
                 extra = {
@@ -464,7 +535,7 @@ class DvdRagService(BaseLlmService):
                     block=plan.block,
                     types=plan.types,
                     scenario_id=scenario_id,
-                    include_shared=True,
+                    include_shared=plan.include_shared,
                     include_inherited=True,
                     **extra,
                 )
@@ -773,25 +844,46 @@ class DvdRagService(BaseLlmService):
                 "block",
                 "include_children",
                 "context_height",
+                "include_shared",
             )
             if getattr(plan, k) is not None
         }
         request["context_height"] = (
             0  # Each target/descendant has its own source label.
         )
-        request["limit"] = 100
+        ranked = plan.retrieval_mode == "semantic" or plan.rank_by_relevance
+        mode = "filtered" if ranked else plan.retrieval_mode
+        request["limit"] = plan.limit if ranked else 100
+        if ranked:
+            request.update(
+                query=plan.search_query,
+                rank_by_relevance=True,
+                allow_multiple=plan.allow_multiple,
+                kind=str(plan.kind),
+                context_height=plan.context_height,
+            )
+            if plan.types:
+                request["types"] = plan.types
+            if collected.get("selected_candidate_ids"):
+                request["root_ids"] = collected["selected_candidate_ids"]
         if scenario_id is not None:
-            request.update(scenario_id=str(scenario_id), include_shared=True)
+            request.update(
+                scenario_id=str(scenario_id), include_shared=plan.include_shared
+            )
         tool = (
-            "search_structure"
-            if plan.retrieval_mode == "structure"
-            else "search_fragment_names"
+            "search_filtered"
+            if ranked
+            else (
+                "search_structure"
+                if plan.retrieval_mode == "structure"
+                else "search_fragment_names"
+            )
         )
         calls, hits, cursors = [], [], set()
         first = None
         selected_ids = None
         for _ in range(int(os.getenv("DVD_RETRIEVAL_MAX_PAGES", "100"))):
-            page = await client.search_fragments(request, mode=plan.retrieval_mode)
+            page = await client.search_fragments(request, mode=mode)
             call = self._search_tool_call(tool, {"request": dict(request)})
             calls.append(call)
             collected["tool_calls"].append(call)
@@ -807,6 +899,18 @@ class DvdRagService(BaseLlmService):
                     if ids
                     else matching_choices(candidates, choice) if choice else []
                 )
+                if (
+                    ranked
+                    and complete_choices
+                    and (matches or len(ranked_choices(candidates, "")) == 1)
+                ):
+                    roots = matches or candidates
+                    ids = [c["id"] for c in roots if c.get("id")]
+                    if not ids or request.get("root_ids") == ids:
+                        raise ValueError("DVD did not resolve the selected scope")
+                    request = {**request, "root_ids": ids}
+                    first = None
+                    continue
                 if matches and complete_choices and all(c.get("id") for c in matches):
                     selected_ids = {c["id"] for c in matches}
                 elif not (

@@ -22,7 +22,10 @@ def test_article_reply_selects_one_identity_and_new_question_releases_old_addres
     reply = resolve_reply("статья 52", pending)
     assert reply["selected_ids"] == ["article-52"]
     assert "52" in reply["plan"]["pattern"]
-    assert resolve_reply("Что указано в пункте 4.2?", pending) is None
+    next_question = resolve_reply("Что указано в пункте 4.2?", pending)
+    assert next_question["plan"]["pattern"] == "4.2"
+    assert next_question["plan"]["doc_id"] == "gradcode"
+    assert "selected_ids" not in next_question
     assert resolve_reply("редакция от 01.01.1999", pending) == {"unresolved": True}
 
 

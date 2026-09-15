@@ -97,6 +97,24 @@ class FakeDvdMcpClient:
             "all": "search_all",
         }.get(str(kind), "search_all")
 
+    async def search_fragments(self, request, *, mode):
+        assert mode == "filtered"
+        result = await self.search(
+            **{
+                k: v
+                for k, v in request.items()
+                if k
+                not in {
+                    "rank_by_relevance",
+                    "allow_multiple",
+                    "include_children",
+                    "name_mode",
+                    "name_scope",
+                }
+            }
+        )
+        return {**result, "total": result["count"], "complete": True}
+
     async def search(self, query, kind="all", limit=10, context_height=0, **kwargs):
         self.search_calls.append(
             SimpleNamespace(

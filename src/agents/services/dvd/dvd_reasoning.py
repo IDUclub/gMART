@@ -9,7 +9,8 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
-from src.agents.services.dvd.document_reference import parse_reference
+from src.agents.services.dvd.document_reference import parse_reference, wants_full_quote
+from src.agents.services.dvd.retrieval_scope import apply_scope
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.dvd_plan import (
     CriticVerdict,
@@ -170,6 +171,7 @@ class RetrievalPlanner:
         ]
         plan = await _request_json(self.llm_client, model, messages, RetrievalPlan)
         plan = self._clamp(plan, user_query)
+        plan = apply_scope(plan, user_query, history=history)
         logger.info(f"DVD retrieval plan: {plan.model_dump_json(ensure_ascii=False)}")
         return plan
 
@@ -209,8 +211,21 @@ class RetrievalPlanner:
         }
         if reference.pattern:
             updates.update(include_children=True, name_query=None, types=None)
+            # A specific provision is already the requested text. Ranking is useful
+            # for a topic inside a section, but never for truncating an exact quote.
+            if wants_full_quote(user_query) or not reference.pattern.rsplit("/", 1)[
+                -1
+            ].strip().startswith(("раздел ", "глава ", "приложение ")):
+                updates["rank_by_relevance"] = False
         if designations:
             updates["document_names"] = list(dict.fromkeys(designations))
+            updates["doc_id"] = None
+        if re.search(
+            r"\b(?:мо[её]м|моего|моих|мой|загруженн[а-я]+\s+мной)\s+документ",
+            user_query,
+            re.I,
+        ):
+            updates["include_shared"] = False
         return validate_retrieval_plan(
             {
                 **plan.model_dump(),
@@ -238,6 +253,8 @@ class RetrievalPlanner:
             "version": "null | явно запрошенная редакция",
             "include_children": True,
             "allow_multiple": False,
+            "rank_by_relevance": False,
+            "include_shared": True,
             "search_query": "строка для векторного поиска",
             "kind": "text | table | all",
             "limit": 10,
@@ -253,50 +270,28 @@ class RetrievalPlanner:
 {json.dumps(structure, ensure_ascii=False)}
 
 Правила:
-- Выбери retrieval_mode="structure", если пользователь указал структурную ссылку.
-  Сохрани её в pattern: "3.3" точно, "3.*" все уровни ниже 3, "3.3–3.5" диапазон
-  соседних элементов, "А / 2" элемент 2 внутри А. Тип документа не важен.
-  Никогда не преобразуй номер пункта в семантический запрос и не ставь types по
-  слову «пункт»: номер может принадлежать definition, section, table и любому типу.
-- retrieval_mode="name" для поиска по наименованию фрагмента. name_query — заголовок,
-  определяемый термин или подпись, а document_names — название исходного документа.
-  name_mode="strict" ищет совпадение/часть/маску; expanded дополнительно словоформы,
-  опечатки и смысл названия. name_scope="path" для «в разделе с названием ...»;
-  self для собственного названия. pattern и name_query можно совмещать (AND).
-- include_children=true: получаем также дочерние пункты. allow_multiple=true только
-  для явно множественного/обзорного/сравнительного вопроса или маски/диапазона.
-  Иначе несколько кандидатов требуют уточнения документа, редакции или пути.
-- Пример «что в пункте 3.3 СП 2.13130.2020»: structure, pattern="3.3",
-  document_names=["СП 2.13130.2020"], types=null, include_children=true.
-  Пример «покажи определения огнезащитного покрытия»: name,
-  name_query="огнезащитное покрытие", name_mode="expanded", name_scope="self".
-- Для обычного смыслового вопроса без адреса/наименования используй semantic.
-- Никогда не снимай явно названные документ, редакцию, структуру или наименование
-  ради получения непустого ответа. Идентификаторы не придумывай.
-- search_query — краткий поисковый запрос на русском, отражающий суть вопроса \
-(ключевые термины, нормативная лексика). Не копируй вопрос дословно — выдели суть.
-- kind = "table" если вопрос про числовые нормативы, показатели или таблицы; \
-"text" для текстовых формулировок, определений и требований; "all" если неясно.
-- limit — сколько фрагментов извлечь (целое 1–20). Больше для широких/обзорных \
-вопросов, меньше для точечных.
-- context_height — сколько соседних фрагментов прикреплять к каждому найденному \
-(целое 0–5). Больше (2–3), когда важен контекст вокруг (определения, процедуры, \
-перечни, ссылки на смежные пункты); 0–1 для точечных фактов.
-- document_names — null по умолчанию (искать по всей базе). Заполняй списком названий \
-документов ТОЛЬКО если пользователь явно назвал конкретный документ (например \
-«СП 42.13330», «по ГОСТ 21.501»).
-- block — null по умолчанию (искать везде). "amendment" — если вопрос про изменения/\
-поправки к документу; "main" — если явно про основную (действующую) редакцию без учёта \
-поправок.
-- types — null по умолчанию (все уровни). Список структурных уровней для сужения: \
-"table" (таблицы), "clause"/"subclause" (пункты/подпункты), "chapter"/"section" \
-(главы/разделы), "definition" (определения/термины), "appendix" (приложения), \
-"note" (примечания). Заполняй, только когда вопрос явно нацелен на определённый вид \
-элемента («дай определение…» → ["definition"], «что в таблице…» → ["table"]). \
-Не дублируй kind: при kind="table" не указывай types=["table"].
-
-Все фильтры (document_names, block, types) по умолчанию null — не сужай поиск без явной \
-необходимости, лишние фильтры отсекают релевантные фрагменты."""
+1. Сначала заполни фильтры из вопроса и диалога. Новый номер пункта, «в нём», «в СП»
+   продолжают выбранный документ; явно другой документ заменяет его. Не придумывай
+   ID, редакцию или адрес. Сохраняй ограничения при повторных поисках.
+2. Точный пункт/цитата/полный раздел: structure, pattern — адрес, rank_by_relevance=false,
+   include_children=true. «3.3» точно, «3.*» потомки, «3.3–3.5» диапазон, «А / 2» путь.
+   Номер не задаёт types: definition с номером тоже пункт. Для structure kind=all, types=null.
+3. Тема внутри раздела: structure, pattern="раздел 5", rank_by_relevance=true,
+   search_query — тема. Документ и тема без адреса: semantic с document_names/doc_id.
+   Только тема: semantic по доступной базе. Точные тексты не заменяются похожими.
+4. Наименование элемента: name, name_query — заголовок/термин/подпись.
+   name_mode=strict (часть/маска), expanded (словоформы/опечатки/смысл).
+   name_scope=self либо path для названия предка. pattern и name_query совместимы (AND).
+   Название документа помещай в document_names, не name_query.
+5. allow_multiple=true только для явного обзора/сравнения/маски/диапазона.
+   Иначе неоднозначный документ или адрес требует выбора уникальной сущности.
+6. «В моём документе», «загруженных мной документах»: include_shared=false (индекс
+   текущего проекта). Иначе true. document_names, version, block, types по умолчанию
+   null, но сохраняй выбранный документ из контекста. block=main для основной части,
+   amendment для изменений. types задавай только по явно запрошенному виду элемента.
+7. search_query — краткая тема поиска на русском. kind=text/table/all; не дублируй
+   kind=table фильтром types. limit=1..20, context_height=0..5, для точечных вопросов 0..1.
+Пример «что в пункте 3.3 СП 55»: structure, pattern="3.3", document_names=["СП 55"]."""
         if prev_critique:
             prompt += f"""
 
