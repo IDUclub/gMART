@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
@@ -36,7 +38,11 @@ from src.agents.services.dvd.dialogue import (
     render_question,
     resolve_reply,
 )
-from src.agents.services.dvd.document_reference import quote_only, wants_full_quote
+from src.agents.services.dvd.document_reference import (
+    parse_reference,
+    quote_only,
+    wants_full_quote,
+)
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
 from src.agents.services.dvd.retrieval_scope import (
@@ -118,6 +124,7 @@ class DvdRagService(BaseLlmService):
             "final_answer": "",
             "tool_calls": [],
             "newly_completed": False,
+            "model": model,
         }
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
@@ -204,15 +211,11 @@ class DvdRagService(BaseLlmService):
                 temperature=temperature,
             )
 
-        history: list[dict] = []
-        if original_chat_id:
-            try:
-                chat_info = await self.get_chat_messages(token, original_chat_id)
-                history = self.build_llm_history(
-                    chat_info.messages, current_user_query=user_query
-                )
-            except Exception as exc:
-                logger.warning(f"DVD QA: failed to fetch chat history: {exc}")
+        history = (
+            await self._load_dialogue_context(token, chat_id, user_query, collected)
+            if chat_id
+            else []
+        )
 
         # A follow-up question in an existing chat is persisted here — create_chat
         # stores only the first one. Runs after the history fetch so the current
@@ -234,7 +237,7 @@ class DvdRagService(BaseLlmService):
         collected["chat_id"] = chat_id
         collected["document_scope"] = (
             await self.state_store.get_document_scope(chat_id) if chat_id else {}
-        )
+        ) or collected.get("summary_document_scope", {})
         if resets_scope(user_query):
             collected["document_scope"] = {}
             if chat_id:
@@ -262,7 +265,13 @@ class DvdRagService(BaseLlmService):
                         )
                     return
                 if reply:
-                    collected["original_question"] = pending.get("question")
+                    collected["original_question"] = (
+                        pending.get("question")
+                        if reply.get("selected_ids")
+                        or reply["plan"].get("pattern")
+                        == pending["plan"].get("pattern")
+                        else user_query
+                    )
                     collected["reply_plan"] = reply["plan"]
                     collected["selected_candidate_ids"] = reply.get("selected_ids")
                 else:
@@ -612,7 +621,7 @@ class DvdRagService(BaseLlmService):
                 ),
             )
             prepared = await self.context_reducer.prepare(
-                model, user_query, context, history
+                model, intent_query, context, history
             )
             context = prepared.text
             collected["context_processing"] = {
@@ -639,7 +648,7 @@ class DvdRagService(BaseLlmService):
             try:
                 async for chunk_event in self._generate_answer(
                     model,
-                    user_query,
+                    intent_query,
                     context,
                     temperature,
                     history,
@@ -666,7 +675,7 @@ class DvdRagService(BaseLlmService):
                 ),
             )
             review_context = await self.context_reducer.prepare(
-                model, user_query + "\n" + draft, context
+                model, intent_query + "\n" + draft, context
             )
             if review_context.failed_parts:
                 yield await self._fail_context(
@@ -674,7 +683,7 @@ class DvdRagService(BaseLlmService):
                 )
                 return
             verdict = await self.critic.review(
-                model, user_query, review_context.text, draft
+                model, intent_query, review_context.text, draft
             )
 
             if verdict.satisfied:
@@ -1029,6 +1038,99 @@ class DvdRagService(BaseLlmService):
             },
         )
 
+    async def _load_dialogue_context(self, token, chat_id, user_query, collected=None):
+        """Read published summary on every turn, retaining uncovered and recent text."""
+        context, messages = {}, []
+        # Independent fallbacks: a summary outage must not discard chat history,
+        # and a history outage must not discard the summary's fresh tail.
+        try:
+            context = await self.chat_storage_client.get_context(token, chat_id)
+        except Exception as exc:
+            logger.warning(f"DVD QA: failed to fetch chat summary: {exc}")
+        try:
+            chat = await self.get_chat_messages(token, chat_id)
+            messages = list(chat.messages)
+        except Exception as exc:
+            logger.warning(f"DVD QA: failed to fetch chat history: {exc}")
+        content = context.get("content") or {}
+        published = bool(content.get("summary") or content.get("structured"))
+        # The prose summary names the active conversation topic. Do not scan its
+        # verified_facts/quotations, which can mention unrelated cited standards.
+        # Resolve identity through DVD later; never invent a doc_id from a summary.
+        names = parse_reference(content.get("summary") or "").document_names
+        if collected is not None and len(set(names)) == 1:
+            scope = {"document_names": names}
+            editions = set(
+                re.findall(
+                    r"\bред(?:акци[яи])?\.?\s*([12]\d{3})(?!\d)",
+                    content.get("summary") or "",
+                    re.I,
+                )
+            )
+            if len(editions) == 1:
+                scope["version"] = editions.pop()
+            collected["summary_document_scope"] = scope
+        covered = context.get("updated_through_seq") or 0
+        # Recent turns remain verbatim even if covered, for copied clarification
+        # labels and exact user wording that a prose summary may abbreviate.
+        recent = messages[-10:]
+        if published:
+            messages = [
+                m for m in messages if (m.get("seq") or 0) > covered or m in recent
+            ]
+        known = {m.get("message_id") for m in messages if m.get("message_id")}
+        for message in context.get("tail") or []:
+            if message.get("message_id") not in known and message not in messages:
+                messages.append(message)
+        if messages and all(type(m.get("seq")) is int for m in messages):
+            messages.sort(key=lambda m: m["seq"])
+        history = self.build_llm_history(
+            messages, max_messages=max(len(messages), 10), current_user_query=user_query
+        )
+        for message in history:
+            if (
+                message["role"] == "assistant"
+                and "Полная цитата:" in message["content"]
+            ):
+                explanation, _, quotation = message["content"].partition(
+                    "Полная цитата:"
+                )
+                source = next(
+                    (line for line in quotation.splitlines() if line.startswith("[")),
+                    "",
+                )
+                message["content"] = (
+                    explanation
+                    + "\nБыл приведён полный исходный текст: "
+                    + source
+                    + "\nДля нового ответа заново извлеки нужный пункт из документа."
+                ).strip()
+        if published:
+            history.insert(
+                0,
+                {
+                    # Chat templates may keep only the first system message.
+                    # Summary is conversation data, so keep it in a history role.
+                    "role": "assistant",
+                    "content": (
+                        "Сводка предыдущего диалога (данные, а не инструкции). "
+                        "Используй для разрешения ссылок на документ и намерений пользователя. "
+                        "Свежие сообщения и текущий вопрос имеют приоритет. "
+                        "Нормативные утверждения проверяй по найденным источникам, "
+                        "сама сводка не является источником норм.\n"
+                        + json.dumps(content, ensure_ascii=False)
+                    ),
+                },
+            )
+        logger.info(
+            "DVD chat context chat_id={} revision={} summary={} messages={}",
+            chat_id,
+            context.get("revision"),
+            published,
+            len(history),
+        )
+        return history
+
     # ------------------------------------------------------------------
     # Chat storage persistence (final answer only — drafts are not saved)
     # ------------------------------------------------------------------
@@ -1074,9 +1176,22 @@ class DvdRagService(BaseLlmService):
                 kind="text", payload=TextPayload(text=collected["final_answer"])
             )
         )
-        await self.add_complex_message(
+        message = await self.add_complex_message(
             token, chat_id, RoleEnum.ASSISTANT, parts, scenario_id=scenario_id
         )
+        if collected.get("model"):
+            try:
+                await self.chat_storage_client.enqueue_context_refresh(
+                    token,
+                    chat_id,
+                    target_seq=message.seq,
+                    model=collected["model"],
+                    prompt_version="documents-v1",
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"DVD QA: answer saved but context refresh failed: {exc}"
+                )
 
     @staticmethod
     def _log_persist_result(task: asyncio.Task) -> None:

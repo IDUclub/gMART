@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   appendIterationChunk,
   appendSseExchange,
+  finalizeSseExchange,
   mergeMessageWindow,
   oldestServerSequence,
   trimMessageWindow,
@@ -104,4 +105,24 @@ test("ordinary SSE chunks keep accumulating without an iteration marker", () => 
 
   assert.equal(result.answer, "Первый второй");
   assert.equal(result.iteration, 1);
+});
+
+test("terminal server error survives stream EOF and cannot be replaced by fallback", () => {
+  const exchange = { answer: "", finalized: false };
+  const error = "Не удалось проверить ответ по источникам";
+  assert.equal(finalizeSseExchange(exchange, error), true);
+  assert.equal(
+    finalizeSseExchange(
+      exchange,
+      "Поток завершился без отдельного финального сообщения.",
+    ),
+    false,
+  );
+  assert.equal(exchange.answer, error);
+});
+
+test("finalization preserves the completed answer", () => {
+  const exchange = { answer: "Текст пункта [1]", finalized: false };
+  finalizeSseExchange(exchange, "fallback");
+  assert.equal(exchange.answer, "Текст пункта [1]");
 });

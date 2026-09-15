@@ -441,7 +441,13 @@ class AnswerCritic:
         return f"""Audit a Russian answer against the supplied document EXCERPTS, not your prior knowledge.
 Return JSON only: {json.dumps(structure, ensure_ascii=False)}
 First inspect every assertion and list evidence defects; only then decide satisfied.
-Do not approve a mostly correct answer that contains even one unsupported assertion.
+Judge material factual correctness and whether the user's actual request is answered.
+Accept faithful paraphrases, concise answers and ordinary introductory wording.
+Do not reject style, formatting, a lack of optional detail or failure to enumerate
+all retrieved excerpts when the user did not request a full quotation/list.
+A brief introduction followed by a full verbatim quotation satisfies completeness;
+do not require the introduction to repeat every definition in that quotation.
+Only list defects that change the meaning, applicability or answer to the question.
 For example, if a source only uses an acronym, an invented parenthetical expansion
 in the answer is an unsupported claim even when its main conclusion is correct.
 If the source says clause 27.3 and table 31.3, citing TABLE 27.3 is unsupported.
@@ -463,8 +469,10 @@ Hard rejection rules:
    the supplied text and retain its explicit scope. Do not fill gaps from memory.
 3. A table of contents or section TITLE only proves that the topic is mentioned;
    it does NOT provide the requirements inside that section.
-4. Reject invented applicability, invented facts, or omissions of directly relevant
-   requirements actually present in the excerpts. Request a refined search.
+4. Reject invented applicability, material invented facts, or omissions that make
+   the answer misleading (e.g. removing a condition or exception of a quoted rule).
+   Do not demand unrelated or merely optional requirements. Request a refined search
+   only when missing evidence can resolve the defect.
 
 Accept an honest statement that THESE EXCERPTS do not contain enough applicable
 information when this is true. Lack of evidence is not a reason to force an answer.
