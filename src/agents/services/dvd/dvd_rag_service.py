@@ -36,6 +36,7 @@ from src.agents.services.dvd.dialogue import (
     render_question,
     resolve_reply,
 )
+from src.agents.services.dvd.document_reference import quote_only, wants_full_quote
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
@@ -306,6 +307,18 @@ class DvdRagService(BaseLlmService):
             "selected_choice"
         ) or selected_choice(user_query, history)
 
+        intent_query = user_query
+        if collected.get("selected_choice"):
+            original = next(
+                (
+                    m.get("content", "")
+                    for m in reversed(history)
+                    if m.get("role") == "user"
+                ),
+                "",
+            )
+            intent_query = original + "\n" + user_query
+
         for iteration in range(start_iteration, self.MAX_ITERATIONS + 1):
             final_iteration = iteration
             is_last = iteration == self.MAX_ITERATIONS
@@ -510,6 +523,15 @@ class DvdRagService(BaseLlmService):
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
 
+            quotation = None
+            if plan.retrieval_mode == "structure" and wants_full_quote(intent_query):
+                quotation = self.context_builder.full_quote(hits)
+                if quote_only(intent_query):
+                    async for event in self._finish_retrieval(
+                        request_id, collected, quotation, iteration
+                    ):
+                        yield event
+                    return
             context = self.context_builder.build_context(hits)
             yield await self._buf(
                 request_id,
@@ -561,6 +583,8 @@ class DvdRagService(BaseLlmService):
                 )
                 return
             draft = "".join(draft_parts).strip()
+            if quotation:
+                draft += "\n\n" + quotation
 
             # A retry budget bounds cost, not the evidence required for acceptance.
             yield await self._buf(
@@ -615,6 +639,16 @@ class DvdRagService(BaseLlmService):
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
 
+            if is_last and quotation:
+                answer = (
+                    "Не удалось подтвердить объяснение по источнику. Ниже приведён полный исходный текст.\n\n"
+                    + quotation
+                )
+                async for event in self._finish_retrieval(
+                    request_id, collected, answer, iteration
+                ):
+                    yield event
+                return
             if is_last:
                 raise ValueError(
                     "Ответ не прошёл проверку по источникам за допустимое число попыток."
@@ -674,8 +708,13 @@ class DvdRagService(BaseLlmService):
             "- Не выдумывай нормы, цифры и положения, которых нет во фрагментах.\n"
             "- На узкий вопрос дай краткий прямой ответ. Не превращай его в общий "
             "обзор других типов объектов и не добавляй непрошенные альтернативные режимы. "
-            "Ссылки оформляй метками [N] после утверждения; не дублируй реквизиты "
+            "Ссылки оформляй конкретными метками источников ([1], [2] и т. д.) после утверждения; никогда не пиши шаблон [N]; не дублируй реквизиты "
             "документов и номера таблиц, если они не нужны для ответа на вопрос.\n"
+            "- Метки в заголовках фрагментов — ссылки приложения. Номера в квадратных "
+            "скобках внутри исходного текста могут быть позициями его библиографии. "
+            "В объяснении обозначай такую отсылку словами, например «позиция 6 "
+            "библиографии документа», и отдельно ссылайся на метку содержащего её "
+            "фрагмента. Не называй позицию библиографии пунктом документа.\n"
             "- Не расшифровывай сокращения, если расшифровки нет в источниках. "
             "Не называй номер пункта номером таблицы. Метаданные ссылки должны "
             "соответствовать источнику. Отвечай непосредственно на вопрос, "
@@ -691,6 +730,8 @@ class DvdRagService(BaseLlmService):
             "(можно через номера [1], [2]… из фрагментов).\n"
             "- Отвечай на русском языке, ясно и по существу.\n\n"
         )
+        if wants_full_quote(user_query):
+            system += "\nДай краткое объяснение смысла выбранного пункта. Сохрани существенные условия и исключения. Даже короткая формулировка в источнике является текстом пункта: не утверждай, что текст отсутствует, когда он приведён. Полную дословную цитату приложение добавит отдельно; не переписывай её в объяснении.\n"
         if revision_note:
             system += (
                 "\n\nУчти замечание к предыдущей версии ответа и исправь его: "
@@ -735,6 +776,9 @@ class DvdRagService(BaseLlmService):
             )
             if getattr(plan, k) is not None
         }
+        request["context_height"] = (
+            0  # Each target/descendant has its own source label.
+        )
         request["limit"] = 100
         if scenario_id is not None:
             request.update(scenario_id=str(scenario_id), include_shared=True)

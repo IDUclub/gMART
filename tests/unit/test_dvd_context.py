@@ -54,7 +54,7 @@ def test_context_keeps_target_even_if_upstream_context_omits_it():
     ctx = DvdContextBuilder().build_context(
         [{"name": "A", "context": "expanded", "text": "raw"}]
     )
-    assert "expanded" in ctx and "raw" in ctx
+    assert "expanded" not in ctx and "raw" in ctx
 
 
 def test_long_body_is_preserved_for_bounded_context_processing():
