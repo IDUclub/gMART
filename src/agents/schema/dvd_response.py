@@ -78,6 +78,7 @@ class WarningContent(BaseModel):
 class DvdResponse(BaseModel):
     """SSE event envelope for the document-QA (RAG) pipeline."""
 
+    event_id: int | None = None
     type: Literal[
         "status",
         "chunk",

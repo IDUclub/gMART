@@ -14,6 +14,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.services.scenario_data.scenario_data_indicators import (
+    INDICATOR_ROW_LABELS,
     IndicatorRequest,
     base_comparison_requested,
     calculation_request,
@@ -32,6 +33,9 @@ from src.agents.services.scenario_data.scenario_data_indicators import (
     selection_messages,
     signed,
     validate_request,
+)
+from src.agents.services.scenario_data.scenario_data_summary import (
+    summarize_comparison,
 )
 from src.agents.services.scenario_data.scenario_data_type_mapper import UrbanTypeMapper
 
@@ -237,13 +241,8 @@ class ScenarioAnalytics:
                             "Полнота сущностей не подтверждена: отсутствуют ID."
                         )
                     counts[sid] = len(set(identifiers))
-                    rows.append(
-                        {
-                            "scenario": labels[sid],
-                            "scenario_id": sid,
-                            "count": counts[sid],
-                        }
-                    )
+                    rows.append({"scenario": labels[sid], "count": counts[sid]})
+                column_labels = {"scenario": "Сценарий", "count": "Количество"}
                 noun = "сервисов" if entity == "service" else "физических объектов"
                 lines = [
                     f"{labels[sid]}: всего {noun} — {count}."
@@ -278,10 +277,8 @@ class ScenarioAnalytics:
                         ),
                     )
                 )
-                if (
-                    indicators_route
-                    and request.operation in {"values", "all"}
-                    and not explanation_requested(query)
+                if request.operation in {"values", "all"} and not explanation_requested(
+                    query
                 ):
                     answer, rows, column_labels = indicator_comparison(
                         request,
@@ -291,10 +288,29 @@ class ScenarioAnalytics:
                         selected=selected,
                         base_id=base_id,
                     )
+                    # One named indicator is one exact line; a model adds nothing there.
+                    if len(scenarios) > 1 and len(rows) > 1:
+                        yield await host._buf(
+                            request_id,
+                            host._status("response_analysis", "Готовлю сводку…"),
+                        )
+                        answer = await summarize_comparison(
+                            host.llm_client,
+                            model,
+                            rows=rows,
+                            column_labels=column_labels,
+                            counts={
+                                f"scenario_{sid}": len(values)
+                                for sid, values in scenarios.items()
+                            },
+                            missing=request.missing,
+                            fallback=answer,
+                        )
                 else:
                     answer, rows = render_indicators(
                         request, scenarios, query=query, labels=labels
                     )
+                    column_labels = INDICATOR_ROW_LABELS
             projects = {
                 (m.get("project") or {}).get("project_id") for m in metadata.values()
             }

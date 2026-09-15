@@ -171,11 +171,14 @@ def test_geometry_list_keeps_ids_and_coordinates():
 
 
 @pytest.mark.parametrize(
-    "result",
+    ("result", "shown"),
     [
-        [{"measurement_unit_id": 17, "name": "метр"}],
-        [],
-        {"investment": 0, "construction": 0, "actual_start_date": None},
+        ([{"measurement_unit_id": 17, "name": "метр"}], [{"name": "метр"}]),
+        ([], []),
+        (
+            {"investment": 0, "construction": 0, "actual_start_date": None},
+            [{"investment": 0, "construction": 0, "actual_start_date": None}],
+        ),
     ],
 )
 async def test_real_pipeline_publishes_source_without_freeform_llm_facts(
@@ -184,6 +187,7 @@ async def test_real_pipeline_publishes_source_without_freeform_llm_facts(
     fake_urban,
     state_store,
     result,
+    shown,
 ):
     monkeypatch.setattr(
         "src.agents.model_clients.base_client.build_llm_adapter",
@@ -215,7 +219,7 @@ async def test_real_pipeline_publishes_source_without_freeform_llm_facts(
     assert text
     tables = [e["content"] for e in events if e["type"] == "table"]
     if result:
-        assert tables[0]["rows"] == (result if isinstance(result, list) else [result])
+        assert tables[0]["rows"] == shown
         assert "отсутств" not in text
     else:
         assert not tables and "записи отсутствуют" in text
@@ -241,8 +245,16 @@ async def test_all_records_follow_cursor_without_changing_scope(
     mcp = AsyncMock()
     mcp.load_tools.return_value = [tool]
     mcp.execute_tool.side_effect = [
-        {"count": 2, "results": [{"physical_object_id": 81}], "nextCursor": "next"},
-        {"count": 2, "results": [{"physical_object_id": 82}], "nextCursor": None},
+        {
+            "count": 2,
+            "results": [{"physical_object_id": 81, "name": "Дом 81"}],
+            "nextCursor": "next",
+        },
+        {
+            "count": 2,
+            "results": [{"physical_object_id": 82, "name": "Дом 82"}],
+            "nextCursor": None,
+        },
     ]
     service = ScenarioDataService("http://llm", None, fake_urban, state_store)
     events = [
@@ -263,7 +275,7 @@ async def test_all_records_follow_cursor_without_changing_scope(
     ]
     tables = [e["content"] for e in events if e["type"] == "table"]
     assert tables[0]["complete"]
-    assert tables[0]["rows"] == [{"physical_object_id": 81}, {"physical_object_id": 82}]
+    assert tables[0]["rows"] == [{"name": "Дом 81"}, {"name": "Дом 82"}]
 
 
 def test_complete_large_result_emits_every_record():
@@ -273,7 +285,9 @@ def test_complete_large_result_emits_every_record():
     tables = output_tables(ScenarioDataService, rows, "Объекты", "objects")
     assert len(tables) == 3
     assert all(t["complete"] for t in tables)
-    assert [r for t in tables for r in t["rows"]] == rows
+    assert [r for t in tables for r in t["rows"]] == [
+        {"name": str(i)} for i in range(2301)
+    ]
 
 
 async def test_single_unambiguous_source_is_read_when_model_abstains(

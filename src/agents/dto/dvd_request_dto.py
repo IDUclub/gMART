@@ -20,6 +20,12 @@ class DocumentQaRequestDTO(SimpleRequestDTO):
             interrupted stream and resume from where it stopped.
     """
 
+    after_event: int = Field(
+        default=0,
+        ge=0,
+        description="Last received document event_id; replay only subsequent events.",
+    )
+
     scenario_id: int | None = Field(
         default=None,
         examples=[772],

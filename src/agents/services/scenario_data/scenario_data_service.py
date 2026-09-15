@@ -26,6 +26,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient, UrbanMcpTool
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
+from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.scenario_data.scenario_data_aggregate import (
     aggregate_result,
     bounded_public_observation_context,
@@ -33,6 +34,17 @@ from src.agents.services.scenario_data.scenario_data_aggregate import (
     unresolved_references,
 )
 from src.agents.services.scenario_data.scenario_data_analytics import ScenarioAnalytics
+from src.agents.services.scenario_data.scenario_data_columns import (
+    DROPPED_FIELDS,
+    column_cells,
+    column_label_messages,
+    dictionary_label,
+    has_cyrillic,
+    ids_requested,
+    is_id_field,
+    unique_labels,
+    valid_label,
+)
 from src.agents.services.scenario_data.scenario_data_evaluator import (
     MAX_ANSWER_ATTEMPTS,
     ScenarioDataEvaluator,
@@ -140,6 +152,8 @@ class ScenarioDataService(BaseLlmService):
     ) -> None:
         super().__init__(llm_host, chat_storage_client, urban_api_client)
         self.state_store = state_store
+        self._column_descriptions: dict[str, str] = {}
+        self._column_label_cache: dict[str, str] = {}
         self.plan_builder = ScenarioDataPlanBuilder(self.llm_client)
         self.evaluator = ScenarioDataEvaluator(self.llm_client)
         self.linear_workflow_enabled = linear_workflow_enabled
@@ -442,6 +456,9 @@ class ScenarioDataService(BaseLlmService):
         loaded_tools: list[UrbanMcpTool] = tools_box[0]
         if not loaded_tools:
             raise ValueError("Urban MCP returned no read-only tools")
+        for tool in loaded_tools:
+            for key, description in tool.output_fields.items():
+                self._column_descriptions.setdefault(key, description)
         if broad_requested:
             async for event in UrbanReadWorkflow(self).run(
                 request_id=request_id,
@@ -756,6 +773,7 @@ class ScenarioDataService(BaseLlmService):
                     result,
                     name=f"urban_{action.group}_{action.tool_name}",
                     title=tool.title,
+                    show_ids=ids_requested(user_query),
                 )
                 if table is not None:
                     pending_artifacts.append({"type": "table", "content": table})
@@ -1048,7 +1066,10 @@ class ScenarioDataService(BaseLlmService):
                     }
                 else:
                     table = self._table_from_result(
-                        records, name="scenario_entities", title=name
+                        records,
+                        name="scenario_entities",
+                        title=name,
+                        show_ids=ids_requested(user_query),
                     )
                 if table is not None:
                     artifacts.append({"type": "table", "content": table})
@@ -1416,7 +1437,7 @@ class ScenarioDataService(BaseLlmService):
                     request_id,
                     self._status(
                         "tool_execution",
-                        f"Проверяю неопределённые ID в общем справочнике: {noun}…",
+                        f"Проверяю неопознанные типы в общем справочнике: {noun}…",
                     ),
                 )
                 fallback_box: list[Any] = []
@@ -1783,6 +1804,7 @@ table_rows и table_total_rows; не утверждай, что полный п�
         name: str,
         title: str,
         labels: dict[str, str] | None = None,
+        show_ids: bool = False,
     ) -> dict[str, Any] | None:
         rows = result
         reported_total: int | None = None
@@ -1826,29 +1848,41 @@ table_rows и table_total_rows; не утверждай, что полный п�
                     keys.append(str(key))
         available_rows = len(rows)
         total_rows = max(available_rows, reported_total or 0)
-        normalized_rows = []
-        for row in rows[:MAX_INLINE_TABLE_ROWS]:
-            normalized_rows.append(
-                {key: cls._table_value(row.get(key)) for key in keys}
+        shown = rows[:MAX_INLINE_TABLE_ROWS]
+        columns: list[dict[str, str]] = []
+        cells: dict[str, list[Any]] = {}
+        for key in keys:
+            if key in DROPPED_FIELDS or (is_id_field(key) and not show_ids):
+                continue
+            column = column_cells([row.get(key) for row in shown])
+            if column is None:
+                logger.warning(
+                    "Table {} drops column {}: nested values have no names", name, key
+                )
+                continue
+            cells[key] = column
+            columns.append(
+                {
+                    "key": key,
+                    "label": (labels or {}).get(key) or dictionary_label(key) or key,
+                }
             )
+        if not columns:
+            return None
+        unique_labels(columns)
         return {
             "name": re.sub(r"[^a-zA-Z0-9_]+", "_", name),
             "title": title,
-            "columns": [
-                {"key": key, "label": (labels or {}).get(key, key)} for key in keys
+            "columns": columns,
+            "rows": [
+                {key: column[index] for key, column in cells.items()}
+                for index in range(len(shown))
             ],
-            "rows": normalized_rows,
             "total_rows": total_rows,
             "complete": (
                 available_rows >= total_rows and total_rows <= MAX_INLINE_TABLE_ROWS
             ),
         }
-
-    @staticmethod
-    def _table_value(value: Any) -> Any:
-        if isinstance(value, (dict, list)):
-            return json.dumps(value, ensure_ascii=False, default=str)
-        return value
 
     @staticmethod
     def _table_part(table: dict[str, Any]) -> TablePartRequest:
@@ -1865,8 +1899,70 @@ table_rows и table_total_rows; не утверждай, что полный п�
         )
 
     async def _buf(self, request_id: str, event: dict[str, Any]) -> dict[str, Any]:
+        if event.get("type") == "table":
+            await self._translate_unknown_columns(request_id, event["content"])
         await self.state_store.buffer_event(request_id, event)
         return event
+
+    async def _translate_unknown_columns(
+        self, request_id: str, table: dict[str, Any]
+    ) -> None:
+        """Give a Russian label to every column the dictionary does not know.
+
+        Every table reaches the user through ``_buf``, so this is the one place where an
+        untranslated source key can still be caught before it is shown or persisted.
+        """
+
+        pending = []
+        for column in table.get("columns") or []:
+            if has_cyrillic(column["label"]):
+                continue
+            cached = self._column_label_cache.get(column["key"])
+            if cached:
+                column["label"] = cached
+            else:
+                pending.append(column)
+        if pending:
+            keys = [column["key"] for column in pending]
+            logger.warning(
+                "Table {} has fields without a dictionary label: {}",
+                table.get("name"),
+                keys,
+            )
+            translated = await self._llm_column_labels(request_id, keys)
+            for column in pending:
+                label = valid_label(translated.get(column["key"]))
+                if label is None:
+                    logger.warning(
+                        "Column {} keeps its source key as the label", column["key"]
+                    )
+                    continue
+                self._column_label_cache[column["key"]] = label
+                column["label"] = label
+        unique_labels(table.get("columns") or [])
+
+    async def _llm_column_labels(
+        self, request_id: str, keys: list[str]
+    ) -> dict[str, Any]:
+        state = await self.state_store.get_state(request_id) or {}
+        model = state.get("model") or await self.resolve_model(None)
+        fields = {key: self._column_descriptions.get(key, "") for key in keys}
+        try:
+            response = await self.llm_client.chat(
+                model=model,
+                messages=column_label_messages(fields),
+                think=False,
+                stream=False,
+                options={"temperature": 0, "num_predict": 400},
+            )
+            payload = json.loads(strip_json_fence(response["message"]["content"] or ""))
+        except Exception as exc:
+            # Labels are presentation only; a failed translation must not lose the table.
+            logger.warning(
+                "Column label translation failed: {}: {}", type(exc).__name__, exc
+            )
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     @staticmethod
     def _pipeline_started(request_id: str) -> dict[str, Any]:
