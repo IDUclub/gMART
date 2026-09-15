@@ -1,3 +1,10 @@
+## v0.19.1 (2026-09-15)
+
+### Fix
+
+- preserve document QA context and accept grounded concise answers (#190)
+- resolve exact document references and compact source context (#187)
+
 ## v0.19.0 (2026-09-14)
 
 ### Feat
