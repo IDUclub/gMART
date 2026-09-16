@@ -27,7 +27,7 @@ Urban API layers → data gate → resolved requirements
 стабильный IDU MCP tool → evidence + coverage
         │
         ├─ Redis checkpoints / SSE reconnect
-        └─ ChatStorage structured parts
+        └─ ChatStorage: tool calls + текстовый ответ
 ```
 
 Нормы выполняются независимо. Ошибка одной нормы формирует для неё
@@ -154,13 +154,11 @@ Urban API layers → data gate → resolved requirements
 
 ## ChatStorage и повтор расчёта
 
-В историю записываются структурированные parts:
-
-- `check_plan`;
-- `requirement_resolution`;
-- `compliance_result`;
-- `compliance_summary`;
-- существующие `tool_call`.
+В историю записываются только вызовы инструментов (`tool_call`) и текстовый ответ
+(`text`), включая вопросы для уточнения. Статусы, `check_plan`,
+`requirement_resolution`, `compliance_result` и `compliance_summary` не включаются
+в сообщение MongoDB, чтобы объёмные результаты проверки не превышали лимит BSON.
+Полные результаты остаются доступны в SSE-потоке и Redis-журнале текущего запроса.
 
 При восстановлении слоёв ChatStorage повторяет сохранённые стабильные MCP-вызовы и
 подставляет заново полученные слои в новые геометрические инструменты. Это
