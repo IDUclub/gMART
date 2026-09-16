@@ -265,3 +265,12 @@ group. `check_plan.content.equivalent_sources`, the result's `source.equivalent_
 and the summary's `equivalent_sources` preserve all source references. The summary
 includes `duplicate_checks`; its existing norm counts refer to executed unique checks.
 The final text names equivalent sources. Stored NormGraph norms are not deleted.
+
+### Geometry retrieval
+
+Compliance explicitly sends `centers_only=false` to `GetServices` and
+`GetPhysicalObjects`. Both tools forward the flag to the corresponding Urban API
+`*_with_geometry` query, and layer revisions distinguish centers from full geometry.
+Deploy the Agents API and IDU MCP together when introducing this tool parameter.
+The flag requests stored geometry; it cannot turn a stored Point into a polygon.
+Polygon requirements remain enforced when the returned source geometry is a Point.

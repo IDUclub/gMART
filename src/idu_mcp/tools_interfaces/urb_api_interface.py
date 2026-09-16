@@ -37,6 +37,10 @@ async def get_services_by_name(
         "Название сервиса на русском языке в единственном числе и именительном падеже",
     ],
     scenario_id: Annotated[int, "ID сценария из Urban API"],
+    centers_only: Annotated[
+        bool,
+        "Только центры объектов; для compliance всегда false, чтобы получить исходную геометрию",
+    ] = False,
     user_id: str = Depends(extract_user_id),
     urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
 ) -> dict[str, dict]:
@@ -52,7 +56,11 @@ async def get_services_by_name(
     """
 
     return await urban_api_tools.get_entity_by_names(
-        scenario_id, services_names, ObjectTypeEnum.SERVICE, user_id
+        scenario_id,
+        services_names,
+        ObjectTypeEnum.SERVICE,
+        user_id,
+        centers_only=centers_only,
     )
 
 
@@ -79,6 +87,10 @@ async def get_physical_objects_by_name(
         list[str], "Physical object names as list from db"
     ],
     scenario_id: Annotated[int, "ID сценария из Urban API"],
+    centers_only: Annotated[
+        bool,
+        "Только центры объектов; для compliance всегда false, чтобы получить исходную геометрию",
+    ] = False,
     user_id: str = Depends(extract_user_id),
     urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
 ) -> dict[str, dict]:
@@ -98,6 +110,7 @@ async def get_physical_objects_by_name(
         physical_objects_names,
         ObjectTypeEnum.PHYSICAL_OBJECT,
         user_id,
+        centers_only=centers_only,
     )
 
 

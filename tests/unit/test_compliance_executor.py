@@ -52,12 +52,14 @@ class FakeMcpClient:
     async def execute_tool(self, name, arguments, meta=None):
         self.calls.append((name, arguments, meta))
         if name == "GetServices":
+            assert arguments["centers_only"] is False
             if self.unavailable_services:
                 return None
             if self.zero_services:
                 return {"Школа": {"type": "FeatureCollection", "features": []}}
             return {"Школа": _fc(30.0, service_id=1)}
         if name == "GetPhysicalObjects":
+            assert arguments["centers_only"] is False
             if self.zero_physical_objects:
                 return {"Жилой дом": {"type": "FeatureCollection", "features": []}}
             return {

@@ -29,6 +29,8 @@ class UrbanApiTool:
         names: list[str],
         object_type: ObjectTypeEnum | str,
         token: str,
+        *,
+        centers_only: bool = False,
     ) -> dict[str, dict]:
         """
         Method for getting all services with given names
@@ -46,14 +48,20 @@ class UrbanApiTool:
             case ObjectTypeEnum.SERVICE:
                 object_name_id = await self.client.get_service_name_id(names, token)
                 objects = await self.client.get_services(
-                    scenario_id, list(object_name_id.values()), token
+                    scenario_id,
+                    list(object_name_id.values()),
+                    token,
+                    centers_only=centers_only,
                 )
             case ObjectTypeEnum.PHYSICAL_OBJECT:
                 object_name_id = await self.client.get_physical_objects_name_id(
                     names, token
                 )
                 objects = await self.client.get_physical_objects(
-                    scenario_id, list(object_name_id.values()), token
+                    scenario_id,
+                    list(object_name_id.values()),
+                    token,
+                    centers_only=centers_only,
                 )
             case _:
                 logger.info(
@@ -68,7 +76,7 @@ class UrbanApiTool:
                 "complete": True,
                 "truncated": False,
                 "revision": (
-                    f"scenario:{scenario_id}:{str(object_type).lower()}:{object_name_id[name]}"
+                    f"scenario:{scenario_id}:{str(object_type).lower()}:{object_name_id[name]}:centers_only={str(centers_only).lower()}"
                 ),
             }
             result[name] = collection
