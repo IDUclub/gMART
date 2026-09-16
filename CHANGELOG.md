@@ -1,3 +1,10 @@
+## v0.19.2 (2026-09-16)
+
+### Fix
+
+- **scenario-data**: summarise indicator answers instead of listing rows
+- persist only compliance tool calls and text (#193)
+
 ## v0.19.1 (2026-09-15)
 
 ### Fix
