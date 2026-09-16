@@ -147,7 +147,9 @@ async def summarize_comparison(
             messages=summary_messages(facts),
             think=False,
             stream=False,
-            options={"temperature": 0, "num_predict": 600},
+            # think=False is served as reasoning_effort="low" on gpt-oss, so the trace
+            # is generated inside this budget and a short summary needs room after it.
+            options={"temperature": 0, "num_predict": 1024},
         )
     except Exception as exc:
         # The computed summary is always correct; the model only rephrases it.

@@ -261,6 +261,48 @@ def calculation_request(query: str) -> IndicatorRequest | None:
     return None
 
 
+EXPLAIN_NAMES = 5
+
+
+def narrow_explanation(facts: list[dict]) -> str:
+    """Ask for specific indicators instead of explaining the whole catalogue."""
+    names = sorted({f["name"] for f in facts})
+    example = f" — например «{names[0]}»" if names else ""
+    return (
+        f"Объяснить можно по конкретным показателям. Назовите, какие именно{example}."
+    )
+
+
+def broad_explanation(query: str) -> bool:
+    """Tell whether an explanation is requested without pointing at any indicator."""
+    return explanation_requested(query) and not names_indicator(query)
+
+
+def explanation_too_broad(request: IndicatorRequest, query: str) -> bool:
+    """Tell whether an explanation covers more indicators than prose can carry.
+
+    Source comments and references live only in the answer text, never in the table,
+    so a wide explanation cannot be summarised the way a comparison can.
+    """
+    if request.operation not in {"values", "all"} or not explanation_requested(query):
+        return False
+    if not (request.names or request.missing):
+        return True
+    return len(request.names) > EXPLAIN_NAMES
+
+
+def catalogue_wide(request: IndicatorRequest, query: str) -> bool:
+    """Tell whether ``all`` asks for the whole catalogue rather than the picked names.
+
+    The selection prompt reserves ``all`` for an empty name list, so a populated one
+    means the model picked names itself. A query aimed at a particular indicator, or
+    asking for explanations, never sweeps the catalogue.
+    """
+    if request.names or request.missing:
+        return False
+    return not query or not (names_indicator(query) or explanation_requested(query))
+
+
 def validate_request(
     request: IndicatorRequest, facts: list[dict], query: str = ""
 ) -> IndicatorRequest:
@@ -282,15 +324,7 @@ def validate_request(
             raise ValueError("Название показателя неоднозначно.")
         selected.append(name if name in names or not matches else matches[0])
     request = request.model_copy(update={"names": selected})
-    if (
-        query
-        and request.operation == "all"
-        and not re.search(
-            r"(?:все|всех|полный|полного|список|перечень|перечисли|какие)[^?.!]{0,70}\bпоказател(?:и|ей)\b",
-            query,
-            re.I,
-        )
-    ):
+    if request.operation == "all" and not catalogue_wide(request, query):
         # Small models sometimes mean all SELECTED names, not the entire catalogue.
         request = request.model_copy(update={"operation": "values"})
     if "Население" in request.names and re.search(
@@ -562,6 +596,14 @@ def render_indicators(
 
 
 SUMMARY_CHANGES = 10
+SUMMARY_ROWS = 5
+
+
+def _capped(names: list[str]) -> str:
+    """List names, but never let an enumeration replace the table."""
+    shown = names[:SUMMARY_CHANGES]
+    rest = len(names) - len(shown)
+    return ", ".join(shown) + (f" и ещё {rest}" if rest else "")
 
 
 def _plain(value: Decimal) -> int | float:
@@ -724,25 +766,28 @@ def indicator_comparison(
     if pair:
         column_labels |= {"difference": "Разница", "change_percent": "Изменение, %"}
     absent_names = absent_notes(request.missing, len(order))
+    # The table always carries every row. Prose repeats it only for a short, explicitly
+    # named selection; a catalogue sweep and any long result get counts instead.
+    itemized = request.operation != "all" and len(rows) <= SUMMARY_ROWS
     if len(order) == 1:
         sid = order[0]
         body = (
-            [
+            lines
+            if itemized
+            else [
                 f"{labels[sid]}: показателей уровня сценария — {len(scenarios[sid])}.",
                 "Все значения — в таблице.",
             ]
-            if request.operation == "all"
-            else lines
         )
         return "\n\n".join([*body, *absent_names]), rows, column_labels
 
     header = comparison_header([labels[sid] for sid in order], pair=pair)
-    if request.operation != "all":
+    if itemized:
         return "\n\n".join([header, *lines, *absent_names]), rows, column_labels
     counts = ", ".join(f"{where(sid)} — {len(scenarios[sid])}" for sid in order)
     body = [header]
     if not pair:
-        body += [f"Показателей: {counts}.", "Все значения — в таблице."]
+        body += [f"Показателей: {counts}.", *absent_names, "Все значения — в таблице."]
         return "\n\n".join(body), rows, column_labels
     status = [f"изменились — {len(changed)}", f"без изменений — {unchanged}"]
     status += [
@@ -761,13 +806,14 @@ def indicator_comparison(
         if len(ranked) > SUMMARY_CHANGES:
             body.append(f"Ещё {len(ranked) - SUMMARY_CHANGES} — в таблице.")
     body += [
-        f"Нет значения {where(sid, full=True)}: {', '.join(lacking[sid])}."
+        f"Нет значения {where(sid, full=True)}: {_capped(lacking[sid])}."
         for sid in reversed(order)
         if lacking[sid]
     ]
     if mismatched:
         body.append(
-            "Единицы не совпадают, разница не считается: " + ", ".join(mismatched) + "."
+            "Единицы не совпадают, разница не считается: " + _capped(mismatched) + "."
         )
+    body += absent_names
     body.append("Все значения — в таблице.")
     return "\n\n".join(body), rows, column_labels

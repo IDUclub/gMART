@@ -501,6 +501,32 @@ async def test_a_project_pointing_at_the_selected_scenario_is_not_compared_with_
     assert "Базовый сценарий «Застройка у реки»" in text
 
 
+@pytest.mark.asyncio
+async def test_an_unbounded_explanation_asks_for_specific_indicators(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    events = await _run(
+        monkeypatch,
+        fake_llm,
+        fake_urban,
+        state_store,
+        _with_area(_mcp()),
+        "Объясни показатели",
+        indicators_route=False,
+    )
+
+    assert _text(events) == (
+        "Объяснить можно по конкретным показателям. "
+        "Назовите, какие именно — например «Площадь территории»."
+    )
+    assert not [event for event in events if event.get("type") == "table"]
+    assert not [
+        call
+        for call in fake_llm.chat_calls
+        if (call.messages or [{}])[0].get("content", "").startswith("Выбери только")
+    ]
+
+
 class FakeScenarioDataService:
     """Records which pipeline the route picked."""
 
