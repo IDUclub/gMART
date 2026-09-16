@@ -1,6 +1,9 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+
+import pytest
 
 from src.agents.schema.restrictions_response import RestrictionsResponse
 from src.agents.services.pipeline_state import PipelineStep
@@ -121,16 +124,121 @@ async def test_completed_reconnect_does_not_reexecute_templates():
     service.compliance_executor.execute.assert_not_awaited()
 
 
-def test_compliance_summary_is_persisted_as_chat_storage_data_part():
-    summary = {"request_id": "request-1", "results": []}
+@pytest.mark.parametrize("persist_history", [True, False])
+async def test_compliance_history_keeps_tool_calls_and_text_without_large_results(
+    persist_history,
+):
+    service = object.__new__(RestrictionParserService)
+    service.resolve_model = AsyncMock(return_value="model")
+    service.add_complex_message = AsyncMock()
+    oversized_result = {"evidence": "x" * (17 * 1024 * 1024)}
+    events = [
+        {
+            "type": "status",
+            "content": {"status": "template_execution", "text": "Проверяю нормы"},
+        },
+        service._tool_call(
+            "normgraph_search",
+            [
+                {
+                    "function": {
+                        "name": "search_restrictions",
+                        "arguments": {"query": "школы"},
+                    }
+                }
+            ],
+            "NORM_GRAPH_MCP_URL",
+        ),
+        service._tool_call(
+            "template_execution",
+            [
+                {
+                    "function": {
+                        "name": "CheckDistanceFromSource",
+                        "arguments": {"distance_m": 50},
+                    }
+                }
+            ],
+            "IDU_MCP_URL",
+        ),
+        *[
+            {"type": event_type, "content": oversized_result}
+            for event_type in (
+                "check_plan",
+                "requirement_resolution",
+                "compliance_result",
+                "compliance_summary",
+            )
+        ],
+        {"type": "compliance_progress", "content": {"completed_norms": 1}},
+        service._chunk("Проверка ", done=False),
+        service._chunk("завершена.", done=True),
+    ]
 
+    async def run_inner(**kwargs):
+        for event in events:
+            yield event
+
+    service._run_restriction_execution_pipline = run_inner
+    streamed = [
+        event
+        async for event in service.run_compliance_pipeline(
+            mcp_client=object(),
+            token="user-token",
+            temperature=0,
+            model="model",
+            user_query="Проверь нормы",
+            scenario_id=845,
+            normgraph_mcp_client=object(),
+            chat_id="chat-1",
+            persist_history=persist_history,
+        )
+    ]
+    await asyncio.sleep(0)
+
+    # Full structured results still reach the caller, including oversized evidence.
+    assert streamed == [event for event in events if event["type"] != "tool_call"]
+    if not persist_history:
+        service.add_complex_message.assert_not_awaited()
+        return
+
+    service.add_complex_message.assert_awaited_once()
+    call = service.add_complex_message.await_args
+    assert call.args[:2] == ("user-token", "chat-1")
+    assert call.kwargs == {"scenario_id": 845}
+    parts = [part.model_dump(mode="json") for part in call.args[3]]
+    assert [part["kind"] for part in parts] == ["tool_call", "tool_call", "text"]
+    assert [part["mcp_source"] for part in parts[:2]] == [
+        "NORM_GRAPH_MCP_URL",
+        "IDU_MCP_URL",
+    ]
+    assert [part["payload"]["calls"][0] for part in parts[:2]] == [
+        {
+            "step": 1,
+            "tool_name": "search_restrictions",
+            "arguments": {"query": "школы"},
+        },
+        {
+            "step": 1,
+            "tool_name": "CheckDistanceFromSource",
+            "arguments": {"distance_m": 50},
+        },
+    ]
+    assert parts[-1]["payload"]["text"] == "Проверка завершена."
+    assert len(json.dumps(parts).encode()) < 4096
+
+
+def test_status_history_is_preserved_outside_compliance():
+    event = {"type": "status", "content": {"status": "planning", "text": "План"}}
+    part = RestrictionParserService._pipeline_item_to_chat_part(event)
+    assert part.kind == "status"
+    assert part.payload.text == "План"
+
+
+def test_compliance_history_keeps_clarification_text():
     part = RestrictionParserService._pipeline_item_to_chat_part(
-        {"type": "compliance_summary", "content": summary}
+        {"type": "clarification", "content": {"question": "Какой объект проверить?"}},
+        text_only=True,
     )
-
-    assert part is not None
-    assert part.kind == "data"
-    assert part.payload == {
-        "event_type": "compliance_summary",
-        "content": summary,
-    }
+    assert part.kind == "text"
+    assert part.payload.text == "Какой объект проверить?"

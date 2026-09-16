@@ -227,12 +227,13 @@ class RestrictionParserService(BaseLlmService):
                 continue
 
             self._flush_text_buffer_to_parts(text_buffer, message_parts)
-            part = self._pipeline_item_to_chat_part(item)
+            part = self._pipeline_item_to_chat_part(
+                item, text_only=history_agent == "compliance"
+            )
             if part is not None:
                 message_parts.append(part)
-            # TODO: persist full FeatureCollection/evidence snapshots for exact
-            # historical reproduction. Phase one intentionally stores MCP tool
-            # calls and reruns them against the current scenario state.
+            # Compliance details remain in the live stream and pipeline journal.
+            # Chat history keeps only tool calls and text to avoid oversized BSON.
             yield item
 
         if text_buffer:
@@ -1249,8 +1250,12 @@ class RestrictionParserService(BaseLlmService):
     @staticmethod
     def _pipeline_item_to_chat_part(
         item: dict,
+        *,
+        text_only: bool = False,
     ) -> TextPartRequest | StatusPartRequest | StructuredPartRequest | None:
         item_type = item.get("type")
+        if text_only and item_type not in {"chunk", "clarification"}:
+            return None
         content = item.get("content") or {}
         if item_type == "status":
             return StatusPartRequest(
