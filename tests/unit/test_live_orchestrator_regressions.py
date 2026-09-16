@@ -83,7 +83,7 @@ async def test_empty_provision_catalog_needs_no_invalid_empty_enum_request():
 
 
 @pytest.mark.parametrize("distance", ["50 м", "50 метров", "50-метровой", "0,1 км"])
-async def test_compliance_does_not_drop_user_distance_when_graph_is_empty(distance):
+async def test_compliance_does_not_generate_plans_when_graph_is_empty(distance):
     service = object.__new__(RestrictionParserService)
     service.state_store = SimpleNamespace(
         new_request_id=lambda: "test",
@@ -126,7 +126,7 @@ async def test_compliance_does_not_drop_user_distance_when_graph_is_empty(distan
             history_agent="compliance",
         )
     ]
-    service._build_plan.assert_awaited_once()
-    assert distance in service._build_plan.await_args.args[2]
-    assert any(e["type"] == "clarification" for e in events)
-    assert not any(e["type"] == "compliance_summary" for e in events)
+    service._build_plan.assert_not_awaited()
+    summary = next(e["content"] for e in events if e["type"] == "compliance_summary")
+    assert summary["total_norms"] == 0
+    assert any("не выполнена" in e["content"].get("text", "") for e in events)

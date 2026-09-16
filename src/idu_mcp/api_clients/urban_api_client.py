@@ -43,6 +43,16 @@ class UrbanApiClient:
                 if i and i["name"] in names
             }
 
+    async def get_type_catalog(self, entity_type: str, token: str) -> dict[str, int]:
+        """Read global type names, including types absent from the scenario."""
+        endpoints = {
+            "service": ("v1/service_types", "service_type_id"),
+            "physical_object": ("v1/physical_object_types", "physical_object_type_id"),
+        }
+        endpoint, id_field = endpoints[entity_type]
+        rows = await self.json_handler.get(endpoint, auth_token=token)
+        return {row["name"]: row[id_field] for row in rows}
+
     async def get_service_name_id(self, names: list[str], token: str) -> dict[str, int]:
         """
         Function retrieves services name_id for scenario asynchronously.
