@@ -17,15 +17,18 @@ from src.agents.services.scenario_data.scenario_data_indicators import (
     INDICATOR_ROW_LABELS,
     IndicatorRequest,
     base_comparison_requested,
+    broad_explanation,
     calculation_request,
     comparison_entities,
     complete_records,
     explanation_requested,
+    explanation_too_broad,
     indicator_comparison,
     indicator_query,
     literal_indicator_request,
     lower_first,
     names_indicator,
+    narrow_explanation,
     normalize_indicators,
     render_indicators,
     scenario_labels,
@@ -259,8 +262,12 @@ class ScenarioAnalytics:
                     sid: normalize_indicators(value, sid) for sid, value in data.items()
                 }
                 facts = [fact for values in scenarios.values() for fact in values]
+                # Selecting indicators for an unbounded explanation costs a model call
+                # and ends in a validation error, so the scope is narrowed first.
                 request = (
-                    calculation_request(query)
+                    None
+                    if broad_explanation(query)
+                    else calculation_request(query)
                     or (
                         IndicatorRequest(operation="all", names=[], missing=[])
                         if indicators_route and not names_indicator(query)
@@ -277,9 +284,12 @@ class ScenarioAnalytics:
                         ),
                     )
                 )
-                if request.operation in {"values", "all"} and not explanation_requested(
-                    query
-                ):
+                if request is None or explanation_too_broad(request, query):
+                    answer, rows, column_labels = narrow_explanation(facts), [], None
+                elif request.operation in {
+                    "values",
+                    "all",
+                } and not explanation_requested(query):
                     answer, rows, column_labels = indicator_comparison(
                         request,
                         scenarios,
