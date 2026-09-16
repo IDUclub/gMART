@@ -208,3 +208,18 @@ cd frontend && npm run build
 timeout, допустимые геометрии и версия evidence. Тяжёлые GeoPandas-операции IDU MCP
 запускает через `asyncio.to_thread`; ошибки входных данных преобразуются в
 `ToolError`.
+
+
+### Inflected entity names
+
+Before fetching scenario layers, compliance calls `ResolveUrbanEntityTypes`.
+The tool reads the global Urban API type dictionaries and matches full phrases
+by their Russian word normal forms. For example, `спортивных площадок`, `школ`
+and `жилых домов` resolve to `Спортивная площадка`, `Школа` and `Жилой дом`.
+The executor uses the returned canonical names; stored restriction text and plans
+are not rewritten. Types with no instances in the scenario can still resolve.
+
+Exact catalog names take precedence. All qualifiers and tokens must match, and
+ambiguous or unknown phrases remain unresolved (`unverifiable`); morphology does
+not substitute synonyms or turn `трёхэтажные жилые дома` into all residential
+buildings. `pymorphy3` provides dictionary forms without an LLM round trip.
