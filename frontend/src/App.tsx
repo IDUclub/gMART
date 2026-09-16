@@ -298,7 +298,6 @@ export default function App() {
     [synapseConfigurationsLoading, setSynapseConfigurationsLoading] =
       useState(false),
     [synapseConfigurationsError, setSynapseConfigurationsError] = useState(""),
-    [systemPassword, setSystemPassword] = useState(""),
     [systemConfig, setSystemConfig] = useState<Record<string, string> | null>(
       null,
     );
@@ -1433,7 +1432,6 @@ export default function App() {
       setSystemConfig(
         await request(settings.agentsUrl, "/system/config", token, {
           method: "POST",
-          body: JSON.stringify({ password: systemPassword }),
         }),
       );
     } catch (e) {
@@ -1871,8 +1869,6 @@ export default function App() {
         ) : (
           <Admin
             settings={settings}
-            password={systemPassword}
-            setPassword={setSystemPassword}
             config={systemConfig}
             load={loadSystem}
           />
@@ -3057,14 +3053,10 @@ function Process({
 }
 function Admin({
   settings,
-  password,
-  setPassword,
   config,
   load,
 }: {
   settings: Settings;
-  password: string;
-  setPassword: (s: string) => void;
   config: Record<string, string> | null;
   load: () => void;
 }) {
@@ -3130,14 +3122,8 @@ function Admin({
       </section>
       <section className="admin-panel config">
         <h2>Конфигурация</h2>
-        <p>Введите системный пароль для просмотра адресов подключений.</p>
+        <p>Текущие адреса подключений сервиса.</p>
         <div className="inline-form">
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Системный пароль"
-          />
           <button className="primary" onClick={load}>
             Загрузить
           </button>

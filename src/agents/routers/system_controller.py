@@ -35,12 +35,12 @@ async def get_system_logs(
 
 @system_router.post("/config")
 async def get_app_config(
-    request: AppConfigRequest,
+    request: AppConfigRequest | None = None,
     system_service: SystemService = Depends(get_system_service),
 ) -> AppConfigResponse:
     """
     Get the current agents service runtime configuration.
-    Requires the system password in the request body.
+    No authorization is required. The legacy request body is optional and ignored.
     """
 
-    return system_service.get_app_config(request.password)
+    return system_service.get_app_config()
