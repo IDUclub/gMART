@@ -242,3 +242,215 @@ def test_compliance_history_keeps_clarification_text():
     )
     assert part.kind == "text"
     assert part.payload.text == "Какой объект проверить?"
+
+
+@pytest.mark.parametrize("distance", ["20 м", "200 метров", "0,1 км"])
+async def test_compliance_large_corpus_never_reaches_llm_and_executes_individually(
+    distance,
+):
+    from copy import deepcopy
+
+    from src.agents.services.normgraph.normgraph_restriction_retriever import (
+        NormGraphRestrictionRetriever,
+    )
+
+    hits = [
+        {"id": f"missing-{i}", "extraction_text": "discard-me" * 10000}
+        for i in range(300)
+    ]
+    for rid in ["r1", "r2"]:
+        plan = deepcopy(_plan())
+        plan["source"]["restriction_id"] = rid
+        hits.append({"id": rid, "check_plan": plan})
+    llm = SimpleNamespace(
+        chat=AsyncMock(side_effect=AssertionError("No corpus in LLM"))
+    )
+    service = object.__new__(RestrictionParserService)
+    service.state_store = SimpleNamespace(
+        new_request_id=lambda: "isolated",
+        create=AsyncMock(),
+        get_checkpoint=AsyncMock(return_value={}),
+        save_checkpoint=AsyncMock(),
+        set_status=AsyncMock(),
+    )
+    service._buf = AsyncMock(side_effect=lambda _id, event: event)
+    service.compliance_result_harness = SimpleNamespace(
+        prepare_follow_up=lambda *args: None
+    )
+    service.normgraph_retriever = NormGraphRestrictionRetriever(llm)
+    service._build_plan = AsyncMock(side_effect=AssertionError("No LLM replanning"))
+    client = SimpleNamespace(
+        search_restrictions=AsyncMock(
+            side_effect=lambda **args: {"hits": hits[: args["limit"]]}
+        )
+    )
+    seen = []
+
+    async def execute(_client, plan, scenario_id):
+        rid = plan["source"]["restriction_id"]
+        if rid == "r2":
+            assert "result:r1" in seen
+        seen.append("execute:" + rid)
+        result = ComplianceResult(
+            restriction_id=rid,
+            template=plan["template"],
+            template_version=1,
+            verification_status="complete",
+            compliance_status="passed",
+            coverage=VerificationCoverage(
+                applicable_objects=1,
+                checked_objects=1,
+                unchecked_objects=0,
+                fill_rate=1,
+            ),
+            summary=ComplianceSummary(violated_objects=0, passed_objects=1),
+        )
+        return SimpleNamespace(result=result, tool_calls=[], timings_ms={})
+
+    service.compliance_executor = SimpleNamespace(
+        execute=AsyncMock(side_effect=execute)
+    )
+    events = []
+    async for event in service._run_restriction_execution_pipline(
+        mcp_client=object(),
+        temperature=0,
+        model="m",
+        user_query=f"Проверь нормы с расстоянием {distance}",
+        scenario_id=772,
+        token_ref=["test"],
+        persist_history=False,
+        normgraph_mcp_client=client,
+        history_agent="compliance",
+    ):
+        events.append(event)
+        if event["type"] == "compliance_result":
+            seen.append("result:" + event["content"]["restriction_id"])
+    assert seen == ["execute:r1", "result:r1", "execute:r2", "result:r2"]
+    llm.chat.assert_not_awaited()
+    service._build_plan.assert_not_awaited()
+    checkpoints = service.state_store.save_checkpoint.await_args_list
+    graph = next(
+        call.args[2] for call in checkpoints if call.args[1] == PipelineStep.NORMGRAPH
+    )
+    assert [hit["id"] for hit in graph["restrictions"]] == ["r1", "r2"]
+    assert graph["unsupported_count"] == 300
+    assert "discard-me" not in json.dumps(graph)
+    summary = next(
+        event["content"] for event in events if event["type"] == "compliance_summary"
+    )
+    assert summary["total_norms"] == 2
+    assert any("Пропущено норм" in event["content"].get("text", "") for event in events)
+
+
+async def test_old_checkpoint_missing_and_unsupported_plans_never_reach_executor():
+    service = object.__new__(RestrictionParserService)
+    service.state_store = SimpleNamespace(
+        save_checkpoint=AsyncMock(), set_status=AsyncMock()
+    )
+    service._buf = AsyncMock(side_effect=lambda _id, event: event)
+    service.compliance_executor = SimpleNamespace(execute=AsyncMock())
+    unsupported = {**_plan(), "planner_status": "unsupported"}
+    events = [
+        event
+        async for event in service._run_executable_compliance(
+            mcp_client=object(),
+            request_id="old",
+            scenario_id=772,
+            restrictions=[
+                {"id": "absent"},
+                {"check_plan": {}},
+                {"check_plan": unsupported},
+            ],
+            checkpoint={},
+        )
+    ]
+    service.compliance_executor.execute.assert_not_awaited()
+    assert not any(
+        event["type"] in {"check_plan", "compliance_result"} for event in events
+    )
+    assert any(
+        "Пропущено норм без исполнимого плана: 3" in event["content"].get("text", "")
+        for event in events
+    )
+
+
+async def test_compliance_without_normgraph_does_not_fall_back_to_llm():
+    service = object.__new__(RestrictionParserService)
+    service.state_store = SimpleNamespace(
+        new_request_id=lambda: "none",
+        create=AsyncMock(),
+        get_checkpoint=AsyncMock(return_value={}),
+        set_status=AsyncMock(),
+    )
+    service._buf = AsyncMock(side_effect=lambda _id, event: event)
+    service.compliance_result_harness = SimpleNamespace(
+        prepare_follow_up=lambda *args: None
+    )
+    service._build_plan = AsyncMock(side_effect=AssertionError("No LLM fallback"))
+    events = [
+        event
+        async for event in service._run_restriction_execution_pipline(
+            mcp_client=object(),
+            temperature=0,
+            model="m",
+            user_query="Проверь 20 м",
+            scenario_id=772,
+            token_ref=["test"],
+            persist_history=False,
+            normgraph_mcp_client=None,
+            history_agent="compliance",
+        )
+    ]
+    service._build_plan.assert_not_awaited()
+    assert any(
+        "NormGraph не подключён" in event["content"].get("text", "") for event in events
+    )
+
+
+async def test_one_norm_failure_does_not_prevent_the_next_plan():
+    from copy import deepcopy
+
+    service = object.__new__(RestrictionParserService)
+    service.state_store = SimpleNamespace(
+        save_checkpoint=AsyncMock(), set_status=AsyncMock()
+    )
+    service._buf = AsyncMock(side_effect=lambda _id, event: event)
+    second = deepcopy(_plan())
+    second["source"]["restriction_id"] = "r2"
+    success = ComplianceResult(
+        restriction_id="r2",
+        template=second["template"],
+        template_version=1,
+        verification_status="complete",
+        compliance_status="passed",
+        coverage=VerificationCoverage(
+            applicable_objects=1, checked_objects=1, unchecked_objects=0, fill_rate=1
+        ),
+        summary=ComplianceSummary(violated_objects=0, passed_objects=1),
+    )
+    service.compliance_executor = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[
+                RuntimeError("geometry unavailable"),
+                SimpleNamespace(result=success, tool_calls=[], timings_ms={}),
+            ]
+        )
+    )
+    events = [
+        event
+        async for event in service._run_executable_compliance(
+            mcp_client=object(),
+            request_id="independent",
+            scenario_id=772,
+            restrictions=[{"check_plan": _plan()}, {"check_plan": second}],
+            checkpoint={},
+        )
+    ]
+    results = [
+        event["content"] for event in events if event["type"] == "compliance_result"
+    ]
+    assert [(r["restriction_id"], r["verification_status"]) for r in results] == [
+        ("r1", "unverifiable"),
+        ("r2", "complete"),
+    ]
+    assert service.compliance_executor.execute.await_count == 2

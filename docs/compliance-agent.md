@@ -1,6 +1,6 @@
 # Compliance agent: исполняемые нормативные ограничения
 
-Compliance agent получает норму и опциональный `CheckPlan` из NormGraph,
+Compliance agent отбирает нормы с валидным исполнимым `CheckPlan` из NormGraph,
 сопоставляет требования плана с данными сценария и запускает только
 зарегистрированный детерминированный шаблон. LLM не вычисляет геометрию, числа,
 статусы или provenance и не передаёт произвольную последовательность MCP-вызовов.
@@ -223,3 +223,19 @@ Exact catalog names take precedence. All qualifiers and tokens must match, and
 ambiguous or unknown phrases remain unresolved (`unverifiable`); morphology does
 not substitute synonyms or turn `трёхэтажные жилые дома` into all residential
 buildings. `pymorphy3` provides dictionary forms without an LLM round trip.
+
+
+### Independent plan execution
+
+Compliance accepts only persisted CheckPlans with supported schema/template versions,
+valid parameters and `auto`/`reviewed` planner status. Missing, malformed and
+`unsupported` plans are discarded immediately after retrieval, before checkpointing
+or calculation; the SSE status reports the skipped count. Old checkpoints pass the
+same gate before execution. Each accepted norm is executed separately and produces
+its own result, so one failure does not discard the others.
+
+A distance mentioned in the request no longer switches compliance to LLM plan
+generation. The corpus is never passed to `RestrictionPlanBuilder` in compliance
+mode. Ad hoc geometry conditions remain available through `/restrictions`.
+Without NormGraph, or without accepted plans, compliance reports that the check
+was not performed instead of inventing plans or claiming compliance.

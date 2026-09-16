@@ -4,6 +4,9 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from src.agents.services.compilance.compliance_registry import (
+    DEFAULT_COMPLIANCE_REGISTRY,
+)
 from src.agents.services.normgraph.normgraph_reasoning import NormGraphRetrievalPlanner
 from src.agents.services.service_entities.normgraph_plan import PrimaryTool
 
@@ -39,7 +42,7 @@ class NormGraphRestrictionRetrieval:
 
 
 class NormGraphRestrictionRetriever:
-    """Retrieve restrictions, retaining unsupported hits for compliance reporting."""
+    """Retrieve normative evidence or validated plans for independent execution."""
 
     def __init__(self, llm_client) -> None:
         self.planner = NormGraphRetrievalPlanner(llm_client)
@@ -52,6 +55,7 @@ class NormGraphRestrictionRetriever:
         history: list[dict] | None = None,
         retain_unsupported: bool = False,
         retrieve_all: bool = False,
+        require_check_plan: bool = False,
     ) -> NormGraphRestrictionRetrieval:
         # Compliance is an audit, not a relevance-ranked QA answer.  The LLM may
         # choose a small result window for ordinary questions, but it must never
@@ -59,7 +63,11 @@ class NormGraphRestrictionRetriever:
         if retrieve_all:
             hits, arguments = await self._retrieve_all(client)
             return self._result(
-                hits, arguments, "search_restrictions", retain_unsupported
+                hits,
+                arguments,
+                "search_restrictions",
+                retain_unsupported,
+                require_check_plan,
             )
 
         exhaustive_document_codes = self._exhaustive_document_codes(user_query)
@@ -78,6 +86,7 @@ class NormGraphRestrictionRetriever:
                 arguments,
                 "search_restrictions",
                 retain_unsupported,
+                require_check_plan,
             )
 
         plan = await self.planner.build_plan(model, user_query, history=history)
@@ -137,7 +146,9 @@ class NormGraphRestrictionRetriever:
         if explicit_hits is not None:
             hits = explicit_hits
 
-        return self._result(hits, arguments, tool_name, retain_unsupported)
+        return self._result(
+            hits, arguments, tool_name, retain_unsupported, require_check_plan
+        )
 
     async def _retrieve_all(
         self, client: "NormGraphMcpClient"
@@ -177,23 +188,42 @@ class NormGraphRestrictionRetriever:
         arguments: dict[str, Any],
         tool_name: str,
         retain_unsupported: bool,
+        require_check_plan: bool = False,
     ) -> NormGraphRestrictionRetrieval:
-        supported = [hit for hit in hits if cls.is_canonical(hit)]
-        restrictions = hits if retain_unsupported else supported
-        unsupported_count = sum(
-            1
-            for hit in hits
-            if not cls.is_canonical(hit)
-            and (
-                not isinstance(hit.get("check_plan"), dict)
-                or hit["check_plan"].get("planner_status") == "unsupported"
+        if require_check_plan:
+            restrictions = [hit for hit in hits if cls.has_executable_plan(hit)]
+            unsupported_count = len(hits) - len(restrictions)
+        else:
+            supported = [hit for hit in hits if cls.is_canonical(hit)]
+            restrictions = hits if retain_unsupported else supported
+            unsupported_count = sum(
+                1
+                for hit in hits
+                if not cls.is_canonical(hit)
+                and (
+                    not isinstance(hit.get("check_plan"), dict)
+                    or hit["check_plan"].get("planner_status") == "unsupported"
+                )
             )
-        )
         return NormGraphRestrictionRetrieval(
             restrictions=restrictions,
             unsupported_count=unsupported_count,
             tool_call={"function": {"name": tool_name, "arguments": arguments}},
         )
+
+    @staticmethod
+    def has_executable_plan(hit: dict[str, Any]) -> bool:
+        """Reject absent, unsupported or malformed plans before checkpointing."""
+        raw_plan = hit.get("check_plan")
+        if not isinstance(raw_plan, dict):
+            return False
+        if raw_plan.get("planner_status") not in ("auto", "reviewed"):
+            return False
+        try:
+            DEFAULT_COMPLIANCE_REGISTRY.validate_plan(raw_plan)
+        except (ValueError, TypeError):
+            return False
+        return True
 
     @staticmethod
     def is_canonical(hit: dict[str, Any]) -> bool:

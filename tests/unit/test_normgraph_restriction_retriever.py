@@ -206,3 +206,35 @@ async def test_compliance_retrieval_fetches_all_norms_without_llm_limit():
         ("search_restrictions", {"limit": 256, "neighbors_depth": 0}),
         ("search_restrictions", {"limit": 512, "neighbors_depth": 0}),
     ]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"planner_status": "unsupported"},
+        {"planner_status": {}},
+        {"template": "unsupported"},
+        {"template_version": 999},
+        {"schema_version": "2.0"},
+        {"params": {}},
+        {"source": {}},
+    ],
+)
+def test_compliance_filters_unusable_plans(change):
+    from tests.unit.test_executable_compliance_pipeline import _plan
+
+    valid = {"id": "valid", "check_plan": _plan()}
+    invalid = {"id": "invalid", "check_plan": {**_plan(), **change}}
+    hits = [valid, invalid, {"id": "missing"}, {"check_plan": None}, {"check_plan": {}}]
+    result = NormGraphRestrictionRetriever._result(
+        hits, {}, "search_restrictions", False, True
+    )
+    assert result.restrictions == [valid]
+    assert result.unsupported_count == 4
+
+
+def test_compliance_keeps_reviewed_plans_without_metric_restriction_fields():
+    from tests.unit.test_executable_compliance_pipeline import _plan
+
+    hit = {"check_plan": {**_plan(), "planner_status": "reviewed"}}
+    assert NormGraphRestrictionRetriever.has_executable_plan(hit)
