@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
 from src.agents.services.service_entities.dvd_plan import SearchKind
 from tests.helpers import plan_json, verdict_json
@@ -113,10 +115,12 @@ async def test_critic_parses_rejection(fake_llm):
 
 
 async def test_critic_does_not_approve_on_invalid_json(fake_llm):
+    from src.agents.services.dvd.retry_policy import CriticResponseError
+
     # Three bounded attempts cannot establish support for the draft.
     fake_llm.json_responses = ["garbage", "garbage", "garbage"]
-    verdict = await AnswerCritic(fake_llm).review("m", "q", "ctx", "answer")
-    assert verdict.satisfied is False
+    with pytest.raises(CriticResponseError):
+        await AnswerCritic(fake_llm).review("m", "q", "ctx", "answer")
     assert len(fake_llm.chat_calls) == 3
 
 

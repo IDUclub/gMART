@@ -6,4 +6,4 @@ class AppConfigRequest(BaseModel):
     Request body for retrieving the agents service runtime configuration.
     """
 
-    password: str
+    password: str | None = None

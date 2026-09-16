@@ -5,6 +5,7 @@ import json
 import os
 import re
 from collections.abc import AsyncGenerator
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -54,10 +55,15 @@ from src.agents.services.dvd.document_reference import (
 )
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
+from src.agents.services.dvd.partial_answer import PartialAnswerEvidence
 from src.agents.services.dvd.retrieval_scope import (
     apply_scope,
     document_scope,
     resets_scope,
+)
+from src.agents.services.dvd.retry_policy import (
+    normalized_query,
+    retrieval_key,
 )
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.service_entities.dvd_plan import validate_retrieval_plan
@@ -79,14 +85,15 @@ class DvdRagService(BaseLlmService):
     For each round:
         1. RETRIEVAL_PLANNING — an LLM picks the search query, surface (text/table/all),
            number of fragments and neighbour-context width.
-        2. SEARCHING — the chosen IDU_DVD search tool is called deterministically.
-        3. ANSWER_DRAFTING — the answer is streamed to the client, grounded in the fragments.
+        2. SEARCHING — retrieve fragments, reusing identical retrievals within this run.
+        3. ANSWER_DRAFTING — buffer an answer grounded in the fragments.
         4. SELF_REVIEW — a critic LLM checks the draft against the fragments. If rejected,
-           a new (refined) search query is planned and the answer is rewritten on fresh
-           context. The loop repeats up to ``MAX_ITERATIONS`` rounds.
+           refine the plan and rewrite the answer using the accumulated feedback.
+           The loop repeats up to ``MAX_ITERATIONS`` rounds.
 
-    Every draft is streamed (each chunk tagged with its ``iteration``); status events report
-    the self-correction. With full integration the final answer is persisted to ChatStorage.
+    Stream an accepted answer or, after exhausting reviews, explicitly verified
+    claims selected across rounds. Status events never expose private critique.
+    With full integration the final answer is persisted to ChatStorage.
 
     Reconnect: every emitted event is buffered in Redis (``PipelineStateStore``) keyed by a
     ``request_id`` that is announced via the first ``pipeline_started`` event. If the SSE
@@ -351,6 +358,13 @@ class DvdRagService(BaseLlmService):
 
         prev_critique: str | None = progress.get("prev_critique")
         prev_query: str | None = progress.get("prev_query")
+        refined_query: str | None = progress.get("refined_query")
+        # Only this producer owns these caches. Never share evidence between
+        # users/requests or persist large retrieved documents in checkpoints.
+        retrieved = {}
+        prepared_contexts = {}
+        partial_evidence = PartialAnswerEvidence(progress.get("partial_evidence"))
+        collected["partial_evidence"] = partial_evidence.records
         start_iteration = int(progress.get("completed_iterations", 0)) + 1
         final_iteration = start_iteration
         collected["selected_choice"] = progress.get(
@@ -435,6 +449,25 @@ class DvdRagService(BaseLlmService):
                 }
                 collected["retrieval_constraints"] = locked
 
+            if (
+                refined_query
+                and (plan.retrieval_mode == "semantic" or plan.rank_by_relevance)
+                and retrieval_key(
+                    plan, scenario_id, collected.get("selected_candidate_ids")
+                )
+                in retrieved
+                and normalized_query(refined_query)
+                != normalized_query(plan.search_query)
+            ):
+                # A repeated planner output must not discard the critic's new
+                # search suggestion. Only replace the ranking query, not scope.
+                plan = validate_retrieval_plan(
+                    {**plan.model_dump(), "search_query": refined_query}
+                )
+            search_key = retrieval_key(
+                plan, scenario_id, collected.get("selected_candidate_ids")
+            )
+
             if plan.doc_id or plan.document_names:
                 scope = {
                     key: getattr(plan, key)
@@ -455,7 +488,16 @@ class DvdRagService(BaseLlmService):
                 ):
                     yield event
                 return
-            if (
+            if search_key in retrieved:
+                search_result = deepcopy(retrieved[search_key])
+                hits = search_result.get("hits") or []
+                context = self.context_builder.build_context(hits)
+                logger.info(
+                    "DVD retrieval reused request_id={} iteration={}",
+                    request_id,
+                    iteration,
+                )
+            elif (
                 plan.retrieval_mode != "semantic"
                 or plan.document_names
                 or plan.doc_id
@@ -600,6 +642,9 @@ class DvdRagService(BaseLlmService):
                     ),
                 )
 
+            if search_key not in retrieved:
+                retrieved[search_key] = deepcopy(search_result)
+
             if not hits and not is_last:
                 yield await self._buf(
                     request_id,
@@ -626,6 +671,17 @@ class DvdRagService(BaseLlmService):
                 continue
 
             if not hits:
+                if partial_evidence.records:
+                    async for event in self._finish_partial_answer(
+                        model,
+                        intent_query,
+                        request_id,
+                        collected,
+                        iteration,
+                        partial_evidence,
+                    ):
+                        yield event
+                    return
                 answer = "В доступной базе документов не найдены фрагменты по этому запросу. Подтвердить требование или привести цитату не удалось; отсутствие результатов поиска не означает отсутствие нормативного требования."
                 collected["final_answer"] = answer
                 collected["newly_completed"] = True
@@ -665,6 +721,7 @@ class DvdRagService(BaseLlmService):
                         yield event
                     return
             context = self.context_builder.build_context(hits)
+            raw_context = context
             yield await self._buf(
                 request_id,
                 self._status(
@@ -672,9 +729,13 @@ class DvdRagService(BaseLlmService):
                     "Подготавливаю полный контекст; большие фрагменты обрабатываю частями…",
                 ),
             )
-            prepared = await self.context_reducer.prepare(
-                model, intent_query, context, history
-            )
+            prepared = prepared_contexts.get(search_key)
+            if prepared is None:
+                prepared = await self.context_reducer.prepare(
+                    model, intent_query, context, history
+                )
+                if not prepared.failed_parts:
+                    prepared_contexts[search_key] = prepared
             context = prepared.text
             collected["context_processing"] = {
                 "processed_parts": prepared.processed_parts,
@@ -734,10 +795,24 @@ class DvdRagService(BaseLlmService):
                     request_id, "review", review_context.failed_parts
                 )
                 return
-            verdict = await self.critic.review(
-                model, intent_query, review_context.text, draft
-            )
+            try:
+                verdict = await self.critic.review(
+                    model, intent_query, review_context.text, draft
+                )
+            except Exception as exc:
+                logger.opt(exception=exc).error(
+                    "DVD review failed request_id={} stage=self_review iteration={} "
+                    "reason={} error_type={}",
+                    request_id,
+                    iteration,
+                    getattr(exc, "reason", "critic_error"),
+                    type(exc).__name__,
+                )
+                raise
 
+            partial_evidence.add(
+                verdict.claims, draft, raw_context, self.critic._literal_defects
+            )
             if verdict.satisfied:
                 yield await self._buf(
                     request_id, self._chunk(draft, done=False, iteration=iteration)
@@ -771,6 +846,17 @@ class DvdRagService(BaseLlmService):
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
 
+            critique_text = (verdict.critique or "ответ недостаточно обоснован").strip()
+            log_rejection = logger.error if is_last else logger.warning
+            log_rejection(
+                "DVD answer rejected request_id={} stage=self_review iteration={} "
+                "reason={} critique={} refined_search_query={}",
+                request_id,
+                iteration,
+                "review_exhausted" if is_last else "answer_rejected",
+                critique_text,
+                verdict.refined_search_query,
+            )
             if is_last and quotation:
                 answer = (
                     "Не удалось подтвердить объяснение по источнику. Ниже приведён полный исходный текст.\n\n"
@@ -782,22 +868,28 @@ class DvdRagService(BaseLlmService):
                     yield event
                 return
             if is_last:
-                raise ValueError(
-                    "Ответ не прошёл проверку по источникам за допустимое число попыток."
-                )
-            critique_text = (verdict.critique or "ответ недостаточно обоснован").strip()
+                async for event in self._finish_partial_answer(
+                    model,
+                    intent_query,
+                    request_id,
+                    collected,
+                    iteration,
+                    partial_evidence,
+                ):
+                    yield event
+                return
             yield await self._buf(
                 request_id,
                 self._status(
                     "self_review",
-                    f"Модель не удовлетворена ответом: {critique_text} "
-                    "Переформулирую запрос и переписываю ответ…",
+                    "Уточняю ответ по источникам…",
                 ),
             )
             # Keep earlier corrections too: fixing the latest defect must not
             # reintroduce a bad citation already rejected on the previous draft.
             prev_critique = "\n".join(filter(None, [prev_critique, critique_text]))
             prev_query = verdict.refined_search_query or plan.search_query
+            refined_query = normalized_query(verdict.refined_search_query) or None
             await self._save_progress(
                 request_id,
                 collected,
@@ -805,6 +897,7 @@ class DvdRagService(BaseLlmService):
                 accepted=False,
                 prev_critique=prev_critique,
                 prev_query=prev_query,
+                refined_query=refined_query,
             )
 
         # Defensive: the last iteration always accepts above, so this is normally unreachable
@@ -1052,6 +1145,53 @@ class DvdRagService(BaseLlmService):
         )
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
 
+    async def _finish_partial_answer(
+        self, model, query, request_id, collected, iteration, evidence
+    ):
+        yield await self._buf(
+            request_id,
+            self._status(
+                "self_review", "Проверяю подтверждённые сведения для частичного ответа…"
+            ),
+        )
+        try:
+            approved = await self.critic.select_partial(model, query, evidence)
+            answer = evidence.render(approved)
+        except Exception as exc:
+            logger.opt(exception=exc).error(
+                "DVD partial review failed request_id={} iteration={} error_type={}",
+                request_id,
+                iteration,
+                type(exc).__name__,
+            )
+            raise
+        logger.warning(
+            "DVD partial answer request_id={} iteration={} candidates={} approved={}",
+            request_id,
+            iteration,
+            len(evidence.candidates()),
+            len(approved),
+        )
+        # The partial answer has its own cross-round citation numbering. The last
+        # retrieval alone must not be reused as evidence for these citations.
+        if collected.get("chat_id") and collected.get("chat_context_access"):
+            await self.state_store.set_document_evidence(collected["chat_id"], None)
+        yield await self._buf(
+            request_id,
+            self._status(
+                "finalizing",
+                (
+                    "Сформирован частичный ответ"
+                    if approved
+                    else "Проверка источников завершена"
+                ),
+            ),
+        )
+        async for event in self._finish_retrieval(
+            request_id, collected, answer, iteration
+        ):
+            yield event
+
     # ------------------------------------------------------------------
     # Redis state helpers (event buffering + resume checkpoint)
     # ------------------------------------------------------------------
@@ -1072,6 +1212,7 @@ class DvdRagService(BaseLlmService):
         final_iteration: int | None = None,
         prev_critique: str | None = None,
         prev_query: str | None = None,
+        refined_query: str | None = None,
     ) -> None:
         await self.state_store.save_checkpoint(
             request_id,
@@ -1084,9 +1225,11 @@ class DvdRagService(BaseLlmService):
                 "final_iteration": final_iteration,
                 "prev_critique": prev_critique,
                 "prev_query": prev_query,
+                "refined_query": refined_query,
                 "retrieval_constraints": collected.get("retrieval_constraints"),
                 "selected_choice": collected.get("selected_choice"),
                 "context_processing": collected.get("context_processing"),
+                "partial_evidence": collected.get("partial_evidence", []),
             },
         )
 

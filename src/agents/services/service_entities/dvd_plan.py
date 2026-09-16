@@ -109,6 +109,17 @@ def validate_retrieval_plan(value) -> RetrievalPlan:
     return _RETRIEVAL_PLAN_ADAPTER.validate_python(value)
 
 
+class ClaimEvidence(BaseModel):
+    source_id: str
+    quote: str
+
+
+class AuditedClaim(BaseModel):
+    text: str
+    status: Literal["supported", "contradicted", "insufficient"]
+    evidence: list[ClaimEvidence] = Field(default_factory=list)
+
+
 class CriticVerdict(BaseModel):
     """
     LLM critic's verdict on a drafted answer.
@@ -121,3 +132,4 @@ class CriticVerdict(BaseModel):
     satisfied: bool
     critique: str = ""
     refined_search_query: str | None = None
+    claims: list[AuditedClaim] = Field(default_factory=list)

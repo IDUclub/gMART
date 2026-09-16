@@ -173,8 +173,9 @@ class TestLoop:
 
         assert len(fake_mcp.search_calls) == 2
         assert fake_mcp.search_calls[1].query == "второй-план"
-        # the rejection surfaced as a self_review status carrying the critique
-        assert any("нет пункта" in t for t in statuses(events, "self_review"))
+        # The client sees progress; the private critique stays in logs/prompts.
+        assert "Уточняю ответ по источникам…" in statuses(events, "self_review")
+        assert not any("нет пункта" in t for t in statuses(events, "self_review"))
         # the refined query was fed to the second planning round
         second_plan_prompt = [c for c in fake_llm.chat_calls if not c.stream][
             2
@@ -205,10 +206,15 @@ class TestLoop:
         ]
         fake_llm.answer_texts = ["d1", "d2", "d3"]
 
-        with pytest.raises(ValueError, match="не прошёл проверку"):
-            await _run(service, fake_mcp)
+        events = await _run(service, fake_mcp)
+        assert "Не удалось подтвердить" in answer_text(events)
+        assert not any(e["type"] == "error" for e in events)
+        assert all(draft not in answer_text(events) for draft in ("d1", "d2", "d3"))
         assert len(fake_mcp.search_calls) == 3
-        service._schedule_persist_answer.assert_not_called()
+        service._schedule_persist_answer.assert_called_once()
+        assert service._schedule_persist_answer.call_args.args[2][
+            "final_answer"
+        ] == answer_text(events)
         non_stream = [c for c in fake_llm.chat_calls if not c.stream]
         assert len(non_stream) == 6
 

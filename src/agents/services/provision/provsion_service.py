@@ -506,13 +506,25 @@ class ProvisionService(BaseLlmService):
             yield await self._buf(request_id, item)
 
         table = self.context_builder.build_summary_table(prov_result.data)
+        for type_id, service in (prov_result.data.get("services") or {}).items():
+            if not service.get("summary"):
+                logger.error(
+                    "Provision calculation failed request_id={} scenario_id={} "
+                    "service_type_id={} reason={}",
+                    request_id,
+                    scenario_id,
+                    type_id,
+                    service.get("error") or "missing_summary",
+                )
         if table["rows"]:
             yield await self._buf(request_id, self._table(table))
         else:
-            failed = [
-                f"{svc.get('name', '')}: {svc.get('error', 'нет данных')}"
-                for svc in (prov_result.data.get("services") or {}).values()
-            ]
+            logger.error(
+                "Provision summary failed request_id={} scenario_id={} "
+                "reason=no_calculation_results",
+                request_id,
+                scenario_id,
+            )
             await self.state_store.set_status(request_id, PipelineStatus.FAILED)
             yield await self._buf(
                 request_id,
@@ -520,8 +532,7 @@ class ProvisionService(BaseLlmService):
                     "type": "error",
                     "content": {
                         "traceback": "",
-                        "message": "Не удалось рассчитать обеспеченность ни для одного сервиса.\n"
-                        + "\n".join(failed),
+                        "message": "Не удалось рассчитать обеспеченность. Повторите попытку.",
                     },
                 },
             )
@@ -634,7 +645,14 @@ class ProvisionService(BaseLlmService):
         service_result = self._single_service_result(prov_result.data, service_type_id)
         summary = (service_result or {}).get("summary")
         if not summary:
-            error = (service_result or {}).get("error") or "нет данных"
+            logger.error(
+                "Provision calculation failed request_id={} scenario_id={} "
+                "service_type_id={} reason={}",
+                request_id,
+                scenario_id,
+                service_type_id,
+                (service_result or {}).get("error") or "missing_summary",
+            )
             await self.state_store.set_status(request_id, PipelineStatus.FAILED)
             yield await self._buf(
                 request_id,
@@ -642,7 +660,7 @@ class ProvisionService(BaseLlmService):
                     "type": "error",
                     "content": {
                         "traceback": "",
-                        "message": f"Не удалось рассчитать обеспеченность сервисом «{service_name}»: {error}",
+                        "message": "Не удалось рассчитать обеспеченность. Повторите попытку.",
                     },
                 },
             )

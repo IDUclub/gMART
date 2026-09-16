@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from src.agents.a2a.dvd_agent import DocumentQaA2AAgent
@@ -220,6 +222,7 @@ async def test_stream_failure_emits_failed_status():
 
     events = [e async for e in ex.stream(params, dvd_mcp_client=object(), token="t")]
 
+    assert "pipeline boom" not in json.dumps(events)
     assert any(
         e.get("kind") == "status-update"
         and e.get("final")
