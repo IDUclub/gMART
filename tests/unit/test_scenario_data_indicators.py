@@ -15,9 +15,11 @@ from src.agents.services.scenario_data.scenario_data_indicators import (
     base_comparison_requested,
     calculation_request,
     comparison_declined,
+    explanation_too_broad,
     grouped,
     indicator_comparison,
     names_indicator,
+    narrow_explanation,
     normalize_indicators,
     render_indicators,
     scenario_labels,
@@ -188,6 +190,67 @@ def test_all_selected_names_does_not_expand_a_single_indicator_request():
         "Какова средняя этажность как сохранённый показатель?",
     )
     assert request.operation == "values" and request.names == ["Средняя этажность"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "сравни показатели с базовым сценарием",
+        "что изменилось?",
+        "покажи все показатели",
+    ],
+)
+def test_a_catalogue_wide_request_is_not_narrowed_by_its_wording(query):
+    facts = normalize_indicators(
+        [indicator(), indicator(28, 2, "Средняя этажность", "этажей")], 772
+    )
+    request = validate_request(
+        IndicatorRequest(operation="all", names=[], missing=[]), facts, query
+    )
+    assert request.operation == "all"
+
+
+def test_an_explanation_of_many_indicators_is_narrowed():
+    named = [f"Показатель {i}" for i in range(6)]
+    assert explanation_too_broad(
+        IndicatorRequest(operation="values", names=named, missing=[]),
+        "Объясни " + ", ".join(f"«{name}»" for name in named),
+    )
+    assert not explanation_too_broad(
+        IndicatorRequest(operation="values", names=named[:5], missing=[]),
+        "Объясни " + ", ".join(f"«{name}»" for name in named[:5]),
+    )
+    assert not explanation_too_broad(
+        IndicatorRequest(operation="density", names=[], missing=[]),
+        "Объясни расчёт плотности населения",
+    )
+    assert not explanation_too_broad(
+        IndicatorRequest(operation="values", names=["Площадь территории"], missing=[]),
+        "Покажи площадь территории",
+    )
+
+
+def test_the_narrowing_answer_names_a_real_indicator():
+    facts = normalize_indicators(
+        [indicator(), indicator(28, 2, "Средняя этажность", "этажей")], 772
+    )
+    assert narrow_explanation(facts) == (
+        "Объяснить можно по конкретным показателям. "
+        "Назовите, какие именно — например «Площадь территории»."
+    )
+    assert narrow_explanation([]) == (
+        "Объяснить можно по конкретным показателям. Назовите, какие именно."
+    )
+
+
+def test_an_explanation_request_never_sweeps_the_catalogue():
+    facts = normalize_indicators([indicator()], 772)
+    with pytest.raises(ValueError):
+        validate_request(
+            IndicatorRequest(operation="all", names=[], missing=[]),
+            facts,
+            "объясни показатели",
+        )
 
 
 def test_integer_trailing_zeroes_are_preserved():
@@ -610,6 +673,45 @@ def test_summary_counts_ranks_changes_and_lists_gaps_without_repeating_the_table
     assert by_name["Срок рекультивации территории"]["change_percent"] == -75.5
     assert by_name["Численность населения"]["scenario_848"] is None
     assert by_name["Численность населения"]["difference"] is None
+
+
+def test_a_long_named_selection_is_summarised_instead_of_listed():
+    moved = [(10 + i, f"Меняется {i}", 10, "%") for i in range(4)]
+    steady = [(20 + i, f"Постоянный {i}", 7, "%") for i in range(4)]
+    base = facts_of(846, *moved, *steady)
+    mine = facts_of(
+        848, *[(iid, name, 20, unit) for iid, name, _, unit in moved], *steady
+    )
+
+    text, rows, _ = compare(
+        IndicatorRequest(
+            operation="values",
+            names=[name for _, name, _, _ in moved + steady],
+            missing=[],
+        ),
+        {846: base, 848: mine},
+    )
+
+    assert len(rows) == 8
+    assert (
+        "Показателей: в базовом — 8, в вашем — 8. Изменились — 4, без изменений — 4."
+        in text
+    )
+    assert all(f"Постоянный {i}" not in text for i in range(4))
+    assert "без изменений." not in text
+    assert text.endswith("Все значения — в таблице.")
+
+
+def test_absent_and_mismatched_names_are_capped_in_the_summary():
+    absent = [(30 + i, f"Только в базовом {i}", i, "%") for i in range(12)]
+    base = facts_of(846, (17, "Земли жилой застройки", 23.41, "%"), *absent)
+    mine = facts_of(848, (17, "Земли жилой застройки", 97.6, "%"))
+
+    text, _, _ = compare(ALL, {846: base, 848: mine})
+
+    assert "нет значения в вашем — 12" in text
+    assert "и ещё 2." in text
+    assert "Только в базовом 8" not in text and "Только в базовом 9" not in text
 
 
 def test_a_named_indicator_is_answered_alone():
