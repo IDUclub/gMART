@@ -206,10 +206,15 @@ class TestLoop:
         ]
         fake_llm.answer_texts = ["d1", "d2", "d3"]
 
-        with pytest.raises(ValueError, match="не прошёл проверку"):
-            await _run(service, fake_mcp)
+        events = await _run(service, fake_mcp)
+        assert "Не удалось подтвердить" in answer_text(events)
+        assert not any(e["type"] == "error" for e in events)
+        assert all(draft not in answer_text(events) for draft in ("d1", "d2", "d3"))
         assert len(fake_mcp.search_calls) == 3
-        service._schedule_persist_answer.assert_not_called()
+        service._schedule_persist_answer.assert_called_once()
+        assert service._schedule_persist_answer.call_args.args[2][
+            "final_answer"
+        ] == answer_text(events)
         non_stream = [c for c in fake_llm.chat_calls if not c.stream]
         assert len(non_stream) == 6
 
