@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
 
+from loguru import logger
 from python_a2a.models.task import TaskState
 
 from src.agents.a2a.a2a_format import sanitized_user_message
@@ -134,11 +135,19 @@ class ProvisionAgentExecutor:
         except PipelineSuspendedError:
             return
         except Exception as exc:
+            logger.opt(exception=exc).error(
+                "Provision A2A failed task_id={} scenario_id={} error_type={}",
+                task_id,
+                execution["scenario_id"],
+                type(exc).__name__,
+            )
             status = self.task_store.set_status(
                 task_id,
                 TaskState.FAILED,
                 self._agent_message(
-                    context_id, task_id, f"Provision effects pipeline failed: {exc}"
+                    context_id,
+                    task_id,
+                    "Не удалось рассчитать обеспеченность. Повторите попытку.",
                 ),
             )
             yield self._status_update(task_id, context_id, status, final=True)

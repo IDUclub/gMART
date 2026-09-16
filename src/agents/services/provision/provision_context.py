@@ -272,9 +272,7 @@ class ProvisionContextBuilder:
             if service.get("summary"):
                 parts.append(self.build_provision_answer(service["summary"], name))
             else:
-                parts.append(
-                    f"{name}: расчёт не выполнен ({service.get('error') or 'нет данных'})."
-                )
+                parts.append(f"{name}: расчёт не выполнен.")
         return "\n\n".join(parts) or "Нет результатов расчёта обеспеченности."
 
     @staticmethod
