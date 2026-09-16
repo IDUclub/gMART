@@ -858,7 +858,7 @@ class RestrictionParserService(BaseLlmService):
                 request_id,
                 {
                     "type": "compliance_result",
-                    "content": result.model_dump(mode="json"),
+                    "content": self._compliance_result_payload(result),
                 },
             )
             progress = self._compliance_progress(results, len(plans))
@@ -873,17 +873,23 @@ class RestrictionParserService(BaseLlmService):
                     f"Проверено {index} из {len(plans)} норм",
                 ),
             )
-            feature_layers = {}
-            if result.violated_features is not None:
-                feature_layers[f"Нарушения: {result.restriction_id}"] = (
-                    result.violated_features
+            # Map geometry has one transport: non-empty violation layer events.
+            # Successful and non-executed checks must not open empty UI layers.
+            if (
+                result.compliance_status == "violated"
+                and result.summary.violated_objects > 0
+                and (result.violated_features or {}).get("features")
+            ):
+                clause = result.source.get("clause_number")
+                suffix = (
+                    f"{clause}_{result.restriction_id}"
+                    if clause
+                    else result.restriction_id
                 )
-            if result.passed_features is not None:
-                feature_layers[f"Проверено без нарушений: {result.restriction_id}"] = (
-                    result.passed_features
-                )
-            for item in self._feature_collections(feature_layers):
-                yield await self._buf(request_id, item)
+                for item in self._feature_collections(
+                    {f"Нарушение_нормы_{suffix}": result.violated_features}
+                ):
+                    yield await self._buf(request_id, item)
 
         await self.state_store.save_checkpoint(
             request_id, PipelineStep.REQUIREMENTS_RESOLUTION, resolution_events
@@ -891,7 +897,10 @@ class RestrictionParserService(BaseLlmService):
         await self.state_store.save_checkpoint(
             request_id,
             PipelineStep.TEMPLATE_EXECUTION,
-            [item.model_dump(mode="json") for item in results],
+            [
+                RestrictionParserService._compliance_result_payload(item)
+                for item in results
+            ],
         )
         yield await self._buf(
             request_id,
@@ -961,7 +970,10 @@ class RestrictionParserService(BaseLlmService):
             "partial_norms": sum(
                 item.verification_status == "partial" for item in results
             ),
-            "results": [item.model_dump(mode="json") for item in results],
+            "results": [
+                RestrictionParserService._compliance_result_payload(item)
+                for item in results
+            ],
         }
 
     @staticmethod
@@ -986,6 +998,13 @@ class RestrictionParserService(BaseLlmService):
         }
 
     @staticmethod
+    def _compliance_result_payload(result: ComplianceResult) -> dict[str, Any]:
+        """Keep result metadata; geometry is emitted only as feature_collection."""
+        return result.model_dump(
+            mode="json", exclude={"violated_features", "passed_features"}
+        )
+
+    @staticmethod
     def _compliance_summary_text(summary: dict[str, Any]) -> str:
         if summary["total_norms"] == 0:
             return "Нормы с исполнимыми планами не найдены. Проверка соответствия не выполнена; отсутствие проверок не подтверждает отсутствие нарушений."
@@ -1000,7 +1019,29 @@ class RestrictionParserService(BaseLlmService):
             parts.append(
                 f"С частичным покрытием: {summary['partial_norms']}; вывод относится только к проверенной части."
             )
-        return " ".join(parts)
+        violations = []
+        for result in summary.get("results", []):
+            count = result.get("summary", {}).get("violated_objects", 0)
+            if result.get("compliance_status") != "violated" or count <= 0:
+                continue
+            source = result.get("source") or {}
+            label = source.get("document_name") or "Норма"
+            if source.get("clause_number"):
+                label += f", пункт {source['clause_number']}"
+            else:
+                label += f" ({result['restriction_id']})"
+            text = " ".join((source.get("extraction_text") or "").split())
+            detail = f"- {label}: нарушений на объектах — {count}."
+            if text:
+                detail += f" Требование: {text}"
+            if result.get("verification_status") == "partial":
+                unchecked = result.get("coverage", {}).get("unchecked_objects", 0)
+                detail += f" Не проверено объектов: {unchecked}."
+            violations.append(detail)
+        overview = " ".join(parts)
+        if violations:
+            return overview + "\n\nНарушенные нормы:\n\n" + "\n".join(violations)
+        return overview
 
     async def _retryable_step(
         self,

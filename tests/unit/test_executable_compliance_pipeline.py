@@ -454,3 +454,130 @@ async def test_one_norm_failure_does_not_prevent_the_next_plan():
         ("r2", "complete"),
     ]
     assert service.compliance_executor.execute.await_count == 2
+
+
+@pytest.mark.parametrize(
+    "status,verification,violated_count,has_geometry,expected_layers",
+    [
+        ("violated", "complete", 2, True, 1),
+        ("violated", "partial", 2, True, 1),
+        ("violated", "complete", 2, False, 0),
+        ("passed", "complete", 0, True, 0),
+        ("passed", "partial", 0, True, 0),
+        ("unknown", "unverifiable", 0, False, 0),
+    ],
+)
+async def test_compliance_ui_only_emits_nonempty_violation_layers(
+    status, verification, violated_count, has_geometry, expected_layers
+):
+    service = object.__new__(RestrictionParserService)
+    service.state_store = SimpleNamespace(
+        buffer_event=AsyncMock(), save_checkpoint=AsyncMock(), set_status=AsyncMock()
+    )
+    geometry = {
+        "type": "FeatureCollection",
+        "features": (
+            [
+                {
+                    "type": "Feature",
+                    "properties": {"id": i},
+                    "geometry": {"type": "Point", "coordinates": [30, 60]},
+                }
+                for i in range(2)
+            ]
+            if has_geometry
+            else []
+        ),
+    }
+    result = ComplianceResult(
+        restriction_id="r1",
+        template="distance_from_source",
+        template_version=1,
+        verification_status=verification,
+        compliance_status=status,
+        coverage=VerificationCoverage(
+            applicable_objects=3,
+            checked_objects=2,
+            unchecked_objects=1,
+            fill_rate=2 / 3,
+        ),
+        summary=ComplianceSummary(
+            violated_objects=violated_count, passed_objects=2 - violated_count
+        ),
+        source={
+            "document_name": "Тесты Норм",
+            "clause_number": "2.1",
+            "extraction_text": "Расстояние должно составлять не менее 100 м.",
+        },
+        violated_features=geometry,
+        passed_features=geometry,
+    )
+    service.compliance_executor = SimpleNamespace(
+        execute=AsyncMock(
+            return_value=SimpleNamespace(result=result, tool_calls=[], timings_ms={})
+        )
+    )
+    events = [
+        event
+        async for event in service._run_executable_compliance(
+            mcp_client=object(),
+            request_id="ui",
+            scenario_id=772,
+            restrictions=[{"check_plan": _plan()}],
+            checkpoint={},
+        )
+    ]
+    layers = [e for e in events if e["type"] == "feature_collection"]
+    assert len(layers) == expected_layers
+    if layers:
+        assert layers[0]["content"]["name"] == "Нарушение_нормы_2.1_r1"
+        assert layers[0]["content"]["feature_collection"] == geometry
+    for event in events:
+        if event["type"] != "feature_collection":
+            payload = json.dumps(event, ensure_ascii=False)
+            assert "FeatureCollection" not in payload
+            assert "violated_features" not in payload
+            assert "passed_features" not in payload
+    final_text = next(e["content"]["text"] for e in events if e["type"] == "chunk")
+    if status == "violated":
+        assert "Тесты Норм, пункт 2.1: нарушений на объектах — 2" in final_text
+        assert "Расстояние должно составлять не менее 100 м." in final_text
+        if verification == "partial":
+            assert "Не проверено объектов: 1" in final_text
+    else:
+        assert "Нарушенные нормы:" not in final_text
+
+
+def test_compliance_summary_identifies_every_violated_norm_and_keeps_counts_separate():
+    summary = dict(
+        total_norms=3,
+        violated_norms=2,
+        passed_norms=1,
+        unverifiable_norms=0,
+        unsupported_norms=0,
+        partial_norms=0,
+        results=[
+            {
+                "restriction_id": "r1",
+                "compliance_status": "violated",
+                "source": {"document_name": "Документ", "clause_number": "1.1"},
+                "summary": {"violated_objects": 17},
+            },
+            {
+                "restriction_id": "r2",
+                "compliance_status": "violated",
+                "source": {},
+                "summary": {"violated_objects": 15},
+            },
+            {
+                "restriction_id": "passed",
+                "compliance_status": "passed",
+                "source": {},
+                "summary": {"violated_objects": 0},
+            },
+        ],
+    )
+    text = RestrictionParserService._compliance_summary_text(summary)
+    assert "Документ, пункт 1.1: нарушений на объектах — 17" in text
+    assert "Норма (r2): нарушений на объектах — 15" in text
+    assert "(passed)" not in text

@@ -239,3 +239,15 @@ generation. The corpus is never passed to `RestrictionPlanBuilder` in compliance
 mode. Ad hoc geometry conditions remain available through `/restrictions`.
 Without NormGraph, or without accepted plans, compliance reports that the check
 was not performed instead of inventing plans or claiming compliance.
+
+
+### UI layers and final explanation
+
+Only non-empty violation layers are emitted, as `feature_collection` events named
+`Нарушение_нормы_<clause>_<restriction_id>` (without the clause when absent).
+Passed checks and non-executed checks emit no map layers. `compliance_result` and
+`compliance_summary.results` retain verdicts, coverage, source and evidence but
+omit `violated_features` and `passed_features`; geometry is not duplicated there.
+The final text lists each violated norm by document/clause (or ID), its requirement
+and the number of violating objects. Partial checks also state the unchecked count.
+Counts are per norm and must not be added as a count of unique objects.
