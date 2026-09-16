@@ -1,12 +1,61 @@
 """Rejected drafts can contribute only explicitly verified facts to a partial answer."""
 
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.agents.services.dvd.runs import stream_document_run
 from tests.helpers import FakeDvdMcpClient, answer_text, plan_json
 from tests.unit.test_dvd_rag_service import _run
+
+
+async def test_live_critic_schema_keeps_draft_wording_and_conditions(fake_llm):
+    from src.agents.services.dvd.dvd_reasoning import AnswerCritic
+    from src.agents.services.dvd.partial_answer import PartialAnswerEvidence
+
+    source = "Учебные помещения размещаются не выше третьего этажа, если иное не определено Правилами."
+    claim = "Помещения допускаются до 3-го этажа включительно, если Правила не предусматривают исключение. [1]"
+    draft = f"1. {claim}\n- Все школы должны иметь дирижабль."
+    fake_llm.json_responses = [audit(claim, source)]
+    fake_llm.chat = AsyncMock(wraps=fake_llm.chat)
+    critic = AnswerCritic(fake_llm)
+
+    verdict = await critic.review(
+        "test", "Где размещать помещения?", f"[1] Правила\n{source}", draft
+    )
+    call = fake_llm.chat.call_args.kwargs
+    choices = call["format"]["$defs"]["AuditedClaim"]["properties"]["text"]["enum"]
+    assert choices == [claim, "Все школы должны иметь дирижабль."]
+    assert source not in choices
+    assert claim in call["messages"][-1]["content"]
+    evidence = PartialAnswerEvidence()
+    evidence.add(
+        verdict.claims, draft, f"[1] Правила\n{source}", critic._literal_defects
+    )
+    assert len(evidence.candidates()) == 1
+    assert source in evidence.render([0])
+    assert claim.split(" [1]")[0] not in evidence.render([0])
+
+
+async def test_partial_output_preserves_source_scope_despite_false_model_approval(
+    service, fake_llm
+):
+    source = "Учебные помещения для младшего школьного возраста размещаются не выше третьего этажа, если иное не определено Правилами."
+    unsafe = "Любая школа должна быть не выше трёх этажей."
+    client = FakeDvdMcpClient(default_hits=[{"name": "Правила", "text": source}])
+    # Regression from the live gpt-oss audit: both model stages can mistakenly
+    # approve the broader assertion even though the quoted evidence is correct.
+    fake_llm.json_responses = [plan_json(), audit(unsafe, source)] * 3 + [
+        json.dumps({"approved_ids": [0]})
+    ]
+    fake_llm.answer_texts = [unsafe] * 3
+    events = await _run(service, client)
+    answer = answer_text(events)
+    assert unsafe not in answer
+    assert source in answer
+    assert "Дословные выдержки" in answer
+    assert events[-1]["content"]["done"]
 
 
 def audit(text, quote, status="supported", label="[1]"):

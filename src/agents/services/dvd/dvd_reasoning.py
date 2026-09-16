@@ -92,6 +92,7 @@ async def _request_json(
     model_cls: Any,
     retries: int = 2,
     reasoning_effort: str | None = None,
+    claim_texts: list[str] | None = None,
 ) -> T:
     """
     Ask the LLM for a JSON object and parse it into ``model_cls``.
@@ -106,6 +107,10 @@ async def _request_json(
         else getattr(model_cls, "__name__", "structured response")
     )
     schema = adapter.json_schema()
+    if claim_texts:
+        # Constrain generation as well as prompting: live critics otherwise copy
+        # the source into `text`, losing the actual assertion being audited.
+        schema["$defs"]["AuditedClaim"]["properties"]["text"]["enum"] = claim_texts
     for attempt in range(retries + 1):
         available = await remaining_output_tokens(
             llm_client,
@@ -367,6 +372,7 @@ class AnswerCritic:
                 model,
                 messages,
                 EvidenceAudit,
+                claim_texts=self._claim_texts(answer),
                 reasoning_effort=(
                     "medium"
                     if isinstance(self.llm_client, OpenAiCompatAdapter)
@@ -540,8 +546,11 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
 Return JSON only: {json.dumps(structure, ensure_ascii=False)}
 First inspect every assertion and list evidence defects; only then decide satisfied.
 Audit each material factual statement explicitly in claims, even if the overall
-answer is rejected. Copy its text from the draft verbatim; do not rewrite or add
-claims. Mark supported only when exact quoted excerpts entail the entire statement,
+answer is rejected. Choose text ONLY from allowed_claim_texts (also constrained by
+the response schema), preserving the entire selected line. Never copy source text
+into the claim or repair/rewrite the draft. Put source excerpts in evidence.quote.
+Skip headings and introductions that assert no facts. Mark supported only when
+exact quoted excerpts entail the entire selected line,
 including conditions, units, negation and applicability. Use contradicted for a
 conflict with evidence, insufficient for missing proof. Evidence source_id must be
 an application source label, and quote must occur literally in that source's body.
@@ -599,10 +608,24 @@ or the specific omitted passage. When accepting, satisfied=true, critique="",
 refined_search_query=null. Never reward an answer just because it sounds helpful."""
 
     @staticmethod
+    def _claim_texts(answer: str) -> list[str]:
+        # Keep complete lines, including qualifications and citations. Do not
+        # split on punctuation: decimals, clause numbers and conditions matter.
+        return list(
+            dict.fromkeys(
+                text
+                for line in answer.splitlines()
+                if (text := re.sub(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", "", line).strip())
+            )
+        )
+
+    @staticmethod
     def _payload(user_query: str, context: str, answer: str) -> str:
         ctx = context or "(релевантные фрагменты не найдены)"
         return (
             f"Вопрос пользователя:\n{user_query}\n\n"
             f"Доступные фрагменты:\n{ctx}\n\n"
-            f"Ответ ассистента для проверки:\n{answer}"
+            f"Ответ ассистента для проверки:\n{answer}\n\n"
+            "allowed_claim_texts (choose each claims.text verbatim from this list):\n"
+            + json.dumps(AnswerCritic._claim_texts(answer), ensure_ascii=False)
         )

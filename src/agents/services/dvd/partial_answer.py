@@ -71,25 +71,22 @@ class PartialAnswerEvidence:
             raise ValueError("Partial answer selection contains an unverified claim")
         if not approved_ids:
             return EMPTY_ANSWER
-        sources, lines = {}, []
+        sources = {}
         for i in approved_ids:
             record = candidates[i]
-            refs = []
             for evidence in record["evidence"]:
                 key = (evidence["source"], evidence["quote"])
                 sources.setdefault(key, len(sources) + 1)
-                label = f"[{sources[key]}]"
-                if label not in refs:
-                    refs.append(label)
-            lines.append(f"- {record['text']} {' '.join(refs)}")
+        # The live critic can approve an overgeneralized paraphrase despite a
+        # correct supporting quotation. After three rejected drafts, return only
+        # literal evidence, never those draft claims or their generated metadata.
         references = [
             f"[{label}] {header}\n> {quote}"
             for (header, quote), label in sources.items()
         ]
         return (
             "По найденным источникам удалось подтвердить следующее:\n\n"
-            + "\n".join(lines)
-            + "\n\nЭто частичный ответ: остальные положения подтвердить не удалось."
-            + "\n\nИсточники:\n\n"
+            + "Дословные выдержки из источников:\n\n"
             + "\n\n".join(references)
+            + "\n\nЭто частичный ответ: остальные положения подтвердить не удалось."
         )
