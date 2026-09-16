@@ -251,3 +251,17 @@ omit `violated_features` and `passed_features`; geometry is not duplicated there
 The final text lists each violated norm by document/clause (or ID), its requirement
 and the number of violating objects. Partial checks also state the unchecked count.
 Counts are per norm and must not be added as a count of unique objects.
+
+### Equivalent checks
+
+Before execution, plans with identical template versions, parameters, layer roles
+and data requirements are grouped. Entity names are resolved through the Urban API
+catalogue first. Different thresholds, directions, geometry constraints or attribute
+candidate order are not merged. If catalogue resolution fails or is ambiguous, checks
+remain separate and the executor reports the missing requirement.
+
+One `check_plan`, result and (only when violated) `feature_collection` is emitted per
+group. `check_plan.content.equivalent_sources`, the result's `source.equivalent_sources`
+and the summary's `equivalent_sources` preserve all source references. The summary
+includes `duplicate_checks`; its existing norm counts refer to executed unique checks.
+The final text names equivalent sources. Stored NormGraph norms are not deleted.
