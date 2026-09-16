@@ -11,6 +11,7 @@ from src.agents.model_clients.context_budget import remaining_output_tokens
 from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
 from src.agents.services.dvd.document_reference import parse_reference, wants_full_quote
 from src.agents.services.dvd.retrieval_scope import apply_scope
+from src.agents.services.dvd.retry_policy import CriticResponseError
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.dvd_plan import (
     CriticVerdict,
@@ -364,11 +365,12 @@ class AnswerCritic:
                 critique=audit.critique or "; ".join(defects),
                 refined_search_query=audit.refined_search_query,
             )
-        except ValueError:
-            logger.warning("Critic produced invalid JSON; draft remains unverified")
-            return CriticVerdict(
-                satisfied=False, critique="Не удалось проверить обоснованность ответа."
-            )
+        except ValueError as exc:
+            # A malformed audit is a technical failure, not evidence that a new
+            # retrieval could repair the answer. The caller logs request/round.
+            raise CriticResponseError(
+                "Critic produced invalid structured response"
+            ) from exc
         logger.info(
             f"DVD critic verdict: {verdict.model_dump_json(ensure_ascii=False)}"
         )

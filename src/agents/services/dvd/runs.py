@@ -92,7 +92,10 @@ async def _produce(service, request_id, owner, kwargs):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         logger.opt(exception=exc).error(
-            "Document producer stopped request_id={}", request_id
+            "Document producer stopped request_id={} reason={} error_type={}",
+            request_id,
+            getattr(exc, "reason", "pipeline_error"),
+            type(exc).__name__,
         )
         await store.buffer_event(
             request_id,

@@ -173,8 +173,9 @@ class TestLoop:
 
         assert len(fake_mcp.search_calls) == 2
         assert fake_mcp.search_calls[1].query == "второй-план"
-        # the rejection surfaced as a self_review status carrying the critique
-        assert any("нет пункта" in t for t in statuses(events, "self_review"))
+        # The client sees progress; the private critique stays in logs/prompts.
+        assert "Уточняю ответ по источникам…" in statuses(events, "self_review")
+        assert not any("нет пункта" in t for t in statuses(events, "self_review"))
         # the refined query was fed to the second planning round
         second_plan_prompt = [c for c in fake_llm.chat_calls if not c.stream][
             2
