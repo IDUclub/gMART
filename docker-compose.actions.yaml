@@ -52,8 +52,8 @@ services:
     environment: *agents-environment
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    healthcheck:
-      disable: true
+    # No image healthcheck: --wait checks that this background worker is running.
+    # Avoid disable: true, which breaks --wait on older Compose versions.
 
   idu_mcp:
     image: ${MCP_IMAGE}
