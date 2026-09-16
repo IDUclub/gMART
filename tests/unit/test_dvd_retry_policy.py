@@ -190,14 +190,23 @@ async def test_terminal_reason_is_logged_but_not_exposed(
     finally:
         logger.remove(sink)
     request_id = events[0]["content"]["request_id"]
-    assert events[-1]["type"] == "error"
-    assert events[-1]["content"] == {
-        "traceback": "",
-        "message": "Не удалось завершить запрос. Повторите попытку.",
-    }
-    assert not any(e["type"] == "chunk" for e in events)
+    if outcome == "rejected":
+        assert events[-1]["type"] == "chunk" and events[-1]["content"]["done"]
+        assert any(
+            "Не удалось подтвердить" in e.get("content", {}).get("text", "")
+            for e in events
+        )
+    else:
+        assert events[-1]["type"] == "error"
+        assert events[-1]["content"] == {
+            "traceback": "",
+            "message": "Не удалось завершить запрос. Повторите попытку.",
+        }
+        assert not any(e["type"] == "chunk" for e in events)
     assert "PRIVATE_" not in json.dumps(events)
-    assert (await service.state_store.get_state(request_id))["status"] == "failed"
+    assert (await service.state_store.get_state(request_id))["status"] == (
+        "done" if outcome == "rejected" else "failed"
+    )
     service._schedule_persist_answer.assert_not_called()
     text = "\n".join(logs)
     if outcome == "rejected":
