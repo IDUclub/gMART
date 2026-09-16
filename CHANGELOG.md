@@ -1,3 +1,11 @@
+## v0.19.3 (2026-09-16)
+
+### Fix
+
+- (#200)
+- allow reading server configuration without a password (#198)
+- **agents**: avoid redundant document retries and keep failure details in logs (#196)
+
 ## v0.19.2 (2026-09-16)
 
 ### Fix
