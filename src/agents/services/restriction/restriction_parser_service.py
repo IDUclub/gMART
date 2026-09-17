@@ -26,6 +26,7 @@ from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiCli
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.compilance.compliance_dedup import group_checks
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
 )
@@ -743,6 +744,20 @@ class RestrictionParserService(BaseLlmService):
                 continue
             raw_plan = hit["check_plan"]
             plans.append(raw_plan)
+        groups = await group_checks(
+            plans,
+            mcp_client,
+            scenario_id,
+            resolver=getattr(
+                getattr(self, "compliance_executor", None), "catalog_resolver", None
+            ),
+        )
+        duplicates = len(plans) - len(groups)
+        plans = [group.plan for group in groups]
+        sources_by_id = {
+            group.plan["source"]["restriction_id"]: group.sources for group in groups
+        }
+        for raw_plan in plans:
             yield await self._buf(
                 request_id,
                 {
@@ -750,6 +765,9 @@ class RestrictionParserService(BaseLlmService):
                     "content": {
                         "restriction_id": raw_plan["source"]["restriction_id"],
                         "plan": raw_plan,
+                        "equivalent_sources": sources_by_id[
+                            raw_plan["source"]["restriction_id"]
+                        ],
                     },
                 },
             )
@@ -823,6 +841,7 @@ class RestrictionParserService(BaseLlmService):
                 fill_rate=result.coverage.fill_rate,
                 violated_objects=result.summary.violated_objects,
             ).info("Compliance norm completed")
+            result.source["equivalent_sources"] = sources_by_id[result.restriction_id]
             results.append(result)
             resolution_content = {
                 "restriction_id": result.restriction_id,
@@ -907,6 +926,10 @@ class RestrictionParserService(BaseLlmService):
             self._status("verdict_aggregation", "Собираю итог по всем нормам"),
         )
         summary = self._compliance_summary(request_id, results)
+        summary["duplicate_checks"] = duplicates
+        summary["equivalent_sources"] = {
+            rid: sources for rid, sources in sources_by_id.items() if len(sources) > 1
+        }
         await self.state_store.save_checkpoint(
             request_id, PipelineStep.VERDICT_AGGREGATION, summary
         )
@@ -914,6 +937,19 @@ class RestrictionParserService(BaseLlmService):
             request_id, {"type": "compliance_summary", "content": summary}
         )
         summary_text = self._compliance_summary_text(summary)
+        if duplicates:
+            summary_text += f" Повторных проверок объединено: {duplicates}."
+            for sources in summary["equivalent_sources"].values():
+                labels = [
+                    str(source.get("document_name") or source["restriction_id"])
+                    + (
+                        f" п. {source['clause_number']}"
+                        if source.get("clause_number")
+                        else ""
+                    )
+                    for source in sources
+                ]
+                summary_text += " Эквивалентные нормы: " + "; ".join(labels) + "."
         if skipped_without_plan:
             summary_text += (
                 f" Пропущено норм без исполнимого плана: {skipped_without_plan}."
