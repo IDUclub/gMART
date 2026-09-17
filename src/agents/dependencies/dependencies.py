@@ -5,6 +5,7 @@ from fastapi import Depends
 from idu_service_auth import KeycloakTokenClient
 
 from src.agents.api_clients.dvd_api_client import DvdApiClient
+from src.agents.api_clients.pzz_api_client import PzzApiClient
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.auth.auth import optional_bearer_token, verify_bearer_token
 from src.agents.common.auth.synapse_auth import SynapseCallerVerifier
@@ -15,6 +16,7 @@ from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
+from src.agents.mcp_clients.pzz_mcp_client import PzzMcpClient
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 from src.agents.services.a2a_service import A2AService
 from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
@@ -26,6 +28,8 @@ from src.agents.services.orchestrator.orchestrator_service import OrchestratorSe
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.provision.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provision.provsion_service import ProvisionService
+from src.agents.services.pzz.pzz_a2a_service import PzzA2AService
+from src.agents.services.pzz.pzz_service import PzzService
 from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
@@ -560,3 +564,40 @@ async def get_system_service() -> SystemService:
     """
 
     return app_deps["system_service"]
+
+
+async def a2a_pzz_mcp_client(user_id: str) -> PzzMcpClient:
+    config = get_app_config()
+    if not config.PZZ_MCP_URL:
+        raise AgentsNotFound("PZZ_MCP_SERVER is not configured")
+    client = PzzMcpClient(
+        await service_mcp_client(config.PZZ_MCP_URL, get_service_auth(), user_id)
+    )
+    client.api_client = (
+        PzzApiClient(
+            config.PZZ_API_URL, get_service_auth(), user_id, get_pipeline_state_store()
+        )
+        if config.PZZ_API_URL
+        else None
+    )
+    return client
+
+
+async def get_pzz_mcp_client(token: str = Depends(verify_bearer_token)) -> PzzMcpClient:
+    return await a2a_pzz_mcp_client(user_id_from_jwt(token))
+
+
+async def get_optional_pzz_mcp_client(
+    token: str = Depends(verify_bearer_token),
+) -> PzzMcpClient | None:
+    if not get_app_config().PZZ_MCP_URL:
+        return None
+    return await get_pzz_mcp_client(token)
+
+
+def get_pzz_service() -> PzzService:
+    return app_deps["pzz_service"]
+
+
+async def get_pzz_a2a_service() -> PzzA2AService:
+    return app_deps["pzz_a2a_service"]

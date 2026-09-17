@@ -1,6 +1,7 @@
 from pydantic import Field
 
 from src.agents.dto.llm_request_dto import SimpleRequestDTO
+from src.agents.dto.pzz_request_dto import PzzInputs
 
 
 class OrchestratorRequestDTO(SimpleRequestDTO):
@@ -47,3 +48,7 @@ class OrchestratorRequestDTO(SimpleRequestDTO):
             "Pass it to reconnect to an interrupted stream and replay its events."
         ),
     )
+
+
+class OrchestratorBodyDTO(OrchestratorRequestDTO):
+    pzz_inputs: PzzInputs | None = None
