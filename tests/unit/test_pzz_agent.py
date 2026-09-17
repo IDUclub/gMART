@@ -412,3 +412,72 @@ async def test_custom_classifier_uses_rest_submission_and_mcp_results(pzz_servic
     assert api.submit_file_task.await_args.args[3] == "custom"
     assert [name for name, _ in mcp.calls] == ["get_task_status", "get_task_result"]
     assert events[-1]["content"]["done"] is True
+
+
+async def test_demo_column_names_resolve_without_llm(pzz_service):
+    result = await detect_columns(
+        pzz_service.llm_client,
+        "test-model",
+        collection(
+            {
+                "Кадастровый_номер": "65:00:0000000:5110",
+                "Вид_использования_по_документу": "Ведение садоводства",
+                "Индекс_зоны": "Ж-1",
+                "Наименование_зоны": "Зона индивидуальных жилых домов",
+            }
+        ),
+        ["cadastral_vri_col", "pzz_zone_code_col", "pzz_zone_name_col"],
+        {},
+    )
+    assert result == {
+        "cadastral_vri_col": "Вид_использования_по_документу",
+        "pzz_zone_code_col": "Индекс_зоны",
+        "pzz_zone_name_col": "Наименование_зоны",
+    }
+    pzz_service.llm_client.chat.assert_not_awaited()
+
+
+async def test_file_intent_with_scenario_asks_for_files_not_year(pzz_service):
+    pzz_service.llm_client.chat = AsyncMock(
+        return_value={
+            "message": {
+                "content": json.dumps(
+                    {"mode": "pzz_check", "year": None, "source": None}
+                )
+            }
+        }
+    )
+    mcp = Mcp()
+    events = await run(pzz_service, mcp, scenario_id=843)
+    question = next(
+        e["content"]["question"] for e in events if e["type"] == "clarification"
+    )
+    assert "кадастровый слой" in question
+    assert not mcp.calls
+
+
+def test_answer_context_uses_disjoint_verdicts_without_mutating_report():
+    report = {
+        "summary": {
+            "total": 208,
+            "unclear": 14,
+            "not_in_zone": 13,
+            "by_verdict": {
+                "Разрешен": 194,
+                "Нет пересечения с ПЗЗ": 13,
+                "Требуется ручная проверка": 1,
+            },
+        },
+        "chat_message": "требуют ручной проверки: 14",
+        "zones": ["x" * 60001],
+    }
+    evidence = json.loads(PzzService._answer_context(report, has_layer=True))
+    assert evidence["summary"] == {
+        "total": 208,
+        "by_verdict": report["summary"]["by_verdict"],
+    }
+    assert not evidence.get("chat_message")
+    assert evidence["detail_omitted"] is True
+    assert evidence["result_layer"]["format"] == "GeoJSON FeatureCollection"
+    assert report["summary"]["unclear"] == 14
+    assert report["chat_message"] == "требуют ручной проверки: 14"

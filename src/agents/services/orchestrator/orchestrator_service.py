@@ -211,7 +211,12 @@ class OrchestratorService(BaseLlmService):
         )
         agents = available_agents(self.app_config, scenario_id)
         plan = await self.plan_builder.build_plan(
-            model, user_query, agents, history, scenario_id=scenario_id
+            model,
+            user_query,
+            agents,
+            history,
+            scenario_id=scenario_id,
+            pzz_inputs=pzz_inputs,
         )
 
         if plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION:
