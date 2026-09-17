@@ -25,6 +25,8 @@ from src.agents.routers.norms_controller import norms_router
 from src.agents.routers.orchestrator_controller import orchestrator_router
 from src.agents.routers.provision_a2a_controller import provision_a2a_router
 from src.agents.routers.provision_controller import provision_router
+from src.agents.routers.pzz_a2a_controller import pzz_a2a_router
+from src.agents.routers.pzz_controller import pzz_router
 from src.agents.routers.restriction_parser_controller import restriction_router
 from src.agents.routers.scenario_data_a2a_controller import scenario_data_a2a_router
 from src.agents.routers.scenario_data_controller import scenario_data_router
@@ -97,6 +99,8 @@ app.include_router(provision_router)
 app.include_router(dvd_router)
 app.include_router(mcp_diagnostics_router)
 app.include_router(norms_router)
+app.include_router(pzz_router)
+app.include_router(pzz_a2a_router)
 app.include_router(orchestrator_router)
 app.include_router(scenario_data_router)
 app.include_router(scenario_data_a2a_router)

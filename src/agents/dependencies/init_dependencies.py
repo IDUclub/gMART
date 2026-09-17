@@ -23,6 +23,8 @@ from src.agents.services.orchestrator.orchestrator_service import OrchestratorSe
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.provision.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provision.provsion_service import ProvisionService
+from src.agents.services.pzz.pzz_a2a_service import PzzA2AService
+from src.agents.services.pzz.pzz_service import PzzService
 from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
@@ -126,6 +128,12 @@ def init_dependencies() -> dict[str, object]:
         urban_api_client,
         pipeline_state_store,
     )
+    pzz_service = PzzService(
+        app_config.OLLAMA_URL,
+        chat_storage_client,
+        urban_api_client,
+        pipeline_state_store,
+    )
     orchestrator_service = OrchestratorService(
         app_config.OLLAMA_URL,
         chat_storage_client,
@@ -137,6 +145,7 @@ def init_dependencies() -> dict[str, object]:
         normgraph_rag_service,
         app_config,
         scenario_data_service=scenario_data_service,
+        pzz_service=pzz_service,
     )
     return {
         "app_config": app_config,
@@ -152,6 +161,8 @@ def init_dependencies() -> dict[str, object]:
         "dvd_rag_service": dvd_rag_service,
         "normgraph_rag_service": normgraph_rag_service,
         "orchestrator_service": orchestrator_service,
+        "pzz_service": pzz_service,
+        "pzz_a2a_service": PzzA2AService(pzz_service),
         "a2a_service": A2AService(restriction_parser_service),
         "provision_a2a_service": ProvisionA2AService(provision_service),
         "dvd_a2a_service": DocumentQaA2AService(dvd_rag_service),

@@ -176,3 +176,34 @@ async def test_blank_task_is_repaired_before_dispatch(builder, fake_llm):
     plan = await builder.build_plan("m", "Найди текст нормы", ALL_AGENTS)
     assert len(fake_llm.chat_calls) == 2
     assert plan.steps[0].task == "Найди текст нормы"
+
+
+@pytest.mark.asyncio
+async def test_pzz_attachment_manifest_reaches_planner_without_file_contents(
+    builder, fake_llm
+):
+    fake_llm.json_responses = [
+        orchestration_plan_json([{"agent": "pzz", "task": "Проверь ПЗЗ"}])
+    ]
+    await builder.build_plan(
+        "m",
+        "Проверь ПЗЗ",
+        ALL_AGENTS,
+        scenario_id=843,
+        pzz_inputs={
+            "mode": "pzz_check",
+            "cadastral_upload_id": "private-upload-id",
+            "pzz_zones_geojson": {
+                "type": "FeatureCollection",
+                "features": ["private-geometry"],
+            },
+            "labels_upload_id": "private-labels-id",
+        },
+    )
+    prompt = fake_llm.chat_calls[0].messages[0]["content"]
+    assert '"mode": "pzz_check"' in prompt
+    assert '"cadastral_layer": true' in prompt
+    assert '"zones_layer": true' in prompt
+    assert '"zone_descriptions": true' in prompt
+    assert "год и источник зон не нужны" in prompt
+    assert "private-" not in prompt

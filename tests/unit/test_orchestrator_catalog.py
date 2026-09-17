@@ -76,3 +76,11 @@ def test_no_agents_without_scenario_and_urls():
         available_agents(config(dvd=None, norms=None, urban=None), scenario_id=None)
         == []
     )
+
+
+def test_pzz_optional_and_available_for_file_flow_without_scenario():
+    cfg = config()
+    cfg.PZZ_MCP_URL = "http://pzz/mcp"
+    assert OrchestratorAgent.PZZ in keys(available_agents(cfg, scenario_id=None))
+    cfg.PZZ_MCP_URL = None
+    assert OrchestratorAgent.PZZ not in keys(available_agents(cfg, scenario_id=772))

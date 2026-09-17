@@ -11,14 +11,19 @@ from src.agents.dependencies.dependencies import (
     get_idu_mcp_client,
     get_optional_dvd_mcp_client,
     get_optional_normgraph_mcp_client,
+    get_optional_pzz_mcp_client,
     get_optional_urban_mcp_client,
     get_orchestrator_service,
 )
-from src.agents.dto.orchestrator_request_dto import OrchestratorRequestDTO
+from src.agents.dto.orchestrator_request_dto import (
+    OrchestratorBodyDTO,
+    OrchestratorRequestDTO,
+)
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
+from src.agents.mcp_clients.pzz_mcp_client import PzzMcpClient
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 from src.agents.schema.orchestrator_response import OrchestratorResponse
 from src.agents.services.orchestrator.orchestrator_service import OrchestratorService
@@ -43,6 +48,7 @@ async def stream_orchestration(
     ),
     urban_mcp_client: UrbanMcpClient | None = Depends(get_optional_urban_mcp_client),
     orchestrator_service: OrchestratorService = Depends(get_orchestrator_service),
+    pzz_mcp_client: PzzMcpClient | None = Depends(get_optional_pzz_mcp_client),
 ) -> AsyncIterable[OrchestratorResponse]:
     """
     Single entry point for all gMART agents.
@@ -65,6 +71,45 @@ async def stream_orchestration(
         dvd_mcp_client=dvd_mcp_client,
         normgraph_mcp_client=normgraph_mcp_client,
         urban_mcp_client=urban_mcp_client,
+        pzz_mcp_client=pzz_mcp_client,
+        token=token,
+        user_query=user_request.request,
+        scenario_id=user_request.scenario_id,
+        chat_id=user_request.chat_id,
+        request_id=user_request.request_id,
+        temperature=user_request.temperature,
+    ):
+        yield OrchestratorResponse(**chunk)
+
+
+@orchestrator_router.post("/route/stream", response_class=EventSourceResponse)
+async def stream_orchestration_body(
+    request: Request,
+    user_request: OrchestratorBodyDTO,
+    token: str = Depends(verify_bearer_token),
+    idu_mcp_client: IduMcpClient = Depends(get_idu_mcp_client),
+    effects_mcp_client: EffectsMcpClient = Depends(get_effects_mcp_client),
+    dvd_mcp_client: DvdMcpClient | None = Depends(get_optional_dvd_mcp_client),
+    normgraph_mcp_client: NormGraphMcpClient | None = Depends(
+        get_optional_normgraph_mcp_client
+    ),
+    urban_mcp_client: UrbanMcpClient | None = Depends(get_optional_urban_mcp_client),
+    pzz_mcp_client: PzzMcpClient | None = Depends(get_optional_pzz_mcp_client),
+    orchestrator_service: OrchestratorService = Depends(get_orchestrator_service),
+):
+    async for chunk in stream_with_error_handling(
+        orchestrator_service.run_orchestration_pipeline,
+        request,
+        orchestrator_service,
+        user_request.model,
+        rerun=False,
+        idu_mcp_client=idu_mcp_client,
+        effects_mcp_client=effects_mcp_client,
+        dvd_mcp_client=dvd_mcp_client,
+        normgraph_mcp_client=normgraph_mcp_client,
+        urban_mcp_client=urban_mcp_client,
+        pzz_mcp_client=pzz_mcp_client,
+        pzz_inputs=user_request.pzz_inputs,
         token=token,
         user_query=user_request.request,
         scenario_id=user_request.scenario_id,
