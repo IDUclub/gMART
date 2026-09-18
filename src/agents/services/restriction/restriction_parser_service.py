@@ -35,6 +35,10 @@ from src.agents.services.compilance.compliance_result_harness import (
     ComplianceResultHarness,
     PreparedComplianceFollowUp,
 )
+from src.agents.services.compilance.compliance_sources import (
+    source_reference,
+    source_references,
+)
 from src.agents.services.normgraph.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,
 )
@@ -743,6 +747,17 @@ class RestrictionParserService(BaseLlmService):
                 skipped_without_plan += 1
                 continue
             raw_plan = hit["check_plan"]
+            source = dict(raw_plan["source"])
+            provenance = hit.get("provenance") or {}
+            # Older stored plans may lack source labels still present in the hit.
+            for field, value, limit in (
+                ("document_name", provenance.get("name"), 300),
+                ("clause_number", provenance.get("numbering"), 100),
+                ("extraction_text", hit.get("extraction_text"), 8000),
+            ):
+                if not (source.get(field) or "").strip() and isinstance(value, str):
+                    source[field] = value.strip()[:limit]
+            raw_plan = {**raw_plan, "source": source}
             plans.append(raw_plan)
         groups = await group_checks(
             plans,
@@ -792,6 +807,7 @@ class RestrictionParserService(BaseLlmService):
             ),
         )
         results: list[ComplianceResult] = []
+        layer_name_counts: dict[str, int] = {}
         resolution_events: list[dict[str, Any]] = []
         yield await self._buf(
             request_id,
@@ -899,15 +915,11 @@ class RestrictionParserService(BaseLlmService):
                 and result.summary.violated_objects > 0
                 and (result.violated_features or {}).get("features")
             ):
-                clause = result.source.get("clause_number")
-                suffix = (
-                    f"{clause}_{result.restriction_id}"
-                    if clause
-                    else result.restriction_id
-                )
-                for item in self._feature_collections(
-                    {f"Нарушение_нормы_{suffix}": result.violated_features}
-                ):
+                name = f"Нарушение нормы — {source_reference(result.source)}"
+                layer_name_counts[name] = layer_name_counts.get(name, 0) + 1
+                if layer_name_counts[name] > 1:
+                    name += f" ({layer_name_counts[name]})"
+                for item in self._feature_collections({name: result.violated_features}):
                     yield await self._buf(request_id, item)
 
         await self.state_store.save_checkpoint(
@@ -940,15 +952,7 @@ class RestrictionParserService(BaseLlmService):
         if duplicates:
             summary_text += f" Повторных проверок объединено: {duplicates}."
             for sources in summary["equivalent_sources"].values():
-                labels = [
-                    str(source.get("document_name") or source["restriction_id"])
-                    + (
-                        f" п. {source['clause_number']}"
-                        if source.get("clause_number")
-                        else ""
-                    )
-                    for source in sources
-                ]
+                labels = list(dict.fromkeys(source_reference(s) for s in sources))
                 summary_text += " Эквивалентные нормы: " + "; ".join(labels) + "."
         if skipped_without_plan:
             summary_text += (
@@ -1061,11 +1065,7 @@ class RestrictionParserService(BaseLlmService):
             if result.get("compliance_status") != "violated" or count <= 0:
                 continue
             source = result.get("source") or {}
-            label = source.get("document_name") or "Норма"
-            if source.get("clause_number"):
-                label += f", пункт {source['clause_number']}"
-            else:
-                label += f" ({result['restriction_id']})"
+            label = "; ".join(source_references(source))
             text = " ".join((source.get("extraction_text") or "").split())
             detail = f"- {label}: нарушений на объектах — {count}."
             if text:

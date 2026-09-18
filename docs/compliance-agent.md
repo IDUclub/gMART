@@ -244,13 +244,21 @@ was not performed instead of inventing plans or claiming compliance.
 ### UI layers and final explanation
 
 Only non-empty violation layers are emitted, as `feature_collection` events named
-`Нарушение_нормы_<clause>_<restriction_id>` (without the clause when absent).
+`Нарушение нормы — СП 42.13330.2016, п. 7.1` (without the clause when absent).
+If the document name is missing, the label is `Источник не указан`. A short SP
+designation is extracted from a full document title when available; other document
+names are retained. Repeated layer names receive a numeric suffix, never a UUID.
 Passed checks and non-executed checks emit no map layers. `compliance_result` and
 `compliance_summary.results` retain verdicts, coverage, source and evidence but
 omit `violated_features` and `passed_features`; geometry is not duplicated there.
-The final text lists each violated norm by document/clause (or ID), its requirement
+The final text lists each violated norm by document/clause, its requirement
 and the number of violating objects. Partial checks also state the unchecked count.
 Counts are per norm and must not be added as a count of unique objects.
+The same textual references, including equivalent sources, are supplied to the
+model for follow-up answers. Missing source names use `Источник не указан`;
+internal restriction IDs remain in structured results and evidence only. If an
+older plan lacks source labels, compliance fills them from the retrieved norm’s
+`provenance.name` and `provenance.numbering` without changing its internal ID.
 
 ### Equivalent checks
 

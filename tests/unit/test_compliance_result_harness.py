@@ -222,3 +222,39 @@ async def test_service_answers_follow_up_without_rerunning_compliance_pipeline()
     service.state_store.set_status.assert_awaited_once_with(
         "follow-up-request", PipelineStatus.DONE
     )
+
+
+def test_model_context_and_fallback_use_all_sources_instead_of_graph_ids():
+    summary = _summary("current")
+    source = summary["results"][0]["source"]
+    source["document_name"] += " Градостроительство. Планировка территорий"
+    source["equivalent_sources"] = [
+        dict(source, restriction_id="equivalent-uuid"),
+        {"restriction_id": "missing-source-uuid", "clause_number": "5.2"},
+    ]
+    prepared = ComplianceResultHarness().prepare_follow_up(
+        "Какие нормы нарушены?", [_stored_summary(summary)], []
+    )
+    prompt = prepared.messages[0]["content"]
+    assert '"source_references": [' in prompt
+    assert "СП 42.13330.2016, п. 10.4" in prompt
+    assert "Источник не указан, п. 5.2" in prompt
+    for identifier in ("restriction-current", "equivalent-uuid", "missing-source-uuid"):
+        assert identifier not in prompt
+    answer = ComplianceResultHarness.fallback_answer(summary)
+    assert "СП 42.13330.2016, п. 10.4" in answer
+    assert "Источник не указан, п. 5.2" in answer
+    assert "restriction-current" not in answer
+    assert "Радиус обслуживания" in answer
+
+
+def test_model_citations_from_legacy_history_are_replaced_with_sources():
+    summary = _summary("current")
+    summary["violated_norms"] = 1
+    summary["results"][0]["source"]["equivalent_sources"] = [
+        {"restriction_id": "missing-source-uuid"}
+    ]
+    answer = ComplianceResultHarness.normalize_answer(
+        summary, "Нарушены restriction-current и missing-source-uuid."
+    )
+    assert answer == "Нарушены СП 42.13330.2016, п. 10.4 и Источник не указан."
