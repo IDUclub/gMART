@@ -5,6 +5,7 @@ import json
 from loguru import logger
 from pydantic import ValidationError
 
+from src.agents.dto.pzz_request_dto import PzzInputs
 from src.agents.services.orchestrator.orchestrator_catalog import AgentCatalogEntry
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.orchestrator_plan import (
@@ -34,9 +35,15 @@ class OrchestratorPlanBuilder:
         agents: list[AgentCatalogEntry],
         history: list[dict] | None = None,
         scenario_id: int | None = None,
+        pzz_inputs: PzzInputs | dict | None = None,
     ) -> OrchestratorPlan:
         plan = await self._request_plan(
-            model, user_query, agents, history, scenario_id=scenario_id
+            model,
+            user_query,
+            agents,
+            history,
+            scenario_id=scenario_id,
+            pzz_inputs=pzz_inputs,
         )
         plan = self._canonicalize_plan(plan, agents)
         if (
@@ -81,9 +88,13 @@ class OrchestratorPlanBuilder:
         history: list[dict] | None = None,
         _retries: int = 2,
         scenario_id: int | None = None,
+        pzz_inputs: PzzInputs | dict | None = None,
     ) -> OrchestratorPlan:
         messages: list[dict] = [
-            {"role": "system", "content": self._build_prompt(agents, scenario_id)},
+            {
+                "role": "system",
+                "content": self._build_prompt(agents, scenario_id, pzz_inputs),
+            },
             {
                 "role": "user",
                 "content": (
@@ -135,8 +146,25 @@ class OrchestratorPlanBuilder:
 
     @staticmethod
     def _build_prompt(
-        agents: list[AgentCatalogEntry], scenario_id: int | None = None
+        agents: list[AgentCatalogEntry],
+        scenario_id: int | None = None,
+        pzz_inputs: PzzInputs | dict | None = None,
     ) -> str:
+        inputs = PzzInputs.model_validate(pzz_inputs or {})
+        pzz_context = {
+            "mode": inputs.mode,
+            "cadastral_layer": bool(inputs.cadastral_upload_id)
+            or inputs.cadastral_geojson is not None,
+            "zones_layer": bool(inputs.pzz_zones_upload_id)
+            or inputs.pzz_zones_geojson is not None,
+            "buildings_layer": bool(inputs.buildings_upload_id),
+            "zone_descriptions": bool(
+                inputs.labels_upload_id or inputs.descriptions_upload_id
+            ),
+            "classifier": bool(inputs.classifier_upload_id),
+            "year": inputs.year,
+            "source": inputs.source,
+        }
         agents_block = "\n".join(
             f'- "{entry.key}" — {entry.title}. {entry.description} '
             f"Примеры запросов: {'; '.join(f'«{example}»' for example in entry.examples)}."
@@ -164,6 +192,16 @@ class OrchestratorPlanBuilder:
 При выбранном scenario_id он автоматически передаётся каждому агенту. Не спрашивай
 его повторно и не требуй дублировать его в тексте. Явные ID сравниваемых сценариев
 в запросе сохраняй в task. Не выдумывай ID, объекты, нормы или числа результатов.
+Входы PZZ, реально переданные в API (true означает наличие слоя/ссылки,
+права и содержимое проверит агент): {json.dumps(pzz_context, ensure_ascii=False)}.
+Не считай упоминание файла в тексте его загрузкой. Для файловых режимов PZZ
+год и источник зон не нужны, даже при выбранном scenario_id. Для pzz_check
+нужны участки и зоны, для classify_only — участки, для building_pzz_check —
+здания и зоны. Регламенты и собственный классификатор необязательны.
+Если запрос относится к PZZ, передай его агенту pzz, сохранив файловый режим
+из запроса: агент проверит комплектность и вернёт точный вопрос о недостающих
+входах. Не подменяй этот вопрос требованием года/источника для файлов.
+Год и источник обязательны только для режима scenario, берущего данные из Urban API.
 
 Верни только валидный JSON без markdown и пояснений:
 {json.dumps(response_structure, ensure_ascii=False)}

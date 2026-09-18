@@ -37,7 +37,7 @@ def _build_service(monkeypatch, fake_llm, state_store):
 
 
 async def _clear(redis, request_id=_RID):
-    for suffix in ("state", "checkpoint", "events"):
+    for suffix in ("state", "checkpoint", "events", "event_ids"):
         await redis.delete(f"pipeline:{request_id}:{suffix}")
 
 
@@ -46,6 +46,7 @@ async def test_reconnect_replays_against_real_redis(require_redis, monkeypatch):
 
     store = PipelineStateStore(require_redis)
     await _clear(require_redis)
+    await store.set_document_evidence("chat-1", None)
 
     fake_llm = FakeLlmClient()
     fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
@@ -86,6 +87,7 @@ async def test_reconnect_replays_against_real_redis(require_redis, monkeypatch):
     assert fake_llm2.chat_calls == []
     assert final_chunk(second) is not None
     svc2._schedule_persist_answer.assert_not_called()
+    await store.set_document_evidence("chat-1", None)
     await _clear(require_redis)
 
 
@@ -142,7 +144,26 @@ async def test_compliance_structured_events_and_checkpoints_survive_redis(
         "schema_version": "1.0",
         "template": "distance_from_source",
         "template_version": 1,
-        "params": {},
+        "params": {
+            "source_layer": "schools",
+            "targets": ["houses"],
+            "geometry_mode": "buffered",
+            "distance_m": 20,
+            "predicate": "intersects",
+            "violation_when": "matched",
+            "result_mode": "both",
+        },
+        "declared_requirements": {
+            "layers": [
+                {"role": "schools", "entity": "Школа", "entity_type": "service"},
+                {
+                    "role": "houses",
+                    "entity": "Жилой дом",
+                    "entity_type": "physical_object",
+                },
+            ],
+            "attributes": [],
+        },
         "source": {"restriction_id": "r1"},
         "planner_status": "auto",
     }
@@ -163,7 +184,10 @@ async def test_compliance_structured_events_and_checkpoints_survive_redis(
         "compliance_result",
         "compliance_summary",
     }
+    service.compliance_executor.execute.assert_awaited_once()
+    assert service.compliance_executor.execute.await_args.args[1] == raw_plan
     replayed = await store.get_buffered_events(request_id)
+    assert replayed == first
     assert {event["type"] for event in replayed} >= {
         "compliance_result",
         "compliance_summary",

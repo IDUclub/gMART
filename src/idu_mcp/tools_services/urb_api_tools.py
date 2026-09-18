@@ -5,6 +5,7 @@ from loguru import logger
 
 from src.idu_mcp.api_clients.urban_api_client import UrbanApiClient
 from src.idu_mcp.tools_services.entites.object_type_enum import ObjectTypeEnum
+from src.idu_mcp.tools_services.entity_names import resolve_catalog_names
 
 
 class UrbanApiTool:
@@ -28,6 +29,8 @@ class UrbanApiTool:
         names: list[str],
         object_type: ObjectTypeEnum | str,
         token: str,
+        *,
+        centers_only: bool = False,
     ) -> dict[str, dict]:
         """
         Method for getting all services with given names
@@ -45,14 +48,20 @@ class UrbanApiTool:
             case ObjectTypeEnum.SERVICE:
                 object_name_id = await self.client.get_service_name_id(names, token)
                 objects = await self.client.get_services(
-                    scenario_id, list(object_name_id.values()), token
+                    scenario_id,
+                    list(object_name_id.values()),
+                    token,
+                    centers_only=centers_only,
                 )
             case ObjectTypeEnum.PHYSICAL_OBJECT:
                 object_name_id = await self.client.get_physical_objects_name_id(
                     names, token
                 )
                 objects = await self.client.get_physical_objects(
-                    scenario_id, list(object_name_id.values()), token
+                    scenario_id,
+                    list(object_name_id.values()),
+                    token,
+                    centers_only=centers_only,
                 )
             case _:
                 logger.info(
@@ -67,7 +76,7 @@ class UrbanApiTool:
                 "complete": True,
                 "truncated": False,
                 "revision": (
-                    f"scenario:{scenario_id}:{str(object_type).lower()}:{object_name_id[name]}"
+                    f"scenario:{scenario_id}:{str(object_type).lower()}:{object_name_id[name]}:centers_only={str(centers_only).lower()}"
                 ),
             }
             result[name] = collection
@@ -112,45 +121,20 @@ class UrbanApiTool:
             dict.fromkeys(name.strip().capitalize() for name in physical_object_names)
         )
 
-        async def service_ids() -> dict[str, int]:
-            if not services:
+        async def catalog(entity_type: str, names: list[str]) -> dict[str, int]:
+            if not names:
                 return {}
-            return await self.client.get_service_name_id(services, token)
+            return await self.client.get_type_catalog(entity_type, token)
 
-        async def physical_object_ids() -> dict[str, int]:
-            if not physical_objects:
-                return {}
-            return await self.client.get_physical_objects_name_id(
-                physical_objects, token
-            )
-
-        resolved_services, resolved_physical_objects = await asyncio.gather(
-            service_ids(), physical_object_ids()
+        service_catalog, physical_object_catalog = await asyncio.gather(
+            catalog("service", services), catalog("physical_object", physical_objects)
         )
         return {
-            "service": self._type_resolution(services, resolved_services),
-            "physical_object": self._type_resolution(
-                physical_objects, resolved_physical_objects
+            "service": resolve_catalog_names(services, service_catalog),
+            "physical_object": resolve_catalog_names(
+                physical_objects, physical_object_catalog
             ),
         }
-
-    @staticmethod
-    def _type_resolution(
-        requested_names: list[str], resolved: dict[str, int]
-    ) -> dict[str, dict]:
-        canonical_by_normalized = {
-            name.strip().casefold(): (name, type_id)
-            for name, type_id in resolved.items()
-        }
-        result: dict[str, dict] = {}
-        for requested in requested_names:
-            match = canonical_by_normalized.get(requested.strip().casefold())
-            result[requested] = {
-                "found": match is not None,
-                "canonical_name": match[0] if match else None,
-                "type_id": match[1] if match else None,
-            }
-        return result
 
     async def get_functional_zones(
         self,

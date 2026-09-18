@@ -127,6 +127,22 @@ AGENT_CATALOG: dict[OrchestratorAgent, AgentCatalogEntry] = {
         ),
         requires_scenario_id=False,
     ),
+    OrchestratorAgent.PZZ: AgentCatalogEntry(
+        key=OrchestratorAgent.PZZ,
+        title="Агент проверки ПЗЗ",
+        description=(
+            "Проверяет виды разрешённого использования участков и размещение зданий "
+            "по правилам землепользования и застройки (ПЗЗ), соответствие функциональным "
+            "зонам. Поддерживает кадастровые слои, здания и сценарии; определяет колонки, "
+            "запускает PZZ-классификацию, получает отчёт и объясняет результат. "
+            "Для сценария нужны год и источник зон; если они отсутствуют, запросит уточнение."
+        ),
+        examples=(
+            "Проверь участки на соответствие ПЗЗ",
+            "Проверь здания сценария по зонам PZZ за 2026 год",
+        ),
+        requires_scenario_id=False,
+    ),
     OrchestratorAgent.NORMS: AgentCatalogEntry(
         key=OrchestratorAgent.NORMS,
         title="Агент графа нормативных ограничений",
@@ -171,6 +187,10 @@ def available_agents(
         if (
             entry.key == OrchestratorAgent.SCENARIO_DATA
             and not app_config.URBAN_MCP_URL
+        ):
+            continue
+        if entry.key == OrchestratorAgent.PZZ and not getattr(
+            app_config, "PZZ_MCP_URL", None
         ):
             continue
         agents.append(entry)

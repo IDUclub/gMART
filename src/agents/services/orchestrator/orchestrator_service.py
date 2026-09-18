@@ -19,6 +19,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
+from src.agents.dto.pzz_request_dto import PzzInputs
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
@@ -32,6 +33,7 @@ from src.agents.services.orchestrator.orchestrator_plan_builder import (
 )
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.provision.provsion_service import ProvisionService
+from src.agents.services.pzz.pzz_service import PzzService
 from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
@@ -48,6 +50,7 @@ if TYPE_CHECKING:
     from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
     from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
+    from src.agents.mcp_clients.pzz_mcp_client import PzzMcpClient
     from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 
 # Inner sub-agent event types that are never forwarded to the client: the outer
@@ -91,12 +94,14 @@ class OrchestratorService(BaseLlmService):
         normgraph_service: NormGraphRagService,
         app_config: AgentsAppConfig,
         scenario_data_service: ScenarioDataService | None = None,
+        pzz_service: PzzService | None = None,
     ) -> None:
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.state_store = state_store
         self.restriction_service = restriction_service
         self.provision_service = provision_service
         self.scenario_data_service = scenario_data_service
+        self.pzz_service = pzz_service
         self.dvd_service = dvd_service
         self.normgraph_service = normgraph_service
         self.app_config = app_config
@@ -121,6 +126,8 @@ class OrchestratorService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
         urban_mcp_client: "UrbanMcpClient | None" = None,
+        pzz_mcp_client: "PzzMcpClient | None" = None,
+        pzz_inputs: PzzInputs | dict | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
@@ -204,7 +211,12 @@ class OrchestratorService(BaseLlmService):
         )
         agents = available_agents(self.app_config, scenario_id)
         plan = await self.plan_builder.build_plan(
-            model, user_query, agents, history, scenario_id=scenario_id
+            model,
+            user_query,
+            agents,
+            history,
+            scenario_id=scenario_id,
+            pzz_inputs=pzz_inputs,
         )
 
         if plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION:
@@ -256,6 +268,8 @@ class OrchestratorService(BaseLlmService):
                     model,
                     temperature,
                     scenario_id,
+                    pzz_mcp_client=pzz_mcp_client,
+                    pzz_inputs=pzz_inputs,
                 )
                 async for item in pipeline:
                     if item.get("type") in _SUPPRESSED_INNER_EVENTS:
@@ -347,7 +361,24 @@ class OrchestratorService(BaseLlmService):
         model: str,
         temperature: float,
         scenario_id: int | None,
+        pzz_mcp_client: "PzzMcpClient | None" = None,
+        pzz_inputs: PzzInputs | dict | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        if step.agent == OrchestratorAgent.PZZ:
+            if pzz_mcp_client is None or self.pzz_service is None:
+                raise ValueError("pzz step requires PZZ_MCP_SERVER")
+            return self.pzz_service.run_pzz_pipeline(
+                pzz_mcp_client=pzz_mcp_client,
+                pzz_api_client=getattr(pzz_mcp_client, "api_client", None),
+                token=token,
+                model=model,
+                temperature=temperature,
+                user_query=user_query,
+                scenario_id=scenario_id,
+                request_id=step_request_id,
+                persist_history=False,
+                inputs=pzz_inputs,
+            )
         if step.agent == OrchestratorAgent.COMPLIANCE:
             if scenario_id is None:
                 raise ValueError("compliance step requires scenario_id")

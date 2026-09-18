@@ -2,6 +2,7 @@ from src.agents.model_clients.endpoint_policy import (
     reject_forbidden_llm_host,
     require_local_ollama_url,
 )
+from src.common.urban_api_url import normalize_urban_api_url
 
 
 class AgentsAppConfig:
@@ -37,6 +38,8 @@ class AgentsAppConfig:
     DVD_MCP_URL: str | None
     DVD_API_URL: str | None
     NORM_GRAPH_MCP_URL: str | None
+    PZZ_MCP_URL: str | None
+    PZZ_API_URL: str | None
     URBAN_MCP_URL: str | None
     CHAT_STORAGE_URL: str
     URBAN_API_URL: str
@@ -88,6 +91,8 @@ class AgentsAppConfig:
         synapse_run_ttl_seconds: int = 86400,
         synapse_a2a_client_id: str = "synapse",
         synapse_auth_audience: str | None = None,
+        pzz_mcp_url: str | None = None,
+        pzz_api_url: str | None = None,
     ) -> None:
 
         if not ollama_api_url:
@@ -119,6 +124,8 @@ class AgentsAppConfig:
         # so existing deployments without NORM_GRAPH_MCP_SERVER still start; the /norms
         # endpoints raise a clear error if it is unset (see dependencies.get_normgraph_mcp_client).
         self.NORM_GRAPH_MCP_URL = norm_graph_mcp_url or None
+        self.PZZ_MCP_URL = pzz_mcp_url or None
+        self.PZZ_API_URL = pzz_api_url.rstrip("/") if pzz_api_url else None
         # Optional so existing deployments keep starting. The scenario-data agent
         # is hidden from the orchestrator until this URL is configured.
         self.URBAN_MCP_URL = urban_mcp_url.rstrip("/") if urban_mcp_url else None
@@ -127,7 +134,7 @@ class AgentsAppConfig:
         self.CHAT_STORAGE_URL = chat_storage_url
         if not urban_api_url:
             raise ValueError("URBAN_API_URL must be set")
-        self.URBAN_API_URL = urban_api_url
+        self.URBAN_API_URL = normalize_urban_api_url(urban_api_url)
         self.REDIS_URL = redis_url
         self.SYSTEM_PASSWORD = system_password
         # Optional: only required by the /auth/token proxy (UI login through the IDU
@@ -186,6 +193,8 @@ class AgentsAppConfig:
             "EFFECTS_MCP_URL": self.EFFECTS_MCP_URL,
             "DVD_MCP_URL": self.DVD_MCP_URL or "",
             "DVD_API_URL": self.DVD_API_URL or "",
+            "PZZ_MCP_URL": self.PZZ_MCP_URL or "",
+            "PZZ_API_URL": self.PZZ_API_URL or "",
             "NORM_GRAPH_MCP_URL": self.NORM_GRAPH_MCP_URL or "",
             "URBAN_MCP_URL": self.URBAN_MCP_URL or "",
             "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,

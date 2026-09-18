@@ -26,6 +26,7 @@ from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiCli
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.compilance.compliance_dedup import group_checks
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
 )
@@ -383,6 +384,7 @@ class RestrictionParserService(BaseLlmService):
         checkpoint = await self.state_store.get_checkpoint(request_id)
 
         normgraph_restrictions: list[dict[str, Any]] = []
+        skipped_without_plan = 0
         if normgraph_mcp_client is not None:
             yield await self._buf(
                 request_id,
@@ -397,10 +399,11 @@ class RestrictionParserService(BaseLlmService):
                     model,
                     user_query,
                     history=llm_history,
-                    retain_unsupported=history_agent == "compliance",
+                    require_check_plan=history_agent == "compliance",
                     retrieve_all=history_agent == "compliance",
                 )
                 normgraph_restrictions = retrieval.restrictions
+                skipped_without_plan = retrieval.unsupported_count
                 checkpoint_data = {
                     "restrictions": retrieval.restrictions,
                     "unsupported_count": retrieval.unsupported_count,
@@ -422,24 +425,30 @@ class RestrictionParserService(BaseLlmService):
                     "restrictions", []
                 )
 
-        # A current distance condition must go through the request-scoped plan:
-        # the canonical-plan audit below cannot represent a user's temporary rule.
-        explicit_distance = re.search(
-            r"\d+(?:[.,]\d+)?\s*[-–]?\s*(?:км\b|м\b|метр|километр)",
-            user_query.split("\n\nКонтекст — результаты предыдущих шагов:", 1)[0],
-            re.IGNORECASE,
-        )
-        if (
-            history_agent == "compliance"
-            and normgraph_mcp_client is not None
-            and not explicit_distance
-        ):
+                skipped_without_plan = checkpoint[PipelineStep.NORMGRAPH].get(
+                    "unsupported_count", 0
+                )
+
+        # Compliance consumes persisted CheckPlans only. Mentioning a threshold
+        # must never route the entire normative corpus into the LLM plan builder.
+        if history_agent == "compliance":
+            if normgraph_mcp_client is None:
+                yield await self._buf(
+                    request_id,
+                    self._chunk(
+                        "Проверка соответствия не выполнена: NormGraph не подключён.",
+                        done=True,
+                    ),
+                )
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
             async for event in self._run_executable_compliance(
                 mcp_client=mcp_client,
                 request_id=request_id,
                 scenario_id=scenario_id,
                 restrictions=normgraph_restrictions,
                 checkpoint=checkpoint,
+                skipped_without_plan=skipped_without_plan,
             ):
                 yield event
             return
@@ -712,6 +721,7 @@ class RestrictionParserService(BaseLlmService):
         scenario_id: int,
         restrictions: list[dict[str, Any]],
         checkpoint: dict[str, Any],
+        skipped_without_plan: int = 0,
     ) -> AsyncGenerator[dict, None]:
         """Execute each NormGraph CheckPlan independently and emit replayable results."""
 
@@ -728,22 +738,26 @@ class RestrictionParserService(BaseLlmService):
         )
         plans: list[dict[str, Any]] = []
         for hit in restrictions:
-            raw_plan = hit.get("check_plan")
-            if not isinstance(raw_plan, dict):
-                raw_plan = {
-                    "schema_version": "1.0",
-                    "template": "unsupported",
-                    "template_version": 1,
-                    "params": {},
-                    "source": {
-                        "restriction_id": str(hit.get("id") or "unknown"),
-                        "document_name": (hit.get("provenance") or {}).get("name"),
-                        "clause_number": (hit.get("provenance") or {}).get("numbering"),
-                        "extraction_text": hit.get("extraction_text"),
-                    },
-                    "planner_status": "unsupported",
-                }
+            # Apply the same gate to old checkpoints restored on reconnect.
+            if not NormGraphRestrictionRetriever.has_executable_plan(hit):
+                skipped_without_plan += 1
+                continue
+            raw_plan = hit["check_plan"]
             plans.append(raw_plan)
+        groups = await group_checks(
+            plans,
+            mcp_client,
+            scenario_id,
+            resolver=getattr(
+                getattr(self, "compliance_executor", None), "catalog_resolver", None
+            ),
+        )
+        duplicates = len(plans) - len(groups)
+        plans = [group.plan for group in groups]
+        sources_by_id = {
+            group.plan["source"]["restriction_id"]: group.sources for group in groups
+        }
+        for raw_plan in plans:
             yield await self._buf(
                 request_id,
                 {
@@ -751,8 +765,20 @@ class RestrictionParserService(BaseLlmService):
                     "content": {
                         "restriction_id": raw_plan["source"]["restriction_id"],
                         "plan": raw_plan,
+                        "equivalent_sources": sources_by_id[
+                            raw_plan["source"]["restriction_id"]
+                        ],
                     },
                 },
+            )
+        if skipped_without_plan:
+            yield await self._buf(
+                request_id,
+                self._status(
+                    "check_plan_validation",
+                    f"Пропущено норм без исполнимого плана: {skipped_without_plan}. "
+                    f"К проверке принято: {len(plans)}.",
+                ),
             )
         await self.state_store.save_checkpoint(
             request_id, PipelineStep.CHECK_PLAN_VALIDATION, plans
@@ -815,6 +841,7 @@ class RestrictionParserService(BaseLlmService):
                 fill_rate=result.coverage.fill_rate,
                 violated_objects=result.summary.violated_objects,
             ).info("Compliance norm completed")
+            result.source["equivalent_sources"] = sources_by_id[result.restriction_id]
             results.append(result)
             resolution_content = {
                 "restriction_id": result.restriction_id,
@@ -850,7 +877,7 @@ class RestrictionParserService(BaseLlmService):
                 request_id,
                 {
                     "type": "compliance_result",
-                    "content": result.model_dump(mode="json"),
+                    "content": self._compliance_result_payload(result),
                 },
             )
             progress = self._compliance_progress(results, len(plans))
@@ -865,17 +892,23 @@ class RestrictionParserService(BaseLlmService):
                     f"Проверено {index} из {len(plans)} норм",
                 ),
             )
-            feature_layers = {}
-            if result.violated_features is not None:
-                feature_layers[f"Нарушения: {result.restriction_id}"] = (
-                    result.violated_features
+            # Map geometry has one transport: non-empty violation layer events.
+            # Successful and non-executed checks must not open empty UI layers.
+            if (
+                result.compliance_status == "violated"
+                and result.summary.violated_objects > 0
+                and (result.violated_features or {}).get("features")
+            ):
+                clause = result.source.get("clause_number")
+                suffix = (
+                    f"{clause}_{result.restriction_id}"
+                    if clause
+                    else result.restriction_id
                 )
-            if result.passed_features is not None:
-                feature_layers[f"Проверено без нарушений: {result.restriction_id}"] = (
-                    result.passed_features
-                )
-            for item in self._feature_collections(feature_layers):
-                yield await self._buf(request_id, item)
+                for item in self._feature_collections(
+                    {f"Нарушение_нормы_{suffix}": result.violated_features}
+                ):
+                    yield await self._buf(request_id, item)
 
         await self.state_store.save_checkpoint(
             request_id, PipelineStep.REQUIREMENTS_RESOLUTION, resolution_events
@@ -883,22 +916,47 @@ class RestrictionParserService(BaseLlmService):
         await self.state_store.save_checkpoint(
             request_id,
             PipelineStep.TEMPLATE_EXECUTION,
-            [item.model_dump(mode="json") for item in results],
+            [
+                RestrictionParserService._compliance_result_payload(item)
+                for item in results
+            ],
         )
         yield await self._buf(
             request_id,
             self._status("verdict_aggregation", "Собираю итог по всем нормам"),
         )
         summary = self._compliance_summary(request_id, results)
+        summary["duplicate_checks"] = duplicates
+        summary["equivalent_sources"] = {
+            rid: sources for rid, sources in sources_by_id.items() if len(sources) > 1
+        }
         await self.state_store.save_checkpoint(
             request_id, PipelineStep.VERDICT_AGGREGATION, summary
         )
         yield await self._buf(
             request_id, {"type": "compliance_summary", "content": summary}
         )
+        summary_text = self._compliance_summary_text(summary)
+        if duplicates:
+            summary_text += f" Повторных проверок объединено: {duplicates}."
+            for sources in summary["equivalent_sources"].values():
+                labels = [
+                    str(source.get("document_name") or source["restriction_id"])
+                    + (
+                        f" п. {source['clause_number']}"
+                        if source.get("clause_number")
+                        else ""
+                    )
+                    for source in sources
+                ]
+                summary_text += " Эквивалентные нормы: " + "; ".join(labels) + "."
+        if skipped_without_plan:
+            summary_text += (
+                f" Пропущено норм без исполнимого плана: {skipped_without_plan}."
+            )
         yield await self._buf(
             request_id,
-            self._chunk(self._compliance_summary_text(summary), done=True),
+            self._chunk(summary_text, done=True),
         )
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
 
@@ -948,7 +1006,10 @@ class RestrictionParserService(BaseLlmService):
             "partial_norms": sum(
                 item.verification_status == "partial" for item in results
             ),
-            "results": [item.model_dump(mode="json") for item in results],
+            "results": [
+                RestrictionParserService._compliance_result_payload(item)
+                for item in results
+            ],
         }
 
     @staticmethod
@@ -973,9 +1034,16 @@ class RestrictionParserService(BaseLlmService):
         }
 
     @staticmethod
+    def _compliance_result_payload(result: ComplianceResult) -> dict[str, Any]:
+        """Keep result metadata; geometry is emitted only as feature_collection."""
+        return result.model_dump(
+            mode="json", exclude={"violated_features", "passed_features"}
+        )
+
+    @staticmethod
     def _compliance_summary_text(summary: dict[str, Any]) -> str:
         if summary["total_norms"] == 0:
-            return "Применимые нормы не найдены. Проверка соответствия не выполнена: отсутствие норм в источнике не подтверждает отсутствие нарушений."
+            return "Нормы с исполнимыми планами не найдены. Проверка соответствия не выполнена; отсутствие проверок не подтверждает отсутствие нарушений."
         parts = [
             f"Проверка завершена для {summary['total_norms']} норм.",
             f"Нарушено: {summary['violated_norms']}.",
@@ -987,7 +1055,29 @@ class RestrictionParserService(BaseLlmService):
             parts.append(
                 f"С частичным покрытием: {summary['partial_norms']}; вывод относится только к проверенной части."
             )
-        return " ".join(parts)
+        violations = []
+        for result in summary.get("results", []):
+            count = result.get("summary", {}).get("violated_objects", 0)
+            if result.get("compliance_status") != "violated" or count <= 0:
+                continue
+            source = result.get("source") or {}
+            label = source.get("document_name") or "Норма"
+            if source.get("clause_number"):
+                label += f", пункт {source['clause_number']}"
+            else:
+                label += f" ({result['restriction_id']})"
+            text = " ".join((source.get("extraction_text") or "").split())
+            detail = f"- {label}: нарушений на объектах — {count}."
+            if text:
+                detail += f" Требование: {text}"
+            if result.get("verification_status") == "partial":
+                unchecked = result.get("coverage", {}).get("unchecked_objects", 0)
+                detail += f" Не проверено объектов: {unchecked}."
+            violations.append(detail)
+        overview = " ".join(parts)
+        if violations:
+            return overview + "\n\nНарушенные нормы:\n\n" + "\n".join(violations)
+        return overview
 
     async def _retryable_step(
         self,

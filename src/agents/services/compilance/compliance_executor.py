@@ -362,7 +362,11 @@ class ComplianceTemplateExecutor:
             )
             if not names:
                 continue
-            arguments = {argument_name: names, "scenario_id": scenario_id}
+            arguments = {
+                argument_name: names,
+                "scenario_id": scenario_id,
+                "centers_only": False,
+            }
             response = await self.tools.execute_named_tool(
                 mcp_client, tool_name, arguments
             )

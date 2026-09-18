@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 import uuid
+from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import Any
 
@@ -95,6 +96,41 @@ class PipelineStateStore:
     @staticmethod
     def new_request_id() -> str:
         return str(uuid.uuid4())
+
+    async def register_pzz_upload(self, upload_id: str, user_id: str) -> None:
+        # Uploads persist in PZZ independently of the short pipeline reconnect TTL.
+        await self._retry(
+            self._redis.set, self._key(upload_id, "pzz_upload_owner"), user_id
+        )
+
+    async def get_pzz_upload_owner(self, upload_id: str) -> str | None:
+        return await self._retry(
+            self._redis.get, self._key(upload_id, "pzz_upload_owner")
+        )
+
+    @asynccontextmanager
+    async def execution_lock(self, request_id: str):
+        """Serialize execution of a submitted PZZ pipeline across API workers."""
+        key = self._key(request_id, "execution_lock")
+        lease = str(uuid.uuid4())
+        acquired = await self._retry(
+            self._redis.set, key, lease, nx=True, ex=PIPELINE_TTL
+        )
+        if not acquired:
+            raise ValueError("Pipeline is already running; reconnect after it finishes")
+        try:
+            yield
+        finally:
+
+            async def release():
+                async with self._redis.pipeline(transaction=True) as pipe:
+                    await pipe.watch(key)
+                    if await pipe.get(key) == lease:
+                        pipe.multi()
+                        pipe.delete(key)
+                        await pipe.execute()
+
+            await self._retry(release)
 
     async def exists(self, request_id: str) -> bool:
         return bool(

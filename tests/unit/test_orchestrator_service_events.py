@@ -544,3 +544,32 @@ async def test_reconnect_replays_buffered_events_only(
     assert events == buffered
     assert not fake_llm.chat_calls  # the planner is not re-run
     orchestrator.create_chat.assert_not_awaited()
+
+
+async def test_pzz_dispatch_forwards_inputs_and_wraps_report(orchestrator, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json([{"agent": "pzz", "task": "Проверь ПЗЗ"}])
+    ]
+    orchestrator.app_config.PZZ_MCP_URL = "http://pzz/mcp"
+    pipeline = FakePipeline(
+        [
+            {"type": "object_zone_fit", "content": {"summary": {"total": 1}}},
+            {
+                "type": "chunk",
+                "content": {"text": "Один объект проверен", "done": True},
+            },
+        ]
+    )
+    orchestrator.pzz_service = SimpleNamespace(run_pzz_pipeline=pipeline)
+    client = SimpleNamespace(api_client=object())
+    inputs = {"mode": "scenario", "year": 2026, "source": "PZZ"}
+    events = await run_pipeline(orchestrator, pzz_mcp_client=client, pzz_inputs=inputs)
+    assert pipeline.calls[0]["pzz_mcp_client"] is client
+    assert pipeline.calls[0]["pzz_api_client"] is client.api_client
+    assert pipeline.calls[0]["inputs"] is inputs
+    assert pipeline.calls[0]["persist_history"] is False
+    assert any(
+        e["type"] == "step_event" and e["content"]["event"]["type"] == "object_zone_fit"
+        for e in events
+    )
+    assert events[-1]["content"]["steps"][0]["status"] == "completed"

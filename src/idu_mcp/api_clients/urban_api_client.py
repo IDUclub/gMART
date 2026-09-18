@@ -43,6 +43,16 @@ class UrbanApiClient:
                 if i and i["name"] in names
             }
 
+    async def get_type_catalog(self, entity_type: str, token: str) -> dict[str, int]:
+        """Read global type names, including types absent from the scenario."""
+        endpoints = {
+            "service": ("v1/service_types", "service_type_id"),
+            "physical_object": ("v1/physical_object_types", "physical_object_type_id"),
+        }
+        endpoint, id_field = endpoints[entity_type]
+        rows = await self.json_handler.get(endpoint, auth_token=token)
+        return {row["name"]: row[id_field] for row in rows}
+
     async def get_service_name_id(self, names: list[str], token: str) -> dict[str, int]:
         """
         Function retrieves services name_id for scenario asynchronously.
@@ -73,7 +83,12 @@ class UrbanApiClient:
         return await self.get_name_id("v1/physical_object_types", names, token)
 
     async def get_services(
-        self, scenario_id: int, services: list[int], token: str
+        self,
+        scenario_id: int,
+        services: list[int],
+        token: str,
+        *,
+        centers_only: bool = False,
     ) -> list[dict]:
         """
         Function retrieves services for scenario asynchronously
@@ -86,7 +101,7 @@ class UrbanApiClient:
         tasks = [
             self.json_handler.get(
                 f"v1/scenarios/{scenario_id}/services_with_geometry",
-                params={"service_type_id": service_id},
+                params={"service_type_id": service_id, "centers_only": centers_only},
                 auth_token=token,
             )
             for service_id in services
@@ -94,7 +109,12 @@ class UrbanApiClient:
         return await asyncio.gather(*tasks)
 
     async def get_physical_objects(
-        self, scenario_id: int, physical_objects: list[int], token: str
+        self,
+        scenario_id: int,
+        physical_objects: list[int],
+        token: str,
+        *,
+        centers_only: bool = False,
     ):
         """
         Function retrieves services for scenario asynchronously
@@ -107,7 +127,10 @@ class UrbanApiClient:
         tasks = [
             self.json_handler.get(
                 f"v1/scenarios/{scenario_id}/physical_objects_with_geometry",
-                params={"physical_object_type_id": physical_object_id},
+                params={
+                    "physical_object_type_id": physical_object_id,
+                    "centers_only": centers_only,
+                },
                 auth_token=token,
             )
             for physical_object_id in physical_objects

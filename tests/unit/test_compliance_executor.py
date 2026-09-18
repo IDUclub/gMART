@@ -1,3 +1,8 @@
+from copy import deepcopy
+from unittest.mock import AsyncMock
+
+import pytest
+
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
 )
@@ -47,12 +52,14 @@ class FakeMcpClient:
     async def execute_tool(self, name, arguments, meta=None):
         self.calls.append((name, arguments, meta))
         if name == "GetServices":
+            assert arguments["centers_only"] is False
             if self.unavailable_services:
                 return None
             if self.zero_services:
                 return {"Школа": {"type": "FeatureCollection", "features": []}}
             return {"Школа": _fc(30.0, service_id=1)}
         if name == "GetPhysicalObjects":
+            assert arguments["centers_only"] is False
             if self.zero_physical_objects:
                 return {"Жилой дом": {"type": "FeatureCollection", "features": []}}
             return {
@@ -202,3 +209,34 @@ async def test_executor_violates_required_presence_when_source_is_absent():
     assert execution.result.verification_status == "complete"
     assert execution.result.compliance_status == "violated"
     assert execution.result.summary.violated_objects == 2
+
+
+@pytest.mark.parametrize(
+    "source,target", [("школ", "жилых домов"), ("школы", "жилые дома")]
+)
+async def test_executor_normalizes_stored_plan_via_catalog_tool(source, target):
+    from src.idu_mcp.tools_services.urb_api_tools import UrbanApiTool
+
+    class CatalogMcp(FakeMcpClient):
+        async def resolve_urban_entity_types(self, **names):
+            api = AsyncMock()
+            api.get_type_catalog.side_effect = [{"Школа": 22}, {"Жилой дом": 4}]
+            return await UrbanApiTool(api).resolve_entity_types(**names, token="user-1")
+
+    plan = _plan()
+    plan["declared_requirements"]["layers"][0]["entity"] = source
+    plan["declared_requirements"]["layers"][1]["entity"] = target
+    original = deepcopy(plan)
+    client = CatalogMcp()
+    execution = await ComplianceTemplateExecutor().execute(client, plan, 772)
+
+    assert execution.result.verification_status == "complete"
+    assert execution.result.summary.violated_objects == 1
+    assert execution.result.summary.passed_objects == 1
+    assert client.calls[0][1]["services_names"] == ["Школа"]
+    assert client.calls[1][1]["physical_objects_names"] == ["Жилой дом"]
+    assert plan == original
+    stored_layers = execution.result.source["check_plan"]["declared_requirements"][
+        "layers"
+    ]
+    assert [layer["entity"] for layer in stored_layers] == [source, target]
