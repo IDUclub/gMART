@@ -12,17 +12,28 @@ from src.idu_mcp.common.config.mcp_config import IduFastMcpConfig
 
 
 @pytest.mark.parametrize(
-    "base",
+    "base, api_root",
     [
-        "https://urban.test:8443",
-        "https://urban.test:8443/",
-        "https://urban.test:8443/api",
-        " https://urban.test:8443/api/// ",
-        "https://urban.test:8443/api/api/",
+        ("https://urban.test:8443", "https://urban.test:8443/api"),
+        ("https://urban.test:8443/", "https://urban.test:8443/api"),
+        ("https://urban.test:8443/api", "https://urban.test:8443/api"),
+        (" https://urban.test:8443/api/// ", "https://urban.test:8443/api"),
+        (
+            "https://prostor-api.idu.actocgnitive.org/urban_api",
+            "https://prostor-api.idu.actocgnitive.org/urban_api",
+        ),
+        (
+            "https://prostor-api.idu.actocgnitive.org/urban_api/",
+            "https://prostor-api.idu.actocgnitive.org/urban_api",
+        ),
+        (
+            "https://urban.test/gateway/urban_api/",
+            "https://urban.test/gateway/urban_api",
+        ),
     ],
 )
 @pytest.mark.parametrize("side", ["agents", "mcp"])
-async def test_urban_requests_use_one_api_prefix(base, side):
+async def test_urban_requests_use_configured_api_root(base, api_root, side):
     if side == "agents":
         config = AgentsAppConfig(
             ollama_api_url="http://localhost:11434",
@@ -41,10 +52,7 @@ async def test_urban_requests_use_one_api_prefix(base, side):
     response.json = AsyncMock(return_value={"project": {"project_id": 42}})
     session.get.return_value.__aenter__.return_value = response
     await handler.get("/v1/scenarios/7", session=session)
-    assert (
-        session.get.call_args.kwargs["url"]
-        == "https://urban.test:8443/api/v1/scenarios/7"
-    )
+    assert session.get.call_args.kwargs["url"] == f"{api_root}/v1/scenarios/7"
 
 
 async def test_generic_handler_preserves_non_urban_service_urls():
@@ -61,7 +69,8 @@ async def test_generic_handler_preserves_non_urban_service_urls():
     [
         ("http://api", "http://api/api"),
         ("https://urban.test/gateway/api/", "https://urban.test/gateway/api"),
-        ("https://urban.test/gateway/", "https://urban.test/gateway/api"),
+        ("https://urban.test/gateway/", "https://urban.test/gateway"),
+        ("https://urban.test/api/api/", "https://urban.test/api/api"),
     ],
 )
 def test_normalization_preserves_authority_and_proxy_path(base, expected):

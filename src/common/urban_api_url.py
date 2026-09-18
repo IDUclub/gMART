@@ -1,10 +1,10 @@
-"""Canonical Urban API base URL used behind the /api load-balancer route."""
+"""Urban API roots for direct connections and load-balancer mounts."""
 
 from urllib.parse import urlsplit, urlunsplit
 
 
 def normalize_urban_api_url(base_url: str) -> str:
-    """Accept an HTTP origin or API root and keep exactly one trailing /api."""
+    """Preserve explicit API roots; use /api only for an origin without a path."""
     url = urlsplit(base_url.strip())
     if (
         url.scheme not in {"http", "https"}
@@ -15,7 +15,5 @@ def normalize_urban_api_url(base_url: str) -> str:
         raise ValueError(
             "Urban API URL must be an HTTP(S) base URL without query or fragment"
         )
-    path = url.path.rstrip("/")
-    while path.endswith("/api"):
-        path = path[:-4].rstrip("/")
-    return urlunsplit((url.scheme, url.netloc, f"{path}/api", "", ""))
+    path = url.path.rstrip("/") or "/api"
+    return urlunsplit((url.scheme, url.netloc, path, "", ""))
