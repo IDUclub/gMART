@@ -523,14 +523,21 @@ async def test_compliance_ui_only_emits_nonempty_violation_layers(
             mcp_client=object(),
             request_id="ui",
             scenario_id=772,
-            restrictions=[{"check_plan": _plan()}],
+            restrictions=[
+                {
+                    "check_plan": {
+                        **_plan(),
+                        "source": {"restriction_id": "r1", **result.source},
+                    }
+                }
+            ],
             checkpoint={},
         )
     ]
     layers = [e for e in events if e["type"] == "feature_collection"]
     assert len(layers) == expected_layers
     if layers:
-        assert layers[0]["content"]["name"] == "Нарушение_нормы_2.1_r1"
+        assert layers[0]["content"]["name"] == "Нарушение нормы — Тесты Норм, п. 2.1"
         assert layers[0]["content"]["feature_collection"] == geometry
     for event in events:
         if event["type"] != "feature_collection":
@@ -540,7 +547,7 @@ async def test_compliance_ui_only_emits_nonempty_violation_layers(
             assert "passed_features" not in payload
     final_text = next(e["content"]["text"] for e in events if e["type"] == "chunk")
     if status == "violated":
-        assert "Тесты Норм, пункт 2.1: нарушений на объектах — 2" in final_text
+        assert "Тесты Норм, п. 2.1: нарушений на объектах — 2" in final_text
         assert "Расстояние должно составлять не менее 100 м." in final_text
         if verification == "partial":
             assert "Не проверено объектов: 1" in final_text
@@ -578,6 +585,110 @@ def test_compliance_summary_identifies_every_violated_norm_and_keeps_counts_sepa
         ],
     )
     text = RestrictionParserService._compliance_summary_text(summary)
-    assert "Документ, пункт 1.1: нарушений на объектах — 17" in text
-    assert "Норма (r2): нарушений на объектах — 15" in text
+    assert "Документ, п. 1.1: нарушений на объектах — 17" in text
+    assert "Источник не указан: нарушений на объектах — 15" in text
     assert "(passed)" not in text
+
+
+@pytest.mark.parametrize(
+    "provenance, expected",
+    [
+        (
+            {"name": "СП 42.13330.2016 Градостроительство", "numbering": "7.1"},
+            "СП 42.13330.2016, п. 7.1",
+        ),
+        ({"name": "СП 42.13330.2016"}, "СП 42.13330.2016"),
+        ({"numbering": "7.1"}, "Источник не указан, п. 7.1"),
+        ({"name": "  \n ", "numbering": " "}, "Источник не указан"),
+    ],
+)
+async def test_source_metadata_reaches_layers_summary_and_checkpoint(
+    provenance, expected
+):
+    from copy import deepcopy
+
+    service = object.__new__(RestrictionParserService)
+    service.state_store = SimpleNamespace(
+        buffer_event=AsyncMock(), save_checkpoint=AsyncMock(), set_status=AsyncMock()
+    )
+    geometry = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {},
+                "geometry": {"type": "Point", "coordinates": [30, 60]},
+            }
+        ],
+    }
+
+    async def execute(_client, plan, scenario_id):
+        result = ComplianceResult(
+            restriction_id=plan["source"]["restriction_id"],
+            template=plan["template"],
+            template_version=1,
+            verification_status="complete",
+            compliance_status="violated",
+            coverage=dict(
+                applicable_objects=1,
+                checked_objects=1,
+                unchecked_objects=0,
+                fill_rate=1,
+            ),
+            summary=dict(violated_objects=1, passed_objects=0),
+            source=plan["source"],
+            violated_features=geometry,
+        )
+        return SimpleNamespace(result=result, tool_calls=[], timings_ms={})
+
+    service.compliance_executor = SimpleNamespace(
+        execute=AsyncMock(side_effect=execute)
+    )
+    hits = []
+    for number in range(2):
+        plan = _plan()
+        plan["source"].update(restriction_id=f"norm-{number}", document_name=" ")
+        plan["params"]["distance_m"] += number
+        hits.append(
+            dict(
+                check_plan=plan,
+                provenance=provenance,
+                extraction_text="Минимальное расстояние",
+            )
+        )
+    original = deepcopy(hits)
+    events = [
+        event
+        async for event in service._run_executable_compliance(
+            mcp_client=object(),
+            request_id="sources",
+            scenario_id=772,
+            restrictions=hits,
+            checkpoint={},
+        )
+    ]
+    assert hits == original
+    names = [
+        event["content"]["name"]
+        for event in events
+        if event["type"] == "feature_collection"
+    ]
+    assert names == [
+        f"Нарушение нормы — {expected}",
+        f"Нарушение нормы — {expected} (2)",
+    ]
+    text = next(
+        event["content"]["text"] for event in events if event["type"] == "chunk"
+    )
+    assert expected in text and "Минимальное расстояние" in text
+    assert "norm-0" not in text and "norm-1" not in text
+    checkpoints = service.state_store.save_checkpoint.await_args_list
+    results = next(
+        call.args[2]
+        for call in checkpoints
+        if call.args[1] == PipelineStep.TEMPLATE_EXECUTION
+    )
+    assert [result["restriction_id"] for result in results] == ["norm-0", "norm-1"]
+    assert results[0]["source"].get("clause_number") == (
+        provenance["numbering"].strip() if "numbering" in provenance else None
+    )

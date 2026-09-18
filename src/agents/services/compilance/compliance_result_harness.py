@@ -12,6 +12,11 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from src.agents.services.compilance.compliance_sources import (
+    source_reference,
+    source_references,
+)
+
 
 @dataclass(frozen=True)
 class PreparedComplianceFollowUp:
@@ -70,7 +75,12 @@ class ComplianceResultHarness:
 
 Если пользователь спрашивает, что «не прошло», сначала раздели фактические
 нарушения и нормы, которые не удалось проверить. При перечислении указывай
-restriction_id, документ/пункт и текст нормы, когда они есть. Причины бери из
+текстовую отсылку из source_references (краткое обозначение документа и пункт,
+если он указан) и текст нормы, когда он есть. Для каждой нарушенной нормы
+обязательно приведи такую отсылку. Если название отсутствует, пиши
+«Источник не указан»; пункт добавляй только при его наличии. UUID и restriction_id
+в ответ не включай, даже если они встречаются в истории. Не придумывай ссылки,
+названия документов или номера пунктов. Причины бери из
 missing_requirements, warnings и resolved_requirements.reason. Техническую ошибку
 объясняй простыми словами, но сохраняй её точный текст. Если ни одна норма не была
 полностью проверена (passed_norms=0 и violated_norms=0), начни ответ с фразы
@@ -147,7 +157,6 @@ missing_requirements, warnings и resolved_requirements.reason. Техничес
         compact = {
             key: result.get(key)
             for key in (
-                "restriction_id",
                 "template",
                 "template_version",
                 "verification_status",
@@ -158,6 +167,7 @@ missing_requirements, warnings и resolved_requirements.reason. Техничес
                 "warnings",
             )
         }
+        compact["source_references"] = source_references(source)
         compact["source"] = {
             key: source.get(key)
             for key in (
@@ -235,7 +245,9 @@ missing_requirements, warnings и resolved_requirements.reason. Техничес
             if not isinstance(result, dict):
                 continue
             source = result.get("source") or {}
-            name = source.get("extraction_text") or result.get("restriction_id")
+            name = "; ".join(source_references(source))
+            if source.get("extraction_text"):
+                name += f": {source['extraction_text']}"
             reasons = [
                 *[str(item) for item in result.get("missing_requirements") or []],
                 *[str(item) for item in result.get("warnings") or []],
@@ -257,6 +269,26 @@ missing_requirements, warnings и resolved_requirements.reason. Техничес
         """Enforce status semantics that must not depend on model obedience."""
 
         normalized = answer.strip()
+        # Old chat history may still contain IDs; never expose them as citations.
+        references = {}
+        for result in summary.get("results") or []:
+            source = result.get("source") or {}
+            if result.get("restriction_id"):
+                references[result["restriction_id"]] = source_reference(source)
+            for equivalent in source.get("equivalent_sources") or []:
+                if equivalent.get("restriction_id"):
+                    references[equivalent["restriction_id"]] = source_reference(
+                        equivalent
+                    )
+        if references:
+            pattern = (
+                r"(?<![\w-])(?:"
+                + "|".join(
+                    re.escape(key) for key in sorted(references, key=len, reverse=True)
+                )
+                + r")(?![\w-])"
+            )
+            normalized = re.sub(pattern, lambda match: references[match[0]], normalized)
         if summary.get("passed_norms") or summary.get("violated_norms"):
             return normalized
         normalized = re.sub(
