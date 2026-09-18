@@ -1,5 +1,7 @@
 import os
 
+from src.common.urban_api_url import normalize_urban_api_url
+
 
 class IduFastMcpConfig:
     """
@@ -32,7 +34,7 @@ class IduFastMcpConfig:
                 raise ValueError(
                     "Number of workers must be a positive integer grater then 0"
                 )
-        self.URBAN_API_URL = urban_api_url
+        self.URBAN_API_URL = normalize_urban_api_url(urban_api_url)
         self.APP_WORKERS = workers
         self.REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
         self.WORKSPACE_ENABLED = os.getenv(

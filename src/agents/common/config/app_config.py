@@ -2,6 +2,7 @@ from src.agents.model_clients.endpoint_policy import (
     reject_forbidden_llm_host,
     require_local_ollama_url,
 )
+from src.common.urban_api_url import normalize_urban_api_url
 
 
 class AgentsAppConfig:
@@ -133,7 +134,7 @@ class AgentsAppConfig:
         self.CHAT_STORAGE_URL = chat_storage_url
         if not urban_api_url:
             raise ValueError("URBAN_API_URL must be set")
-        self.URBAN_API_URL = urban_api_url
+        self.URBAN_API_URL = normalize_urban_api_url(urban_api_url)
         self.REDIS_URL = redis_url
         self.SYSTEM_PASSWORD = system_password
         # Optional: only required by the /auth/token proxy (UI login through the IDU
