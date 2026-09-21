@@ -1,3 +1,121 @@
+## v0.19.3 (2026-09-16)
+
+### Fix
+
+- (#200)
+- allow reading server configuration without a password (#198)
+- **agents**: avoid redundant document retries and keep failure details in logs (#196)
+
+## v0.19.2 (2026-09-16)
+
+### Fix
+
+- **scenario-data**: summarise indicator answers instead of listing rows
+- persist only compliance tool calls and text (#193)
+
+## v0.19.1 (2026-09-15)
+
+### Fix
+
+- preserve document QA context and accept grounded concise answers (#190)
+- resolve exact document references and compact source context (#187)
+
+## v0.19.0 (2026-09-14)
+
+### Feat
+
+- **scenario-data**: show Russian tables without ids and summarize comparisons
+- retrieve document structure and reduce large contexts in parallel (#171)
+
+### Fix
+
+- preserve document clarifications and recover interrupted streams (#183)
+- resolve and rank document clause clarifications (#182)
+- preserve document choices across RAG clarification turns (#181)
+- validate DVD retrieval plan modes (#180)
+- adapt RAG answer budgets and resume truncated drafts (#177)
+- ground document answers and detect deployed model context (#175)
+- budget RAG summaries and reject incomplete evidence (#174)
+- align scoped RAG parameters with DVD MCP contract (#173)
+
+## v0.18.1 (2026-09-08)
+
+### Fix
+
+- harden scenario data harness results
+
+## v0.18.0 (2026-08-21)
+
+### Feat
+
+- **documents**: manage user documents in test UI (#153)
+
+### Fix
+
+- ci-cd skip changes in tests action (#156)
+- preserve named type mapping values (#152)
+
+## v0.17.4 (2026-08-19)
+
+### Fix
+
+- pass user context outside m2m transports (#149) (#150)
+- pass user context outside m2m transports (#149)
+
+## v0.17.3 (2026-08-19)
+
+## v0.17.2 (2026-08-19)
+
+### Fix
+
+- updated think parametres (#144) (#145)
+- updated think parametres (#144)
+
+## v0.17.1 (2026-08-19)
+
+### Fix
+
+- **ui**: generate ids without secure-context crypto.randomUUID (#142) (#143)
+- **ui**: generate ids without secure-context crypto.randomUUID (#142)
+
+## v0.17.0 (2026-08-18)
+
+### Feat
+
+- **auth**: use service tokens for internal calls (#138)
+
+### Fix
+
+- **restrictions**: keep NormGraph out of geometry pipeline (#136)
+
+## v0.16.0 (2026-08-17)
+
+### Feat
+
+- **llm**: resolve the default model from the connected provider
+
+### Fix
+
+- **llm**: document Harmony's real reasoning_effort set and cover it with tests
+
+## v0.15.0 (2026-08-17)
+
+### Feat
+
+- **ui**: add MCP diagnostics console (#128)
+- **scenario-data**: add optional-context A2A agent (#127)
+
+### Refactor
+
+- **frontend**: simplify workspace UI (#129)
+
+## v0.14.1 (2026-07-14)
+
+### Fix
+
+- **norms_rag**: recursively normalize NormGraph MCP results (#120)
+- **chat_storage**: tolerate new ChatStorage response fields (#119)
+
 ## v0.14.0 (2026-07-13)
 
 ### Feat
