@@ -1,3 +1,12 @@
+## v0.19.4 (2026-09-21)
+
+### Fix
+
+- **agents**: сократить выдаваемые слои и их атрибуты (#209)
+- cite compliance documents and clauses instead of norm IDs (#208)
+- respect configured Urban API roots behind load balancers (#206)
+- deduplicate compliance checks and request full geometry (#203)
+
 ## v0.19.3 (2026-09-16)
 
 ### Fix
