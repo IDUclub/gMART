@@ -26,6 +26,7 @@ from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiCli
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.layer_attributes import compact_layer, compact_layer_event
 from src.agents.services.pipeline_state import (
     PipelineStateStore,
     PipelineStatus,
@@ -206,7 +207,7 @@ class ProvisionService(BaseLlmService):
         if is_reconnect:
             logger.info(f"Reconnect for request_id={request_id}, replaying events")
             for event in await self.state_store.get_buffered_events(request_id):
-                yield event
+                yield compact_layer_event(event, "provision")
             if not chat_id:
                 stored = await self.state_store.get_state(request_id)
                 if stored and stored.get("chat_id"):
@@ -1220,7 +1221,10 @@ class ProvisionService(BaseLlmService):
             if isinstance(fc, dict) and fc.get("type") == "FeatureCollection":
                 yield {
                     "type": "feature_collection",
-                    "content": {"name": name, "feature_collection": fc},
+                    "content": {
+                        "name": name,
+                        "feature_collection": compact_layer(fc, "provision"),
+                    },
                 }
 
     @staticmethod
@@ -1235,7 +1239,7 @@ class ProvisionService(BaseLlmService):
                             "type": "feature_collection",
                             "content": {
                                 "name": f"{group_key}.{layer_name}",
-                                "feature_collection": fc,
+                                "feature_collection": compact_layer(fc, "effects"),
                             },
                         }
         effects_fc = effects_data.get("effects")
@@ -1245,7 +1249,10 @@ class ProvisionService(BaseLlmService):
         ):
             yield {
                 "type": "feature_collection",
-                "content": {"name": "effects", "feature_collection": effects_fc},
+                "content": {
+                    "name": "effects",
+                    "feature_collection": compact_layer(effects_fc, "effects"),
+                },
             }
 
     @staticmethod
@@ -1260,6 +1267,6 @@ class ProvisionService(BaseLlmService):
                         "type": "feature_collection",
                         "content": {
                             "name": f"provision.{service_name}.{layer_name}",
-                            "feature_collection": fc,
+                            "feature_collection": compact_layer(fc, "provision"),
                         },
                     }

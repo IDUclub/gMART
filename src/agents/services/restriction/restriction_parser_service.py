@@ -39,6 +39,7 @@ from src.agents.services.compilance.compliance_sources import (
     source_reference,
     source_references,
 )
+from src.agents.services.layer_attributes import compact_layer, compact_layer_event
 from src.agents.services.normgraph.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,
 )
@@ -47,7 +48,10 @@ from src.agents.services.pipeline_state import (
     PipelineStatus,
     PipelineStep,
 )
-from src.agents.services.restriction.restriction_catalog import RestrictionPlanBuilder
+from src.agents.services.restriction.restriction_catalog import (
+    RestrictionPlanBuilder,
+    normalize_name,
+)
 from src.agents.services.restriction.restriction_context import (
     RestrictionContextBuilder,
 )
@@ -272,7 +276,7 @@ class RestrictionParserService(BaseLlmService):
         if is_reconnect:
             logger.info(f"Reconnect for request_id={request_id}, replaying events")
             for event in await self.state_store.get_buffered_events(request_id):
-                yield event
+                yield compact_layer_event(event, history_agent)
             # Restore chat_id from persisted state so history is available
             # even if the client didn't re-send the query parameter.
             if not chat_id:
@@ -568,9 +572,20 @@ class RestrictionParserService(BaseLlmService):
                 "data_retrievement", layers_result.tool_calls, mcp_source="IDU_MCP_URL"
             ),
         )
-        for item in self._feature_collections(layers_result.tool_result):
-            yield await self._buf(request_id, item)
         layers = layers_result.tool_result
+        visible_layers = layers
+        if plan.mode == RestrictionTaskMode.RESTRICTIONS:
+            source_names = {
+                normalize_name(entity.name) for entity in plan.source_entities
+            }
+            # Targets are published only after checking their intersections.
+            visible_layers = {
+                name: layer
+                for name, layer in layers.items()
+                if normalize_name(name) in source_names
+            }
+        for item in self._feature_collections(visible_layers):
+            yield await self._buf(request_id, item)
 
         yield await self._buf(
             request_id,
@@ -620,10 +635,10 @@ class RestrictionParserService(BaseLlmService):
                 "buffer_creation", "Построил необходимые буферы с ограничениями."
             ),
         )
-        for item in self._feature_collections(buffers_result.tool_result):
-            yield await self._buf(request_id, item)
-
         if plan.mode == RestrictionTaskMode.BUFFERS_ONLY:
+            # Restriction checks publish these geometries in the final generators layer.
+            for item in self._feature_collections(buffers_result.tool_result):
+                yield await self._buf(request_id, item)
             # A buffer count is not a count of affected objects. Report the
             # actual returned layers directly, including empty collections.
             counts = [
@@ -1509,7 +1524,9 @@ class RestrictionParserService(BaseLlmService):
                 "type": "feature_collection",
                 "content": {
                     "name": display,
-                    "feature_collection": feature_collection,
+                    "feature_collection": compact_layer(
+                        feature_collection, "restrictions"
+                    ),
                 },
             }
 
