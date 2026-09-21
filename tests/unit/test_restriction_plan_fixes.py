@@ -12,6 +12,8 @@ Covers:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import geopandas as gpd
 import pytest
@@ -25,6 +27,7 @@ from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
     _ablation_no_catalog,
 )
+from src.agents.services.service_entities import GeometryToolCallResult
 from src.agents.services.service_entities.restriction_plan import (
     BufferRule,
     EntityRef,
@@ -89,6 +92,118 @@ def test_feature_collections_translate_reserved_names():
     assert "Объекты в зоне ограничений" in out
     assert "Источники ограничений" in out
     assert "Жилой дом" in out  # catalog names pass through unchanged
+
+
+@pytest.mark.parametrize("mode", ["restrictions", "buffers_only"])
+async def test_pipeline_emits_only_layers_needed_for_selected_mode(mode):
+    def collection(feature_id):
+        return {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "id": feature_id,
+                    "geometry": {"type": "Point", "coordinates": [30, 60]},
+                    "properties": {},
+                }
+            ],
+        }
+
+    school = collection("school")
+    buildings = collection("building")
+    buffers = {"Школа": collection("buffer")}
+    result = {"objects": buildings, "generators": buffers["Школа"]}
+    layers = {"Школа": school}
+    if mode == "restrictions":
+        layers["Жилой дом"] = buildings
+    plan = RestrictionPlan(
+        mode=mode,
+        source_entities=[EntityRef(name=" школа ", entity_type="service")],
+        target_entities=(
+            [EntityRef(name="Жилой дом", entity_type="physical_object")]
+            if mode == "restrictions"
+            else []
+        ),
+        buffer_rules=[BufferRule(source_name="Школа", buffer_size=100, title="100 м")],
+        restriction_rules=(
+            [
+                RestrictionRule(
+                    source_name="Школа",
+                    target_names=["Жилой дом"],
+                    title="100 м",
+                    description="Здания в зоне школ",
+                )
+            ]
+            if mode == "restrictions"
+            else []
+        ),
+        original="test",
+    )
+    service = object.__new__(RestrictionParserService)
+    service.state_store = SimpleNamespace(
+        new_request_id=lambda: "test",
+        create=AsyncMock(),
+        get_checkpoint=AsyncMock(return_value={}),
+        save_checkpoint=AsyncMock(),
+        set_status=AsyncMock(),
+        buffer_event=AsyncMock(),
+    )
+    service._build_plan = AsyncMock(return_value=plan)
+
+    async def text_response(*args, **kwargs):
+        yield service._chunk("test", done=True)
+
+    service.generate_plan_explanation = text_response
+    service.generate_final_response = text_response
+    service.context_builder = SimpleNamespace(
+        generate_restrictions_context=AsyncMock(return_value="test")
+    )
+    service.tool_executor = SimpleNamespace(
+        **{
+            name: AsyncMock(
+                return_value=GeometryToolCallResult(
+                    tool_result=data, tool_calls=[], messages=[]
+                )
+            )
+            for name, data in (
+                ("retrieve_layers_for_plan", layers),
+                ("run_buffer_plan", buffers),
+                ("run_restriction_plan", result),
+            )
+        }
+    )
+    mcp_client = object()
+    events = [
+        event
+        async for event in service._run_restriction_execution_pipline(
+            mcp_client=mcp_client,
+            temperature=0,
+            model="m",
+            user_query="test",
+            scenario_id=1,
+            token_ref=["test"],
+            persist_history=False,
+        )
+    ]
+    returned = [e["content"] for e in events if e["type"] == "feature_collection"]
+    expected = [("Школа", school)]
+    if mode == "restrictions":
+        expected += [
+            ("Объекты в зоне ограничений", buildings),
+            ("Источники ограничений", buffers["Школа"]),
+        ]
+        service.tool_executor.run_restriction_plan.assert_awaited_once_with(
+            mcp_client, plan, layers, buffers
+        )
+    else:
+        expected.append(("Школа", buffers["Школа"]))
+        service.tool_executor.run_restriction_plan.assert_not_awaited()
+    assert returned == [
+        {"name": name, "feature_collection": data} for name, data in expected
+    ]
+    service.tool_executor.run_buffer_plan.assert_awaited_once_with(
+        mcp_client, plan, layers
+    )
 
 
 def test_ablation_env_toggle(monkeypatch):
