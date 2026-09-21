@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.dto.pzz_request_dto import PzzInputs
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.layer_attributes import compact_layer, compact_layer_event
 from src.agents.services.pipeline_state import PipelineStatus
 from src.agents.services.pzz.pzz_columns import detect_columns
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
@@ -103,7 +104,7 @@ class PzzService(BaseLlmService):
             inputs = PzzInputs.model_validate(progress["inputs"])
             for event in await self.state_store.get_buffered_events(request_id):
                 if progress.get("done") or event.get("type") != "error":
-                    yield event
+                    yield compact_layer_event(event, "pzz")
             if progress.get("done"):
                 return
         else:
@@ -474,7 +475,7 @@ class PzzService(BaseLlmService):
             yield self._event(
                 "feature_collection",
                 name="Результат проверки ПЗЗ",
-                feature_collection=layer,
+                feature_collection=compact_layer(layer, "pzz"),
             )
         # Keep raw geometries out of the LLM context; the report is the evidence.
         yield self._event(
