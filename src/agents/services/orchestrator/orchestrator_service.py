@@ -22,6 +22,7 @@ from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.dto.pzz_request_dto import PzzInputs
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
+from src.agents.services.layer_attributes import compact_layer_event
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 from src.agents.services.orchestrator.orchestrator_catalog import (
     AGENT_CATALOG,
@@ -141,7 +142,7 @@ class OrchestratorService(BaseLlmService):
                 "replaying buffered events"
             )
             for event in await self.state_store.get_buffered_events(request_id):
-                yield event
+                yield compact_layer_event(event, "orchestrator")
             return
         request_id = request_id or self.state_store.new_request_id()
 

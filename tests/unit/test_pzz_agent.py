@@ -49,7 +49,23 @@ class Mcp:
     async def call(self, name, arguments):
         self.calls.append((name, arguments))
         if name == "get_task_result":
-            return collection({"verdict": "allowed"})
+            return collection(
+                {
+                    "verdict": "allowed",
+                    "cad_num": "65:01:123:4",
+                    "ВРИ_ЕГРН": "ИЖС",
+                    "Подобранный_ВРИ": "Жилая застройка",
+                    "Код_подобранного_ВРИ": "2.1",
+                    "Вердикт_ПЗЗ": "Разрешен",
+                    "Причина": "ВРИ разрешён в зоне",
+                    "Топ1_возможный_ВРИ": "2.1 — ИЖС",
+                    "zone_code": "Ж-1",
+                    "zone_name": "Жилая зона",
+                    "created_at": "old",
+                    "debug": {"prompt": "internal"},
+                    "Топ5_возможных_ВРИ": "long candidate list",
+                }
+            )
         if name.startswith("submit_") or name == "classify_scenario":
             return self.submit
         if name in {"get_task_status", "get_scenario_classification_status"}:
@@ -93,6 +109,24 @@ async def test_cadastral_auto_flow_and_reconnect_do_not_resubmit(pzz_service):
     ]
     assert mcp.calls[0][1]["cadastral_vri_col"] == "vri"
     assert any(e["type"] == "object_zone_fit" for e in events)
+    layer = next(
+        e["content"]["feature_collection"]
+        for e in events
+        if e["type"] == "feature_collection"
+    )
+    properties = layer["features"][0]["properties"]
+    assert properties == {
+        "verdict": "allowed",
+        "cad_num": "65:01:123:4",
+        "ВРИ_ЕГРН": "ИЖС",
+        "Подобранный_ВРИ": "Жилая застройка",
+        "Код_подобранного_ВРИ": "2.1",
+        "Вердикт_ПЗЗ": "Разрешен",
+        "Причина": "ВРИ разрешён в зоне",
+        "Топ1_возможный_ВРИ": "2.1 — ИЖС",
+        "zone_code": "Ж-1",
+        "zone_name": "Жилая зона",
+    }
     assert events[-1]["content"]["done"] is True
     request_id = events[0]["content"]["request_id"]
     replay = await run(pzz_service, mcp, request_id=request_id)
@@ -120,6 +154,14 @@ async def test_classify_only_uses_classify_summary_not_zone_report(pzz_service):
     ]
     api.classify_summary.assert_awaited_once_with("pzz-task")
     assert any(e["type"] == "classify_summary" for e in events)
+    layer = next(
+        e["content"]["feature_collection"]
+        for e in events
+        if e["type"] == "feature_collection"
+    )
+    properties = layer["features"][0]["properties"]
+    assert properties["Топ1_возможный_ВРИ"] == "2.1 — ИЖС"
+    assert "debug" not in properties and "Топ5_возможных_ВРИ" not in properties
 
 
 async def test_missing_columns_never_start_a_task(pzz_service):

@@ -39,6 +39,7 @@ from src.agents.services.compilance.compliance_sources import (
     source_reference,
     source_references,
 )
+from src.agents.services.layer_attributes import compact_layer, compact_layer_event
 from src.agents.services.normgraph.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,
 )
@@ -275,7 +276,7 @@ class RestrictionParserService(BaseLlmService):
         if is_reconnect:
             logger.info(f"Reconnect for request_id={request_id}, replaying events")
             for event in await self.state_store.get_buffered_events(request_id):
-                yield event
+                yield compact_layer_event(event, history_agent)
             # Restore chat_id from persisted state so history is available
             # even if the client didn't re-send the query parameter.
             if not chat_id:
@@ -1523,7 +1524,9 @@ class RestrictionParserService(BaseLlmService):
                 "type": "feature_collection",
                 "content": {
                     "name": display,
-                    "feature_collection": feature_collection,
+                    "feature_collection": compact_layer(
+                        feature_collection, "restrictions"
+                    ),
                 },
             }
 
