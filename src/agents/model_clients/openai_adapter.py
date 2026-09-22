@@ -384,6 +384,11 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                             raise LlmResponseError(
                                 "Incomplete structured answer; no context capacity for a larger output budget",
                                 502,
+                                reason=(
+                                    "output_truncated"
+                                    if response.done_reason == "length"
+                                    else "empty_completion"
+                                ),
                             )
                     call["max_tokens"] = retry_budget
                     logger.warning(
@@ -399,6 +404,11 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                         raise LlmResponseError(
                             "Model did not produce a complete structured answer after a bounded retry",
                             502,
+                            reason=(
+                                "output_truncated"
+                                if response.done_reason == "length"
+                                else "empty_completion"
+                            ),
                         )
                 return response
         except APIStatusError as exc:

@@ -209,7 +209,7 @@ class UrbanMcpClient:
         clients: dict[str, Any] | None = None,
         client_factory: Callable[..., Any] = McpClient,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = base_url.strip().rstrip("/")
         self._client_factory = client_factory
         self._clients = clients or self._build_clients(token)
         missing = set(URBAN_MCP_GROUPS) - set(self._clients)

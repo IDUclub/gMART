@@ -481,7 +481,9 @@ async def test_large_retrieval_flows_through_parallel_reducer(service, fake_llm)
     assert "FACT2" in answer_text(events)
 
 
-async def test_partial_failure_prevents_drafting_and_persistence(service, fake_llm):
+async def test_partial_failure_preserves_verified_answer_with_warning(
+    service, fake_llm
+):
     from tests.unit.test_dvd_context_reducer import Summarizer
 
     service.context_reducer.configured_window = 8192
@@ -502,10 +504,10 @@ async def test_partial_failure_prevents_drafting_and_persistence(service, fake_l
         ]
     )
     events = await run(service, client)
-    assert not answer_text(events)
-    assert any(e["type"] == "error" for e in events)
-    assert not any(c.stream for c in fake_llm.chat_calls)
-    service._schedule_persist_answer.assert_not_called()
+    assert "FACT2" in answer_text(events)
+    assert "частичный ответ" in answer_text(events)
+    assert not any(e["type"] == "error" for e in events)
+    assert any(c.stream for c in fake_llm.chat_calls)
 
 
 async def test_truncated_final_generation_cannot_be_accepted(service):

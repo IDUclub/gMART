@@ -51,8 +51,15 @@ def test_summary_table_sorted_by_deficit_with_strict_columns():
         "deficit",
         "surplus",
         "balance",
+        "status",
     ]
-    assert [row["service"] for row in table["rows"]] == ["Школы", "Детские сады"]
+    assert [row["service"] for row in table["rows"]] == [
+        "Школы",
+        "Детские сады",
+        "Аптеки",
+    ]
+    assert table["rows"][-1]["status"] == "Нет данных"
+    assert table["rows"][-1]["capacity"] is None
     schools = table["rows"][0]
     assert schools["deficit"] == 250
     assert schools["balance"] == -250

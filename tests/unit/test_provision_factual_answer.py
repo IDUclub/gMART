@@ -49,7 +49,7 @@ def test_failed_service_is_reported_without_zero_deficit():
             }
         }
     )
-    assert "Школа: расчёт не выполнен" in answer
+    assert "Школа: нет данных — расчёт не выполнен" in answer
     assert "Детский сад" in answer and "20" in answer
     assert "Дефицит (чел): 0" not in answer
 

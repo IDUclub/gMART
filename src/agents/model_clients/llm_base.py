@@ -26,9 +26,13 @@ class LlmResponseError(Exception):
     onto the REST-facing ``ModelNotFound``.
     """
 
-    def __init__(self, message: str, status_code: int | None = None):
+    def __init__(
+        self, message: str, status_code: int | None = None, *, reason: str | None = None
+    ):
         super().__init__(message)
         self.status_code = status_code
+        # Stable machine-readable diagnostics without provider payloads/source text.
+        self.reason = reason
 
 
 class _SubscriptableModel(BaseModel):
