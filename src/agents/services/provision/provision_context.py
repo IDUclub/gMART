@@ -185,6 +185,22 @@ class ProvisionContextBuilder:
         for service in (services_result.get("services") or {}).values():
             summary = service.get("summary")
             if not summary:
+                rows.append(
+                    {
+                        "service": service.get("name", ""),
+                        **{
+                            key: None
+                            for key in (
+                                "capacity",
+                                "demand",
+                                "deficit",
+                                "surplus",
+                                "balance",
+                            )
+                        },
+                        "status": "Нет данных",
+                    }
+                )
                 continue
             rows.append(
                 {
@@ -196,11 +212,18 @@ class ProvisionContextBuilder:
                     "balance": summary.get("balance"),
                 }
             )
-        rows.sort(key=lambda row: row.get("deficit") or 0, reverse=True)
+        rows.sort(
+            key=lambda row: ("status" not in row, row.get("deficit") or 0), reverse=True
+        )
+        columns = self.SUMMARY_TABLE_COLUMNS
+        if any("status" in row for row in rows):
+            columns = [*columns, {"key": "status", "label": "Статус"}]
+            for row in rows:
+                row.setdefault("status", "Рассчитано")
         return {
             "name": "provision_summary",
             "title": "Сводка обеспеченности сервисами",
-            "columns": self.SUMMARY_TABLE_COLUMNS,
+            "columns": columns,
             "rows": rows,
         }
 
@@ -272,7 +295,9 @@ class ProvisionContextBuilder:
             if service.get("summary"):
                 parts.append(self.build_provision_answer(service["summary"], name))
             else:
-                parts.append(f"{name}: расчёт не выполнен.")
+                parts.append(
+                    f"{name}: нет данных — расчёт не выполнен. Это не означает нулевую обеспеченность."
+                )
         return "\n\n".join(parts) or "Нет результатов расчёта обеспеченности."
 
     @staticmethod

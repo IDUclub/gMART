@@ -517,7 +517,10 @@ class ProvisionService(BaseLlmService):
                     type_id,
                     service.get("error") or "missing_summary",
                 )
-        if table["rows"]:
+        if any(
+            service.get("summary")
+            for service in (prov_result.data.get("services") or {}).values()
+        ):
             yield await self._buf(request_id, self._table(table))
         else:
             logger.error(

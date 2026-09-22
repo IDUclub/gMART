@@ -128,7 +128,7 @@ class AgentsAppConfig:
         self.PZZ_API_URL = pzz_api_url.rstrip("/") if pzz_api_url else None
         # Optional so existing deployments keep starting. The scenario-data agent
         # is hidden from the orchestrator until this URL is configured.
-        self.URBAN_MCP_URL = urban_mcp_url.rstrip("/") if urban_mcp_url else None
+        self.URBAN_MCP_URL = (urban_mcp_url or "").strip().rstrip("/") or None
         if not chat_storage_url:
             raise ValueError("CHAT_STORAGE_URL must be set")
         self.CHAT_STORAGE_URL = chat_storage_url
