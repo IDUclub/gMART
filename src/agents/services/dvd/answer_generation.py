@@ -61,6 +61,7 @@ class DvdAnswerGenerator:
     def __init__(self, reducer: DvdContextReducer, *, llm_client=None):
         self.reducer = reducer
         self.llm_client = reducer.llm_client if llm_client is None else llm_client
+        self.failed_parts: list[str] = []
         self.retries = int(os.getenv("DVD_ANSWER_RETRIES", "2"))
         if not 0 <= self.retries <= 4:
             raise ValueError("invalid DVD answer retries")
@@ -76,6 +77,7 @@ class DvdAnswerGenerator:
         iteration: int,
     ) -> str:
         prefix = ""
+        self.failed_parts.clear()
         for attempt in range(self.retries + 1):
             continuation = (
                 [
@@ -122,7 +124,11 @@ class DvdAnswerGenerator:
                         "answer_generation_context_reduction_failed"
                     ) from exc
                 if prepared.failed_parts:
-                    raise AnswerGenerationError("answer_generation_context_incomplete")
+                    if not prepared.processed_parts or not prepared.text.strip():
+                        raise AnswerGenerationError(
+                            "answer_generation_context_incomplete"
+                        )
+                    self.failed_parts.extend(prepared.failed_parts)
                 context = prepared.text
                 messages = build_messages(context) + continuation
                 budget = await remaining_output_tokens(

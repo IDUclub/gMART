@@ -19,6 +19,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
 from src.agents.model_clients.context_budget import remaining_output_tokens
+from src.agents.model_clients.llm_base import LlmResponseError
 
 from .dvd_context import SOURCE_SEPARATOR, source_records
 
@@ -212,6 +213,7 @@ class DvdContextReducer:
                 async with semaphore:
                     feedback = None
                     select_only = False
+                    inputs = [part]
                     for attempt in range(self.retries + 1):
                         try:
                             extract = (
@@ -219,14 +221,28 @@ class DvdContextReducer:
                                 if select_only
                                 else self._summarize
                             )
-                            summary = await extract(
-                                model, user_query, part, budget // 2, feedback=feedback
-                            )
-                            # A second reading asks specifically for lost conditions,
-                            # exceptions, quantities and disagreements across sources.
-                            summary = await extract(
-                                model, user_query, part, budget // 2, draft=summary
-                            )
+                            summaries = []
+                            for source in inputs:
+                                summary = await extract(
+                                    model,
+                                    user_query,
+                                    source,
+                                    budget // 2,
+                                    feedback=feedback,
+                                )
+                                # Audit each smaller source against its original text.
+                                summary = await extract(
+                                    model,
+                                    user_query,
+                                    source,
+                                    budget // 2,
+                                    draft=summary,
+                                    feedback=feedback,
+                                )
+                                summaries.append(summary)
+                            summary = "\n\n".join(s for s in summaries if s.strip())
+                            if cost(summary) > budget // 2:
+                                raise SummaryError("summary_oversized")
                             return label, summary, None
                         except Exception as exc:
                             feedback = (
@@ -234,16 +250,36 @@ class DvdContextReducer:
                                 if isinstance(exc, SummaryError)
                                 else type(exc).__name__
                             )
+                            if isinstance(exc, LlmResponseError) and exc.reason:
+                                feedback = exc.reason
                             if feedback == "quote_not_in_source":
                                 # Some models normalize table spelling/punctuation
                                 # despite verbatim instructions. Select source spans
                                 # by index instead; the application copies the text.
                                 select_only = True
+                            if (
+                                feedback in {"output_truncated", "empty_completion"}
+                                and attempt < self.retries
+                            ):
+                                # A full output budget cannot grow further. Reduce the
+                                # source workload instead of repeating the same request.
+                                # Retry count still bounds this split (at most twice).
+                                inputs = [
+                                    smaller
+                                    for source in inputs
+                                    for smaller in (
+                                        self._parts(source, max(512, cost(source) // 2))
+                                        if cost(source) > 1024
+                                        else [source]
+                                    )
+                                ]
                             logger.warning(
-                                "DVD context part={} attempt={} reason={}",
+                                "DVD context part={} attempt={} reason={} error_type={} status_code={}",
                                 label,
                                 attempt + 1,
                                 feedback,
+                                type(exc).__name__,
+                                getattr(exc, "status_code", None),
                             )
                             if attempt == self.retries:
                                 return label, "", feedback
@@ -265,7 +301,7 @@ class DvdContextReducer:
             result.reduction_rounds += 1
             if not reduced:
                 result.text = (
-                    "Документальный контекст не удалось обработать. Не давай содержательного ответа без источников."
+                    ""
                     if result.failed_parts
                     else "После проверки найденных фрагментов сведений для ответа не извлечено. "
                     "Это не означает отсутствия требований в документе или нормативной базе."
@@ -305,6 +341,8 @@ class DvdContextReducer:
             "даже если их нет. Программа сама скопирует исходный текст. "
             f"Выбранный текст вместе с заголовками должен занимать не более {budget} байт UTF-8."
         )
+        if feedback:
+            system += f" Предыдущая попытка отклонена: {feedback}. Исправь эту причину."
         payload = {
             "question": question,
             "sources": [

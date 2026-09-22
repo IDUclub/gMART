@@ -76,6 +76,10 @@ _MCP_SOURCE = "DVD_MCP_URL"
 _EXECUTION_MODE = "rag_search"
 # Checkpoint key holding the iterative loop progress (so a reconnect can resume).
 _QA_PROGRESS = "qa_progress"
+_PARTIAL_CONTEXT_WARNING = (
+    "Предупреждение: это частичный ответ. Часть источников не удалось обработать; "
+    "ответ основан только на обработанных и проверенных фрагментах и может быть неполным."
+)
 
 
 class DvdRagService(BaseLlmService):
@@ -355,6 +359,30 @@ class DvdRagService(BaseLlmService):
             collected["final_answer"] = progress.get("final_answer", "")
             await self.state_store.set_status(request_id, PipelineStatus.DONE)
             return
+
+        # Only a standalone greeting bypasses retrieval. A greeting followed by
+        # a substantive question still goes through the full evidence pipeline.
+        greeting = re.sub(r"[\s!.,?]+", " ", user_query.casefold()).strip()
+        if greeting in {
+            "привет",
+            "здравствуйте",
+            "здравствуй",
+            "добрый день",
+            "доброе утро",
+            "добрый вечер",
+            "hello",
+            "hi",
+        }:
+            async for event in self._finish_retrieval(
+                request_id,
+                collected,
+                "Здравствуйте! Задайте вопрос по нормативным документам; если знаете документ или номер пункта, укажите его.",
+                1,
+            ):
+                yield event
+            return
+
+        collected["context_incomplete"] = progress.get("context_incomplete", False)
 
         prev_critique: str | None = progress.get("prev_critique")
         prev_query: str | None = progress.get("prev_query")
@@ -734,7 +762,9 @@ class DvdRagService(BaseLlmService):
                 prepared = await self.context_reducer.prepare(
                     model, intent_query, context, history
                 )
-                if not prepared.failed_parts:
+                if not prepared.failed_parts or (
+                    prepared.processed_parts and prepared.text.strip()
+                ):
                     prepared_contexts[search_key] = prepared
             context = prepared.text
             collected["context_processing"] = {
@@ -744,10 +774,21 @@ class DvdRagService(BaseLlmService):
                 "complete": not prepared.failed_parts,
             }
             if prepared.failed_parts:
-                yield await self._fail_context(
-                    request_id, "preparation", prepared.failed_parts
+                if not prepared.processed_parts or not prepared.text.strip():
+                    yield await self._fail_context(
+                        request_id, "preparation", prepared.failed_parts
+                    )
+                    return
+                collected["context_incomplete"] = True
+                logger.warning(
+                    "DVD partial context request_id={} stage=preparation failed_parts={}",
+                    request_id,
+                    prepared.failed_parts,
                 )
-                return
+                yield await self._buf(
+                    request_id,
+                    self._status("context_processing", _PARTIAL_CONTEXT_WARNING),
+                )
 
             # ── Step 3: draft the answer (streamed) ───────────────────────
             yield await self._buf(
@@ -758,6 +799,7 @@ class DvdRagService(BaseLlmService):
             )
             revision_note = prev_critique if iteration > 1 else None
             draft_parts: list[str] = []
+            generation_failures: list[str] = []
             try:
                 async for chunk_event in self._generate_answer(
                     model,
@@ -767,6 +809,7 @@ class DvdRagService(BaseLlmService):
                     history,
                     iteration,
                     revision_note,
+                    context_failures=generation_failures,
                 ):
                     if text := chunk_event["content"]["text"]:
                         draft_parts.append(text)
@@ -775,6 +818,14 @@ class DvdRagService(BaseLlmService):
                     request_id, "answer_generation", [str(exc)]
                 )
                 return
+            if generation_failures:
+                collected["context_incomplete"] = True
+                collected["context_processing"]["complete"] = False
+                logger.warning(
+                    "DVD partial context request_id={} stage=answer_generation failed_parts={}",
+                    request_id,
+                    generation_failures,
+                )
             draft = "".join(draft_parts).strip()
             if quotation:
                 draft += "\n\n" + quotation
@@ -791,10 +842,21 @@ class DvdRagService(BaseLlmService):
                 model, intent_query + "\n" + draft, context
             )
             if review_context.failed_parts:
-                yield await self._fail_context(
-                    request_id, "review", review_context.failed_parts
+                if (
+                    not review_context.processed_parts
+                    or not review_context.text.strip()
+                ):
+                    yield await self._fail_context(
+                        request_id, "review", review_context.failed_parts
+                    )
+                    return
+                collected["context_incomplete"] = True
+                logger.warning(
+                    "DVD partial context request_id={} stage=review failed_parts={}",
+                    request_id,
+                    review_context.failed_parts,
                 )
-                return
+                collected["context_processing"]["complete"] = False
             try:
                 verdict = await self.critic.review(
                     model, intent_query, review_context.text, draft
@@ -814,6 +876,8 @@ class DvdRagService(BaseLlmService):
                 verdict.claims, draft, raw_context, self.critic._literal_defects
             )
             if verdict.satisfied:
+                if collected.get("context_incomplete"):
+                    draft += "\n\n" + _PARTIAL_CONTEXT_WARNING
                 yield await self._buf(
                     request_id, self._chunk(draft, done=False, iteration=iteration)
                 )
@@ -827,7 +891,7 @@ class DvdRagService(BaseLlmService):
                         "finalizing",
                         (
                             "Ответ сформирован с пропусками"
-                            if prepared.failed_parts
+                            if collected.get("context_incomplete")
                             else "Ответ сформирован"
                         ),
                     ),
@@ -924,6 +988,8 @@ class DvdRagService(BaseLlmService):
         history: list[dict],
         iteration: int,
         revision_note: str | None = None,
+        *,
+        context_failures: list[str] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         system = (
             "Ты — ассистент-эксперт по нормативной документации в сфере градостроительства "
@@ -975,11 +1041,12 @@ class DvdRagService(BaseLlmService):
                 {"role": "user", "content": user_query},
             ]
 
-        answer = await DvdAnswerGenerator(
-            self.context_reducer, llm_client=self.llm_client
-        ).generate(
+        generator = DvdAnswerGenerator(self.context_reducer, llm_client=self.llm_client)
+        answer = await generator.generate(
             model, user_query, context, temperature, build_messages, iteration=iteration
         )
+        if context_failures is not None:
+            context_failures.extend(generator.failed_parts)
         # Completion does not mean acceptance. The loop audits the entire assembled
         # answer before emitting it or persisting it in chat history.
         yield self._chunk(answer, done=False, iteration=iteration)
@@ -1128,6 +1195,8 @@ class DvdRagService(BaseLlmService):
 
     async def _finish_retrieval(self, request_id, collected, answer, iteration):
         """Grounded not-found / clarification; no model invents an alternative answer."""
+        if collected.get("context_incomplete"):
+            answer += "\n\n" + _PARTIAL_CONTEXT_WARNING
         collected.update(final_answer=answer, newly_completed=True)
         yield await self._buf(
             request_id, self._chunk(answer, done=False, iteration=iteration)
@@ -1229,6 +1298,7 @@ class DvdRagService(BaseLlmService):
                 "retrieval_constraints": collected.get("retrieval_constraints"),
                 "selected_choice": collected.get("selected_choice"),
                 "context_processing": collected.get("context_processing"),
+                "context_incomplete": collected.get("context_incomplete", False),
                 "partial_evidence": collected.get("partial_evidence", []),
             },
         )
