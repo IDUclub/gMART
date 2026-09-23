@@ -611,3 +611,113 @@ async def test_file_event_closes_the_stream_and_is_persisted(orchestrator, fake_
     assert len(file_parts) == 1
     assert "download_url" not in file_parts[0].payload
     assert file_parts[0].payload["url"] == descriptor["url"]
+
+
+@pytest.mark.asyncio
+async def test_documents_step_gets_the_user_question_and_router_task(
+    orchestrator, fake_llm
+):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [{"agent": "documents", "task": "Найти документы о школах"}]
+        )
+    ]
+    documents = FakePipeline([{"type": "chunk", "content": {"text": "", "done": True}}])
+    orchestrator.dvd_service.run_document_qa_pipeline = documents
+
+    await run_pipeline(orchestrator, user_query="Какие регламенты застройки школ?")
+
+    call = documents.calls[0]
+    assert call["user_query"] == "Какие регламенты застройки школ?"
+    assert call["task"] == "Найти документы о школах"
+    assert call["context_note"] is None
+
+
+class SlowPipeline(FakePipeline):
+    """Records when its producer starts and finishes; yields after ``delay``."""
+
+    def __init__(self, events, delay, log, name):
+        super().__init__(events)
+        self.delay, self.log, self.name = delay, log, name
+
+    async def _run(self):
+        self.log.append(f"{self.name}:start")
+        try:
+            await asyncio.sleep(self.delay)
+        except asyncio.CancelledError:
+            self.log.append(f"{self.name}:cancelled")
+            raise
+        for event in self.events:
+            yield event
+        self.log.append(f"{self.name}:end")
+
+
+@pytest.mark.asyncio
+async def test_independent_qa_steps_run_together_but_stream_in_order(
+    orchestrator, fake_llm
+):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [
+                {"agent": "norms", "task": "Ограничения для школ"},
+                {"agent": "documents", "task": "Документы о школах"},
+            ]
+        )
+    ]
+    log: list[str] = []
+    done = {"type": "chunk", "content": {"text": "", "done": True}}
+    norms = SlowPipeline(
+        [{"type": "chunk", "content": {"text": "граф", "done": False}}, done],
+        0.2,
+        log,
+        "norms",
+    )
+    documents = SlowPipeline(
+        [{"type": "chunk", "content": {"text": "документы", "done": False}}, done],
+        0.0,
+        log,
+        "documents",
+    )
+    orchestrator.normgraph_service.run_norms_qa_pipeline = norms
+    orchestrator.dvd_service.run_document_qa_pipeline = documents
+
+    started = asyncio.get_running_loop().time()
+    events = await run_pipeline(orchestrator, user_query="Какие регламенты школ?")
+
+    # The documents producer finished while norms was still working...
+    assert log.index("documents:end") < log.index("norms:end")
+    # ...yet the client sees step 1 fully before step 2.
+    steps = [
+        e["content"]["step"]
+        for e in events
+        if e["type"] in {"step_started", "step_event", "step_finished"}
+    ]
+    assert steps == sorted(steps)
+    final = events_of_type(events, "orchestrator_final")[0]["content"]
+    assert [s["status"] for s in final["steps"]] == ["completed", "completed"]
+    assert documents.calls[0]["context_note"] is None
+    assert asyncio.get_running_loop().time() - started < 0.4
+
+
+@pytest.mark.asyncio
+async def test_failed_first_step_cancels_the_step_running_ahead(orchestrator, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [
+                {"agent": "norms", "task": "Ограничения"},
+                {"agent": "documents", "task": "Документы"},
+            ]
+        )
+    ]
+    log: list[str] = []
+    norms = FakePipeline(raise_exc=RuntimeError("boom"))
+    documents = SlowPipeline([], 5.0, log, "documents")
+    orchestrator.normgraph_service.run_norms_qa_pipeline = norms
+    orchestrator.dvd_service.run_document_qa_pipeline = documents
+
+    events = await run_pipeline(orchestrator)
+
+    final = events_of_type(events, "orchestrator_final")[0]["content"]
+    assert [s["status"] for s in final["steps"]] == ["failed", "skipped"]
+    await asyncio.sleep(0)
+    assert log == ["documents:start", "documents:cancelled"]

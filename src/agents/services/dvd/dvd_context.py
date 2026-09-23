@@ -76,13 +76,23 @@ class DvdContextBuilder:
         return compact if len(compact.encode()) < len(flat.encode()) else flat
 
     def _tree_context(self, hits):
-        parts, previous, documents = [], [], {}
+        parts, previous, documents, displays = [], [], {}, {}
         for index, hit in enumerate(self.ordered_hits(hits), 1):
             key = (hit.get("doc_id"), hit.get("name"), hit.get("version"))
-            documents.setdefault(key, len(documents) + 1)
-            document = f"Документ D{documents[key]}: {hit.get('name') or 'Документ без названия'}"
-            if hit.get("version"):
-                document += ", ред. " + str(hit["version"])
+            if key not in documents:
+                # No document-level labels such as "D1": models cite them instead
+                # of the [N] source labels. Only distinct same-named documents
+                # get an ordinal, so their scopes are never merged.
+                display = "Документ: " + (hit.get("name") or "Документ без названия")
+                if hit.get("version"):
+                    display += ", ред. " + str(hit["version"])
+                displays[display] = displays.get(display, 0) + 1
+                if displays[display] > 1:
+                    display += (
+                        f" (другой документ с тем же названием, {displays[display]})"
+                    )
+                documents[key] = display
+            document = documents[key]
             path = list(hit.get("structure_path") or [])
             number = str(hit.get("numbering") or "")
             own_label = " ".join(filter(None, [number, hit.get("fragment_name")]))

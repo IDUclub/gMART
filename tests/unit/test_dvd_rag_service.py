@@ -127,12 +127,15 @@ class TestLoop:
     async def test_later_draft_retains_all_previous_corrections(
         self, service, fake_llm, fake_mcp
     ):
+        # Later rounds reuse the plan; the critic's query opens the third round.
         fake_llm.json_responses = [
             plan_json(),
             verdict_json(satisfied=False, critique="Исправь ссылку на таблицу"),
-            plan_json(),
-            verdict_json(satisfied=False, critique="Сохрани область применения"),
-            plan_json(),
+            verdict_json(
+                satisfied=False,
+                critique="Сохрани область применения",
+                refined_search_query="область применения",
+            ),
             verdict_json(satisfied=True),
         ]
         fake_llm.answer_texts = ["d1", "d2", "d3"]
@@ -164,7 +167,6 @@ class TestLoop:
             verdict_json(
                 satisfied=False, critique="нет пункта", refined_search_query="второй"
             ),
-            plan_json(search_query="второй-план"),
             verdict_json(satisfied=True),
         ]
         fake_llm.answer_texts = ["Черновик 1", "Черновик 2 [1]"]
@@ -172,15 +174,14 @@ class TestLoop:
         events = await _run(service, fake_mcp)
 
         assert len(fake_mcp.search_calls) == 2
-        assert fake_mcp.search_calls[1].query == "второй-план"
+        assert fake_mcp.search_calls[1].query == "второй"
         # The client sees progress; the private critique stays in logs/prompts.
         assert "Уточняю ответ по источникам…" in statuses(events, "self_review")
         assert not any("нет пункта" in t for t in statuses(events, "self_review"))
-        # the refined query was fed to the second planning round
-        second_plan_prompt = [c for c in fake_llm.chat_calls if not c.stream][
-            2
-        ].messages[0]["content"]
-        assert "второй" in second_plan_prompt and "нет пункта" in second_plan_prompt
+        # The second round reuses the plan: no second planner request.
+        assert len([c for c in fake_llm.chat_calls if not c.stream]) == 3
+        second_draft = [c for c in fake_llm.chat_calls if c.stream][1]
+        assert "нет пункта" in second_draft.messages[0]["content"]
         # Only the accepted draft is exposed; rejected/partial drafts stay private.
         draft_iters = sorted(
             {

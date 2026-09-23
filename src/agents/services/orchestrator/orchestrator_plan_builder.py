@@ -1,18 +1,30 @@
 from __future__ import annotations
 
 import json
+import re
 
 from loguru import logger
 from pydantic import ValidationError
 
 from src.agents.dto.pzz_request_dto import PzzInputs
+from src.agents.services.dvd.document_reference import parse_reference
+from src.agents.services.dvd.query_terms import is_document_list_question
 from src.agents.services.orchestrator.orchestrator_catalog import AgentCatalogEntry
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.orchestrator_plan import (
     MAX_PLAN_STEPS,
+    OrchestratorAgent,
     OrchestratorPlan,
     OrchestratorPlanMode,
+    OrchestratorStep,
 )
+
+# Regulations as a body of rules, not one requirement («требования к инсоляции»).
+_REGULATION_SUBJECT = re.compile(
+    r"(?:регламент|норматив|\bнорм[ыа]?\b|ограничени|правил\w*\s+(?:застройки|землепользования))",
+    re.I,
+)
+_OVERVIEW = re.compile(r"(?:\bкак\w+\b|перечень|перечисл|список|\bвсе\b)", re.I)
 
 
 class OrchestratorPlanBuilder:
@@ -46,6 +58,7 @@ class OrchestratorPlanBuilder:
             pzz_inputs=pzz_inputs,
         )
         plan = self._canonicalize_plan(plan, agents)
+        plan = self._complement_regulation_steps(plan, agents, user_query)
         if (
             plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION
             and not (plan.clarification_question or "").strip()
@@ -79,6 +92,46 @@ class OrchestratorPlanBuilder:
                 ),
             )
         return plan
+
+    @staticmethod
+    def _complement_regulation_steps(
+        plan: OrchestratorPlan, agents: list[AgentCatalogEntry], user_query: str
+    ) -> OrchestratorPlan:
+        """Answer a regulation overview from both the graph and the documents.
+
+        «Какие регламенты застройки школ?» needs NormGraph restrictions AND the
+        IDU_DVD documents with quotes. The LLM router picks only one of them
+        inconsistently, so a single-source plan is completed deterministically:
+        norms first, then documents, which receives the norms digest as context.
+        """
+        if plan.mode != OrchestratorPlanMode.EXECUTE or not plan.steps:
+            return plan
+        pair = {OrchestratorAgent.NORMS, OrchestratorAgent.DOCUMENTS}
+        used = {step.agent for step in plan.steps}
+        available = {entry.key for entry in agents}
+        if (
+            len(used) != 1
+            or not used <= pair
+            or not pair <= available
+            or len(plan.steps) >= MAX_PLAN_STEPS
+            or parse_reference(user_query).pattern
+            or not (
+                is_document_list_question(user_query)
+                or (
+                    _REGULATION_SUBJECT.search(user_query)
+                    and _OVERVIEW.search(user_query)
+                )
+            )
+        ):
+            return plan
+        missing = (pair - used).pop()
+        task = plan.steps[0].task
+        steps = [*plan.steps, OrchestratorStep(agent=missing, task=task)]
+        steps.sort(key=lambda step: step.agent != OrchestratorAgent.NORMS)
+        logger.info(
+            f"Orchestration plan completed with {missing} for regulation overview"
+        )
+        return plan.model_copy(update={"steps": steps})
 
     async def _request_plan(
         self,
@@ -235,6 +288,9 @@ clarification_question обязателен.
 - Определение понятия и требования со ссылкой на текстовый источник ищет documents.
   norms выбирай для явно запрошенных записей/связей/конфликтов графа, а не просто
   потому, что в запросе встретилось слово «норма».
+- Обзор регламентов, нормативов или ограничений для вида объекта («какие есть
+  регламенты застройки школ», «в каких документах требования к школам») — два шага:
+  norms (ограничения графа), затем documents (документы и выдержки из них).
 - Если обязательная часть требует недоступного агента, весь план требует уточнения.
   compliance не заменяет norms для поиска конфликтов правил между собой.
 - Явно указанный ID сценария передай исполнителю как есть. Проверку существования

@@ -3,8 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastmcp import Client as McpClient
+from loguru import logger
 
 from src.agents.mcp_clients.base_mcp_client import BaseMcpClient
+
+# Hits described per search in the log; enough to see what an answer was built on.
+_LOGGED_HITS = 12
 
 # kind -> IDU_DVD MCP tool name (see IDU_DVD/src/mcp_server/server.py)
 _KIND_TO_TOOL = {
@@ -25,8 +29,8 @@ class DvdMcpClient(BaseMcpClient):
     Exposed IDU_DVD MCP tools (see IDU_DVD/src/mcp_server/server.py):
     ``search_texts`` / ``search_tables`` / ``search_all`` (vector search), ``list_documents``,
     ``document_versions``, ``find_document``, ``get_document``, ``get_tags``,
-    ``pending_references`` and ``job_status``. Only the search tools are used by the RAG
-    pipeline.
+    ``pending_references`` and ``job_status``. The RAG pipeline uses the search tools and
+    ``get_tags`` (planner hints).
     """
 
     def __init__(
@@ -107,8 +111,42 @@ class DvdMcpClient(BaseMcpClient):
             # transport. It is not an argument in the public MCP tool schema.
             arguments["include_shared"] = include_shared
             arguments["include_inherited"] = include_inherited
-        result = await self.execute_tool(tool_name, arguments)
-        return self._normalize(result)
+        result = self._normalize(await self.execute_tool(tool_name, arguments))
+        self._log_hits(tool_name, query, result)
+        return result
+
+    async def get_tags(self) -> list[str]:
+        """All tags present in the shared IDU_DVD corpus."""
+        result = self._to_dict(await self.execute_tool("get_tags", {}))
+        tags = result.get("tags") if isinstance(result, dict) else None
+        return [str(tag) for tag in tags or [] if str(tag).strip()]
+
+    @staticmethod
+    def _log_hits(tool: str, query: str | None, result: dict[str, Any]) -> None:
+        """Record which documents and clauses a search returned (no fragment text)."""
+        hits = result.get("hits") or []
+        described = [
+            {
+                "name": hit.get("name"),
+                "version": hit.get("version"),
+                "numbering": hit.get("numbering"),
+                "score": (
+                    round(hit["score"], 4)
+                    if isinstance(hit.get("score"), (int, float))
+                    else None
+                ),
+            }
+            for hit in hits[:_LOGGED_HITS]
+        ]
+        logger.info(
+            "DVD search tool={} query={!r} count={} complete={} ambiguous={} hits={}",
+            tool,
+            query,
+            len(hits),
+            result.get("complete"),
+            bool(result.get("ambiguous")),
+            described,
+        )
 
     @staticmethod
     def _to_dict(obj: Any) -> Any:
@@ -148,6 +186,7 @@ class DvdMcpClient(BaseMcpClient):
         normalized["candidates"] = [
             self._to_dict(x) for x in normalized.get("candidates", [])
         ]
+        self._log_hits(tool, request.get("query") or request.get("pattern"), normalized)
         return normalized
 
     @classmethod

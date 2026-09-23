@@ -19,23 +19,36 @@ async def test_repeated_plan_reuses_sources_and_prepared_context(
     fake_llm.json_responses = [
         plan_json(search_query="школы"),
         verdict_json(satisfied=False, critique="PRIVATE_FIRST"),
-        plan_json(search_query="  школы  "),
-        verdict_json(satisfied=False, critique="PRIVATE_SECOND"),
-        plan_json(search_query="школы"),
         verdict_json(satisfied=True),
     ]
-    fake_llm.answer_texts = ["d1", "d2", "Исправленный ответ [1]"]
+    fake_llm.answer_texts = ["d1", "Исправленный ответ [1]"]
 
     events = await _run(service, fake_mcp)
 
     assert len(fake_mcp.search_calls) == 1
     assert len([e for e in events if e["type"] == "tool_call"]) == 1
-    # Prepare sources once, then prepare each of the three distinct reviews.
-    assert service.context_reducer.prepare.await_count == 4
+    # Prepare sources once, then prepare each of the two distinct reviews.
+    assert service.context_reducer.prepare.await_count == 3
     assert "PRIVATE_" not in json.dumps(events)
     drafts = [c for c in fake_llm.chat_calls if c.stream]
-    assert "PRIVATE_FIRST" in drafts[2].messages[0]["content"]
-    assert "PRIVATE_SECOND" in drafts[2].messages[0]["content"]
+    assert "PRIVATE_FIRST" in drafts[1].messages[0]["content"]
+    assert events[-1]["content"]["done"]
+
+
+async def test_third_draft_over_the_same_sources_is_not_attempted(
+    service, fake_llm, fake_mcp
+):
+    fake_llm.json_responses = [
+        plan_json(),
+        verdict_json(satisfied=False, critique="PRIVATE_FIRST"),
+        verdict_json(satisfied=False, critique="PRIVATE_SECOND"),
+    ]
+    fake_llm.answer_texts = ["d1", "d2", "d3"]
+    events = await _run(service, fake_mcp)
+    assert len(fake_mcp.search_calls) == 1
+    assert len([c for c in fake_llm.chat_calls if c.stream]) == 2
+    assert len(fake_llm.chat_calls) == 5  # plan + 2 × (draft, review)
+    assert "Не удалось подтвердить" in events[-2]["content"]["text"]
     assert events[-1]["content"]["done"]
 
 
@@ -49,7 +62,6 @@ async def test_repeated_plan_uses_critic_query_without_changing_scope(
             critique="Нужны источники",
             refined_search_query="школы расстояния",
         ),
-        plan_json(search_query="школы", block="main"),
         verdict_json(satisfied=True),
     ]
     fake_llm.answer_texts = ["d1", "Ответ [1]"]
@@ -58,16 +70,21 @@ async def test_repeated_plan_uses_critic_query_without_changing_scope(
     assert all(c.block == "main" for c in fake_mcp.search_calls)
 
 
-async def test_changed_search_parameters_fetch_new_sources(service, fake_llm, fake_mcp):
-    fake_llm.json_responses = [
-        plan_json(limit=2),
-        verdict_json(satisfied=False, critique="Нужен контекст"),
-        plan_json(limit=5),
-        verdict_json(satisfied=True),
-    ]
+async def test_missing_evidence_widens_the_search_once(service, fake_llm, fake_mcp):
+    missing = json.dumps(
+        {
+            "satisfied": False,
+            "critique": "Нужен контекст",
+            "missing_requirements": ["условие применения"],
+        },
+        ensure_ascii=False,
+    )
+    fake_llm.json_responses = [plan_json(limit=2), missing, verdict_json(True)]
     fake_llm.answer_texts = ["d1", "Ответ [1]"]
     await _run(service, fake_mcp)
-    assert [c.limit for c in fake_mcp.search_calls] == [2, 5]
+    assert [c.limit for c in fake_mcp.search_calls] == [2, 20]
+    assert [c.kind for c in fake_mcp.search_calls] == ["all", "all"]
+    assert [c.context_height for c in fake_mcp.search_calls] == [1, 2]
 
 
 async def test_search_cache_is_not_shared_between_requests(service, fake_llm, fake_mcp):
@@ -89,7 +106,6 @@ async def test_exact_retrieval_ignores_changed_ranking_query(service, fake_llm):
         verdict_json(
             satisfied=False, critique="Исправь формулировку", refined_search_query="q2"
         ),
-        json.dumps({**scope, "search_query": "q2", "limit": 20}),
         verdict_json(satisfied=True),
     ]
     fake_llm.answer_texts = ["d1", "Ответ [1]"]
@@ -151,12 +167,15 @@ async def test_invalid_first_review_stops_without_new_retrieval(
 async def test_terminal_reason_is_logged_but_not_exposed(
     service, fake_llm, fake_mcp, outcome
 ):
+    # New critic queries give every round its own sources, so three reviews run.
     fake_llm.json_responses = [
         plan_json(),
-        verdict_json(satisfied=False, critique="PRIVATE_FIRST"),
-        plan_json(),
-        verdict_json(satisfied=False, critique="PRIVATE_SECOND"),
-        plan_json(),
+        verdict_json(
+            satisfied=False, critique="PRIVATE_FIRST", refined_search_query="r1"
+        ),
+        verdict_json(
+            satisfied=False, critique="PRIVATE_SECOND", refined_search_query="r2"
+        ),
     ]
     fake_llm.json_responses += (
         [verdict_json(satisfied=False, critique="PRIVATE_LAST")]
@@ -167,7 +186,8 @@ async def test_terminal_reason_is_logged_but_not_exposed(
     original = fake_llm.chat
 
     async def chat(*args, **kwargs):
-        if outcome == "technical_error" and len(fake_llm.chat_calls) == 8:
+        # plan, then (draft, review) × 3: the third review is the seventh call.
+        if outcome == "technical_error" and len(fake_llm.chat_calls) == 6:
             raise RuntimeError("PRIVATE_TRANSPORT_ERROR")
         return await original(*args, **kwargs)
 

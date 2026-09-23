@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, TypeVar
 
@@ -31,6 +32,7 @@ from src.agents.services.service_entities.dvd_plan import (
 from .clarification import parse_choice, selected_choice
 from .context_reducer import current_context_window
 from .dvd_context import source_records
+from .query_terms import is_document_list_question, topical_query
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -69,6 +71,19 @@ _LIMIT_MIN, _LIMIT_MAX = 1, 20
 _CONTEXT_HEIGHT_MIN, _CONTEXT_HEIGHT_MAX = 0, 5
 # IDU_DVD ``block`` filter accepts only these two values (see IDU_DVD SearchRequest).
 _VALID_BLOCKS = {"main", "amendment"}
+_MAX_ALTERNATIVE_QUERIES = 2
+_VALID_EFFORTS = {"low", "medium", "high"}
+_TABLE_SEPARATOR = re.compile(r"^\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?$")
+_DOCUMENT_LIST_AUDIT = """
+The user asks WHICH documents cover the subject. A line naming a document by the
+designation or title visible in a source is supported by that source, even if the
+source only mentions or lists the document. «Упоминается в [n]» is supported by the
+mention. Any description of what a document requires must be supported by that
+document's OWN fragments; a bare mention proves nothing about its content. Accept
+an answer that lists documents and honestly says their requirement text is absent
+from the fragments. Do not reject it for missing excerpts that are not retrieved."""
+# The planner prompt lists the corpus tags only while the list stays readable.
+_MAX_PROMPT_TAGS = 150
 
 
 def _clean_str_list(
@@ -85,6 +100,18 @@ def _clean_str_list(
     return cleaned or None
 
 
+def critic_reasoning_effort(llm_client, model: str) -> str | None:
+    """Reasoning effort for gpt-oss audits (``DVD_CRITIC_REASONING_EFFORT``).
+
+    Audits dominate document-QA latency. Other models keep their own default.
+    """
+
+    if not (isinstance(llm_client, OpenAiCompatAdapter) and "gpt-oss" in model.lower()):
+        return None
+    effort = (os.getenv("DVD_CRITIC_REASONING_EFFORT") or "medium").strip().lower()
+    return effort if effort in _VALID_EFFORTS else "medium"
+
+
 async def _request_json(
     llm_client,
     model: str,
@@ -93,6 +120,7 @@ async def _request_json(
     retries: int = 2,
     reasoning_effort: str | None = None,
     claim_texts: list[str] | None = None,
+    source_ids: list[str] | None = None,
 ) -> T:
     """
     Ask the LLM for a JSON object and parse it into ``model_cls``.
@@ -111,6 +139,10 @@ async def _request_json(
         # Constrain generation as well as prompting: live critics otherwise copy
         # the source into `text`, losing the actual assertion being audited.
         schema["$defs"]["AuditedClaim"]["properties"]["text"]["enum"] = claim_texts
+    if source_ids and "ClaimEvidence" in schema.get("$defs", {}):
+        # Evidence must cite an application source label ([1], [2]…), never a
+        # document group, bibliography number or invented identifier.
+        schema["$defs"]["ClaimEvidence"]["properties"]["source_id"]["enum"] = source_ids
     for attempt in range(retries + 1):
         available = await remaining_output_tokens(
             llm_client,
@@ -182,6 +214,7 @@ class RetrievalPlanner:
         history: list[dict] | None = None,
         prev_critique: str | None = None,
         prev_query: str | None = None,
+        available_tags: list[str] | None = None,
     ) -> RetrievalPlan:
         choice = selected_choice(user_query, history or [])
         if choice:
@@ -189,7 +222,10 @@ class RetrievalPlanner:
                 {"search_query": user_query, **parse_choice(choice)}
             )
         messages: list[dict] = [
-            {"role": "system", "content": self._prompt(prev_critique, prev_query)},
+            {
+                "role": "system",
+                "content": self._prompt(prev_critique, prev_query, available_tags),
+            },
             *(history or []),
             {"role": "user", "content": user_query},
         ]
@@ -199,13 +235,17 @@ class RetrievalPlanner:
             messages,
             RetrievalPlan,
         )
-        plan = self._clamp(plan, user_query)
+        plan = self._clamp(plan, user_query, available_tags)
         plan = apply_scope(plan, user_query, history=history)
         logger.info(f"DVD retrieval plan: {plan.model_dump_json(ensure_ascii=False)}")
         return plan
 
     @staticmethod
-    def _clamp(plan: RetrievalPlan, user_query: str) -> RetrievalPlan:
+    def _clamp(
+        plan: RetrievalPlan,
+        user_query: str,
+        available_tags: list[str] | None = None,
+    ) -> RetrievalPlan:
         if choice := parse_choice(user_query):
             return validate_retrieval_plan({**plan.model_dump(), **choice})
         block = (plan.block or "").strip().lower() or None
@@ -255,10 +295,47 @@ class RetrievalPlanner:
             re.I,
         ):
             updates["include_shared"] = False
+        # The vector query names the subject. Request verbs and document meta-words
+        # («найти документы, содержащие…») pull reference lists instead of norms.
+        ranked = mode == "semantic" or updates.get(
+            "rank_by_relevance", plan.rank_by_relevance
+        )
+        search_query = (plan.search_query or "").strip()
+        if ranked:
+            search_query = (
+                topical_query(search_query, min_words=1)
+                or topical_query(user_query)
+                or search_query
+            )
+        search_query = search_query or user_query
+        alternatives = []
+        if ranked:
+            for query in plan.alternative_queries or []:
+                topic = topical_query(query) if isinstance(query, str) else ""
+                if topic and topic.casefold() not in {
+                    search_query.casefold(),
+                    *(a.casefold() for a in alternatives),
+                }:
+                    alternatives.append(topic)
+        # An exact address is a lookup, never a document overview.
+        intent = (
+            "document_list"
+            if not reference.pattern
+            and (
+                plan.intent == "document_list" or is_document_list_question(user_query)
+            )
+            else "norm"
+        )
+        # Tags are corpus identifiers: keep only values the corpus actually has.
+        known_tags = set(available_tags or [])
+        tags = [t for t in (plan.tags or []) if t in known_tags] or None
         return validate_retrieval_plan(
             {
                 **plan.model_dump(),
-                "search_query": (plan.search_query or "").strip() or user_query,
+                "search_query": search_query,
+                "alternative_queries": alternatives[:_MAX_ALTERNATIVE_QUERIES],
+                "intent": intent,
+                "tags": tags if mode == "semantic" else None,
                 "limit": min(max(plan.limit, _LIMIT_MIN), _LIMIT_MAX),
                 "context_height": min(
                     max(plan.context_height, _CONTEXT_HEIGHT_MIN), _CONTEXT_HEIGHT_MAX
@@ -271,7 +348,11 @@ class RetrievalPlanner:
         )
 
     @staticmethod
-    def _prompt(prev_critique: str | None, prev_query: str | None) -> str:
+    def _prompt(
+        prev_critique: str | None,
+        prev_query: str | None,
+        available_tags: list[str] | None = None,
+    ) -> str:
         structure = {
             "retrieval_mode": "semantic | structure | name",
             "pattern": 'null | "3.3" | "3.*" | "3.3–3.5" | "А / 2"',
@@ -284,7 +365,10 @@ class RetrievalPlanner:
             "allow_multiple": False,
             "rank_by_relevance": False,
             "include_shared": True,
-            "search_query": "строка для векторного поиска",
+            "search_query": "тема для векторного поиска",
+            "alternative_queries": '[] | ["другая формулировка темы", ...]',
+            "intent": "norm | document_list",
+            "tags": 'null | ["тег из списка корпуса", ...]',
             "kind": "text | table | all",
             "limit": 10,
             "context_height": 1,
@@ -318,9 +402,26 @@ class RetrievalPlanner:
    текущего проекта). Иначе true. document_names, version, block, types по умолчанию
    null, но сохраняй выбранный документ из контекста. block=main для основной части,
    amendment для изменений. types задавай только по явно запрошенному виду элемента.
-7. search_query — краткая тема поиска на русском. kind=text/table/all; не дублируй
-   kind=table фильтром types. limit=1..20, context_height=0..5, для точечных вопросов 0..1.
+7. search_query — краткая ТЕМА на русском: предмет требований, как он назван в
+   нормативном тексте. Не пиши действие или формат ответа: «найти документы,
+   содержащие требования к постройке школ» — неверно; «требования к проектированию
+   и размещению зданий общеобразовательных организаций (школ)» — верно. Для semantic
+   добавь в alternative_queries 1–2 иные формулировки той же темы (официальные
+   термины, синонимы, смежный аспект: участок, размещение, вместимость, доступность).
+   kind=text/table/all; не дублируй kind=table фильтром types. limit=1..20,
+   context_height=0..5, для точечных вопросов 0..1.
+8. intent=document_list, если спрашивают, КАКИЕ документы/регламенты/нормативы
+   относятся к теме («в каких документах…», «какие есть регламенты…»); иначе norm.
+   Для document_list: semantic, limit=15..20, context_height=0.
 Пример «что в пункте 3.3 СП 55»: structure, pattern="3.3", document_names=["СП 55"]."""
+        tags = sorted(set(available_tags or []))
+        if tags and len(tags) <= _MAX_PROMPT_TAGS:
+            prompt += (
+                "\n9. tags — только если тема прямо соответствует тегам корпуса; иначе null. "
+                "Теги корпуса: " + json.dumps(tags, ensure_ascii=False)
+            )
+        else:
+            prompt += "\n9. tags=null."
         if prev_critique:
             prompt += f"""
 
@@ -348,6 +449,7 @@ class AnswerCritic:
         answer: str,
         *,
         require_answer: bool = False,
+        intent: str = "norm",
     ) -> CriticVerdict:
         if defects := self._literal_defects(context, answer):
             return CriticVerdict(satisfied=False, critique="; ".join(defects))
@@ -362,7 +464,8 @@ class AnswerCritic:
                     "address the user's question using the supplied source text."
                     if require_answer
                     else ""
-                ),
+                )
+                + (_DOCUMENT_LIST_AUDIT if intent == "document_list" else ""),
             },
             {"role": "user", "content": self._payload(user_query, context, answer)},
         ]
@@ -373,20 +476,30 @@ class AnswerCritic:
                 messages,
                 EvidenceAudit,
                 claim_texts=self._claim_texts(answer),
-                reasoning_effort=(
-                    "medium"
-                    if isinstance(self.llm_client, OpenAiCompatAdapter)
-                    and "gpt-oss" in model.lower()
-                    else None
-                ),
+                source_ids=[
+                    label for label in source_records(context) if label != "unlabelled"
+                ],
+                reasoning_effort=critic_reasoning_effort(self.llm_client, model),
             )
             defects = audit.unsupported_claims + audit.missing_requirements
             defects += [c.text for c in audit.claims if c.status != "supported"]
+            satisfied = audit.satisfied and not defects
             verdict = CriticVerdict(
-                satisfied=audit.satisfied and not defects,
+                satisfied=satisfied,
                 critique=audit.critique or "; ".join(defects),
                 refined_search_query=audit.refined_search_query,
                 claims=audit.claims,
+                # Omitted requirements, a suggested search or claims that have no
+                # evidence at all cannot be repaired by rewriting over these fragments.
+                needs_evidence=not satisfied
+                and bool(
+                    audit.missing_requirements
+                    or (audit.refined_search_query or "").strip()
+                    or any(
+                        c.status == "insufficient" and not c.evidence
+                        for c in audit.claims
+                    )
+                ),
             )
         except ValueError as exc:
             # A malformed audit is a technical failure, not evidence that a new
@@ -439,12 +552,7 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
                     },
                 ],
                 PartialSelection,
-                reasoning_effort=(
-                    "medium"
-                    if isinstance(self.llm_client, OpenAiCompatAdapter)
-                    and "gpt-oss" in model.lower()
-                    else None
-                ),
+                reasoning_effort=critic_reasoning_effort(self.llm_client, model),
             )
             # A valid JSON response is not sufficient: IDs must belong to the
             # verified closed set, and a claim can appear at most once.
@@ -611,13 +719,30 @@ refined_search_query=null. Never reward an answer just because it sounds helpful
     def _claim_texts(answer: str) -> list[str]:
         # Keep complete lines, including qualifications and citations. Do not
         # split on punctuation: decimals, clause numbers and conditions matter.
-        return list(
-            dict.fromkeys(
-                text
-                for line in answer.splitlines()
-                if (text := re.sub(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", "", line).strip())
-            )
-        )
+        # Layout lines assert nothing: a table header/separator or a heading marked
+        # insufficient would otherwise reject every tabular or sectioned answer.
+        lines = answer.splitlines()
+        texts = []
+        for index, line in enumerate(lines):
+            text = re.sub(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", "", line).strip()
+            following = lines[index + 1].strip() if index + 1 < len(lines) else ""
+            if (
+                not text
+                or not re.search(r"[А-Яа-яЁёA-Za-z]", text)
+                or _TABLE_SEPARATOR.match(text)
+                or (text.startswith("|") and _TABLE_SEPARATOR.match(following))
+                or re.match(r"^#{1,6}\s", text)
+                or (
+                    not re.search(r"\[\d+\]", text)
+                    and (
+                        re.fullmatch(r"(?:\*\*|__)[^*_]+(?:\*\*|__):?", text)
+                        or text.endswith(":")
+                    )
+                )
+            ):
+                continue
+            texts.append(text)
+        return list(dict.fromkeys(texts))
 
     @staticmethod
     def _payload(user_query: str, context: str, answer: str) -> str:
