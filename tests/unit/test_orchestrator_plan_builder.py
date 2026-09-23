@@ -207,3 +207,50 @@ async def test_pzz_attachment_manifest_reaches_planner_without_file_contents(
     assert '"zone_descriptions": true' in prompt
     assert "год и источник зон не нужны" in prompt
     assert "private-" not in prompt
+
+
+@pytest.mark.parametrize("routed", ["norms", "documents"])
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Какие есть регламенты застройки школ?",
+        "Приведи перечень градостроительных ограничений на размещение школы.",
+        "В каких документах требования к постройке школ?",
+    ],
+)
+async def test_regulation_overview_runs_norms_then_documents(
+    builder, fake_llm, routed, query
+):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [{"agent": routed, "task": "Найти регламенты застройки школ"}]
+        )
+    ]
+    plan = await builder.build_plan("m", query, ALL_AGENTS)
+    assert [step.agent for step in plan.steps] == [
+        OrchestratorAgent.NORMS,
+        OrchestratorAgent.DOCUMENTS,
+    ]
+    assert {step.task for step in plan.steps} == {"Найти регламенты застройки школ"}
+
+
+@pytest.mark.parametrize(
+    "query, agents",
+    [
+        ("Что в пункте 3.3 СП 42 о школах?", ALL_AGENTS),
+        ("Сколько школ на проекте?", ALL_AGENTS),
+        ("Какие требования к инсоляции жилых помещений?", ALL_AGENTS),
+        (
+            "Какие есть регламенты застройки школ?",
+            [e for e in ALL_AGENTS if e.key != OrchestratorAgent.NORMS],
+        ),
+    ],
+)
+async def test_regulation_completion_leaves_other_plans_alone(
+    builder, fake_llm, query, agents
+):
+    fake_llm.json_responses = [
+        orchestration_plan_json([{"agent": "documents", "task": query}])
+    ]
+    plan = await builder.build_plan("m", query, agents)
+    assert [step.agent for step in plan.steps] == [OrchestratorAgent.DOCUMENTS]

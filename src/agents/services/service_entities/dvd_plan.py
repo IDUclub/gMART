@@ -37,6 +37,11 @@ class _BaseRetrievalPlan(BaseModel):
         types (list[str] | None): Restrict to these structural levels (``chapter`` /
             ``section`` / ``clause`` / ``subclause`` / ``table`` / ``definition`` / ...);
             ``None`` searches all levels.
+        alternative_queries (list[str]): Up to two more topical phrasings; semantic
+            retrieval merges their hits with ``search_query``.
+        intent (str): ``norm`` for a question about requirements themselves,
+            ``document_list`` for "which documents/regulations cover a subject".
+        tags (list[str] | None): Restrict to documents carrying any of these IDU_DVD tags.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -48,6 +53,9 @@ class _BaseRetrievalPlan(BaseModel):
     document_names: list[str] | None = None
     block: str | None = None
     types: list[str] | None = None
+    alternative_queries: list[str] = Field(default_factory=list)
+    intent: Literal["norm", "document_list"] = "norm"
+    tags: list[str] | None = None
     pattern: str | None = None
     name_query: str | None = None
     name_mode: Literal["strict", "expanded"] = "strict"
@@ -127,9 +135,12 @@ class CriticVerdict(BaseModel):
         satisfied (bool): Whether the answer is accepted as-is.
         critique (str): Short explanation of what is wrong (empty when satisfied).
         refined_search_query (str | None): A better search query to use on the next round.
+        needs_evidence (bool): The rejection is caused by missing evidence, so rewriting
+            the answer over the same fragments cannot fix it.
     """
 
     satisfied: bool
     critique: str = ""
     refined_search_query: str | None = None
+    needs_evidence: bool = False
     claims: list[AuditedClaim] = Field(default_factory=list)

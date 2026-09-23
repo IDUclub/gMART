@@ -60,6 +60,41 @@ if TYPE_CHECKING:
 _SUPPRESSED_INNER_EVENTS = {"pipeline_started", "service_event"}
 
 
+# Read-only QA agents whose steps never depend on another step's result.
+_INDEPENDENT_AGENTS = {OrchestratorAgent.NORMS, OrchestratorAgent.DOCUMENTS}
+
+
+def _run_ahead(pipeline: AsyncGenerator) -> tuple[AsyncGenerator, asyncio.Task]:
+    """Start consuming ``pipeline`` now; replay its items, then its outcome, later.
+
+    The returned task must be cancelled if the replay is abandoned.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def pump() -> None:
+        try:
+            async for item in pipeline:
+                await queue.put((True, item))
+        except Exception as exc:  # re-raised at the same point of the replay
+            await queue.put((False, exc))
+        else:
+            await queue.put((False, None))
+
+    task = asyncio.create_task(pump())
+
+    async def replay() -> AsyncGenerator[dict[str, Any], None]:
+        while True:
+            is_item, value = await queue.get()
+            if is_item:
+                yield value
+            elif value is None:
+                return
+            else:
+                raise value
+
+    return replay(), task
+
+
 class OrchestratorService(BaseLlmService):
     """
     Single entry point routing a user request across the gMART agents.
@@ -236,8 +271,91 @@ class OrchestratorService(BaseLlmService):
         digests: list[tuple[OrchestratorStep, str]] = []
         table_parts: list[TablePartRequest] = []
         file_events: list[dict[str, Any]] = []
-        aborted = False
 
+        step_kwargs = dict(
+            idu_mcp_client=idu_mcp_client,
+            effects_mcp_client=effects_mcp_client,
+            dvd_mcp_client=dvd_mcp_client,
+            normgraph_mcp_client=normgraph_mcp_client,
+            urban_mcp_client=urban_mcp_client,
+            token=token,
+            model=model,
+            temperature=temperature,
+            scenario_id=scenario_id,
+            pzz_mcp_client=pzz_mcp_client,
+            pzz_inputs=pzz_inputs,
+            original_query=user_query,
+        )
+        # Read-only QA steps that do not need each other's results start together;
+        # their events are still streamed step by step, in plan order.
+        ahead: dict[int, tuple[str, AsyncGenerator, asyncio.Task]] = {}
+        if self._runs_independently(plan):
+            for number, later in enumerate(plan.steps[1:], start=2):
+                ahead_id = self.state_store.new_request_id()
+                try:
+                    pipeline = self._build_step_pipeline(
+                        later, later.task, ahead_id, **step_kwargs
+                    )
+                except Exception:
+                    continue  # built again in order; the loop reports the error
+                ahead[number] = (ahead_id, *_run_ahead(pipeline))
+
+        try:
+            async for event in self._run_steps(
+                plan,
+                request_id,
+                ahead,
+                step_kwargs,
+                summary_steps,
+                digests,
+                table_parts,
+                file_events,
+            ):
+                yield event
+        finally:
+            for _, _, task in ahead.values():
+                task.cancel()
+        aborted = any(s["status"] != "completed" for s in summary_steps)
+
+        yield await self._buf(request_id, self._final_event(summary_steps))
+        for item in file_events:
+            yield await self._buf(request_id, item)
+        await self.state_store.set_status(
+            request_id, PipelineStatus.FAILED if aborted else PipelineStatus.DONE
+        )
+        if persist_history:
+            self._schedule_persist_summary(
+                token,
+                chat_id,
+                summary_steps,
+                scenario_id,
+                table_parts=table_parts,
+                file_parts=[
+                    RestrictionParserService._pipeline_item_to_chat_part(item)
+                    for item in file_events
+                ],
+            )
+
+    @staticmethod
+    def _runs_independently(plan: OrchestratorPlan) -> bool:
+        """Norms and documents answer from their own sources; neither needs the
+        other's digest, so a plan made only of them can run concurrently."""
+        return len(plan.steps) > 1 and all(
+            step.agent in _INDEPENDENT_AGENTS for step in plan.steps
+        )
+
+    async def _run_steps(
+        self,
+        plan: OrchestratorPlan,
+        request_id: str,
+        ahead: dict[int, tuple[str, AsyncGenerator, asyncio.Task]],
+        step_kwargs: dict[str, Any],
+        summary_steps: list[dict[str, Any]],
+        digests: list[tuple[OrchestratorStep, str]],
+        table_parts: list[TablePartRequest],
+        file_events: list[dict[str, Any]],
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        aborted = False
         for step_number, step in enumerate(plan.steps, start=1):
             if aborted:
                 summary_steps.append(
@@ -245,8 +363,13 @@ class OrchestratorService(BaseLlmService):
                 )
                 continue
 
-            effective_query = self._compose_step_query(step, digests)
-            step_request_id = self.state_store.new_request_id()
+            started = ahead.get(step_number)
+            if started:
+                effective_query = step.task
+                step_request_id = started[0]
+            else:
+                effective_query = self._compose_step_query(step, digests)
+                step_request_id = self.state_store.new_request_id()
             yield await self._buf(
                 request_id,
                 self._step_started_event(
@@ -258,21 +381,16 @@ class OrchestratorService(BaseLlmService):
             collected: dict[str, Any] = {"chunks": {}, "notes": []}
             step_tables: list[TablePartRequest] = []
             try:
-                pipeline = self._build_step_pipeline(
-                    step,
-                    effective_query,
-                    step_request_id,
-                    idu_mcp_client,
-                    effects_mcp_client,
-                    dvd_mcp_client,
-                    normgraph_mcp_client,
-                    urban_mcp_client,
-                    token,
-                    model,
-                    temperature,
-                    scenario_id,
-                    pzz_mcp_client=pzz_mcp_client,
-                    pzz_inputs=pzz_inputs,
+                pipeline = (
+                    started[1]
+                    if started
+                    else self._build_step_pipeline(
+                        step,
+                        effective_query,
+                        step_request_id,
+                        context_note=self._digest_lines(digests) or None,
+                        **step_kwargs,
+                    )
                 )
                 async for item in pipeline:
                     if item.get("type") in _SUPPRESSED_INNER_EVENTS:
@@ -337,25 +455,6 @@ class OrchestratorService(BaseLlmService):
                 # failure would produce misleading results — abort the plan.
                 aborted = True
 
-        yield await self._buf(request_id, self._final_event(summary_steps))
-        for item in file_events:
-            yield await self._buf(request_id, item)
-        await self.state_store.set_status(
-            request_id, PipelineStatus.FAILED if aborted else PipelineStatus.DONE
-        )
-        if persist_history:
-            self._schedule_persist_summary(
-                token,
-                chat_id,
-                summary_steps,
-                scenario_id,
-                table_parts=table_parts,
-                file_parts=[
-                    RestrictionParserService._pipeline_item_to_chat_part(item)
-                    for item in file_events
-                ],
-            )
-
     # ------------------------------------------------------------------
     # Step dispatch (in-process pipeline invocation)
     # ------------------------------------------------------------------
@@ -376,6 +475,8 @@ class OrchestratorService(BaseLlmService):
         scenario_id: int | None,
         pzz_mcp_client: "PzzMcpClient | None" = None,
         pzz_inputs: PzzInputs | dict | None = None,
+        original_query: str | None = None,
+        context_note: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         if step.agent == OrchestratorAgent.PZZ:
             if pzz_mcp_client is None or self.pzz_service is None:
@@ -449,15 +550,19 @@ class OrchestratorService(BaseLlmService):
         if step.agent == OrchestratorAgent.DOCUMENTS:
             if dvd_mcp_client is None:
                 raise ValueError("documents step requires DVD_MCP_SERVER")
+            # The user's own words drive retrieval; the router's task wording is
+            # an instruction and earlier results are context, never search terms.
             return self.dvd_service.run_document_qa_pipeline(
                 dvd_mcp_client=dvd_mcp_client,
                 token=token,
                 model=model,
                 temperature=temperature,
-                user_query=user_query,
+                user_query=original_query or step.task,
                 scenario_id=scenario_id,
                 request_id=step_request_id,
                 persist_history=False,
+                task=step.task if original_query else None,
+                context_note=context_note,
             )
         if step.agent == OrchestratorAgent.NORMS:
             if normgraph_mcp_client is None:
@@ -478,6 +583,13 @@ class OrchestratorService(BaseLlmService):
     # Text digest between steps
     # ------------------------------------------------------------------
 
+    def _digest_lines(self, digests: list[tuple[OrchestratorStep, str]]) -> str:
+        return "\n".join(
+            f"[Шаг {number}, {self._agent_title(prev.agent)}] {digest}"
+            for number, (prev, digest) in enumerate(digests, start=1)
+            if digest
+        )
+
     def _compose_step_query(
         self,
         step: OrchestratorStep,
@@ -485,11 +597,7 @@ class OrchestratorService(BaseLlmService):
     ) -> str:
         if not digests:
             return step.task
-        context_lines = "\n".join(
-            f"[Шаг {number}, {self._agent_title(prev.agent)}] {digest}"
-            for number, (prev, digest) in enumerate(digests, start=1)
-            if digest
-        )
+        context_lines = self._digest_lines(digests)
         if not context_lines:
             return step.task
         return (
