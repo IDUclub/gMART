@@ -274,6 +274,35 @@ and the summary's `equivalent_sources` preserve all source references. The summa
 includes `duplicate_checks`; its existing norm counts refer to executed unique checks.
 The final text names equivalent sources. Stored NormGraph norms are not deleted.
 
+### Markdown report
+
+When at least one norm was actually checked (`passed` or `violated`), the stream
+closes with an `event: file` frame after the final `chunk`: a link to a Markdown
+report (`compliance_report_<scenario_id>_<YYYYMMDD-HHMM>.md`). It is built
+deterministically from `compliance_summary` by
+`services/compilance/compliance_report.py`, without the LLM, and contains:
+
+- summary counters: checked norms, failed, passed, checked as equivalent, not
+  checked, skipped without an executable plan;
+- «Не прошли проверку» and «Прошли проверку»: per norm — requirement text,
+  coverage and fill-rate, violated/passed object counts, template parameters,
+  resolved layers/fields and up to 20 violating objects with measured value,
+  condition and related sources/zones; `partial + passed` is marked as partial;
+- «Проверены как эквивалентные»: each dedup group with the executed norm, its
+  inherited verdict and the equivalent sources.
+
+`unverifiable`, `unsupported` and `not_applicable` norms appear only in the
+counters. Without a checked norm no report and no `file` event are produced.
+
+The file is written to the container's temp directory (no volume) and served by
+`StaticFiles` mounted at `/files`, behind `OwnedFilesApp`: a Bearer token is
+required and only the author (`sub`) receives it; after one hour it is refused
+with `404` and deleted (lazily and by a 5-minute purge task). `url` opens it
+inline, `download_url` (`?download=1`) as an attachment; both are built on
+`PUBLIC_BASE_URL`. The link, without `role` and `download_url`, is stored in
+ChatStorage as a `kind: "file"` part. With several agents replicas the file lives
+only on the replica that produced it.
+
 ### Geometry retrieval
 
 Compliance explicitly sends `centers_only=false` to `GetServices` and

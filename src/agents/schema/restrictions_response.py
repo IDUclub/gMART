@@ -4,6 +4,7 @@ from geojson_pydantic import FeatureCollection
 from pydantic import BaseModel
 
 from src.agents.common.exceptions.sse_exceptions import SseBaseError
+from src.agents.schema.file_event import FileEventContent
 from src.agents.services.service_entities.compliance import CheckPlan, ComplianceResult
 
 
@@ -132,6 +133,7 @@ class RestrictionsResponse(BaseModel):
         "compliance_result",
         "compliance_progress",
         "compliance_summary",
+        "file",
     ]
     content: (
         StatusResponse
@@ -148,4 +150,5 @@ class RestrictionsResponse(BaseModel):
         | ComplianceResult
         | ComplianceProgressEventContent
         | ComplianceSummaryEventContent
+        | FileEventContent
     )

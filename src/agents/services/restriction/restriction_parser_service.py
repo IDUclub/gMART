@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 from collections.abc import AsyncGenerator, Callable
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -13,6 +14,7 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 )
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
+    FilePartRequest,
     StatusPartRequest,
     StatusPayload,
     StructuredPartRequest,
@@ -24,6 +26,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
+from src.agents.common.files.temporary_file_store import TemporaryFileStore
 from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.compilance.compliance_dedup import group_checks
@@ -31,6 +34,13 @@ from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
 )
 from src.agents.services.compilance.compliance_metrics import COMPLIANCE_METRICS
+from src.agents.services.compilance.compliance_report import (
+    REPORT_MIME_TYPE,
+    REPORT_SLOT,
+    REPORT_TITLE,
+    build_compliance_report,
+    report_filename,
+)
 from src.agents.services.compilance.compliance_result_harness import (
     ComplianceResultHarness,
     PreparedComplianceFollowUp,
@@ -67,6 +77,7 @@ from src.agents.services.service_entities.restriction_plan import (
     RestrictionPlan,
     RestrictionTaskMode,
 )
+from src.common.service_auth import user_id_from_jwt
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
@@ -103,6 +114,7 @@ class RestrictionParserService(BaseLlmService):
         chat_storage_client: ChatStorageApiClient,
         urban_api_client: UrbanApiClient,
         state_store: PipelineStateStore,
+        file_store: TemporaryFileStore | None = None,
     ) -> None:
 
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
@@ -113,6 +125,7 @@ class RestrictionParserService(BaseLlmService):
         self.compliance_result_harness = ComplianceResultHarness()
         self.context_builder = RestrictionContextBuilder()
         self.state_store = state_store
+        self.file_store = file_store
 
     async def run_restriction_execution_pipline(
         self,
@@ -199,6 +212,7 @@ class RestrictionParserService(BaseLlmService):
             | StatusPartRequest
             | ToolCallPartRequest
             | StructuredPartRequest
+            | FilePartRequest
         ] = []
 
         async for item in self._run_restriction_execution_pipline(
@@ -457,6 +471,7 @@ class RestrictionParserService(BaseLlmService):
                 restrictions=normgraph_restrictions,
                 checkpoint=checkpoint,
                 skipped_without_plan=skipped_without_plan,
+                owner=self._report_owner(token_ref[0]),
             ):
                 yield event
             return
@@ -741,6 +756,7 @@ class RestrictionParserService(BaseLlmService):
         restrictions: list[dict[str, Any]],
         checkpoint: dict[str, Any],
         skipped_without_plan: int = 0,
+        owner: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Execute each NormGraph CheckPlan independently and emit replayable results."""
 
@@ -977,7 +993,65 @@ class RestrictionParserService(BaseLlmService):
             request_id,
             self._chunk(summary_text, done=True),
         )
+        # The report link closes the stream, after the final answer text.
+        report_event = self._compliance_report_event(
+            {**summary, "skipped_without_plan": skipped_without_plan},
+            scenario_id=scenario_id,
+            owner=owner,
+        )
+        if report_event is not None:
+            yield await self._buf(request_id, report_event)
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
+
+    def _compliance_report_event(
+        self,
+        summary: dict[str, Any],
+        *,
+        scenario_id: int,
+        owner: str | None,
+    ) -> dict | None:
+        """Store the Markdown report and describe it as a ``file`` event."""
+
+        file_store: TemporaryFileStore | None = getattr(self, "file_store", None)
+        if file_store is None or not owner:
+            return None
+        report = build_compliance_report(summary)
+        if report is None:
+            return None
+        filename = report_filename(scenario_id, datetime.now(timezone.utc))
+        try:
+            stored = file_store.save(
+                REPORT_SLOT,
+                report.encode("utf-8"),
+                owner=owner,
+                filename=filename,
+                mime_type=REPORT_MIME_TYPE,
+            )
+        except OSError:
+            # The verdicts are already delivered; a missing file must not fail them.
+            logger.exception("Could not store the compliance report")
+            return None
+        return {
+            "type": "file",
+            "content": {
+                "name": REPORT_SLOT,
+                "title": REPORT_TITLE,
+                "role": "result",
+                "url": stored.url,
+                "download_url": stored.download_url,
+                "filename": filename,
+                "mime_type": REPORT_MIME_TYPE,
+                "source_service": "gmart",
+            },
+        }
+
+    @staticmethod
+    def _report_owner(token: str) -> str | None:
+        try:
+            return user_id_from_jwt(token)
+        except ValueError:
+            logger.warning("Compliance report is skipped: token has no user id")
+            return None
 
     @staticmethod
     def _failed_compliance_result(
@@ -1274,6 +1348,7 @@ class RestrictionParserService(BaseLlmService):
             | StatusPartRequest
             | ToolCallPartRequest
             | StructuredPartRequest
+            | FilePartRequest
         ],
         **metadata,
     ) -> None:
@@ -1292,6 +1367,7 @@ class RestrictionParserService(BaseLlmService):
             | StatusPartRequest
             | ToolCallPartRequest
             | StructuredPartRequest
+            | FilePartRequest
         ],
         **metadata,
     ) -> None:
@@ -1317,6 +1393,7 @@ class RestrictionParserService(BaseLlmService):
             | StatusPartRequest
             | ToolCallPartRequest
             | StructuredPartRequest
+            | FilePartRequest
         ],
     ) -> None:
         if not text_buffer:
@@ -1333,6 +1410,7 @@ class RestrictionParserService(BaseLlmService):
             | StatusPartRequest
             | ToolCallPartRequest
             | StructuredPartRequest
+            | FilePartRequest
         ],
         tool_calls: list[dict],
         execution_mode: str,
@@ -1357,8 +1435,22 @@ class RestrictionParserService(BaseLlmService):
         item: dict,
         *,
         text_only: bool = False,
-    ) -> TextPartRequest | StatusPartRequest | StructuredPartRequest | None:
+    ) -> (
+        TextPartRequest
+        | StatusPartRequest
+        | StructuredPartRequest
+        | FilePartRequest
+        | None
+    ):
         item_type = item.get("type")
+        if item_type == "file":
+            # History keeps the link like GenBuilder: without role and download_url.
+            payload = {
+                key: value
+                for key, value in (item.get("content") or {}).items()
+                if key not in {"role", "download_url"}
+            }
+            return FilePartRequest(kind="file", payload=payload)
         if text_only and item_type not in {"chunk", "clarification"}:
             return None
         content = item.get("content") or {}

@@ -11,6 +11,7 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 )
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
+    FilePartRequest,
     TablePartRequest,
     TablePayload,
     TextPartRequest,
@@ -234,6 +235,7 @@ class OrchestratorService(BaseLlmService):
         summary_steps: list[dict[str, Any]] = []
         digests: list[tuple[OrchestratorStep, str]] = []
         table_parts: list[TablePartRequest] = []
+        file_events: list[dict[str, Any]] = []
         aborted = False
 
         for step_number, step in enumerate(plan.steps, start=1):
@@ -274,6 +276,10 @@ class OrchestratorService(BaseLlmService):
                 )
                 async for item in pipeline:
                     if item.get("type") in _SUPPRESSED_INNER_EVENTS:
+                        continue
+                    if item.get("type") == "file":
+                        # File links are top-level events that close the stream.
+                        file_events.append(item)
                         continue
                     self._collect_digest(collected, item)
                     table_part = self._table_part(item)
@@ -332,6 +338,8 @@ class OrchestratorService(BaseLlmService):
                 aborted = True
 
         yield await self._buf(request_id, self._final_event(summary_steps))
+        for item in file_events:
+            yield await self._buf(request_id, item)
         await self.state_store.set_status(
             request_id, PipelineStatus.FAILED if aborted else PipelineStatus.DONE
         )
@@ -342,6 +350,10 @@ class OrchestratorService(BaseLlmService):
                 summary_steps,
                 scenario_id,
                 table_parts=table_parts,
+                file_parts=[
+                    RestrictionParserService._pipeline_item_to_chat_part(item)
+                    for item in file_events
+                ],
             )
 
     # ------------------------------------------------------------------
@@ -525,6 +537,7 @@ class OrchestratorService(BaseLlmService):
         scenario_id: int | None,
         *,
         table_parts: list[TablePartRequest] | None = None,
+        file_parts: list[FilePartRequest] | None = None,
     ) -> None:
         text_blocks = [
             f"Шаг {step['step']} — {self._agent_title(step['agent'])}: "
@@ -541,7 +554,8 @@ class OrchestratorService(BaseLlmService):
                 TextPartRequest(kind="text", payload=TextPayload(text=block))
                 for block in text_blocks
             ]
-            + list(table_parts or []),
+            + list(table_parts or [])
+            + list(file_parts or []),
             scenario_id,
         )
 
@@ -565,7 +579,7 @@ class OrchestratorService(BaseLlmService):
         self,
         token: str,
         chat_id: str | None,
-        parts: list[TextPartRequest | TablePartRequest],
+        parts: list[TextPartRequest | TablePartRequest | FilePartRequest],
         scenario_id: int | None,
     ) -> None:
         if not chat_id:

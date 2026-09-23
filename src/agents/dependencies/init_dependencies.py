@@ -12,6 +12,7 @@ from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
 from src.agents.common.auth.synapse_auth import SynapseCallerVerifier
 from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.common.config.app_config_loader import load_config
+from src.agents.common.files.temporary_file_store import TemporaryFileStore
 from src.agents.common.logging.log_config import config_logger
 from src.agents.common.logging.redis_logging import LoggedRedis
 from src.agents.services.a2a_service import A2AService
@@ -94,11 +95,13 @@ def init_dependencies() -> dict[str, object]:
             service_client_id=app_config.SYNAPSE_A2A_CLIENT_ID,
             audience=app_config.SYNAPSE_AUTH_AUDIENCE,
         )
+    file_store = TemporaryFileStore(public_base_url=app_config.PUBLIC_BASE_URL)
     restriction_parser_service = RestrictionParserService(
         app_config.OLLAMA_URL,
         chat_storage_client,
         urban_api_client,
         pipeline_state_store,
+        file_store=file_store,
     )
     provision_service = ProvisionService(
         app_config.OLLAMA_URL,
@@ -176,4 +179,5 @@ def init_dependencies() -> dict[str, object]:
         "synapse_run_store": synapse_run_store,
         "synapse_gateway_service": synapse_gateway_service,
         "synapse_caller_verifier": synapse_caller_verifier,
+        "file_store": file_store,
     }

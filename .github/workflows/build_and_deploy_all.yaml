@@ -86,6 +86,7 @@ jobs:
           REDIS_URL: ${{ secrets.REDIS_URL }}
           SYSTEM_PASSWORD: ${{ secrets.SYSTEM_PASSWORD }}
           AUTH_HELPER_URL: ${{ vars.AUTH_HELPER_URL }}
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
           AUTH_HELPER_API_KEY: ${{ secrets.AUTH_HELPER_API_KEY }}
           SERVICE_AUTH_SERVER_URL: ${{ vars.SERVICE_AUTH_SERVER_URL }}
           SERVICE_AUTH_REALM: ${{ vars.SERVICE_AUTH_REALM }}

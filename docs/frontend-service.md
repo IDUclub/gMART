@@ -257,6 +257,11 @@ Redis-журнале запроса, но не сохраняются в ист�
 карточку. Кнопка восстановления MCP-вызовов запускает новый расчёт на текущих
 данных сценария и не означает исторически идентичный replay.
 
+Если проверена хотя бы одна норма, поток закрывается событием `file` со ссылкой на
+Markdown-отчёт (см. [`file`](#file)). Та же ссылка сохраняется в историю чата как
+часть `kind: "file"`. Через `/orchestrator` событие приходит так же, на верхнем
+уровне после `orchestrator_final`, а не внутри `step_event`.
+
 ---
 
 ## Типы SSE-событий
@@ -353,6 +358,28 @@ Redis-журнале запроса, но не сохраняются в ист�
 `compliance_summary.content` — агрегаты `total_norms`, `violated_norms`,
 `passed_norms` и `unchecked_norms`. Не вычисляйте compliance из текста `chunk`:
 источником истины является структурированное событие.
+
+### `file`
+
+Ссылка на сгенерированный файл. Формат совпадает с GenBuilder: имя события в
+строке `event:`, в `data` — плоский дескриптор **без** полей `type`/`content`.
+
+```
+event: file
+data: {"name": "compliance_report", "title": "Отчёт о проверке соответствия нормам", "role": "result", "url": "http://10.32.1.46:8200/files/compliance_report/a1b2c3…", "download_url": "http://10.32.1.46:8200/files/compliance_report/a1b2c3…?download=1", "filename": "compliance_report_772_20260923-1415.md", "mime_type": "text/markdown", "source_service": "gmart"}
+```
+
+- `url` — просмотр (`Content-Disposition: inline`), `download_url` — вложение
+  (`attachment`). Обе ссылки абсолютные, если задан `PUBLIC_BASE_URL`, иначе
+  относительные к agents.
+- `GET /files/{name}/{id}` требует `Authorization: Bearer <token>` и отдаёт файл
+  только его автору (Keycloak `sub`). Без токена — `401`; чужой, неизвестный или
+  истёкший файл — `404`.
+- Файл хранится **один час** на диске контейнера и не переживает его перезапуск.
+  В истории чата часть `file` остаётся (без `role` и `download_url`), поэтому
+  ссылка из старого чата штатно отвечает `404` — показывайте файл как недоступный.
+- Из-за заголовка `Authorization` `<a href>` не подходит: скачивайте через
+  `fetch` → `Blob` → `URL.createObjectURL` (так делает встроенный UI).
 
 ### `feature_collection`
 

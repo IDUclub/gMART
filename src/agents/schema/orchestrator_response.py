@@ -9,6 +9,7 @@ from src.agents.schema.dvd_response import (
     ServiceEvent,
     WarningContent,
 )
+from src.agents.schema.file_event import FileEventContent
 
 StepStatus = Literal["completed", "failed", "suspended", "needs_clarification"]
 
@@ -112,6 +113,7 @@ class OrchestratorResponse(BaseModel):
         "chunk",
         "warning",
         "error",
+        "file",
     ]
     content: (
         PipelineStartedContent
@@ -126,4 +128,5 @@ class OrchestratorResponse(BaseModel):
         | DvdTextResponse
         | WarningContent
         | SseBaseError
+        | FileEventContent
     )

@@ -102,6 +102,29 @@ export async function readSse<T = StreamEvent>(
   }
 }
 
+/**
+ * Download a generated file. The link needs the Bearer token, so `<a href>` cannot be
+ * used directly: fetch it, then save the blob under its own filename.
+ */
+export async function downloadGeneratedFile(
+  file: { url: string; download_url?: string | null; filename?: string },
+  token: string,
+) {
+  const response = await fetch(file.download_url || file.url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (response.status === 404)
+    throw new Error("Файл больше недоступен: он хранится один час");
+  if (!response.ok)
+    throw new Error(`Не удалось скачать файл: ${response.status}`);
+  const href = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = file.filename || "file";
+  link.click();
+  URL.revokeObjectURL(href);
+}
+
 export async function getChats(
   settings: Settings,
   token: string,
