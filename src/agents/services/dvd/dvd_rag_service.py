@@ -28,6 +28,7 @@ from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.dvd.answer_generation import (
     AnswerGenerationError,
     DvdAnswerGenerator,
+    tables_to_lists,
 )
 from src.agents.services.dvd.clarification import (
     CLARIFICATION,
@@ -57,9 +58,10 @@ from src.agents.services.dvd.document_reference import (
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
 from src.agents.services.dvd.partial_answer import PartialAnswerEvidence
-from src.agents.services.dvd.query_terms import mentioned_documents
+from src.agents.services.dvd.query_terms import TASK_LABEL, mentioned_documents
 from src.agents.services.dvd.retrieval_scope import (
     apply_scope,
+    continues_document,
     document_scope,
     resets_scope,
 )
@@ -198,7 +200,7 @@ class DvdRagService(BaseLlmService):
         # An orchestrator hands over the user's own question plus its task wording.
         # The task clarifies intent; it is not a search phrase.
         if task and normalized_query(task) != normalized_query(user_query):
-            user_query = f"{user_query}\n\nЗадача: {task}"
+            user_query = f"{user_query}{TASK_LABEL}{task}"
         collected: dict[str, Any] = {
             "final_answer": "",
             "tool_calls": [],
@@ -325,9 +327,16 @@ class DvdRagService(BaseLlmService):
                 logger.warning(f"DVD QA: failed to persist user question: {exc}")
 
         collected["chat_id"] = chat_id
+        # A document the user selected persists. One merely named in the chat
+        # summary (e.g. cited by the last answer) scopes only an address or
+        # anaphoric follow-up: a new topic in the same chat searches the whole base.
         collected["document_scope"] = (
             await self.state_store.get_document_scope(chat_id) if chat_id else {}
-        ) or collected.get("summary_document_scope", {})
+        ) or (
+            collected.get("summary_document_scope", {})
+            if continues_document(user_query)
+            else {}
+        )
         collected["scenario_id"] = scenario_id
         if chat_id and collected.get("chat_context_access"):
             collected["cached_evidence"] = await self.state_store.get_document_evidence(
@@ -963,7 +972,7 @@ class DvdRagService(BaseLlmService):
                     request_id,
                     generation_failures,
                 )
-            draft = "".join(draft_parts).strip()
+            draft = tables_to_lists("".join(draft_parts)).strip()
             if quotation:
                 draft += "\n\n" + quotation
 

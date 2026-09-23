@@ -112,6 +112,37 @@ def test_planner_replaces_instruction_with_topic_and_keeps_alternatives():
     assert clamped.tags == ["образование"]
 
 
+def test_planner_echo_of_question_and_task_searches_the_task_topic():
+    # Dev run: the planner echoed a two-part question plus the router task, and
+    # the provision part («сколько жителей обеспечено») reached the vector index.
+    question = (
+        "Какие ограничения на строительство есть вокруг школ в проекте "
+        "и сколько жителей обеспечено школами?"
+    )
+    task = "Получить выдержки из нормативных документов о строительстве вокруг школ"
+    user_query = question + "\n\nЗадача: " + task
+    plan = validate_retrieval_plan(
+        {"retrieval_mode": "semantic", "search_query": user_query}
+    )
+    clamped = RetrievalPlanner._clamp(plan, user_query)
+    assert clamped.search_query == topical_query(task)
+    assert "жителей" not in clamped.search_query
+    # «из нормативных документов» is the router's wording, not a document list.
+    assert clamped.intent == "norm"
+
+
+def test_planner_own_topic_is_kept_under_an_orchestrator_task():
+    user_query = "Какие отступы от школ?\n\nЗадача: Найти требования к школам"
+    plan = validate_retrieval_plan(
+        {
+            "retrieval_mode": "semantic",
+            "search_query": "размещение зданий общеобразовательных организаций",
+        }
+    )
+    clamped = RetrievalPlanner._clamp(plan, user_query)
+    assert clamped.search_query == "размещение зданий общеобразовательных организаций"
+
+
 def test_planner_keeps_exact_address_lookup_as_norm():
     plan = validate_retrieval_plan(
         {"retrieval_mode": "semantic", "search_query": "3.3", "intent": "document_list"}
@@ -484,3 +515,24 @@ def test_empty_settings_from_ci_fall_back_to_defaults(monkeypatch):
     assert dvd_rag_service._max_drafts_per_retrieval() == 2
     adapter = OpenAiCompatAdapter.__new__(OpenAiCompatAdapter)
     assert critic_reasoning_effort(adapter, "gpt-oss-20b") == "medium"
+
+
+def test_draft_table_becomes_a_bullet_list_with_labels():
+    from src.agents.services.dvd.answer_generation import tables_to_lists
+
+    draft = (
+        "**Документы**\n\n"
+        "| № | Документ | Требование |\n"
+        "|---|----------|------------|\n"
+        "| 1 | СП 2.4.3648‑20 | • до 1 км [1] |\n"
+        "| 2 | Постановление № 525 | для садов – не более 1200 м [3] |\n"
+        "\nВывод: прямого требования нет."
+    )
+    assert tables_to_lists(draft) == (
+        "**Документы**\n\n"
+        "- Документ: СП 2.4.3648‑20; Требование: до 1 км [1]\n"
+        "- Документ: Постановление № 525; Требование: для садов – не более 1200 м [3]\n"
+        "\nВывод: прямого требования нет."
+    )
+    # Plain text and a lone pipe line are left alone.
+    assert tables_to_lists("a | b\n| c |") == "a | b\n| c |"

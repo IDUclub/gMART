@@ -288,8 +288,15 @@ deterministically from `compliance_summary` by
   coverage and fill-rate, violated/passed object counts, template parameters,
   resolved layers/fields and up to 20 violating objects with measured value,
   condition and related sources/zones; `partial + passed` is marked as partial;
+- «Прошли без применимых объектов»: norms that passed only because the scenario
+  has no object they apply to (warning `no_applicable_objects`). They are counted
+  in «Прошли проверку» with a separate «из них без применимых объектов» row and
+  are shown as a formal pass, without coverage or fill-rate. The final answer text
+  reports the same count;
 - «Проверены как эквивалентные»: each dedup group with the executed norm, its
-  inherited verdict and the equivalent sources.
+  inherited verdict and the equivalent sources. Merged norms are distinct by
+  `restriction_id`: unnumbered clauses of one document share a label yet are
+  counted separately (the label then shows «(2 нормы)»).
 
 `unverifiable`, `unsupported` and `not_applicable` norms appear only in the
 counters. Without a checked norm no report and no `file` event are produced.

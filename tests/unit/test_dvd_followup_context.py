@@ -202,6 +202,27 @@ async def test_summary_restores_filter_when_planner_omits_it(service, fake_llm):
     assert any("Сводка предыдущего диалога" in m["content"] for m in history)
 
 
+async def test_summary_document_does_not_scope_a_new_topic(service, fake_llm, fake_mcp):
+    # Dev run: the last answer cited the ГрК, the summary named it, and a question
+    # about orphanages was searched only inside the ГрК.
+    service.get_chat_messages.side_effect = RuntimeError("unavailable")
+    service.chat_storage_client.get_context.return_value = {
+        "content": {"summary": "Обсуждался Градостроительный кодекс РФ."},
+        "updated_through_seq": 2,
+    }
+    fake_llm.json_responses = [
+        plan_json(document_names=None),
+        verdict_json(satisfied=True),
+    ]
+    fake_llm.answer_texts = ["Не более 1 км [1]."]
+    await run(
+        service,
+        fake_mcp,
+        "А какое расстояние должно быть от организаций для детей-сирот до школ?",
+    )
+    assert fake_mcp.search_calls[0].document_names is None
+
+
 async def test_ambiguous_summary_does_not_guess_a_filter(service):
     service.chat_storage_client.get_context.return_value = {
         "content": {"summary": "Сравниваем СП 55 и СП 42"}

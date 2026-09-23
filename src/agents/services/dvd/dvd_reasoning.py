@@ -32,7 +32,12 @@ from src.agents.services.service_entities.dvd_plan import (
 from .clarification import parse_choice, selected_choice
 from .context_reducer import current_context_window
 from .dvd_context import source_records
-from .query_terms import is_document_list_question, topical_query
+from .query_terms import (
+    is_document_list_question,
+    router_topic,
+    split_task,
+    topical_query,
+)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -300,14 +305,17 @@ class RetrievalPlanner:
         ranked = mode == "semantic" or updates.get(
             "rank_by_relevance", plan.rank_by_relevance
         )
+        question, task = split_task(user_query)
         search_query = (plan.search_query or "").strip()
         if ranked:
             search_query = (
                 topical_query(search_query, min_words=1)
-                or topical_query(user_query)
+                or topical_query(task or question)
                 or search_query
             )
-        search_query = search_query or user_query
+            if task:
+                search_query = router_topic(search_query, question, task)
+        search_query = search_query or task or question
         alternatives = []
         if ranked:
             for query in plan.alternative_queries or []:
@@ -322,7 +330,10 @@ class RetrievalPlanner:
             "document_list"
             if not reference.pattern
             and (
-                plan.intent == "document_list" or is_document_list_question(user_query)
+                # The router's task wording («что говорится в документах») is not
+                # the user asking which documents exist.
+                plan.intent == "document_list"
+                or is_document_list_question(question)
             )
             else "norm"
         )
@@ -413,15 +424,18 @@ class RetrievalPlanner:
 8. intent=document_list, если спрашивают, КАКИЕ документы/регламенты/нормативы
    относятся к теме («в каких документах…», «какие есть регламенты…»); иначе norm.
    Для document_list: semantic, limit=15..20, context_height=0.
+9. «Задача:» после вопроса — поручение оркестратора этому агенту. Другие части
+   вопроса выполняют другие агенты: search_query — тема задачи, не склеивай вопрос
+   с задачей. intent определяй по вопросу пользователя, а не по словам задачи.
 Пример «что в пункте 3.3 СП 55»: structure, pattern="3.3", document_names=["СП 55"]."""
         tags = sorted(set(available_tags or []))
         if tags and len(tags) <= _MAX_PROMPT_TAGS:
             prompt += (
-                "\n9. tags — только если тема прямо соответствует тегам корпуса; иначе null. "
+                "\n10. tags — только если тема прямо соответствует тегам корпуса; иначе null. "
                 "Теги корпуса: " + json.dumps(tags, ensure_ascii=False)
             )
         else:
-            prompt += "\n9. tags=null."
+            prompt += "\n10. tags=null."
         if prev_critique:
             prompt += f"""
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 
 from loguru import logger
@@ -44,6 +45,51 @@ class AnswerGenerationError(ValueError):
 def message_cost(messages: list[dict]) -> int:
     # Same conservative UTF-8 upper estimate as evidence reduction, plus framing.
     return 256 + sum(64 + cost(str(m.get("content", ""))) for m in messages)
+
+
+_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$")
+
+
+def _cells(row: str) -> list[str]:
+    return [cell.strip() for cell in row.strip().strip("|").split("|")]
+
+
+def tables_to_lists(text: str) -> str:
+    """Rewrite Markdown tables as bullet lists, one row per line.
+
+    The draft prompt forbids tables, yet gpt-oss still writes them for overviews.
+    A row keeps every cell with its column name, so labels [N] stay on the line
+    the critic audits and the user reads.
+    """
+
+    lines = text.split("\n")
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        is_table = (
+            index + 1 < len(lines)
+            and _TABLE_ROW.match(lines[index])
+            and _TABLE_RULE.match(lines[index + 1])
+        )
+        if not is_table:
+            out.append(lines[index])
+            index += 1
+            continue
+        header = _cells(lines[index])
+        index += 2
+        while index < len(lines) and _TABLE_ROW.match(lines[index]):
+            pairs = []
+            for name, cell in zip(header, _cells(lines[index])):
+                cell = " ".join(cell.replace("<br>", " ").replace("•", "").split())
+                # The row number column carries no content.
+                if not cell or name in {"№", "#", "N"}:
+                    continue
+                pairs.append(f"{name}: {cell}" if name else cell)
+            if pairs:
+                out.append("- " + "; ".join(pairs))
+            index += 1
+    return "\n".join(out)
 
 
 def append_continuation(prefix: str, addition: str) -> str:

@@ -46,6 +46,7 @@ from src.agents.services.compilance.compliance_result_harness import (
     PreparedComplianceFollowUp,
 )
 from src.agents.services.compilance.compliance_sources import (
+    grouped_references,
     source_reference,
     source_references,
 )
@@ -980,15 +981,18 @@ class RestrictionParserService(BaseLlmService):
             request_id, {"type": "compliance_summary", "content": summary}
         )
         summary_text = self._compliance_summary_text(summary)
+        notes = []
         if duplicates:
-            summary_text += f" Повторных проверок объединено: {duplicates}."
+            notes.append(f"Повторных проверок объединено: {duplicates}.")
             for sources in summary["equivalent_sources"].values():
-                labels = list(dict.fromkeys(source_reference(s) for s in sources))
-                summary_text += " Эквивалентные нормы: " + "; ".join(labels) + "."
+                notes.append(f"Эквивалентные нормы: {grouped_references(sources)}.")
         if skipped_without_plan:
-            summary_text += (
-                f" Пропущено норм без исполнимого плана: {skipped_without_plan}."
+            notes.append(
+                f"Пропущено норм без исполнимого плана: {skipped_without_plan}."
             )
+        if notes:
+            # A separate paragraph: appended to the list it read as part of the last norm.
+            summary_text += "\n\n" + " ".join(notes)
         yield await self._buf(
             request_id,
             self._chunk(summary_text, done=True),
@@ -1137,10 +1141,20 @@ class RestrictionParserService(BaseLlmService):
     def _compliance_summary_text(summary: dict[str, Any]) -> str:
         if summary["total_norms"] == 0:
             return "Нормы с исполнимыми планами не найдены. Проверка соответствия не выполнена; отсутствие проверок не подтверждает отсутствие нарушений."
+        vacuous = sum(
+            result.get("compliance_status") == "passed"
+            and "no_applicable_objects" in (result.get("warnings") or [])
+            for result in summary.get("results", [])
+        )
         parts = [
             f"Проверка завершена для {summary['total_norms']} норм.",
             f"Нарушено: {summary['violated_norms']}.",
             f"На проверенной части без нарушений: {summary['passed_norms']}.",
+            *(
+                [f"Из них формально, без применимых объектов в сценарии: {vacuous}."]
+                if vacuous
+                else []
+            ),
             f"Не удалось проверить: {summary['unverifiable_norms']}.",
             f"Не поддерживается: {summary['unsupported_norms']}.",
         ]

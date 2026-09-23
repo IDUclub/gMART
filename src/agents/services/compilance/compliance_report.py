@@ -11,8 +11,9 @@ from datetime import datetime
 from typing import Any
 
 from src.agents.services.compilance.compliance_sources import (
+    grouped_references,
+    merged_sources,
     source_reference,
-    source_references,
 )
 
 REPORT_SLOT = "compliance_report"
@@ -74,9 +75,15 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
     if not checked:
         return None
     violated = [item for item in checked if item["compliance_status"] == "violated"]
-    passed = [item for item in checked if item["compliance_status"] == "passed"]
-    numbers = {id(item): index for index, item in enumerate(violated + passed, 1)}
-    groups = [item for item in violated + passed if _equivalents(item)]
+    passed = [
+        item
+        for item in checked
+        if item["compliance_status"] == "passed" and not _vacuous(item)
+    ]
+    vacuous = [item for item in checked if _vacuous(item)]
+    ordered = violated + passed + vacuous
+    numbers = {id(item): index for index, item in enumerate(ordered, 1)}
+    groups = [item for item in ordered if _equivalents(item)]
     equivalent_count = sum(len(_equivalents(item)) for item in groups)
     not_checked = len(results) - len(checked)
 
@@ -89,7 +96,8 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
         "| --- | ---: |",
         f"| Норм проверено | {len(checked) + equivalent_count} |",
         f"| Не прошли проверку | {len(violated)} |",
-        f"| Прошли проверку | {len(passed)} |",
+        f"| Прошли проверку | {len(passed) + len(vacuous)} |",
+        f"| из них без применимых объектов | {len(vacuous)} |",
         f"| Проверены как эквивалентные | {equivalent_count} |",
         f"| Не удалось проверить | {not_checked} |",
     ]
@@ -106,6 +114,18 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
     lines += _norm_sections(violated, numbers) or ["_Нет._"]
     lines += ["", "## Прошли проверку", ""]
     lines += _norm_sections(passed, numbers) or ["_Нет._"]
+    if vacuous:
+        lines += [
+            "",
+            "## Прошли без применимых объектов",
+            "",
+            "В слоях сценария нет объектов, к которым относится норма, поэтому "
+            "нарушений найти было не на чем. Это формальное прохождение, а не "
+            "подтверждение соответствия: проверьте, что нужные объекты есть в "
+            "сценарии и распознаны правильно.",
+            "",
+        ]
+        lines += _norm_sections(vacuous, numbers)
     lines += ["", "## Проверены как эквивалентные", ""]
     if groups:
         lines += [
@@ -127,16 +147,15 @@ def report_filename(scenario_id: int | str, created_at: datetime) -> str:
 def _equivalents(result: dict[str, Any]) -> list[dict[str, Any]]:
     """Sources merged into this check, excluding the one that was executed."""
 
-    source = result.get("source") or {}
-    own = source_reference(source)
-    seen = {own}
-    unique = []
-    for item in source.get("equivalent_sources") or []:
-        label = source_reference(item)
-        if label not in seen:
-            seen.add(label)
-            unique.append(item)
-    return unique
+    return merged_sources(result.get("source") or {})
+
+
+def _vacuous(result: dict[str, Any]) -> bool:
+    """Passed only because the scenario has no object the norm applies to."""
+
+    return result["compliance_status"] == "passed" and "no_applicable_objects" in (
+        result.get("warnings") or []
+    )
 
 
 def _norm_sections(results: list[dict[str, Any]], numbers: dict[int, int]) -> list[str]:
@@ -153,33 +172,37 @@ def _norm_section(result: dict[str, Any], number: int) -> list[str]:
     partial = result.get("verification_status") == "partial"
     lines = [f"### {number}. {source_reference(source)}", ""]
 
-    status = (
-        "не прошла проверку"
-        if result["compliance_status"] == "violated"
-        else "прошла проверку"
-    )
+    vacuous = _vacuous(result)
+    if result["compliance_status"] == "violated":
+        status = "не прошла проверку"
+    elif vacuous:
+        status = "прошла формально: применимых объектов в сценарии нет"
+    else:
+        status = "прошла проверку"
     if partial:
         status += " (проверена частично, вывод относится только к проверенным объектам)"
     lines.append(f"- **Статус:** {status}")
     requirement = _one_line(source.get("extraction_text"))
     if requirement:
         lines.append(f"- **Требование:** {requirement}")
-    lines.append(
-        f"- **Объекты:** применимых — {coverage.get('applicable_objects', 0)}, "
-        f"проверено — {coverage.get('checked_objects', 0)}, "
-        f"не проверено — {coverage.get('unchecked_objects', 0)}; "
-        f"заполненность данных — {_percent(coverage.get('fill_rate'))}"
-    )
-    lines.append(
-        f"- **Результат:** с нарушением — {counts.get('violated_objects', 0)}, "
-        f"без нарушений — {counts.get('passed_objects', 0)}"
-    )
+    if vacuous:
+        lines.append("- **Объекты:** применимых — 0")
+    else:
+        lines.append(
+            f"- **Объекты:** применимых — {coverage.get('applicable_objects', 0)}, "
+            f"проверено — {coverage.get('checked_objects', 0)}, "
+            f"не проверено — {coverage.get('unchecked_objects', 0)}; "
+            f"заполненность данных — {_percent(coverage.get('fill_rate'))}"
+        )
+        lines.append(
+            f"- **Результат:** с нарушением — {counts.get('violated_objects', 0)}, "
+            f"без нарушений — {counts.get('passed_objects', 0)}"
+        )
     lines += _parameters(result)
     equivalents = _equivalents(result)
     if equivalents:
-        labels = "; ".join(source_reference(item) for item in equivalents)
         lines.append(
-            f"- **Эквивалентные нормы:** {labels} "
+            f"- **Эквивалентные нормы:** {grouped_references(equivalents)} "
             "(см. раздел «Проверены как эквивалентные»)"
         )
     lines += _violators(result)
@@ -312,11 +335,12 @@ def _related(item: dict[str, Any]) -> str:
 
 
 def _equivalent_group(result: dict[str, Any], number: int) -> list[str]:
-    verdict = (
-        "не прошла проверку"
-        if result["compliance_status"] == "violated"
-        else "прошла проверку"
-    )
+    if result["compliance_status"] == "violated":
+        verdict = "не прошла проверку"
+    elif _vacuous(result):
+        verdict = "прошла формально (применимых объектов нет)"
+    else:
+        verdict = "прошла проверку"
     lines = [
         f"### Группа нормы № {number}: {source_reference(result.get('source') or {})}",
         "",
@@ -330,8 +354,7 @@ def _equivalent_group(result: dict[str, Any], number: int) -> list[str]:
         if requirement:
             line += f" — {requirement}"
         lines.append(line)
-    all_labels = source_references(result.get("source") or {})
-    lines += ["", f"Всего норм в группе: {len(all_labels)}.", ""]
+    lines += ["", f"Всего норм в группе: {1 + len(_equivalents(result))}.", ""]
     return lines
 
 

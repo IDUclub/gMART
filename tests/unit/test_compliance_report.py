@@ -171,6 +171,58 @@ def test_report_groups_failed_passed_and_equivalent_norms():
     assert "не прошла проверку" in equivalent
 
 
+def test_merged_norms_with_the_same_label_are_counted_by_restriction_id():
+    # Two unnumbered clauses of one document share the label "СП 42.13330.2016";
+    # the merge happened and must be reported, not hidden as a duplicate label.
+    same_label = {**_source("r9", ""), "extraction_text": "Другая формулировка"}
+    result = _result("r1", "passed", clause="")
+    result["source"]["equivalent_sources"] = [_source("r1", ""), same_label]
+    report = build_compliance_report(_summary([result]))
+
+    assert "| Норм проверено | 2 |" in report
+    assert "| Проверены как эквивалентные | 1 |" in report
+    assert "СП 42.13330.2016 — Другая формулировка" in report
+    assert "Всего норм в группе: 2." in report
+
+
+def test_norm_without_applicable_objects_is_a_formal_pass():
+    real = _result("r1", "passed")
+    empty = _result("r2", "passed", clause="8.2")
+    empty["warnings"] = ["no_applicable_objects"]
+    empty["coverage"] = {
+        "applicable_objects": 0,
+        "checked_objects": 0,
+        "unchecked_objects": 0,
+        "fill_rate": 1.0,
+    }
+    report = build_compliance_report(_summary([real, empty]))
+
+    passed, vacuous = report.split("## Прошли без применимых объектов")
+    assert "| Прошли проверку | 2 |" in report
+    assert "| из них без применимых объектов | 1 |" in report
+    assert "п. 7.1" in passed and "п. 8.2" not in passed
+    assert "### 2. СП 42.13330.2016, п. 8.2" in vacuous
+    assert "прошла формально" in vacuous
+    # No "100% filled" claim for an empty object set.
+    assert "заполненность" not in vacuous
+
+
+def test_summary_text_separates_notes_and_formal_passes():
+    empty = _result("r2", "passed", clause="8.2")
+    empty["warnings"] = ["no_applicable_objects"]
+    summary = {
+        "total_norms": 2,
+        "violated_norms": 1,
+        "passed_norms": 1,
+        "unverifiable_norms": 0,
+        "unsupported_norms": 0,
+        "partial_norms": 0,
+        "results": [_result("r1", "violated", violated=3), empty],
+    }
+    text = RestrictionParserService._compliance_summary_text(summary)
+    assert "Из них формально, без применимых объектов в сценарии: 1." in text
+
+
 def test_report_is_not_built_without_checked_norms():
     assert build_compliance_report(_summary([])) is None
     assert (
