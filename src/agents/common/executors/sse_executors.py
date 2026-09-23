@@ -7,6 +7,7 @@ from loguru import logger
 
 from src.agents.common.exceptions.base_exceptions import PipelineStorageUnavailable
 from src.agents.model_clients.base_client import BaseLlmClient
+from src.agents.model_clients.llm_base import LlmResponseError
 
 StreamGenerator = Callable[..., AsyncIterator[dict[str, Any]]]
 
@@ -108,6 +109,7 @@ async def stream_with_error_handling(
 
     except Exception as exc:
         logger.opt(exception=exc).error("Unhandled exception while running pipeline")
+        failure = exc
         if rerun:
             logger.info("Trying to re-run pipeline")
             yield {
@@ -124,6 +126,7 @@ async def stream_with_error_handling(
                     yield item
                 return
             except Exception as retry_exc:
+                failure = retry_exc
                 logger.opt(exception=retry_exc).error(
                     "Couldn't re-run pipeline on retry, needs manual check"
                 )
@@ -131,11 +134,17 @@ async def stream_with_error_handling(
         # Never ask the same model that may have caused the failure to explain it.
         # The full exception is already in server logs; clients receive neither a
         # speculative diagnosis nor internal paths and stack frames.
+        # A model that returned an incomplete or malformed answer is not a server
+        # fault: the same request usually succeeds on a retry or a rephrasing.
+        model_failed = isinstance(failure, LlmResponseError)
         yield {
             "type": "chunk",
             "content": {
                 "text": (
-                    "Не удалось выполнить запрос из-за внутренней ошибки сервера. "
+                    "Модель не смогла сформировать ответ на этот запрос. "
+                    "Повторите запрос или сформулируйте его иначе."
+                    if model_failed
+                    else "Не удалось выполнить запрос из-за внутренней ошибки сервера. "
                     "Повторите попытку позже."
                 ),
                 "done": False,
@@ -144,7 +153,11 @@ async def stream_with_error_handling(
         yield {
             "type": "error",
             "content": {
-                "message": "Internal stream exception",
+                "message": (
+                    "Model response error"
+                    if model_failed
+                    else "Internal stream exception"
+                ),
                 "traceback": "",
             },
         }

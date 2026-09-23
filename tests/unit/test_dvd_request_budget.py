@@ -44,10 +44,12 @@ async def test_window_cap_respects_smaller_server_and_configuration(
     llm = AsyncMock()
     llm.model_context_window.return_value = server_window
     reducer = DvdContextReducer(llm)
-    default = min(int(configured or 32000), 32000)
+    target = int(configured or 100000)
+    # Unverified by the server, a window never exceeds 32000.
+    default = min(target, 32000)
     assert current_context_window() == default
     async with reducer.model_window("m"):
-        expected = min(default, server_window or 32000)
+        expected = min(target, server_window) if server_window else default
         assert current_context_window() == reducer.window == expected
     assert current_context_window() == default
 

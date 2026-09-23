@@ -91,6 +91,39 @@ def topical_query(text: str, *, min_words: int = _MIN_WORDS) -> str:
     return "; ".join(dict.fromkeys(parts))
 
 
+# How the orchestrator appends its task wording to the user's own question.
+TASK_LABEL = "\n\nЗадача: "
+
+
+def split_task(text: str) -> tuple[str, str]:
+    """``(question, task)``; the task is empty outside the orchestrator."""
+
+    question, separator, task = (text or "").partition(TASK_LABEL)
+    return question, task.strip() if separator else ""
+
+
+def router_topic(search_query: str, question: str, task: str) -> str:
+    """The task topic when the planner echoed the question and the task together.
+
+    The router already isolated this agent's part of a multi-part question; the
+    echo («…сколько жителей обеспечено школами; выдержки из документов…») sends
+    the other agents' parts to the vector index as well.
+    """
+
+    task_topic = topical_query(task, min_words=1)
+    if not task_topic:
+        return search_query
+    echoes = {
+        topic.casefold()
+        for topic in (task_topic, topical_query(question, min_words=1))
+        if topic
+    }
+    parts = [part.strip() for part in search_query.split(";") if part.strip()]
+    if any(part.casefold() in echoes for part in parts):
+        return task_topic
+    return search_query
+
+
 def is_document_list_question(text: str) -> bool:
     """Whether the user asks WHICH documents/regulations cover a subject."""
 
