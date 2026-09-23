@@ -12,6 +12,7 @@ import {
   ClockCounterClockwise,
   Command,
   Database,
+  DownloadSimple,
   FileText,
   GearSix,
   List,
@@ -38,6 +39,7 @@ import DocumentLibrary from "./DocumentLibrary";
 import { reusableChatId } from "./agentSession";
 import { appendLatestVisibleLayer } from "./layerState";
 import {
+  appendFilePart,
   appendIterationChunk,
   appendSseExchange,
   finalizeSseExchange,
@@ -52,6 +54,7 @@ import {
   authLogin,
   cancelSynapseRun,
   deleteChat,
+  downloadGeneratedFile,
   getChat,
   getChats,
   getModels,
@@ -73,6 +76,7 @@ import type {
   ComplianceProgress,
   ComplianceResult,
   ComplianceSummary,
+  FileDescriptor,
   LayerData,
   Message,
   MessagePart,
@@ -211,6 +215,7 @@ type ActiveExchange = {
   question: string;
   answer: string;
   tables: TableData[];
+  files: FileDescriptor[];
   finalized: boolean;
 };
 type HistoryWindow = {
@@ -706,11 +711,33 @@ export default function App() {
     }
     return token;
   }
-  function handle(event: StreamEvent) {
+  function handle(event: StreamEvent, frame?: { event?: string }) {
     setEvents((v) =>
       [{ time: new Date().toLocaleTimeString(), event }, ...v].slice(0, 100),
     );
+    // `event: file` frames carry a flat descriptor instead of {type, content}.
+    if (frame?.event === "file") {
+      attachFile(event as unknown as FileDescriptor);
+      return;
+    }
     route(event);
+  }
+  function attachFile(file: FileDescriptor) {
+    if (!file?.url) return;
+    const exchange = activeExchangeRef.current;
+    if (exchange && !exchange.finalized) {
+      exchange.files.push(file);
+      return;
+    }
+    // The link closes the stream, usually after the answer was already finalized.
+    setChat((current) =>
+      current
+        ? { ...current, messages: appendFilePart(current.messages, file) }
+        : current,
+    );
+  }
+  async function downloadFile(file: FileDescriptor) {
+    await downloadGeneratedFile(file, await freshToken());
   }
   function handleSynapseEvent(event: SynapseEvent): boolean {
     setEvents((current) =>
@@ -857,6 +884,7 @@ export default function App() {
         question: saved.question || "Продолжение запроса Synapse",
         answer: "",
         tables: [],
+        files: [],
         finalized: false,
       };
       setPendingQuestion(saved.question || "Запрос Synapse выполняется");
@@ -1290,6 +1318,7 @@ export default function App() {
       question: submittedQuery,
       answer: "",
       tables: [],
+      files: [],
       finalized: false,
     };
     setBusy(true);
@@ -1707,6 +1736,7 @@ export default function App() {
                           message={m}
                           restore={restoreLayers}
                           restoreState={restoreState}
+                          downloadFile={downloadFile}
                           openTables={() => {
                             setRightTab("data");
                             setResultOpen(true);
@@ -2276,11 +2306,13 @@ function MessageView({
   message,
   restore,
   restoreState,
+  downloadFile,
   openTables,
 }: {
   message: Message;
   restore: (message: Message, part: MessagePart) => void;
   restoreState: Record<string, string>;
+  downloadFile: (file: FileDescriptor) => Promise<void>;
   openTables: () => void;
 }) {
   const isUser = message.role.toLowerCase() === "user";
@@ -2311,6 +2343,12 @@ function MessageView({
                 key={block.key}
                 table={p.payload as TableData}
                 open={openTables}
+              />
+            ) : p.kind === "file" ? (
+              <StoredFilePart
+                key={block.key}
+                file={p.payload as FileDescriptor}
+                download={downloadFile}
               />
             ) : p.kind === "tool_call" ? (
               <div className="stored-tool-call" key={block.key}>
@@ -2402,6 +2440,40 @@ function StoredTablePart({
         </small>
       </div>
       <button onClick={open}>Открыть в данных</button>
+    </div>
+  );
+}
+
+function StoredFilePart({
+  file,
+  download,
+}: {
+  file: FileDescriptor;
+  download: (file: FileDescriptor) => Promise<void>;
+}) {
+  const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const [error, setError] = useState("");
+  async function start() {
+    setState("loading");
+    try {
+      await download(file);
+      setState("idle");
+    } catch (e) {
+      setError((e as Error).message);
+      setState("error");
+    }
+  }
+  return (
+    <div className="stored-table-part">
+      <FileText weight="duotone" />
+      <div>
+        <strong>{file.title || file.filename || "Файл"}</strong>
+        <small>{state === "error" ? error : file.filename}</small>
+      </div>
+      <button onClick={start} disabled={state === "loading"}>
+        <DownloadSimple />{" "}
+        {state === "loading" ? "Скачиваю…" : "Скачать"}
+      </button>
     </div>
   );
 }

@@ -573,3 +573,41 @@ async def test_pzz_dispatch_forwards_inputs_and_wraps_report(orchestrator, fake_
         for e in events
     )
     assert events[-1]["content"]["steps"][0]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_file_event_closes_the_stream_and_is_persisted(orchestrator, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json([{"agent": "compliance", "task": "Проверь нормы"}])
+    ]
+    descriptor = {
+        "name": "compliance_report",
+        "title": "Отчёт о проверке соответствия нормам",
+        "role": "result",
+        "url": "http://gmart/files/compliance_report/abc",
+        "download_url": "http://gmart/files/compliance_report/abc?download=1",
+        "filename": "compliance_report_772_20260923-1200.md",
+        "mime_type": "text/markdown",
+        "source_service": "gmart",
+    }
+    orchestrator.restriction_service.run_compliance_pipeline = FakePipeline(
+        [
+            {"type": "chunk", "content": {"text": "Проверка завершена.", "done": True}},
+            {"type": "file", "content": descriptor},
+        ]
+    )
+
+    events = await run_pipeline(orchestrator, normgraph_mcp_client=Mock())
+    await asyncio.sleep(0)
+
+    assert types_of(events)[-2:] == ["orchestrator_final", "file"]
+    assert events[-1]["content"] == descriptor
+    assert all(
+        event["content"]["event"]["type"] != "file"
+        for event in events_of_type(events, "step_event")
+    )
+    parts = orchestrator.add_complex_message.await_args.args[3]
+    file_parts = [part for part in parts if part.kind == "file"]
+    assert len(file_parts) == 1
+    assert "download_url" not in file_parts[0].payload
+    assert file_parts[0].payload["url"] == descriptor["url"]

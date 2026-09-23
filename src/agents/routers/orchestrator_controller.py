@@ -2,7 +2,7 @@ from collections.abc import AsyncIterable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.sse import EventSourceResponse
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.executors.sse_executors import stream_with_error_handling
@@ -25,6 +25,7 @@ from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 from src.agents.mcp_clients.pzz_mcp_client import PzzMcpClient
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
+from src.agents.schema.file_event import file_sse_event
 from src.agents.schema.orchestrator_response import OrchestratorResponse
 from src.agents.services.orchestrator.orchestrator_service import OrchestratorService
 
@@ -49,7 +50,7 @@ async def stream_orchestration(
     urban_mcp_client: UrbanMcpClient | None = Depends(get_optional_urban_mcp_client),
     orchestrator_service: OrchestratorService = Depends(get_orchestrator_service),
     pzz_mcp_client: PzzMcpClient | None = Depends(get_optional_pzz_mcp_client),
-) -> AsyncIterable[OrchestratorResponse]:
+) -> AsyncIterable[OrchestratorResponse | ServerSentEvent]:
     """
     Single entry point for all gMART agents.
 
@@ -79,7 +80,7 @@ async def stream_orchestration(
         request_id=user_request.request_id,
         temperature=user_request.temperature,
     ):
-        yield OrchestratorResponse(**chunk)
+        yield file_sse_event(chunk) or OrchestratorResponse(**chunk)
 
 
 @orchestrator_router.post("/route/stream", response_class=EventSourceResponse)
@@ -117,4 +118,4 @@ async def stream_orchestration_body(
         request_id=user_request.request_id,
         temperature=user_request.temperature,
     ):
-        yield OrchestratorResponse(**chunk)
+        yield file_sse_event(chunk) or OrchestratorResponse(**chunk)

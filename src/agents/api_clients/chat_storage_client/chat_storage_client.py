@@ -9,6 +9,7 @@ from src.agents.api_clients.chat_storage_client.entities import (
     RoleEnum,
 )
 from src.agents.api_clients.chat_storage_client.request_models import (
+    FilePartRequest,
     StatusPartRequest,
     StructuredPartRequest,
     TablePartRequest,
@@ -187,6 +188,7 @@ class ChatStorageApiClient:
             | ToolCallPartRequest
             | TablePartRequest
             | StructuredPartRequest
+            | FilePartRequest
         ],
         space: str = "main",
         user_id: str | None = None,

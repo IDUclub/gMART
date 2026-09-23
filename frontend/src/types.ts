@@ -145,6 +145,17 @@ export type ChatSummary = {
   updated_at: string;
   metadata?: Record<string, unknown>;
 };
+/** `event: file` descriptor: a link to a generated file behind a Bearer token. */
+export type FileDescriptor = {
+  name?: string;
+  title?: string;
+  role?: string;
+  url: string;
+  download_url?: string | null;
+  filename?: string;
+  mime_type?: string;
+  source_service?: string;
+};
 export type MessagePart = {
   part_seq: number;
   kind: string;

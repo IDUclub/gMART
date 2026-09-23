@@ -2,7 +2,7 @@ from collections.abc import AsyncIterable
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.sse import EventSourceResponse
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from src.agents.common.auth.auth import verify_bearer_token
@@ -15,6 +15,7 @@ from src.agents.dependencies.dependencies import (
 from src.agents.dto.restriction_request_dto import RestrictionRequestDTO
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
+from src.agents.schema.file_event import file_sse_event
 from src.agents.schema.restrictions_response import RestrictionsResponse
 from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
@@ -80,7 +81,7 @@ async def check_compliance(
     restriction_service: RestrictionParserService = Depends(
         get_restriction_parser_service
     ),
-) -> AsyncIterable[RestrictionsResponse]:
+) -> AsyncIterable[RestrictionsResponse | ServerSentEvent]:
     """Check request-scoped spatial restrictions against current scenario layers."""
 
     async for chunk in stream_with_error_handling(
@@ -98,4 +99,4 @@ async def check_compliance(
         temperature=user_request.temperature,
         request_id=user_request.request_id,
     ):
-        yield RestrictionsResponse(**chunk)
+        yield file_sse_event(chunk) or RestrictionsResponse(**chunk)

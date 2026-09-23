@@ -33,6 +33,8 @@ services:
       AUTH_HELPER_URL: ${AUTH_HELPER_URL:-}
       AUTH_HELPER_API_KEY: ${AUTH_HELPER_API_KEY:-}
       AUTH_LOG_USERNAME: ${AUTH_LOG_USERNAME:-false}
+      # External origin for generated file links (compliance report); relative if empty.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       SERVICE_AUTH_SERVER_URL: ${SERVICE_AUTH_SERVER_URL:?SERVICE_AUTH_SERVER_URL is required}
       SERVICE_AUTH_REALM: ${SERVICE_AUTH_REALM:?SERVICE_AUTH_REALM is required}
       SERVICE_AUTH_CLIENT_ID: ${SERVICE_AUTH_CLIENT_ID:?SERVICE_AUTH_CLIENT_ID is required}
