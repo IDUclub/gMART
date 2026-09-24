@@ -58,6 +58,7 @@ from src.agents.services.dvd.document_reference import (
 )
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
+from src.agents.services.dvd.fragment_continuation import complete_cut_fragments
 from src.agents.services.dvd.partial_answer import PartialAnswerEvidence
 from src.agents.services.dvd.query_terms import TASK_LABEL, mentioned_documents
 from src.agents.services.dvd.retrieval_scope import (
@@ -822,6 +823,17 @@ class DvdRagService(BaseLlmService):
                     )
 
             if search_key not in retrieved:
+                hits = await complete_cut_fragments(dvd_mcp_client, hits)
+                search_result["hits"] = hits
+                completed = sum(1 for hit in hits if hit.get("continued_by"))
+                if completed:
+                    yield await self._buf(
+                        request_id,
+                        self._status(
+                            "searching",
+                            f"Дополнены фрагменты, оборванные на полуслове: {completed}",
+                        ),
+                    )
                 retrieved[search_key] = deepcopy(search_result)
 
             if not hits and not is_last:
