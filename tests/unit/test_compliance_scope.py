@@ -143,6 +143,42 @@ async def test_empty_selection_falls_back_to_the_topics_own_entity():
     assert outcome.scope.entities == ("школа",)
 
 
+async def test_plan_layer_named_like_the_topic_is_its_own_entity():
+    # «детский сад» exists only as a check-plan layer, not as a subject/object entity.
+    llm = ScriptedLlm(
+        {"topics": ["детский сад"], "documents": []},
+        {"selections": []},
+    )
+    client = FakeNormGraph(
+        candidates={
+            "детский сад": [
+                _entity("детский сад", "layer"),
+                _entity("детский сад-ясли", "layer_text"),
+            ]
+        }
+    )
+
+    outcome = await ComplianceScopeResolver(llm).resolve(
+        client, "m", "Проверь нормы касательно детских садов"
+    )
+
+    assert outcome.kind == "scoped"
+    assert outcome.scope.entities == ("детский сад",)
+    offered = json.loads(llm.calls[1][-1]["content"])["topics"][0]["candidates"]
+    assert [c["match"] for c in offered] == ["layer", "layer_text"]
+
+
+@pytest.mark.parametrize("reply", ["2", "1, 3", "второй", "все"])
+async def test_bare_pick_without_a_pending_list_asks_what_to_check(reply):
+    client = FakeNormGraph()
+
+    outcome = await ComplianceScopeResolver(ScriptedLlm()).resolve(client, "m", reply)
+
+    assert outcome.kind == "empty"
+    assert "нет списка документов" in outcome.message
+    assert client.calls == []
+
+
 async def test_unknown_topic_stops_with_an_explanation():
     llm = ScriptedLlm({"topics": ["космодром"], "documents": []})
     client = FakeNormGraph()
@@ -239,6 +275,19 @@ async def test_unmatched_description_offers_the_documents_with_most_norms():
         "СП 4.13130.2013",
     ]
     assert "не найден среди документов" in outcome.message
+
+
+async def test_document_type_named_with_a_preposition_asks_to_choose():
+    llm = ScriptedLlm({"topics": [], "documents": ["из санитарных правил"]})
+    client = FakeNormGraph(pool=[_doc("СП 2.4.3648-20", 3), _doc("Тестовые Нормы", 3)])
+
+    outcome = await ComplianceScopeResolver(llm).resolve(
+        client, "m", "Проверь нормы из санитарных правил"
+    )
+
+    assert outcome.kind == "choice"
+    assert outcome.choice["references"] == ["санитарных правил"]
+    assert "«санитарных правил»" in outcome.message
 
 
 async def test_no_documents_with_executable_norms_stops():

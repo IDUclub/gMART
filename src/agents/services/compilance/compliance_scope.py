@@ -62,6 +62,15 @@ _NUMBERS_REPLY = re.compile(
 )
 _FLEXION = re.compile(r"[аеиоуыэюяйь]+$")
 _TOKEN = re.compile(r"[^\W_]+")
+# «из санитарных правил» as the model sometimes copies it → «санитарных правил».
+_LEADING_PREPOSITION = re.compile(r"^\s*(?:из|по|в|во|согласно|от)\s+", re.IGNORECASE)
+# NormGraph candidate matches that carry the topic's own name.
+_OWN_NAME_MATCHES = {"exact", "alias", "layer"}
+_NO_PENDING_CHOICE = (
+    "Не понял, что проверить: сейчас нет списка документов, из которого можно "
+    "выбрать вариант. Напишите, какие нормы проверить — например, «проверь нормы "
+    "по школам» или «проверь нормы из СП 42.13330»."
+)
 
 
 def normalized(text: str) -> str:
@@ -259,12 +268,18 @@ class ComplianceScopeResolver:
         user_query: str,
         history: list[dict] | None = None,
     ) -> ScopeOutcome:
+        if _looks_like_choice(user_query):
+            # No list is pending (or it expired): «2» names nothing to check and must
+            # not start a check of every norm.
+            return ScopeOutcome(kind="empty", message=_NO_PENDING_CHOICE)
         request = await self._extract(model, user_query, history)
         topics = _unique(request.topics)[:MAX_TOPICS]
         exact_refs = parse_reference(user_query).document_names
         described = [
             ref
-            for ref in _unique(request.documents)
+            for ref in _unique(
+                [_LEADING_PREPOSITION.sub("", doc) for doc in request.documents]
+            )
             if not any(
                 designates(ref, exact) or designates(exact, ref) for exact in exact_refs
             )
@@ -441,6 +456,7 @@ class ComplianceScopeResolver:
                                     "candidates": [
                                         {
                                             "entity": c["normalized"],
+                                            "match": c.get("match"),
                                             "aliases": (c.get("aliases") or [])[:5],
                                             "norms": c.get("restriction_count", 0),
                                             "executable_norms": c.get(
@@ -465,11 +481,11 @@ class ComplianceScopeResolver:
             # The model may only narrow NormGraph's candidates, never invent names.
             picked = [key for key in chosen.get(topic, []) if key in offered[topic]]
             if not picked:
-                # Its own name (or alias) always means the topic.
+                # Its own name (or alias, or a plan layer so named) always means the topic.
                 picked = [
                     c["normalized"]
                     for c in candidates.get(topic, [])
-                    if c.get("match") in {"exact", "alias"}
+                    if c.get("match") in _OWN_NAME_MATCHES
                 ]
             by_topic[topic] = sorted(set(picked))
         logger.info(f"Compliance topic entities: {by_topic}")
@@ -601,6 +617,14 @@ def _reply_numbers(text: str) -> list[int] | None:
     return None
 
 
+def _looks_like_choice(reply: str) -> bool:
+    """A bare pick from a list: «2», «1, 3», «второй», «все»."""
+    text = normalized(reply).strip(" .!")
+    return bool(text) and (
+        _ALL_OPTIONS.match(text) is not None or _reply_numbers(text) is not None
+    )
+
+
 def _by_numbers(numbers: list[int], candidates: list[str]) -> ChoiceReply:
     if not numbers or any(not 0 < number <= len(candidates) for number in numbers):
         return ChoiceReply(kind="unresolved")
@@ -623,8 +647,11 @@ _SCOPE_PROMPT = f"""Ты разбираешь запрос на проверку
 или «соответствие». Если пользователь проверяет все нормы или тему не называет — [].
 - documents — нормативные документы, которыми пользователь ограничивает проверку, так, \
 как он их назвал: обозначение («СП 42.13330», «СанПиН 2.2.1/2.1.1.1200-03») или \
-описание («свод правил по планировке городов»). Не придумывай обозначения, которых нет \
-в запросе, и не добавляй документы от себя. Если документ не назван — [].
+описание («свод правил по планировке городов»). Вид документа без номера — тоже \
+документ: «из санитарных правил», «по СанПиНу», «по своду правил», «по ГОСТу», «по \
+региональным нормативам» → запиши его так, как написал пользователь. Не придумывай \
+обозначения, которых нет в запросе, и не добавляй документы от себя. Если документ не \
+назван — [].
 - Если текущее сообщение уточняет предыдущий запрос из диалога («а теперь только по \
 школам»), учитывай предыдущий запрос.
 """
@@ -634,8 +661,12 @@ _ENTITY_PROMPT = """Ты сопоставляешь темы проверки н
 обозначают тот же вид объектов, что и тема: синонимы, другие формы названия и более \
 узкие разновидности (для «школа» — «общеобразовательная школа», «общеобразовательная \
 организация»). Не выбирай смежные и другие объекты: для «школа» не подходят «детский \
-сад», «жилой дом», «территория школы», если тема не про неё. Выбирай только значения \
-"entity" из кандидатов этой темы, без изменений. Если подходящих нет — пустой список.
+сад», «жилой дом», «территория школы», если тема не про неё. Кандидат с "match" \
+"layer" или "layer_text" — название слоя из пункта нормы, в той форме, как оно там \
+написано; выбирай его, если он обозначает вид объектов темы или перечень, в который \
+этот вид входит (для «школа» — «общеобразовательных и дошкольных организаций»). \
+Выбирай только значения "entity" из кандидатов этой темы, без изменений. Если \
+подходящих нет — пустой список.
 Верни только валидный JSON без markdown и пояснений:
 {"selections": [{"topic": "тема", "entities": ["сущность"]}]}
 """
