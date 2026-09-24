@@ -30,7 +30,12 @@ HIT = {
     "subject": "КСК",
     "object": "селитебная зона",
     "kind": "минимальное_расстояние",
-    "value": {"operator": ">=", "number": 300.0, "unit": "м", "condition": "до 20 голов"},
+    "value": {
+        "operator": ">=",
+        "number": 300.0,
+        "unit": "м",
+        "condition": "до 20 голов",
+    },
     "extraction_text": "КСК должны быть отделены от селитебной зоны санитарно-защитной зоной.",
     "provenance": {"name": "СП 2.4.3648-20", "version": "3648", "numbering": "5.4"},
 }
@@ -73,7 +78,9 @@ def test_header_omits_a_bogus_redaction():
 
 
 def test_quantities_absent_from_the_context_are_reported():
-    context = "[1] … | >= 300.0 м (условие: до 20 голов)\nТекст пункта: «не более 1 000 м»"
+    context = (
+        "[1] … | >= 300.0 м (условие: до 20 голов)\nТекст пункта: «не более 1 000 м»"
+    )
     answer = (
         "Не менее 300 м [1]; не более 1000 метров; для сёл 1,5 км; "
         "п. 2.6.10 и [2] не величины; 40 м от окон."
@@ -144,7 +151,9 @@ class StreamingLlm:
 
         async def parts():
             for index in range(0, len(text), 5):
-                yield SimpleNamespace(message=SimpleNamespace(content=text[index : index + 5]))
+                yield SimpleNamespace(
+                    message=SimpleNamespace(content=text[index : index + 5])
+                )
 
         return parts()
 
@@ -166,7 +175,9 @@ async def _draft(service, context: str) -> str:
 
 @pytest.mark.asyncio
 async def test_streamed_table_reaches_the_client_as_a_list():
-    table = "Нормы:\n| № | Норма | Источник |\n|---|---|---|\n| 1 | 500 м | [1] |\nИтог."
+    table = (
+        "Нормы:\n| № | Норма | Источник |\n|---|---|---|\n| 1 | 500 м | [1] |\nИтог."
+    )
     draft = await _draft(_service(StreamingLlm(table)), "контекст")
 
     assert draft == tables_to_lists(table)
@@ -231,6 +242,4 @@ async def test_list_restrictions_pages_with_a_bounded_wait():
     page = await client.list_restrictions(limit=200, after_id="r0")
 
     assert page == {"count": 1, "hits": [{"id": "r1"}], "next_after_id": "r1"}
-    assert mcp.calls == [
-        ("list_restrictions", {"after_id": "r0", "limit": 200}, 120.0)
-    ]
+    assert mcp.calls == [("list_restrictions", {"after_id": "r0", "limit": 200}, 120.0)]
