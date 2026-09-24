@@ -415,3 +415,106 @@ async def test_global_catalogue_cannot_authorize_unfiltered_fallback(
         assert len(mcp.calls) == 4
         assert not any(e["type"] in {"table", "feature_collection"} for e in events)
         assert "не найден тип" in text
+
+
+class SchoolsMcp(EntityMcp):
+    """Scenario with three schools and two kindergartens as service types."""
+
+    ROWS = {
+        1: [record(i, type_id=1, name="Школа") for i in (1, 2, 3)],
+        2: [record(i, type_id=2, name="Детский сад") for i in (4, 5)],
+    }
+
+    async def execute_tool(self, group, name, arguments, *, meta):
+        self.calls.append((name, arguments))
+        if name == "GetScenarioPhysicalObjectTypes":
+            return [{"physical_object_type_id": 48, "name": "Жилой дом"}]
+        if name == "GetScenarioServiceTypes":
+            return [
+                {"service_type_id": 1, "name": "Школа"},
+                {"service_type_id": 2, "name": "Детский сад"},
+            ]
+        assert name == "GetScenarioServices"
+        return self.ROWS[arguments["service_type_id"]]
+
+
+async def test_several_listed_types_are_counted_separately(
+    monkeypatch, fake_llm, fake_urban, state_store
+):
+    monkeypatch.setattr(
+        "src.agents.model_clients.base_client.build_llm_adapter",
+        lambda *a, **kw: fake_llm,
+    )
+    fake_llm.json_responses = [
+        json.dumps(
+            {
+                "operation": "count",
+                "requested_type": None,
+                "requested_types": ["школы", "детские сады"],
+            }
+        ),
+        json.dumps({"candidate": "candidate_2"}),
+        json.dumps({"candidate": "candidate_3"}),
+    ]
+    service = ScenarioDataService("http://llm", None, fake_urban, state_store)
+    mcp = SchoolsMcp()
+    events = [
+        event
+        async for event in service.run_scenario_data_pipeline(
+            mcp,
+            "token",
+            "model",
+            0,
+            "Сколько школ и детских садов в проекте?",
+            scenario_id=17,
+            persist_history=False,
+        )
+    ]
+    text = "".join(e["content"].get("text", "") for e in events if e["type"] == "chunk")
+    assert "«Школа» — 3" in text and "«Детский сад» — 2" in text
+    tables = [e["content"] for e in events if e["type"] == "table"]
+    assert tables[0]["rows"] == [
+        {"type_name": "Школа", "count": 3},
+        {"type_name": "Детский сад", "count": 2},
+    ]
+
+
+@pytest.mark.parametrize(
+    "classified",
+    [
+        {"operation": "count", "requested_type": None},
+        {"operation": "map", "requested_type": None, "requested_types": ["а", "б"]},
+    ],
+)
+async def test_untyped_or_multi_type_listing_goes_to_general_planning(classified):
+    from unittest.mock import AsyncMock
+
+    from src.agents.services.scenario_data.scenario_data_type_mapper import (
+        UrbanTypeMapper,
+    )
+
+    llm = AsyncMock()
+    llm.chat.return_value = {"message": {"content": json.dumps(classified)}}
+    request = await UrbanTypeMapper(llm).classify_scenario_entity_request(
+        "model", "Сколько школ и детских садов в проекте?"
+    )
+    assert request.operation == "unsupported"
+    # No retry: re-asking only makes the model squeeze several types into one name.
+    llm.chat.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("name", "several"),
+    [
+        ("школы и детские сады", True),
+        ("школы, детские сады", True),
+        ("Школа", False),
+        ("Дом культуры", False),
+    ],
+)
+def test_combined_type_name_is_detected(name, several):
+    from src.agents.services.scenario_data.scenario_data_selection import (
+        several_types,
+    )
+
+    assert several_types(name) is several

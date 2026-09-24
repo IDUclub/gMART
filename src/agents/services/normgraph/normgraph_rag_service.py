@@ -18,7 +18,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
-from src.agents.model_clients.llm_base import LlmChatResponse
+from src.agents.model_clients.llm_base import LlmChatResponse, LlmResponseError
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.normgraph.normgraph_context import NormGraphContextBuilder
 from src.agents.services.normgraph.normgraph_reasoning import (
@@ -26,11 +26,13 @@ from src.agents.services.normgraph.normgraph_reasoning import (
     NormGraphRetrievalPlanner,
 )
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
-from src.agents.services.service_entities.normgraph_plan import PrimaryTool
+from src.agents.services.service_entities.normgraph_plan import (
+    NormGraphPlan,
+    PrimaryTool,
+)
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
-    from src.agents.services.service_entities.normgraph_plan import NormGraphPlan
 
 _MCP_SOURCE = "NORM_GRAPH_MCP_URL"
 _EXECUTION_MODE = "normgraph_search"
@@ -257,6 +259,7 @@ class NormGraphRagService(BaseLlmService):
         prev_critique: str | None = progress.get("prev_critique")
         prev_query: str | None = progress.get("prev_query")
         prev_object: str | None = progress.get("prev_object")
+        empty_tool: str | None = progress.get("empty_tool")
         start_iteration = int(progress.get("completed_iterations", 0)) + 1
         final_iteration = start_iteration
 
@@ -272,9 +275,28 @@ class NormGraphRagService(BaseLlmService):
                     f"Подбираю параметры запроса к графу ограничений (попытка {iteration})…",
                 ),
             )
-            plan = await self.planner.build_plan(
-                model, user_query, history, prev_critique, prev_query, prev_object
-            )
+            try:
+                plan = await self.planner.build_plan(
+                    model, user_query, history, prev_critique, prev_query, prev_object
+                )
+            except (LlmResponseError, ValueError) as exc:
+                # gpt-oss can spend the whole output budget reasoning about a retry.
+                # A plain text search still answers; failing the step does not.
+                logger.warning(f"NormGraph planner failed, using text search: {exc}")
+                plan = NormGraphPlan(search_query=prev_query or user_query)
+            if (
+                empty_tool == PrimaryTool.APPLICABLE
+                and plan.primary_tool == PrimaryTool.APPLICABLE
+            ):
+                # The planner tends to repeat the same object lookup. The object is
+                # absent from the graph, so search the text without entity filters.
+                plan = plan.model_copy(
+                    update={
+                        "primary_tool": PrimaryTool.SEARCH,
+                        "object": None,
+                        "subject": None,
+                    }
+                )
 
             # ── Step 2: execute the primary NormGraph tool ──────────────────
             yield await self._buf(
@@ -337,6 +359,7 @@ class NormGraphRagService(BaseLlmService):
                 )
                 prev_query = plan.search_query
                 prev_object = plan.object
+                empty_tool = plan.primary_tool
                 await self._save_progress(
                     request_id,
                     collected,
@@ -345,6 +368,7 @@ class NormGraphRagService(BaseLlmService):
                     prev_critique=prev_critique,
                     prev_query=prev_query,
                     prev_object=prev_object,
+                    empty_tool=empty_tool,
                 )
                 continue
 
@@ -440,6 +464,7 @@ class NormGraphRagService(BaseLlmService):
             prev_critique = critique_text
             prev_query = verdict.refined_search_query or plan.search_query
             prev_object = verdict.refined_object or plan.object
+            empty_tool = None
             await self._save_progress(
                 request_id,
                 collected,
@@ -625,6 +650,7 @@ class NormGraphRagService(BaseLlmService):
         prev_critique: str | None = None,
         prev_query: str | None = None,
         prev_object: str | None = None,
+        empty_tool: str | None = None,
     ) -> None:
         await self.state_store.save_checkpoint(
             request_id,
@@ -638,6 +664,7 @@ class NormGraphRagService(BaseLlmService):
                 "prev_critique": prev_critique,
                 "prev_query": prev_query,
                 "prev_object": prev_object,
+                "empty_tool": empty_tool,
             },
         )
 

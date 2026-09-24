@@ -395,11 +395,15 @@ class UrbanTypeMapper:
             )
 
         def validate(request):
-            if (
-                request.operation != "unsupported"
-                and not (request.requested_type or "").strip()
-            ):
-                raise ValueError("A supported entity request must name its type")
+            types = request.types()
+            if request.operation == "unsupported":
+                return request
+            if not types or (len(types) > 1 and request.operation != "count"):
+                # A missing type is how the model marks a query outside this path;
+                # forcing a retry only makes it squeeze several types into one name.
+                return ScenarioEntityRequest(
+                    operation="unsupported", requested_type=None
+                )
             return request
 
         return await self._request_json(
