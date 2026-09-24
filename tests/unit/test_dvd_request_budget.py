@@ -20,7 +20,8 @@ async def test_legacy_character_limit_no_longer_rejects_model_input(monkeypatch)
         llm, "m", [{"role": "user", "content": "Я" * 5000}], CriticVerdict
     )
     call = llm.chat.call_args.kwargs
-    assert call["options"]["num_predict"] == 32000 - 10000 - 64 - 256
+    # Byte estimate of the input (10000 + framing), half of it plus the floor.
+    assert call["options"]["num_predict"] == 4096 + (10000 + 64 + 256) // 2
     assert call["options"]["num_ctx"] == 32000
 
 
@@ -86,7 +87,7 @@ async def test_answer_checks_history_and_instructions_before_sending():
     llm.chat.assert_not_called()
 
 
-async def test_planner_uses_remaining_tokens_and_ignores_legacy_caps(monkeypatch):
+async def test_planner_output_follows_input_and_ignores_legacy_caps(monkeypatch):
     monkeypatch.setenv("DVD_PLANNER_MAX_TOKENS", "1024")
     monkeypatch.setenv("DVD_REQUEST_MAX_CHARS", "32000")
     monkeypatch.delenv("DVD_CONTEXT_WINDOW_TOKENS", raising=False)
@@ -99,7 +100,7 @@ async def test_planner_uses_remaining_tokens_and_ignores_legacy_caps(monkeypatch
         history=[{"role": "user", "content": "История " * 5000}],
     )
     call = llm.chat.call_args.kwargs
-    assert call["options"]["num_predict"] == 32000 - 8000 - 256
+    assert call["options"]["num_predict"] == 4096 + 8000 // 2
     assert call["options"]["num_ctx"] == 32000
     assert sum(len(m["content"]) for m in call["messages"]) > 32000
 
@@ -117,3 +118,53 @@ async def test_reasoning_output_is_bounded_by_remaining_window(monkeypatch):
     assert (
         128 <= llm.chat.call_args.kwargs["options"]["num_predict"] <= 8192 - 6000 - 256
     )
+
+
+async def test_runaway_structured_reply_is_cut_at_the_proportional_limit():
+    llm = AsyncMock()
+    llm.model_input_tokens.return_value = 2000
+    llm.chat.side_effect = [
+        {"message": {"content": "{"}, "done_reason": "length"},
+        {"message": {"content": verdict_json()}},
+    ]
+    verdict = await _request_json(
+        llm, "m", [{"role": "user", "content": "q"}], CriticVerdict
+    )
+    first, second = (
+        c.kwargs["options"]["num_predict"] for c in llm.chat.call_args_list
+    )
+    # The first request stops a runaway reply early; a legitimately long reply
+    # is retried with a doubled limit, still well inside the window.
+    assert first == 4096 + 1000
+    assert second == 2 * first < 32000 - 2000 - 256
+    assert verdict.satisfied
+
+
+async def test_reply_truncated_by_the_window_itself_is_not_retried(monkeypatch):
+    monkeypatch.setenv("DVD_CONTEXT_WINDOW_TOKENS", "8192")
+    llm = AsyncMock()
+    llm.model_input_tokens.return_value = 6000
+    llm.chat.return_value = {"message": {"content": "{"}, "done_reason": "length"}
+    with pytest.raises(ValueError, match="exhausted_context_window"):
+        await _request_json(llm, "m", [{"role": "user", "content": "q"}], CriticVerdict)
+    assert llm.chat.await_count == 1
+
+
+async def test_adapter_truncation_error_is_retried_with_a_wider_limit():
+    from src.agents.model_clients.llm_base import LlmResponseError
+
+    llm = AsyncMock()
+    llm.model_input_tokens.return_value = 2000
+    llm.chat.side_effect = [
+        LlmResponseError(
+            "Incomplete structured answer", 502, reason="output_truncated"
+        ),
+        {"message": {"content": verdict_json()}},
+    ]
+    verdict = await _request_json(
+        llm, "m", [{"role": "user", "content": "q"}], CriticVerdict
+    )
+    first, second = (
+        c.kwargs["options"]["num_predict"] for c in llm.chat.call_args_list
+    )
+    assert verdict.satisfied and second == 2 * first

@@ -21,7 +21,10 @@ from dataclasses import dataclass, field
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
-from src.agents.model_clients.context_budget import remaining_output_tokens
+from src.agents.model_clients.context_budget import (
+    EVIDENCE_OUTPUT,
+    remaining_output_tokens,
+)
 from src.agents.model_clients.llm_base import LlmResponseError
 
 from .dvd_context import SOURCE_SEPARATOR, source_records
@@ -282,7 +285,7 @@ class DvdContextReducer:
                                 feedback in {"output_truncated", "empty_completion"}
                                 and attempt < self.retries
                             ):
-                                # A full output budget cannot grow further. Reduce the
+                                # The output budget follows the input size. Reduce the
                                 # source workload instead of repeating the same request.
                                 # Retry count still bounds this split (at most twice).
                                 inputs = [
@@ -403,6 +406,7 @@ class DvdContextReducer:
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             self.window,
             schema=schema,
+            output=EVIDENCE_OUTPUT,
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")
@@ -500,6 +504,7 @@ class DvdContextReducer:
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             self.window,
             schema=schema,
+            output=EVIDENCE_OUTPUT,
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")
