@@ -128,6 +128,20 @@ class AuditedClaim(BaseModel):
     evidence: list[ClaimEvidence] = Field(default_factory=list)
 
 
+class Correction(BaseModel):
+    """One local edit the critic asks for; the rest of the answer stays verbatim.
+
+    ``target`` is the exact answer line to change, or empty when the fix adds a
+    line or the line is not known (literal checks). ``quote`` from fragment
+    ``source_id`` supports the fixed or added text.
+    """
+
+    target: str = ""
+    instruction: str
+    source_id: str = ""
+    quote: str = ""
+
+
 class CriticVerdict(BaseModel):
     """
     LLM critic's verdict on a drafted answer.
@@ -137,6 +151,8 @@ class CriticVerdict(BaseModel):
         refined_search_query (str | None): A better search query to use on the next round.
         needs_evidence (bool): The rejection is caused by missing evidence, so rewriting
             the answer over the same fragments cannot fix it.
+        corrections (list[Correction]): Local edits that repair the answer over the
+            same fragments; lines they do not name are kept as they are.
     """
 
     satisfied: bool
@@ -144,3 +160,4 @@ class CriticVerdict(BaseModel):
     refined_search_query: str | None = None
     needs_evidence: bool = False
     claims: list[AuditedClaim] = Field(default_factory=list)
+    corrections: list[Correction] = Field(default_factory=list)

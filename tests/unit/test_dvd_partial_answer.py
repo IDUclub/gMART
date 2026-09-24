@@ -135,7 +135,15 @@ async def test_no_verified_claims_returns_honest_empty_answer(
     )
     if kind == "invented_quote":
         review = audit(fact + " [1]", "Цитата, которой нет.")
-    fake_llm.json_responses = [plan_json(), review, review]
+    repairable = kind in ("insufficient", "contradicted")
+    # A rejected line gets a local correction; a repair that changes nothing
+    # falls back to a new draft, and to the partial answer once drafts run out.
+    no_edit = json.dumps({"edits": []})
+    fake_llm.json_responses = (
+        [plan_json(), review, no_edit, review, no_edit]
+        if repairable
+        else [plan_json(), review, review]
+    )
     fake_llm.answer_texts = [
         "Другой черновик [1]" if kind == "not_in_draft" else fact + " [1]"
     ] * 2
@@ -143,8 +151,8 @@ async def test_no_verified_claims_returns_honest_empty_answer(
     assert "Не удалось подтвердить" in answer_text(events)
     assert fact not in answer_text(events)
     assert not any(e["type"] == "error" for e in events)
-    # plan + 2 × (draft, review); no final model request without candidates
-    assert len(fake_llm.chat_calls) == 5
+    # plan + 2 × (draft, review) [+ 2 repairs]; no final request without candidates
+    assert len(fake_llm.chat_calls) == (7 if repairable else 5)
 
 
 async def test_final_selection_cannot_include_contradicted_claim(

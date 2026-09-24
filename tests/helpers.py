@@ -41,7 +41,11 @@ class FakeLlmClient:
     ):
         self.chat_calls.append(
             SimpleNamespace(
-                model=model, messages=messages, options=options, stream=stream
+                model=model,
+                messages=messages,
+                options=options,
+                stream=stream,
+                format=kwargs.get("format"),
             )
         )
         if stream:

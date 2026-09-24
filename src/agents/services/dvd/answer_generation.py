@@ -14,7 +14,11 @@ from collections.abc import Callable
 
 from loguru import logger
 
-from src.agents.model_clients.context_budget import remaining_output_tokens
+from src.agents.model_clients.context_budget import (
+    ANSWER_OUTPUT,
+    output_budget,
+    remaining_output_tokens,
+)
 
 from .context_reducer import DvdContextReducer, cost
 
@@ -188,13 +192,16 @@ class DvdAnswerGenerator:
             )
             evidence = context
             messages = build_messages(evidence) + continuation
-            budget = await remaining_output_tokens(
+            # The draft grows with the evidence it covers; a truncated draft is
+            # continued below, so the limit bounds each request, not the answer.
+            room = await output_budget(
                 self.llm_client,
                 model,
                 messages,
                 self.reducer.window,
+                output=ANSWER_OUTPUT,
             )
-            if budget < 128:
+            if room.window_rest < 128:
                 # Only evidence can be reduced. Preserve instructions, history
                 # and every visible continuation prefix.
                 fixed_available = await remaining_output_tokens(
@@ -225,15 +232,17 @@ class DvdAnswerGenerator:
                     self.failed_parts.extend(prepared.failed_parts)
                 context = prepared.text
                 messages = build_messages(context) + continuation
-                budget = await remaining_output_tokens(
+                room = await output_budget(
                     self.llm_client,
                     model,
                     messages,
                     self.reducer.window,
+                    output=ANSWER_OUTPUT,
                 )
-                if budget < 128:
+                if room.window_rest < 128:
                     raise AnswerGenerationError("answer_generation_no_context_room")
-            input_cost = self.reducer.window - budget
+            budget = room.tokens
+            input_cost = self.reducer.window - room.window_rest
             logger.info(
                 "DVD answer model={} iteration={} attempt={} input_upper_estimate={} "
                 "output_budget={} window={} prefix_bytes={}",

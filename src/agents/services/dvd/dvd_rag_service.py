@@ -30,6 +30,7 @@ from src.agents.services.dvd.answer_generation import (
     DvdAnswerGenerator,
     tables_to_lists,
 )
+from src.agents.services.dvd.answer_revision import AnswerReviser
 from src.agents.services.dvd.clarification import (
     CLARIFICATION,
     matching_choices,
@@ -72,6 +73,8 @@ from src.agents.services.dvd.retry_policy import (
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.readable_refs import NO_SYSTEM_IDS_RULE
 from src.agents.services.service_entities.dvd_plan import (
+    AuditedClaim,
+    Correction,
     SearchKind,
     validate_retrieval_plan,
 )
@@ -171,6 +174,7 @@ class DvdRagService(BaseLlmService):
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.planner = RetrievalPlanner(self.llm_client)
         self.critic = AnswerCritic(self.llm_client)
+        self.reviser = AnswerReviser(self.llm_client)
         self.conversation_evidence = ConversationEvidence(self.llm_client)
         self.context_builder = DvdContextBuilder()
         self.context_reducer = DvdContextReducer(self.llm_client)
@@ -474,6 +478,9 @@ class DvdRagService(BaseLlmService):
         collected["partial_evidence"] = partial_evidence.records
         # Whether the last rejection lacked evidence (a rewrite cannot fix that).
         needs_evidence = bool(progress.get("needs_evidence"))
+        # A rejected draft with local corrections over the same retrieval: the
+        # next round edits only the named lines instead of drafting anew.
+        pending_revision: dict | None = progress.get("pending_revision")
         # The plan of the previous round; the planner LLM runs again only when a
         # retrieval matched nothing and needs a reformulation.
         last_plan: dict | None = progress.get("last_plan")
@@ -629,9 +636,16 @@ class DvdRagService(BaseLlmService):
                 )
                 plan, search_key = broadened, broadened_key
             collected["intent"] = plan.intent
-            if draft_counts.get(search_key, 0) >= _max_drafts_per_retrieval():
+            repairing = bool(
+                pending_revision and pending_revision.get("search_key") == search_key
+            )
+            if (
+                draft_counts.get(search_key, 0) >= _max_drafts_per_retrieval()
+                and not repairing
+            ):
                 # One rewrite over the same fragments fixes wording defects; a
                 # further one has, in production, never turned a rejection around.
+                # A targeted repair of named lines is not a rewrite.
                 logger.warning(
                     "DVD rewrite budget exhausted request_id={} iteration={}",
                     request_id,
@@ -932,39 +946,87 @@ class DvdRagService(BaseLlmService):
                     self._status("context_processing", _PARTIAL_CONTEXT_WARNING),
                 )
 
-            draft_counts[search_key] = draft_counts.get(search_key, 0) + 1
-            collected["draft_counts"] = draft_counts
-            # ── Step 3: draft the answer (streamed) ───────────────────────
-            yield await self._buf(
-                request_id,
-                self._status(
-                    "answer_drafting", f"Формирую ответ (попытка {iteration})…"
-                ),
-            )
+            # ── Step 3: draft the answer, or repair the lines the critic named ──
+            revision = pending_revision if repairing else None
+            pending_revision = None
+            verified: list[AuditedClaim] | None = None
+            recheck: dict[str, Any] = {}
+            body = None
+            if revision:
+                yield await self._buf(
+                    request_id,
+                    self._status(
+                        "answer_drafting",
+                        f"Исправляю отмеченные места ответа (попытка {iteration})…",
+                    ),
+                )
+                body = await self._revise_answer(
+                    model, intent_query, context, revision, request_id, iteration
+                )
+                verified = [AuditedClaim(**c) for c in revision.get("verified") or []]
+                if body is not None:
+                    kept = set(AnswerCritic._claim_texts(body))
+                    recheck = {
+                        "previous": [
+                            Correction(**c) for c in revision.get("corrections") or []
+                        ],
+                        "removed": [
+                            line
+                            for line in AnswerCritic._claim_texts(revision["draft"])
+                            if line not in kept
+                        ],
+                    }
             revision_note = prev_critique if iteration > 1 else None
-            draft_parts: list[str] = []
+            draft_parts: list[str] = [body] if body is not None else []
             generation_failures: list[str] = []
-            try:
-                async for chunk_event in self._generate_answer(
+            if (
+                body is None
+                and repairing
+                and draft_counts.get(search_key, 0) >= _max_drafts_per_retrieval()
+            ):
+                # The repair failed and the rewrite budget is spent.
+                async for event in self._finish_partial_answer(
                     model,
                     intent_query,
-                    context,
-                    # A grounded draft needs low variance; the request default
-                    # (1.0) suits free chat, not quoting norms.
-                    min(temperature, _answer_temperature()),
-                    history,
+                    request_id,
+                    collected,
                     iteration,
-                    revision_note,
-                    context_failures=generation_failures,
-                    intent=plan.intent,
+                    partial_evidence,
                 ):
-                    if text := chunk_event["content"]["text"]:
-                        draft_parts.append(text)
-            except AnswerGenerationError as exc:
-                yield await self._fail_context(
-                    request_id, "answer_generation", [str(exc)]
-                )
+                    yield event
                 return
+            if body is None:
+                # A full draft; a failed or empty repair falls back to it too.
+                verified = None
+                draft_counts[search_key] = draft_counts.get(search_key, 0) + 1
+                collected["draft_counts"] = draft_counts
+                yield await self._buf(
+                    request_id,
+                    self._status(
+                        "answer_drafting", f"Формирую ответ (попытка {iteration})…"
+                    ),
+                )
+                try:
+                    async for chunk_event in self._generate_answer(
+                        model,
+                        intent_query,
+                        context,
+                        # A grounded draft needs low variance; the request default
+                        # (1.0) suits free chat, not quoting norms.
+                        min(temperature, _answer_temperature()),
+                        history,
+                        iteration,
+                        revision_note,
+                        context_failures=generation_failures,
+                        intent=plan.intent,
+                    ):
+                        if text := chunk_event["content"]["text"]:
+                            draft_parts.append(text)
+                except AnswerGenerationError as exc:
+                    yield await self._fail_context(
+                        request_id, "answer_generation", [str(exc)]
+                    )
+                    return
             if generation_failures:
                 collected["context_incomplete"] = True
                 collected["context_processing"]["complete"] = False
@@ -973,7 +1035,8 @@ class DvdRagService(BaseLlmService):
                     request_id,
                     generation_failures,
                 )
-            draft = tables_to_lists("".join(draft_parts)).strip()
+            draft_body = tables_to_lists("".join(draft_parts)).strip()
+            draft = draft_body
             if quotation:
                 draft += "\n\n" + quotation
 
@@ -1011,6 +1074,8 @@ class DvdRagService(BaseLlmService):
                     review_context.text,
                     draft,
                     intent=plan.intent,
+                    verified=verified,
+                    **recheck,
                 )
             except Exception as exc:
                 logger.opt(exception=exc).error(
@@ -1106,6 +1171,19 @@ class DvdRagService(BaseLlmService):
             prev_query = verdict.refined_search_query or plan.search_query
             refined_query = normalized_query(verdict.refined_search_query) or None
             needs_evidence = verdict.needs_evidence
+            if verdict.corrections and not needs_evidence:
+                # Same fragments, named defects: repair those lines next round and
+                # keep the audit of every line that is left unchanged.
+                pending_revision = {
+                    "search_key": search_key,
+                    "draft": draft_body,
+                    "corrections": [c.model_dump() for c in verdict.corrections],
+                    "verified": [
+                        c.model_dump()
+                        for c in verdict.claims
+                        if c.status == "supported"
+                    ],
+                }
             await self._save_progress(
                 request_id,
                 collected,
@@ -1115,6 +1193,7 @@ class DvdRagService(BaseLlmService):
                 prev_query=prev_query,
                 refined_query=refined_query,
                 needs_evidence=needs_evidence,
+                pending_revision=pending_revision,
             )
 
         # Defensive: the last iteration always accepts above, so this is normally unreachable
@@ -1209,6 +1288,38 @@ class DvdRagService(BaseLlmService):
         # Completion does not mean acceptance. The loop audits the entire assembled
         # answer before emitting it or persisting it in chat history.
         yield self._chunk(answer, done=False, iteration=iteration)
+
+    async def _revise_answer(
+        self, model, question, context, revision, request_id, iteration
+    ) -> str | None:
+        """Apply the critic's corrections to the previous draft; ``None`` to redraft."""
+        corrections = [Correction(**c) for c in revision.get("corrections") or []]
+        try:
+            body = await self.reviser.revise(
+                model, question, context, revision["draft"], corrections
+            )
+        except ValueError as exc:
+            logger.warning(
+                "DVD answer revision failed request_id={} iteration={} reason={}",
+                request_id,
+                iteration,
+                exc,
+            )
+            return None
+        if not body or body == revision["draft"]:
+            logger.warning(
+                "DVD answer revision changed nothing request_id={} iteration={}",
+                request_id,
+                iteration,
+            )
+            return None
+        logger.info(
+            "DVD answer revised request_id={} iteration={} corrections={}",
+            request_id,
+            iteration,
+            len(corrections),
+        )
+        return body
 
     # ------------------------------------------------------------------
     # Retrieval helpers (multi-query, document lists, broadening)
@@ -1707,6 +1818,7 @@ class DvdRagService(BaseLlmService):
         refined_query: str | None = None,
         needs_evidence: bool = False,
         replan: bool = False,
+        pending_revision: dict | None = None,
     ) -> None:
         await self.state_store.save_checkpoint(
             request_id,
@@ -1726,6 +1838,7 @@ class DvdRagService(BaseLlmService):
                 "context_incomplete": collected.get("context_incomplete", False),
                 "partial_evidence": collected.get("partial_evidence", []),
                 "needs_evidence": needs_evidence,
+                "pending_revision": pending_revision,
                 "last_plan": collected.get("last_plan"),
                 "replan": replan,
                 "draft_counts": collected.get("draft_counts", {}),
