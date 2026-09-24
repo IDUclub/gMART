@@ -4,6 +4,7 @@ import pytest
 
 from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
+from src.agents.services.normgraph.normgraph_reasoning import PLACEMENT_KINDS
 from src.agents.services.service_entities.normgraph_plan import (
     NormGraphCriticVerdict,
     NormGraphPlan,
@@ -106,8 +107,47 @@ async def test_planner_failure_falls_back_to_text_search(norms):
         "search_restrictions",
         {
             "query": "расстояние от окон до автостоянок",
+            "kinds": list(PLACEMENT_KINDS),
             "limit": 10,
             "neighbors_depth": 0,
         },
     )
     assert collected["final_answer"] == "Не менее 10 м [1]."
+
+
+class EmptyMcp(Mcp):
+    async def search_restrictions(self, **arguments):
+        self.calls.append(("search_restrictions", arguments))
+        return {"hits": [HIT] if "kinds" not in arguments else []}
+
+
+def search(query="расстояние от окон до автостоянок"):
+    return NormGraphPlan(search_query=query)
+
+
+async def test_placement_question_filters_by_placement_kinds_until_they_find_nothing(
+    norms,
+):
+    norms.planner = Planner(search(), search())
+    mcp = EmptyMcp()
+
+    _, collected = await run(norms, mcp)
+
+    assert [arguments.get("kinds") for _, arguments in mcp.calls] == [
+        list(PLACEMENT_KINDS),
+        None,
+    ]
+    assert collected["final_answer"] == "Не менее 10 м [1]."
+
+
+async def test_other_questions_keep_every_kind(norms):
+    norms.planner = Planner(search("что такое красная линия"))
+    mcp = Mcp()
+    collected = {"final_answer": "", "tool_calls": [], "newly_completed": False}
+
+    async for _ in norms._run_qa_loop(
+        mcp, "model", 0, "Что такое красная линия?", [], collected, "rid"
+    ):
+        pass
+
+    assert "kinds" not in mcp.calls[0][1]

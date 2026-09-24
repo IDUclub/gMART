@@ -30,8 +30,9 @@ _CANONICAL_KINDS = {
     "запрет_размещения",
     "требование_размещения",
 }
-_ALL_RESTRICTIONS_INITIAL_LIMIT = 256
-_ALL_RESTRICTIONS_MAX_LIMIT = 65_536
+# NormGraph rejects windows above 500: one response carries full provenance and plans.
+_ALL_RESTRICTIONS_PAGE = 200
+_ALL_RESTRICTIONS_MAX_PAGES = 500
 
 
 @dataclass(frozen=True)
@@ -65,7 +66,7 @@ class NormGraphRestrictionRetriever:
             return self._result(
                 hits,
                 arguments,
-                "search_restrictions",
+                "list_restrictions",
                 retain_unsupported,
                 require_check_plan,
             )
@@ -155,31 +156,34 @@ class NormGraphRestrictionRetriever:
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Fetch the complete NormGraph corpus without a silent top-k window.
 
-        NormGraph currently exposes a ``limit`` but no offset/cursor.  Grow the
-        window until the server returns fewer rows than requested.  Hitting the
-        explicit safety ceiling is an error: returning a partial audit as if it
-        were complete would be worse than failing visibly.
+        ``list_restrictions`` pages by restriction id, so documents ingested meanwhile
+        cannot shift or duplicate rows. Plans are filtered here rather than with
+        ``executable_only``: the report counts the norms skipped for lacking a plan.
+        Hitting the page ceiling is an error — a partial audit presented as complete
+        would be worse than failing visibly.
         """
 
-        limit = _ALL_RESTRICTIONS_INITIAL_LIMIT
-        while True:
-            arguments = {"limit": limit, "neighbors_depth": 0}
-            response = await client.search_restrictions(**arguments)
-            hits = [hit for hit in response.get("hits") or [] if isinstance(hit, dict)]
-            if len(hits) < limit:
-                # Preserve graph order while protecting the executor and summary
-                # from duplicate restriction IDs.
-                unique: dict[str, dict[str, Any]] = {}
-                for index, hit in enumerate(hits):
-                    unique.setdefault(str(hit.get("id") or index), hit)
-                return list(unique.values()), arguments
-            if limit >= _ALL_RESTRICTIONS_MAX_LIMIT:
-                raise RuntimeError(
-                    "NormGraph returned at least "
-                    f"{_ALL_RESTRICTIONS_MAX_LIMIT} restrictions; complete "
-                    "compliance retrieval requires server-side pagination"
-                )
-            limit = min(limit * 2, _ALL_RESTRICTIONS_MAX_LIMIT)
+        unique: dict[str, dict[str, Any]] = {}
+        after_id: str | None = None
+        for _ in range(_ALL_RESTRICTIONS_MAX_PAGES):
+            arguments: dict[str, Any] = {"limit": _ALL_RESTRICTIONS_PAGE}
+            if after_id:
+                arguments["after_id"] = after_id
+            page = await client.list_restrictions(**arguments)
+            for hit in page.get("hits") or []:
+                if isinstance(hit, dict):
+                    unique.setdefault(str(hit.get("id") or len(unique)), hit)
+            next_after_id = page.get("next_after_id")
+            if not next_after_id:
+                return list(unique.values()), {"limit": _ALL_RESTRICTIONS_PAGE}
+            if next_after_id == after_id:
+                raise RuntimeError("NormGraph listing cursor did not advance")
+            after_id = next_after_id
+        raise RuntimeError(
+            "NormGraph returned more than "
+            f"{_ALL_RESTRICTIONS_PAGE * _ALL_RESTRICTIONS_MAX_PAGES} restrictions; "
+            "complete compliance retrieval stopped"
+        )
 
     @classmethod
     def _result(

@@ -279,10 +279,19 @@ async def test_compliance_large_corpus_never_reaches_llm_and_executes_individual
     )
     service.normgraph_retriever = NormGraphRestrictionRetriever(llm)
     service._build_plan = AsyncMock(side_effect=AssertionError("No LLM replanning"))
+
+    def page(limit, after_id=None):
+        # NormGraph pages by id; the fake keeps list order, which the ids mirror.
+        start = 0 if after_id is None else [h["id"] for h in hits].index(after_id) + 1
+        rows = hits[start : start + limit + 1]
+        more = len(rows) > limit
+        return {
+            "hits": rows[:limit],
+            "next_after_id": rows[limit - 1]["id"] if more else None,
+        }
+
     client = SimpleNamespace(
-        search_restrictions=AsyncMock(
-            side_effect=lambda **args: {"hits": hits[: args["limit"]]}
-        )
+        list_restrictions=AsyncMock(side_effect=lambda **args: page(**args))
     )
     seen = []
 

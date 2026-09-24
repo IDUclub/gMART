@@ -21,6 +21,8 @@ class NormGraphPlan(BaseModel):
             ``applicable``, optional filter for ``search``.
         subject (str | None): Restriction subject entity filter.
         kind (str | None): Restriction kind (controlled vocabulary) filter.
+        kinds (list[str] | None): Any of these kinds. Set by code for placement
+            questions, never taken from the model (it does not know the vocabulary).
         document_names (list[str] | None): Restrict to these document names (any of).
         doc_type (str | None): Document type filter.
         corpus (str | None): Corpus filter.
@@ -39,6 +41,7 @@ class NormGraphPlan(BaseModel):
     object: str | None = None
     subject: str | None = None
     kind: str | None = None
+    kinds: list[str] | None = None
     document_names: list[str] | None = None
     doc_type: str | None = None
     corpus: str | None = None

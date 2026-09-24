@@ -17,8 +17,12 @@ class NormGraphMcpClient(BaseMcpClient):
 
     Exposed NormGraph MCP tools (see NormGraph/src/mcp_server/server.py): ``search_restrictions``,
     ``restrictions_applicable``, ``get_restriction``, ``traverse_restrictions``, ``list_entities``,
-    ``list_restriction_kinds``, ``list_conflicts``, ``health``.
+    ``list_restriction_kinds``, ``list_conflicts``, ``list_restrictions``, ``health``.
     """
+
+    # Graph reads return in seconds (a 1024-row window took ~12 s on dev); a longer wait
+    # means the server restarted mid-call and the response will never arrive.
+    tool_timeout = 120.0
 
     def __init__(self, mcp_client: McpClient, mcp_url: str = "") -> None:
         super().__init__(mcp_client)
@@ -28,6 +32,7 @@ class NormGraphMcpClient(BaseMcpClient):
         self,
         query: str | None = None,
         kind: str | None = None,
+        kinds: list[str] | None = None,
         document_names: list[str] | None = None,
         version: str | None = None,
         doc_type: str | None = None,
@@ -44,6 +49,7 @@ class NormGraphMcpClient(BaseMcpClient):
         Args:
             query (str | None): Free-text query; omit for a purely filtered listing.
             kind (str | None): Restriction kind from the controlled vocabulary.
+            kinds (list[str] | None): Any of these kinds.
             document_names (list[str] | None): Restrict to any of these document names.
             version (str | None): Document version/redaction filter.
             doc_type (str | None): Document type filter.
@@ -61,6 +67,7 @@ class NormGraphMcpClient(BaseMcpClient):
         arguments = self._filters(
             query=query,
             kind=kind,
+            kinds=kinds,
             document_names=document_names,
             version=version,
             doc_type=doc_type,
@@ -80,6 +87,7 @@ class NormGraphMcpClient(BaseMcpClient):
         object: str,
         subject: str | None = None,
         kind: str | None = None,
+        kinds: list[str] | None = None,
         document_names: list[str] | None = None,
         version: str | None = None,
         limit: int = 20,
@@ -94,12 +102,44 @@ class NormGraphMcpClient(BaseMcpClient):
             object=object,
             subject=subject,
             kind=kind,
+            kinds=kinds,
             document_names=document_names,
             version=version,
             limit=int(limit),
         )
         result = await self.execute_tool("restrictions_applicable", arguments)
         return self._normalize_search(result)
+
+    async def list_restrictions(
+        self,
+        after_id: str | None = None,
+        limit: int = 200,
+        executable_only: bool = False,
+        **filters: Any,
+    ) -> dict[str, Any]:
+        """
+        One keyset page of the complete restriction listing (ordered by id).
+        Returns:
+            dict[str, Any]: ``{"count", "hits", "next_after_id"}``; ``next_after_id`` is
+            ``None`` once the listing is exhausted.
+        """
+
+        arguments = self._filters(
+            after_id=after_id,
+            limit=int(limit),
+            executable_only=executable_only or None,
+            **filters,
+        )
+        result = self._to_dict(await self.execute_tool("list_restrictions", arguments))
+        result = result if isinstance(result, dict) else {}
+        hits = [
+            self._to_dict(hit) for hit in (result.get("hits") or []) if hit is not None
+        ]
+        return {
+            "count": result.get("count", len(hits)),
+            "hits": hits,
+            "next_after_id": result.get("next_after_id"),
+        }
 
     async def get_restriction(self, restriction_id: str) -> dict[str, Any] | None:
         """One restriction with full provenance and its direct graph neighbours."""
