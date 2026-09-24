@@ -156,9 +156,9 @@ Urban API layers → data gate → resolved requirements
 `request_id` сервис сначала отдаёт сохранённый буфер событий; завершённый pipeline
 не запускает вычисления повторно.
 
-События `feature_collection` сохранены. Для каждой нормы отдельно отдаются слои
-«Нарушения» и «Проверено без нарушений», если соответствующий `result_mode`
-разрешает их вернуть.
+События `feature_collection`: для каждой нарушенной нормы отдельно отдаётся слой
+«Нарушение нормы — …», а перед ссылкой на отчёт — один общий слой «Объекты без
+нарушений» со всеми проверенными объектами, которые не нарушили ни одной нормы.
 
 ## ChatStorage и повтор расчёта
 
@@ -167,6 +167,12 @@ Urban API layers → data gate → resolved requirements
 `requirement_resolution`, `compliance_result` и `compliance_summary` не включаются
 в сообщение MongoDB, чтобы объёмные результаты проверки не превышали лимит BSON.
 Полные результаты остаются доступны в SSE-потоке и Redis-журнале текущего запроса.
+
+Из вызовов получения данных (`GetServices`, `GetPhysicalObjects`,
+`GetFunctionalZones`) в историю попадают только те, что вернули объекты. Клиент,
+открывающий чат заново, повторяет сохранённые вызовы через ChatStorage и показывает
+их результаты слоями; вызов без объектов (тип зоны, которого нет в сценарии)
+превращался бы в пустой слой с одним `meta`.
 
 При восстановлении слоёв ChatStorage повторяет сохранённые стабильные MCP-вызовы и
 подставляет заново полученные слои в новые геометрические инструменты. Это
@@ -256,7 +262,13 @@ Only non-empty violation layers are emitted, as `feature_collection` events name
 If the document name is missing, the label is `Источник не указан`. A short SP
 designation is extracted from a full document title when available; other document
 names are retained. Repeated layer names receive a numeric suffix, never a UUID.
-Passed checks and non-executed checks emit no map layers. `compliance_result` and
+Passed and non-executed checks emit no per-norm layers. Instead, right before the
+report `file` frame (after the final `chunk`), one `feature_collection` named
+`Объекты без нарушений` merges every checked object that passed at least one norm
+and violated none (`services/compilance/compliance_layers.py`). Each object appears
+once, keyed by `object_ref.id`; per-norm verdict fields are dropped and
+`passed_norms` lists the document/clause references it passed, equivalent norms
+included. The layer is omitted when no checked object is compliant. `compliance_result` and
 `compliance_summary.results` retain verdicts, coverage, source and evidence but
 omit `violated_features` and `passed_features`; geometry is not duplicated there.
 The final text lists each violated norm by document/clause, its requirement
@@ -308,6 +320,11 @@ deterministically from `compliance_summary` by
 
 `unverifiable`, `unsupported` and `not_applicable` norms appear only in the
 counters. Without a checked norm no report and no `file` event are produced.
+
+`PUBLIC_BASE_URL` must be the public origin through which clients reach the agents
+app (for the Urban Assistant proxy, e.g. `https://<host>/gmart`). Left empty, the
+links are relative (`/files/…`) and a client served from another origin resolves
+them against itself, receiving its own page instead of the report.
 
 The file is written to the container's temp directory (no volume) and served by
 `StaticFiles` mounted at `/files`, behind `OwnedFilesApp`: a Bearer token is

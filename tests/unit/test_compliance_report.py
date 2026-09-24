@@ -233,7 +233,7 @@ def test_report_is_not_built_without_checked_norms():
     )
 
 
-def _service(file_store, compliance="violated"):
+def _service(file_store, compliance="violated", passed_features=None):
     service = object.__new__(RestrictionParserService)
     service.file_store = file_store
     service.state_store = SimpleNamespace(
@@ -265,6 +265,7 @@ def _service(file_store, compliance="violated"):
                 "violated": violated,
             }
         ],
+        passed_features=passed_features,
     )
     service.compliance_executor = SimpleNamespace(
         execute=AsyncMock(
@@ -310,6 +311,36 @@ async def test_pipeline_closes_stream_with_report_file_event(tmp_path):
     assert store.metadata("compliance_report", file_id)["owner"] == "user-1"
     content = (store.data_dir / "compliance_report" / file_id).read_text("utf-8")
     assert content.startswith("# Отчёт о проверке соответствия нормам")
+
+
+async def test_compliant_objects_layer_comes_right_before_the_report(tmp_path):
+    road = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [30.0, 60.0]},
+        "properties": {
+            "name": "Дорога",
+            "object_ref": {"id": "physical_object/1", "name": "Дорога"},
+            "compliance_status": "passed",
+            "restriction_id": "r1",
+        },
+    }
+    service = _service(
+        TemporaryFileStore(tmp_path),
+        compliance="passed",
+        passed_features={"type": "FeatureCollection", "features": [road]},
+    )
+    events = await _run(service)
+
+    assert [event["type"] for event in events][-3:] == [
+        "chunk",
+        "feature_collection",
+        "file",
+    ]
+    layer = events[-2]["content"]
+    assert layer["name"] == "Объекты без нарушений"
+    (feature,) = layer["feature_collection"]["features"]
+    assert feature["properties"]["passed_norms"] == ["СП 42.13330.2016, п. 7.1"]
+    assert "restriction_id" not in feature["properties"]
 
 
 @pytest.mark.parametrize("with_store, owner", [(False, "user-1"), (True, None)])

@@ -33,6 +33,10 @@ from src.agents.services.compilance.compliance_dedup import group_checks
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
 )
+from src.agents.services.compilance.compliance_layers import (
+    PASSED_OBJECTS_LAYER,
+    passed_objects_layer,
+)
 from src.agents.services.compilance.compliance_metrics import COMPLIANCE_METRICS
 from src.agents.services.compilance.compliance_report import (
     REPORT_MIME_TYPE,
@@ -998,6 +1002,12 @@ class RestrictionParserService(BaseLlmService):
             request_id,
             self._chunk(summary_text, done=True),
         )
+        # Compliant objects share one layer, sent right before the report: without
+        # it a run with no violations leaves the map empty.
+        passed_layer = passed_objects_layer(results)
+        if passed_layer is not None:
+            for item in self._feature_collections({PASSED_OBJECTS_LAYER: passed_layer}):
+                yield await self._buf(request_id, item)
         # The report link closes the stream, after the final answer text.
         report_event = self._compliance_report_event(
             {**summary, "skipped_without_plan": skipped_without_plan},
