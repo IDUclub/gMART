@@ -29,8 +29,8 @@ class DvdMcpClient(BaseMcpClient):
     Exposed IDU_DVD MCP tools (see IDU_DVD/src/mcp_server/server.py):
     ``search_texts`` / ``search_tables`` / ``search_all`` (vector search), ``list_documents``,
     ``document_versions``, ``find_document``, ``get_document``, ``get_tags``,
-    ``pending_references`` and ``job_status``. The RAG pipeline uses the search tools and
-    ``get_tags`` (planner hints).
+    ``pending_references``, ``get_node`` and ``job_status``. The RAG pipeline uses the
+    search tools, ``get_tags`` (planner hints) and ``get_node`` (completing cut fragments).
     """
 
     def __init__(
@@ -115,11 +115,41 @@ class DvdMcpClient(BaseMcpClient):
         self._log_hits(tool_name, query, result)
         return result
 
+    async def get_node(self, node_id: str) -> dict[str, Any]:
+        """One fragment with its reading-order neighbours ``prev`` / ``next``."""
+        node = self._to_dict(
+            await self.execute_tool(
+                "get_node",
+                {"node_id": node_id, "with_children": False, "with_neighbours": True},
+            )
+        )
+        if not isinstance(node, dict):
+            return {}
+        for key in ("prev", "next", "parent"):
+            if node.get(key) is not None:
+                node[key] = self._to_dict(node[key])
+        return node
+
     async def get_tags(self) -> list[str]:
         """All tags present in the shared IDU_DVD corpus."""
         result = self._to_dict(await self.execute_tool("get_tags", {}))
         tags = result.get("tags") if isinstance(result, dict) else None
         return [str(tag) for tag in tags or [] if str(tag).strip()]
+
+    async def get_node(self, node_id: str) -> dict[str, Any]:
+        """One fragment with its reading-order neighbours ``prev`` and ``next``."""
+        node = self._to_dict(
+            await self.execute_tool(
+                "get_node",
+                {"node_id": node_id, "with_children": False, "with_neighbours": True},
+            )
+        )
+        if not isinstance(node, dict):
+            return {}
+        for key in ("prev", "next"):
+            if node.get(key) is not None:
+                node[key] = self._to_dict(node[key])
+        return node
 
     @staticmethod
     def _log_hits(tool: str, query: str | None, result: dict[str, Any]) -> None:
