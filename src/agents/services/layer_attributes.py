@@ -29,7 +29,7 @@ _RESTRICTIONS = _fields(
     """buffer_size | buffer_type | restriction_title | restriction_name |
     restriction_description | restriction_id | restriction_evidence |
     compliance_status | verification_status | compliance_evidence |
-    origin | provenance | violated | generator_ref | generator_refs"""
+    origin | provenance | violated | generator_ref | generator_refs | passed_norms"""
 )
 _PROVISION = _fields(
     """population | demand | demand_left | capacity | capacity_left | service_load |

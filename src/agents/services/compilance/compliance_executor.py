@@ -39,6 +39,19 @@ class ComplianceExecution:
     timings_ms: dict[str, float]
 
 
+def _has_features(*layers: Any) -> bool:
+    """Whether any retrieved layer holds an object.
+
+    Retrieval calls go to the chat history, and a client that reopens the chat
+    replays them into map layers. A call that found nothing (a zone type absent
+    from the scenario, an entity no catalogue name matches) would reappear as an
+    empty layer, so only calls that returned objects are recorded.
+    """
+    return any(
+        isinstance(layer, dict) and bool(layer.get("features")) for layer in layers
+    )
+
+
 class ComplianceTemplateExecutor:
     def __init__(
         self,
@@ -371,7 +384,8 @@ class ComplianceTemplateExecutor:
                 mcp_client, tool_name, arguments
             )
             layers.update(response or {})
-            calls.append({"function": {"name": tool_name, "arguments": arguments}})
+            if _has_features(*(response or {}).values()):
+                calls.append({"function": {"name": tool_name, "arguments": arguments}})
 
         for requirement in (
             item
@@ -393,9 +407,10 @@ class ComplianceTemplateExecutor:
             response = response or {}
             if "functional_zones" in response:
                 layers[requirement.entity] = response["functional_zones"]
-            calls.append(
-                {"function": {"name": "GetFunctionalZones", "arguments": arguments}}
-            )
+            if _has_features(response.get("functional_zones")):
+                calls.append(
+                    {"function": {"name": "GetFunctionalZones", "arguments": arguments}}
+                )
         return layers, calls
 
     @staticmethod
