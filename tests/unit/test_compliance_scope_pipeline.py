@@ -9,6 +9,7 @@ from src.agents.services.compilance.compliance_scope import (
     ComplianceScope,
     ScopeOutcome,
 )
+from src.agents.services.compilance.compliance_territory import TerritoryDocuments
 from src.agents.services.pipeline_state import PipelineStep
 from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
@@ -28,8 +29,17 @@ _CHOICE = {
 }
 
 
+# Documents in force on the scenario's territory (IDU_DVD).
+_IN_FORCE = ("СП 42.13330.2011", "СП 42.13330.2016")
+
+
 def _service(*, pending=None, outcome=None, reply=None, restrictions=()):
     service = object.__new__(RestrictionParserService)
+    service.compliance_territory = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=TerritoryDocuments(status="ok", allowed=_IN_FORCE)
+        )
+    )
     service.state_store = SimpleNamespace(
         exists=AsyncMock(return_value=False),
         new_request_id=lambda: "request-1",
@@ -136,7 +146,10 @@ async def test_reply_to_the_choice_checks_the_original_request_with_its_document
         "document_names": ["СП 42.13330.2016"],
     }
     assert service.executed_with["scope"] == ComplianceScope(
-        topics=("школа",), entities=("школа",), documents=("СП 42.13330.2016",)
+        topics=("школа",),
+        entities=("школа",),
+        documents=("СП 42.13330.2016",),
+        allowed_documents=_IN_FORCE,
     )
     saved = {
         call.args[1]: call.args[2]
@@ -170,9 +183,12 @@ async def test_reconnect_after_a_question_replays_it_without_rerunning():
     )
     service.state_store.get_checkpoint = AsyncMock(
         return_value={
+            PipelineStep.COMPLIANCE_TERRITORY: TerritoryDocuments(
+                status="ok", allowed=_IN_FORCE
+            ).to_dict(),
             PipelineStep.COMPLIANCE_SCOPE: ScopeOutcome(
                 kind="choice", message="Выберите", choice=_CHOICE
-            ).to_dict()
+            ).to_dict(),
         }
     )
 
@@ -206,7 +222,9 @@ async def test_new_request_instead_of_a_choice_drops_it():
 
     service.state_store.set_compliance_choice.assert_awaited_once_with("chat-1", None)
     service.compliance_scope.resolve.assert_awaited_once()
-    assert service.normgraph_retriever.retrieve.await_args.kwargs["filters"] == {}
+    assert service.normgraph_retriever.retrieve.await_args.kwargs["filters"] == {
+        "document_names": list(_IN_FORCE)
+    }
 
 
 async def test_filtered_check_without_executable_norms_explains_and_stops():

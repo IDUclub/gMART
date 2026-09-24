@@ -115,6 +115,22 @@ class DvdMcpClient(BaseMcpClient):
         self._log_hits(tool_name, query, result)
         return result
 
+    async def list_documents(
+        self, scenario_id: str | int | None = None
+    ) -> list[dict[str, Any]]:
+        """Shared documents per ``(name, version)``; ``scenario_id`` keeps those in force there.
+
+        In force means under the scenario's project boundary, inside and above it
+        (federal, regional and municipal documents of those territories).
+        """
+
+        arguments: dict[str, Any] = {}
+        if scenario_id is not None:
+            arguments["scenario_id"] = str(scenario_id)
+        result = self._to_dict(await self.execute_tool("list_documents", arguments))
+        documents = result.get("documents") if isinstance(result, dict) else None
+        return [self._to_dict(item) for item in documents or []]
+
     async def get_node(self, node_id: str) -> dict[str, Any]:
         """One fragment with its reading-order neighbours ``prev`` / ``next``."""
         node = self._to_dict(

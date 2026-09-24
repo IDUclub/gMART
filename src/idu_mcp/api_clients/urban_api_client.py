@@ -175,6 +175,21 @@ class UrbanApiClient:
             for physical_object_type in physical_objects_types
         ]
 
+    async def get_scenario_project_id(self, scenario_id: int, token: str) -> int:
+        """Return the id of the project the scenario belongs to."""
+
+        scenario = await self.json_handler.get(
+            f"v1/scenarios/{scenario_id}", auth_token=token
+        )
+        return int(scenario["project"]["project_id"])
+
+    async def get_project_territory(self, project_id: int, token: str) -> dict:
+        """Return the project boundary record (``geometry`` in EPSG:4326)."""
+
+        return await self.json_handler.get(
+            f"v1/projects/{project_id}/territory", auth_token=token
+        )
+
     async def get_functional_zone_sources(
         self, scenario_id: int, token: str
     ) -> list[dict]:

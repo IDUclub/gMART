@@ -1,7 +1,7 @@
 from typing import Any, Literal
 
 from geojson_pydantic import FeatureCollection
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.agents.common.exceptions.sse_exceptions import SseBaseError
 from src.agents.schema.file_event import FileEventContent
@@ -28,7 +28,9 @@ class StatusResponse(BaseModel):
         "template_execution",
         "verdict_aggregation",
         "compliance_result_analysis",
+        "compliance_territory",
         "compliance_scope",
+        "restriction_zones",
     ]
     text: str
 
@@ -116,6 +118,42 @@ class ComplianceSummaryEventContent(BaseModel):
     results: list[ComplianceResult]
     # Topic entities and documents the norms were filtered by; absent for a full audit.
     scope: dict[str, Any] | None = None
+    # How many graph documents are (not) in force on the scenario's territory.
+    territory: dict[str, Any] | None = None
+
+
+class RestrictionZoneEventContent(BaseModel):
+    """One norm's area on the scenario; the geometry is a feature_collection."""
+
+    restriction_id: str
+    template: str
+    template_version: int
+    status: Literal["shown", "no_objects", "unverifiable", "unsupported"]
+    zone_kind: Literal["restriction", "required"]
+    zone_count: int
+    skipped_objects: int = 0
+    description: dict[str, Any] = Field(default_factory=dict)
+    missing_requirements: list[str] = Field(default_factory=list)
+    source: dict[str, Any] = Field(default_factory=dict)
+
+
+class RestrictionInventoryEventContent(BaseModel):
+    """Totals of a «какие ограничения есть» run."""
+
+    request_id: str
+    mode: Literal["inventory"]
+    total_norms: int
+    shown_norms: int
+    restriction_zones: int
+    required_zones: int
+    no_objects_norms: int
+    unverifiable_norms: int
+    unsupported_norms: int
+    zones: list[RestrictionZoneEventContent]
+    duplicate_checks: int = 0
+    skipped_without_plan: int = 0
+    scope: dict[str, Any] | None = None
+    territory: dict[str, Any] | None = None
 
 
 class ComplianceProgressEventContent(BaseModel):
@@ -145,6 +183,8 @@ class RestrictionsResponse(BaseModel):
         "compliance_result",
         "compliance_progress",
         "compliance_summary",
+        "restriction_zone",
+        "restriction_inventory",
         "file",
     ]
     content: (
@@ -162,5 +202,7 @@ class RestrictionsResponse(BaseModel):
         | ComplianceResult
         | ComplianceProgressEventContent
         | ComplianceSummaryEventContent
+        | RestrictionZoneEventContent
+        | RestrictionInventoryEventContent
         | FileEventContent
     )

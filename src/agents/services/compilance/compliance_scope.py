@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from loguru import logger
@@ -25,6 +25,8 @@ from src.agents.services.normgraph.normgraph_reasoning import _request_json
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
+
+ScopeMode = Literal["check", "inventory"]
 
 MAX_TOPICS = 5
 MAX_CHOICE_OPTIONS = 10
@@ -114,23 +116,49 @@ def _overlap(reference: str, name: str) -> int:
 
 @dataclass(frozen=True)
 class ComplianceScope:
-    """Resolved filters of one compliance run; empty means the full corpus."""
+    """Resolved filters of one compliance run; empty means the full corpus.
+
+    ``mode`` is ``check`` (verdicts per norm) or ``inventory`` (the areas the
+    norms govern, «какие ограничения есть на территории»). ``allowed_documents``
+    are the documents in force on the scenario's territory; ``None`` leaves the
+    corpus unrestricted by territory.
+    """
 
     topics: tuple[str, ...] = ()
     entities: tuple[str, ...] = ()
     documents: tuple[str, ...] = ()
+    mode: ScopeMode = "check"
+    allowed_documents: tuple[str, ...] | None = None
 
     @property
     def is_filtered(self) -> bool:
+        """Whether the user narrowed the norms (the territory does not count)."""
         return bool(self.entities or self.documents)
+
+    @property
+    def is_inventory(self) -> bool:
+        return self.mode == "inventory"
 
     def filters(self) -> dict[str, Any]:
         filters: dict[str, Any] = {}
         if self.entities:
             filters["entities"] = list(self.entities)
-        if self.documents:
-            filters["document_names"] = list(self.documents)
+        documents = list(self.documents)
+        if self.allowed_documents is not None:
+            allowed = set(self.allowed_documents)
+            documents = (
+                [name for name in documents if name in allowed]
+                if documents
+                else list(self.allowed_documents)
+            )
+            # A chosen document out of force leaves nothing, never the whole corpus.
+            filters["document_names"] = documents
+        elif documents:
+            filters["document_names"] = documents
         return filters
+
+    def with_territory(self, allowed: tuple[str, ...] | None) -> "ComplianceScope":
+        return replace(self, allowed_documents=allowed)
 
     def label(self) -> str:
         parts = []
@@ -145,6 +173,7 @@ class ComplianceScope:
             "topics": list(self.topics),
             "entities": list(self.entities),
             "documents": list(self.documents),
+            "mode": self.mode,
             "label": self.label(),
         }
 
@@ -155,6 +184,7 @@ class ComplianceScope:
             topics=tuple(data.get("topics") or ()),
             entities=tuple(data.get("entities") or ()),
             documents=tuple(data.get("documents") or ()),
+            mode="inventory" if data.get("mode") == "inventory" else "check",
         )
 
 
@@ -195,6 +225,8 @@ class ChoiceReply:
 
 
 class ScopeRequest(BaseModel):
+    # A free string: an unexpected value from the model means a check, not a failure.
+    mode: str = "check"
     topics: list[str] = Field(default_factory=list)
     documents: list[str] = Field(default_factory=list)
 
@@ -232,10 +264,15 @@ def render_choice(choice: dict[str, Any]) -> str:
     topics = choice.get("topics") or []
     about = " по теме " + ", ".join(f"«{topic}»" for topic in topics) if topics else ""
     references = ", ".join(f"«{ref}»" for ref in choice.get("references") or [])
+    purpose = (
+        ", ограничения из которого показать"
+        if choice.get("mode") == "inventory"
+        else " для проверки норм"
+    )
     if choice.get("matched"):
         header = (
             f"Не удалось однозначно определить документ {references}. "
-            f"Выберите документ для проверки норм{about}:"
+            f"Выберите документ{purpose}{about}:"
         )
     else:
         header = (
@@ -267,12 +304,17 @@ class ComplianceScopeResolver:
         model: str,
         user_query: str,
         history: list[dict] | None = None,
+        allowed_documents: tuple[str, ...] | None = None,
     ) -> ScopeOutcome:
+        """``allowed_documents`` limit the documents offered or accepted by name."""
         if _looks_like_choice(user_query):
             # No list is pending (or it expired): «2» names nothing to check and must
             # not start a check of every norm.
             return ScopeOutcome(kind="empty", message=_NO_PENDING_CHOICE)
         request = await self._extract(model, user_query, history)
+        mode: ScopeMode = (
+            "inventory" if request.mode.strip().casefold() == "inventory" else "check"
+        )
         topics = _unique(request.topics)[:MAX_TOPICS]
         exact_refs = parse_reference(user_query).document_names
         described = [
@@ -285,7 +327,7 @@ class ComplianceScopeResolver:
             )
         ]
         if not topics and not exact_refs and not described:
-            return ScopeOutcome(kind="scoped")
+            return ScopeOutcome(kind="scoped", scope=ComplianceScope(mode=mode))
 
         entities: list[str] = []
         if topics:
@@ -295,7 +337,7 @@ class ComplianceScopeResolver:
                 return ScopeOutcome(
                     kind="empty",
                     message=(
-                        "Проверка не выполнена: в графе норм нет объектов, "
+                        f"{_not_done(mode)}: в графе норм нет объектов, "
                         "соответствующих теме "
                         + ", ".join(f"«{topic}»" for topic in missing)
                         + ". Уточните тему — например, назовите вид объектов "
@@ -303,11 +345,13 @@ class ComplianceScopeResolver:
                     ),
                 )
             entities = sorted({key for keys in by_topic.values() for key in keys})
-        scope = ComplianceScope(topics=tuple(topics), entities=tuple(entities))
+        scope = ComplianceScope(
+            topics=tuple(topics), entities=tuple(entities), mode=mode
+        )
         if not exact_refs and not described:
             return ScopeOutcome(kind="scoped", scope=scope)
         return await self._resolve_documents(
-            client, user_query, scope, exact_refs, described
+            client, user_query, scope, exact_refs, described, allowed_documents
         )
 
     async def resolve_choice(
@@ -372,14 +416,18 @@ class ComplianceScopeResolver:
         """Explain a scoped check with no executable norm and name where they exist."""
 
         lines = [
-            f"Проверка не выполнена: по условиям ({scope.label()}) нет норм "
+            f"{_not_done(scope.mode)}: по условиям ({scope.label()}) нет норм "
             "с исполнимым планом проверки. "
             f"Найдено норм по условиям: {found}, исполнимых из них: 0."
         ]
+        filters: dict[str, Any] = {}
+        if scope.entities:
+            filters["entities"] = list(scope.entities)
+        if scope.allowed_documents is not None:
+            # Only documents in force on the territory are worth naming.
+            filters["document_names"] = list(scope.allowed_documents)
         documents = await client.list_restriction_documents(
-            executable_only=True,
-            limit=MAX_CHOICE_OPTIONS,
-            **({"entities": list(scope.entities)} if scope.entities else {}),
+            executable_only=True, limit=MAX_CHOICE_OPTIONS, **filters
         )
         about = (
             " по теме " + ", ".join(f"«{topic}»" for topic in scope.topics)
@@ -396,7 +444,12 @@ class ComplianceScopeResolver:
         elif scope.topics:
             lines += [
                 "",
-                f"Исполнимых норм{about} нет ни в одном документе графа норм.",
+                f"Исполнимых норм{about} нет ни в одном документе графа норм"
+                + (
+                    ", действующем на территории сценария."
+                    if scope.allowed_documents is not None
+                    else "."
+                ),
             ]
         return "\n".join(lines)
 
@@ -498,15 +551,17 @@ class ComplianceScopeResolver:
         scope: ComplianceScope,
         exact_refs: list[str],
         described: list[str],
+        allowed_documents: tuple[str, ...] | None = None,
     ) -> ScopeOutcome:
         topic_filter = {"entities": list(scope.entities)} if scope.entities else {}
         pool = await client.list_restriction_documents(
             executable_only=True, limit=DOCUMENT_POOL_LIMIT, **topic_filter
         )
+        in_force = set(allowed_documents) if allowed_documents is not None else None
         executable = {
             item["name"]: int(item.get("executable_count") or 0)
             for item in pool
-            if item.get("name")
+            if item.get("name") and (in_force is None or item["name"] in in_force)
         }
         catalogue = [
             item["name"]
@@ -519,8 +574,14 @@ class ComplianceScopeResolver:
         selected: list[str] = []
         ambiguous: list[str] = []
         unresolved: list[str] = list(described)
+        out_of_force: list[str] = []
         for ref in exact_refs:
             matches = [name for name in catalogue if designates(ref, name)]
+            if in_force is not None and matches:
+                if not any(name in in_force for name in matches):
+                    out_of_force.append(ref)
+                    continue
+                matches = [name for name in matches if name in in_force]
             if len(matches) == 1:
                 selected.append(matches[0])
             elif matches:
@@ -528,6 +589,17 @@ class ComplianceScopeResolver:
                 unresolved.append(ref)
             else:
                 unresolved.append(ref)
+        if out_of_force and not selected and not unresolved:
+            return ScopeOutcome(
+                kind="empty",
+                scope=scope,
+                message=(
+                    f"{_not_done(scope.mode)}: "
+                    + ", ".join(f"«{ref}»" for ref in out_of_force)
+                    + " не действует на территории сценария. Применяются только "
+                    "документы, действующие на ней."
+                ),
+            )
         if not unresolved:
             return ScopeOutcome(
                 kind="scoped",
@@ -535,6 +607,7 @@ class ComplianceScopeResolver:
                     topics=scope.topics,
                     entities=scope.entities,
                     documents=tuple(_unique(selected)),
+                    mode=scope.mode,
                 ),
             )
 
@@ -559,16 +632,18 @@ class ComplianceScopeResolver:
                 if scope.topics
                 else ""
             )
+            where = "на территории сценария" if in_force is not None else "в графе норм"
             return ScopeOutcome(
                 kind="empty",
                 scope=scope,
                 message=(
-                    f"Проверка не выполнена: документов с исполнимыми нормами{about} "
-                    "в графе норм нет."
+                    f"{_not_done(scope.mode)}: документов с исполнимыми "
+                    f"нормами{about} {where} нет."
                 ),
             )
         choice = {
             "query": user_query,
+            "mode": scope.mode,
             "topics": list(scope.topics),
             "entities": list(scope.entities),
             "documents": _unique(selected),
@@ -590,6 +665,15 @@ def scope_for_choice(
         topics=tuple(choice.get("topics") or ()),
         entities=tuple(choice.get("entities") or ()),
         documents=tuple(_unique([*(choice.get("documents") or []), *documents])),
+        mode="inventory" if choice.get("mode") == "inventory" else "check",
+    )
+
+
+def _not_done(mode: ScopeMode) -> str:
+    return (
+        "Перечень ограничений не составлен"
+        if mode == "inventory"
+        else "Проверка не выполнена"
     )
 
 
@@ -634,12 +718,19 @@ def _by_numbers(numbers: list[int], candidates: list[str]) -> ChoiceReply:
     )
 
 
-_SCOPE_PROMPT = f"""Ты разбираешь запрос на проверку объектов сценария на соответствие \
-градостроительным нормам. Определи, чем пользователь ограничивает проверку. Верни только \
-валидный JSON без markdown и пояснений:
-{json.dumps({"topics": ["тема"], "documents": ["документ"]}, ensure_ascii=False)}
+_SCOPE_PROMPT = f"""Ты разбираешь запрос к агенту градостроительных норм сценария. \
+Определи, что просит пользователь и чем он ограничивает нормы. Верни только валидный \
+JSON без markdown и пояснений:
+{json.dumps({"mode": "check", "topics": ["тема"], "documents": ["документ"]}, ensure_ascii=False)}
 
 Правила:
+- mode — "inventory", если пользователь хочет узнать, какие ограничения, нормы или \
+требования действуют на территории проекта или сценария, где и что нельзя или можно \
+строить, какие зоны ограничений есть: «какие ограничения есть на территории проекта?», \
+«что ограничивает застройку?», «покажи зоны ограничений», «какие ограничения дают \
+школы?». mode — "check", если он просит проверить соответствие, найти нарушения, \
+узнать, соблюдаются ли нормы: «проверь нормы», «есть ли нарушения», «соответствует ли \
+застройка СП 42». Если сомневаешься — "check".
 - topics — виды объектов или застройки, нормы о которых нужно проверить: «школа», \
 «жилой дом», «детский сад», «жилая застройка», «автозаправочная станция». Пиши каждую \
 тему в именительном падеже единственного числа, без слов «нормы», «ограничения», \

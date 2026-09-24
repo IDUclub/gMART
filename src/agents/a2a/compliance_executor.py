@@ -17,6 +17,7 @@ from src.agents.services.restriction.restriction_parser_service import (
 )
 
 if TYPE_CHECKING:
+    from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
     from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 
@@ -26,10 +27,14 @@ A2AEventData = dict[str, Any]
 
 @dataclass(frozen=True)
 class ComplianceMcpClients:
-    """Scenario layers come from idu_mcp, the norms from NormGraph (optional)."""
+    """Scenario layers come from idu_mcp, the norms from NormGraph (optional).
+
+    IDU_DVD tells which documents are in force on the scenario's territory.
+    """
 
     idu: "IduMcpClient"
     normgraph: "NormGraphMcpClient | None"
+    dvd: "DvdMcpClient | None" = None
 
 
 class ComplianceAgentExecutor:
@@ -107,6 +112,7 @@ class ComplianceAgentExecutor:
             async for item in self.restriction_service.run_compliance_pipeline(
                 mcp_client=clients.idu,
                 normgraph_mcp_client=clients.normgraph,
+                dvd_mcp_client=clients.dvd,
                 token=token,
                 temperature=execution["temperature"],
                 model=execution["model"],
@@ -203,7 +209,7 @@ class ComplianceAgentExecutor:
             self.task_store.add_or_append_artifact(task_id, artifact, append=False)
             return self._artifact_update(task_id, context_id, artifact, append=False)
 
-        if item_type in {"compliance_summary", "file"}:
+        if item_type in {"compliance_summary", "restriction_inventory", "file"}:
             artifact = self._data_artifact(
                 f"compliance-{item_type.removeprefix('compliance_')}",
                 item_type,

@@ -136,6 +136,40 @@ class UrbanApiTool:
             ),
         }
 
+    async def get_project_territory(
+        self, scenario_id: int, token: str
+    ) -> dict[str, dict]:
+        """Return the scenario's project boundary as a one-feature layer."""
+
+        project_id = await self.client.get_scenario_project_id(scenario_id, token)
+        territory = await self.client.get_project_territory(project_id, token)
+        geometry = territory.get("geometry")
+        features = (
+            [
+                {
+                    "type": "Feature",
+                    "geometry": geometry,
+                    "properties": {
+                        "name": "Территория проекта",
+                        "object_type": "project_territory",
+                    },
+                }
+            ]
+            if geometry
+            else []
+        )
+        return {
+            "project_territory": {
+                "type": "FeatureCollection",
+                "features": features,
+                "meta": {
+                    "complete": True,
+                    "truncated": False,
+                    "revision": f"project:{project_id}:territory",
+                },
+            }
+        }
+
     async def get_functional_zones(
         self,
         scenario_id: int,

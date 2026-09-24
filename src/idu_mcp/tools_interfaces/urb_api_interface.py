@@ -174,6 +174,26 @@ async def resolve_urban_entity_types(
 
 
 @urban_api_mcp.tool(
+    name="GetProjectTerritory",
+    title="Получить территорию проекта",
+    description=(
+        "Получить границу проектной территории сценария одним объектом GeoJSON в WGS84 "
+        "(EPSG:4326). Ответ: {'project_territory': FeatureCollection}; у проекта без "
+        "границы слой пустой."
+    ),
+    tags=tools_tags,
+    annotations={"title": "GET project territory", "readOnlyHint": True},
+    meta={"author": "ICII"},
+)
+async def get_project_territory(
+    scenario_id: Annotated[int, "ID сценария из Urban API"],
+    user_id: str = Depends(extract_user_id),
+    urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
+) -> dict[str, dict]:
+    return await urban_api_tools.get_project_territory(scenario_id, user_id)
+
+
+@urban_api_mcp.tool(
     name="GetFunctionalZones",
     title="Получить функциональные зоны",
     description=(

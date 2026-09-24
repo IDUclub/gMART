@@ -549,6 +549,7 @@ class OrchestratorService(BaseLlmService):
             return self.restriction_service.run_compliance_pipeline(
                 mcp_client=idu_mcp_client,
                 normgraph_mcp_client=normgraph_mcp_client,
+                dvd_mcp_client=dvd_mcp_client,
                 token=token,
                 temperature=temperature,
                 model=model,
