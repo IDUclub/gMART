@@ -26,6 +26,16 @@ class ScenarioEntityRequest(BaseModel):
 
     operation: Literal["count", "list", "map", "unsupported"]
     requested_type: str | None
+    requested_types: list[str] | None = None
+
+    def types(self) -> list[str]:
+        names = [self.requested_type, *(self.requested_types or [])]
+        return list(dict.fromkeys(n.strip() for n in names if n and n.strip()))
+
+
+def several_types(name: str) -> bool:
+    """«школы и детские сады» — one type field that names a list of types."""
+    return bool(re.search(r"[,;]|\s(?:и|или|а также)\s", name, re.I))
 
 
 def entity_request_messages(query: str) -> list[dict]:
@@ -36,10 +46,13 @@ def entity_request_messages(query: str) -> list[dict]:
                 "Определи только намерение запроса, не ищи данные и не оценивай существование объектов. "
                 "Верни JSON: operation=count для количества сущностей одного типа; list для списка/таблицы; "
                 "map для карты. requested_type — запрошенный тип словами пользователя. "
+                "Если спрашивают только количество сущностей нескольких перечисленных типов "
+                "(«сколько школ и детских садов»), верни operation=count, requested_type=null и "
+                "requested_types — список этих типов словами пользователя. "
                 "Неизвестные, вымышленные и отсутствующие типы тоже являются допустимыми запросами. "
                 "unsupported и requested_type=null нужны только для других задач или дополнительных "
-                "условий: этажи, адрес, радиус, вместимость, сравнение, окружение, несколько типов, "
-                "подсчёт самих типов, показатели или свойства. Не теряй условия запроса. "
+                "условий: этажи, адрес, радиус, вместимость, сравнение, окружение, список или карта "
+                "нескольких типов, подсчёт самих типов, показатели или свойства. Не теряй условия запроса. "
                 "Вопросы об объектах одного типа в выбранном сценарии всегда поддерживаются независимо "
                 "от того, есть ли такой тип или его объекты в базе."
             ),
