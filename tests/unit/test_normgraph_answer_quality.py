@@ -72,7 +72,35 @@ def test_version_taken_from_the_document_code_is_not_a_redaction(name, version, 
 
 def test_header_omits_a_bogus_redaction():
     context = NormGraphContextBuilder().build_context([HIT])
-    assert context.startswith("[1] СП 2.4.3648-20, п. 5.4 (id: r1)")
+    assert context.startswith("[1] СП 2.4.3648-20, п. 5.4\n")
+
+
+def test_context_never_shows_restriction_ids_to_the_model():
+    other = {
+        **HIT,
+        "id": "7f3a9c",
+        "provenance": {"name": "СП 42.13330", "numbering": "7.2"},
+    }
+    context = NormGraphContextBuilder().build_context(
+        [HIT, other],
+        conflicts=[
+            {"restriction": HIT, "other": other, "reason": "разные расстояния"},
+            {
+                "restriction": HIT,
+                "other": {"id": "zz", "provenance": {"name": "СанПиН"}},
+            },
+        ],
+    )
+
+    assert "r1" not in context and "7f3a9c" not in context and "zz" not in context
+    assert "- [1] СП 2.4.3648-20 п.5.4 vs [2] СП 42.13330 п.7.2" in context
+    assert "vs СанПиН [possible]" in context
+
+
+def test_critic_prompt_no_longer_asks_for_restriction_ids():
+    prompt = NormGraphAnswerCritic._prompt()
+    assert "restriction_id" not in prompt
+    assert "системные идентификаторы" in prompt
 
 
 # ── grounding of values ─────────────────────────────────────────────────

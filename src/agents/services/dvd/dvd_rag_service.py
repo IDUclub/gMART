@@ -70,6 +70,7 @@ from src.agents.services.dvd.retry_policy import (
     retrieval_key,
 )
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
+from src.agents.services.readable_refs import NO_SYSTEM_IDS_RULE
 from src.agents.services.service_entities.dvd_plan import (
     SearchKind,
     validate_retrieval_plan,
@@ -1172,6 +1173,7 @@ class DvdRagService(BaseLlmService):
             "- Если данных во фрагментах недостаточно — прямо сообщи об этом.\n"
             "- Ссылайся на источники: название документа, редакцию и номер пункта "
             "(можно через номера [1], [2]… из фрагментов).\n"
+            f"- {NO_SYSTEM_IDS_RULE}\n"
             "- Отвечай на русском языке, ясно и по существу.\n"
             "- Не оформляй ответ таблицей: перечни давай маркированным списком, "
             "одно утверждение в строке, с меткой источника в той же строке.\n\n"
@@ -2057,9 +2059,8 @@ class DvdRagService(BaseLlmService):
                 "code": "project_id_unavailable",
                 "scenario_id": scenario_id,
                 "message": (
-                    f"Не удалось получить идентификатор проекта (project_id) по "
-                    f"scenario_id={scenario_id}. Фильтр проекта не будет сохранён, "
-                    "выполнение запроса продолжается."
+                    "Не удалось определить проект выбранного сценария. Фильтр проекта "
+                    "не будет сохранён, выполнение запроса продолжается."
                 ),
             },
         }

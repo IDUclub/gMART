@@ -237,9 +237,10 @@ class ScenarioExecutionContext(BaseModel):
         }
 
     def failure_note(self, reasons: list[str]) -> str:
+        """Explain an incomplete result to the user by step purposes and requirement
+        descriptions — never by step, requirement or tool identifiers."""
         attempted = [
-            f"{attempt.group}.{attempt.tool_name}"
-            + (f" — {attempt.error}" if attempt.error else "")
+            f"«{attempt.purpose}»" + (f" — {attempt.error}" if attempt.error else "")
             for attempt in self.attempts
             if attempt.status in {AttemptStatus.FAILED, AttemptStatus.SKIPPED}
         ]
@@ -249,12 +250,12 @@ class ScenarioExecutionContext(BaseModel):
             if attempt.status == AttemptStatus.COMPLETED
             for requirement in attempt.satisfies
         }
-        all_requirements = {
-            str(requirement.get("requirement_id"))
+        open_requirements = [
+            str(requirement.get("description") or requirement["requirement_id"])
             for requirement in self.requirements
             if requirement.get("requirement_id")
-        }
-        open_requirements = sorted(all_requirements - completed)
+            and str(requirement["requirement_id"]) not in completed
+        ]
         chunks = ["Не удалось получить результат полностью."]
         if attempted:
             chunks.append("Проверенные пути: " + "; ".join(attempted[-6:]) + ".")

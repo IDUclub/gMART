@@ -34,12 +34,16 @@ class NormGraphContextBuilder:
     numbered, citable context string for the LLM.
 
     Each restriction becomes a block headed by
-    ``[N] <document>, ред. <version>, п. <numbering> (id: <restriction_id>) — <breadcrumb>``
+    ``[N] <document>, ред. <version>, п. <numbering> — <breadcrumb>``
     followed by two labelled lines: ``Структура`` (the extracted triple — our own notation,
     never to be quoted as document text) and ``Текст пункта`` (the clause sentence the
     triple was extracted from, the only quotable text). A separate
     "Обнаруженные противоречия" block lists any ``list_conflicts`` results so the critic can
     require them to be surfaced in the answer.
+
+    Restriction ids never reach the model: whatever it sees it may repeat to the user, who
+    reads documents and clauses, not graph keys. A conflict names its restrictions by their
+    ``[N]`` labels instead.
     """
 
     MAX_EXCERPT_CHARS = 1200
@@ -52,10 +56,13 @@ class NormGraphContextBuilder:
         conflicts: list[dict[str, Any]] | None = None,
     ) -> str:
         blocks: list[str] = []
+        labels: dict[str, int] = {}
         index = 1
 
         for hit in hits or []:
             blocks.append(self._format_restriction(index, hit))
+            if hit.get("id"):
+                labels.setdefault(str(hit["id"]), index)
             index += 1
 
         for neighbor in neighbors or []:
@@ -64,6 +71,8 @@ class NormGraphContextBuilder:
             blocks.append(
                 self._format_restriction(index, restriction, relation=relation)
             )
+            if restriction.get("id"):
+                labels.setdefault(str(restriction["id"]), index)
             index += 1
 
         for hit in dvd_fallback or []:
@@ -73,7 +82,7 @@ class NormGraphContextBuilder:
         context = "\n\n".join(blocks)
 
         if conflicts:
-            conflicts_block = self._format_conflicts(conflicts)
+            conflicts_block = self._format_conflicts(conflicts, labels)
             context = f"{context}\n\n{conflicts_block}" if context else conflicts_block
 
         return context
@@ -88,10 +97,7 @@ class NormGraphContextBuilder:
             header_bits.append(f"ред. {version}")
         if numbering := provenance.get("numbering"):
             header_bits.append(f"п. {numbering}")
-        restriction_id = hit.get("id")
         header = ", ".join(header_bits)
-        if restriction_id:
-            header += f" (id: {restriction_id})"
         if relation:
             header += f" [{relation}]"
         if breadcrumb := provenance.get("breadcrumb"):
@@ -138,7 +144,9 @@ class NormGraphContextBuilder:
         return f"{header}\n{text}" if text else header
 
     @staticmethod
-    def _format_conflicts(conflicts: list[dict[str, Any]]) -> str:
+    def _format_conflicts(
+        conflicts: list[dict[str, Any]], labels: dict[str, int] | None = None
+    ) -> str:
         lines = ["Обнаруженные противоречия:"]
         for conflict in conflicts:
             restriction = conflict.get("restriction") or {}
@@ -146,16 +154,19 @@ class NormGraphContextBuilder:
             severity = conflict.get("severity") or "possible"
             reason = conflict.get("reason") or ""
             lines.append(
-                f"- {NormGraphContextBuilder._short_ref(restriction)} vs "
-                f"{NormGraphContextBuilder._short_ref(other)} "
+                f"- {NormGraphContextBuilder._short_ref(restriction, labels)} vs "
+                f"{NormGraphContextBuilder._short_ref(other, labels)} "
                 f"[{severity}]: {reason}"
             )
         return "\n".join(lines)
 
     @staticmethod
-    def _short_ref(restriction: dict[str, Any]) -> str:
+    def _short_ref(
+        restriction: dict[str, Any], labels: dict[str, int] | None = None
+    ) -> str:
         provenance = restriction.get("provenance") or {}
         name = provenance.get("name") or "?"
-        numbering = provenance.get("numbering") or "?"
-        restriction_id = restriction.get("id") or "?"
-        return f"{name} п.{numbering} (id: {restriction_id})"
+        numbering = provenance.get("numbering")
+        reference = f"{name} п.{numbering}" if numbering else name
+        label = (labels or {}).get(str(restriction.get("id") or ""))
+        return f"[{label}] {reference}" if label else reference

@@ -231,9 +231,11 @@ def test_failure_note_reports_attempts_before_honest_refusal():
 
     note = context.failure_note(["не получен требуемый слой"])
 
-    assert "GetScenarioServices" in note
-    assert "service unavailable" in note
-    assert "clinics" in note
+    assert "«Получить поликлиники» — service unavailable" in note
+    assert "Не закрыты требования: Получить поликлиники сценария." in note
+    # Step, requirement and tool identifiers are not for the user.
+    assert "GetScenarioServices" not in note
+    assert "clinics" not in note
 
 
 def test_only_transient_tool_errors_are_retried():

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 import geopandas as gpd
 import pandas as pd
 
 from src.idu_mcp.tools_services.entites.buffer_type_enum import BufferTypeEnum
+
+_PLACEHOLDER_NAME = re.compile(r"^\(?\s*безымянн", re.IGNORECASE)
 
 
 class GeometryTools:
@@ -42,9 +45,13 @@ class GeometryTools:
         if geometry_id is not None:
             uid += f"/geometry/{geometry_id}"
 
+        # Urban API names an object without a name "(Безымянный физический объект)";
+        # the address, else the layer, reads better, and an id is not a name.
         raw_name = cls._plain(row.get("name"))
+        if isinstance(raw_name, str) and _PLACEHOLDER_NAME.match(raw_name.strip()):
+            raw_name = None
         raw_address = cls._plain(row.get("address"))
-        display_name = raw_name or raw_address or f"{layer_name} #{entity_id}"
+        display_name = raw_name or raw_address or f"{layer_name} (без названия)"
         return {
             "id": uid,
             "namespace": namespace,
