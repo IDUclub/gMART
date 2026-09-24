@@ -20,10 +20,13 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.model_clients.llm_base import LlmChatResponse, LlmResponseError
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.dvd.answer_generation import StreamingTableRewriter
 from src.agents.services.normgraph.normgraph_context import NormGraphContextBuilder
 from src.agents.services.normgraph.normgraph_reasoning import (
+    PLACEMENT_KINDS,
     NormGraphAnswerCritic,
     NormGraphRetrievalPlanner,
+    is_placement_question,
 )
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.service_entities.normgraph_plan import (
@@ -40,6 +43,10 @@ _EXECUTION_MODE = "normgraph_search"
 _QA_PROGRESS = "qa_progress"
 # How many top hits get a list_conflicts pass when the plan asks for a conflict check.
 _CONFLICT_CHECK_TOP_N = 5
+# Heading NormGraphContextBuilder gives the list_conflicts block.
+_CONFLICTS_HEADER = "Обнаруженные противоречия:"
+# A grounded draft needs low variance; the request default suits free chat, not norms.
+_ANSWER_TEMPERATURE = 0.2
 
 
 class NormGraphRagService(BaseLlmService):
@@ -260,6 +267,9 @@ class NormGraphRagService(BaseLlmService):
         prev_query: str | None = progress.get("prev_query")
         prev_object: str | None = progress.get("prev_object")
         empty_tool: str | None = progress.get("empty_tool")
+        # A placement kind filter that already returned nothing is not applied again.
+        kinds_empty = bool(progress.get("kinds_empty"))
+        placement = is_placement_question(user_query)
         start_iteration = int(progress.get("completed_iterations", 0)) + 1
         final_iteration = start_iteration
 
@@ -297,6 +307,10 @@ class NormGraphRagService(BaseLlmService):
                         "subject": None,
                     }
                 )
+            if placement and not kinds_empty and plan.kind is None:
+                # Without it a placement question gets the facility's premises and
+                # equipment requirements, which mention the same object.
+                plan = plan.model_copy(update={"kinds": list(PLACEMENT_KINDS)})
 
             # ── Step 2: execute the primary NormGraph tool ──────────────────
             yield await self._buf(
@@ -360,6 +374,11 @@ class NormGraphRagService(BaseLlmService):
                 prev_query = plan.search_query
                 prev_object = plan.object
                 empty_tool = plan.primary_tool
+                # An empty object lookup says nothing about the kinds; a text search
+                # that found nothing with them does.
+                kinds_empty = kinds_empty or (
+                    bool(plan.kinds) and plan.primary_tool == PrimaryTool.SEARCH
+                )
                 await self._save_progress(
                     request_id,
                     collected,
@@ -369,6 +388,7 @@ class NormGraphRagService(BaseLlmService):
                     prev_query=prev_query,
                     prev_object=prev_object,
                     empty_tool=empty_tool,
+                    kinds_empty=kinds_empty,
                 )
                 continue
 
@@ -407,7 +427,7 @@ class NormGraphRagService(BaseLlmService):
                 model,
                 user_query,
                 context,
-                temperature,
+                min(temperature, _ANSWER_TEMPERATURE),
                 history,
                 iteration,
                 revision_note,
@@ -473,6 +493,7 @@ class NormGraphRagService(BaseLlmService):
                 prev_critique=prev_critique,
                 prev_query=prev_query,
                 prev_object=prev_object,
+                kinds_empty=kinds_empty,
             )
 
         # Defensive: the last iteration always accepts above, so this is normally unreachable
@@ -499,6 +520,7 @@ class NormGraphRagService(BaseLlmService):
                 "object": plan.object,
                 "subject": plan.subject,
                 "kind": plan.kind,
+                "kinds": plan.kinds,
                 "document_names": plan.document_names,
                 "limit": plan.limit,
             }
@@ -509,6 +531,7 @@ class NormGraphRagService(BaseLlmService):
             arguments = {
                 "query": plan.search_query,
                 "kind": plan.kind,
+                "kinds": plan.kinds,
                 "document_names": plan.document_names,
                 "doc_type": plan.doc_type,
                 "corpus": plan.corpus,
@@ -567,6 +590,8 @@ class NormGraphRagService(BaseLlmService):
             note = f"объект: {plan.object}"
         else:
             note = "поиск"
+        if plan.kinds:
+            note += ", нормы размещения"
         if plan.check_conflicts:
             note += ", проверка противоречий"
         return note
@@ -585,19 +610,34 @@ class NormGraphRagService(BaseLlmService):
         iteration: int,
         revision_note: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        rules = [
+            "Не выдумывай нормы, значения и положения, которых нет в контексте.",
+            "Если данных в контексте недостаточно — прямо сообщи об этом.",
+            "Используй только ограничения, которые прямо отвечают на вопрос. Остальные "
+            "не упоминай, даже если они есть в контексте: например, на вопрос о "
+            "размещении объекта не приводи требования к его помещениям и оборудованию, "
+            "на вопрос о школах — нормы для других учреждений.",
+            "По каждому ограничению укажи значение, условие применения и источник: "
+            "номер [N] из контекста, документ и пункт.",
+            "В кавычках «» приводи только дословный «Текст пункта». Строка «Структура» "
+            "служебная: не цитируй её как текст документа.",
+            "Не толкуй нормы и не расшифровывай сокращения, если толкования или "
+            "расшифровки нет в контексте.",
+            "Не используй таблицы: оформляй ответ списком.",
+            "Отвечай на русском языке, ясно и по существу.",
+        ]
+        if _CONFLICTS_HEADER in context:
+            rules.append(
+                "В контексте есть раздел «Обнаруженные противоречия» — обязательно "
+                "упомяни его и предупреди пользователя о расхождении норм."
+            )
         system = (
             "Ты — ассистент-эксперт по нормативным ограничениям в сфере градостроительства "
             "и городского планирования (СП/СНиП/ГОСТ/СанПиН). Отвечай на вопрос пользователя "
             "СТРОГО на основании приведённых ограничений. Правила:\n"
-            "- Не выдумывай нормы, значения и положения, которых нет в контексте.\n"
-            "- Если данных в контексте недостаточно — прямо сообщи об этом.\n"
-            "- Обязательно ссылайся на источники по каждому приведённому ограничению: "
-            "название документа, редакция, номер пункта (через номера [1], [2]… из контекста).\n"
-            "- Если в контексте есть раздел «Обнаруженные противоречия» — обязательно "
-            "упомяни его в ответе и предупреди пользователя о расхождении норм.\n"
-            "- Отвечай на русском языке, ясно и по существу.\n\n"
-            f"Контекст (найденные ограничения):\n"
-            f"{context or '(релевантные ограничения не найдены)'}"
+            + "".join(f"- {rule}\n" for rule in rules)
+            + "\nКонтекст (найденные ограничения):\n"
+            + (context or "(релевантные ограничения не найдены)")
         )
         if revision_note:
             system += (
@@ -610,6 +650,9 @@ class NormGraphRagService(BaseLlmService):
             {"role": "user", "content": user_query},
         ]
         response_buffer: list[str] = []
+        # gpt-oss writes tables for overviews despite the rule; rows are released as a
+        # list once the table ends, the rest of the draft streams unchanged.
+        rewriter = StreamingTableRewriter()
         async for part in await self.llm_client.chat(
             model,
             messages,
@@ -623,8 +666,12 @@ class NormGraphRagService(BaseLlmService):
             # ``done`` is forced False here; finality is decided by the loop after the
             # critic accepts a draft (a single done=True chunk is emitted at the end).
             yield self._chunk(
-                part.message.content or "", done=False, iteration=iteration
+                rewriter.feed(part.message.content or ""),
+                done=False,
+                iteration=iteration,
             )
+        if tail := rewriter.flush():
+            yield self._chunk(tail, done=False, iteration=iteration)
         logger.debug(
             f"NormGraph answer draft {iteration} [{model}]: {''.join(response_buffer)}"
         )
@@ -651,6 +698,7 @@ class NormGraphRagService(BaseLlmService):
         prev_query: str | None = None,
         prev_object: str | None = None,
         empty_tool: str | None = None,
+        kinds_empty: bool = False,
     ) -> None:
         await self.state_store.save_checkpoint(
             request_id,
@@ -665,6 +713,7 @@ class NormGraphRagService(BaseLlmService):
                 "prev_query": prev_query,
                 "prev_object": prev_object,
                 "empty_tool": empty_tool,
+                "kinds_empty": kinds_empty,
             },
         )
 

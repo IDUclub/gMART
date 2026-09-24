@@ -18,6 +18,10 @@ def _is_token_expired(exc: Exception) -> bool:
 
 
 class BaseMcpClient:
+    # Per-call read timeout in seconds; ``None`` keeps FastMCP's default (no limit).
+    # Without one, a server that dies mid-call leaves the request waiting forever.
+    tool_timeout: float | None = None
+
     def __init__(self, mcp_client: MCPClient):
 
         self.mcp_client: MCPClient = mcp_client
@@ -95,7 +99,12 @@ class BaseMcpClient:
     ):
         try:
             async with self.mcp_client as mcp:
-                result = await mcp.call_tool(tool_name, arguments, meta=meta or {})
+                result = await mcp.call_tool(
+                    tool_name,
+                    arguments,
+                    meta=meta or {},
+                    timeout=self.tool_timeout,
+                )
                 if log:
                     logger.info(
                         f"Executed tool with meta {result.meta} and data {result.data}"

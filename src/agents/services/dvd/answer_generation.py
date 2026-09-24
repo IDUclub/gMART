@@ -92,6 +92,54 @@ def tables_to_lists(text: str) -> str:
     return "\n".join(out)
 
 
+class StreamingTableRewriter:
+    """``tables_to_lists`` for a streamed draft.
+
+    Ordinary text passes through as it arrives. Lines that start with ``|`` are held
+    until the block ends, then released rewritten, so the reader never sees a table
+    that is later replaced. ``flush`` releases whatever is held at the end.
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""  # start of the current line, undecided (blank or a row)
+        self._passing = False  # the current line is plain text, already released
+        self._held: list[str] = []  # complete lines of a possible table
+
+    def _release_held(self) -> str:
+        text = "".join(line + "\n" for line in self._held)
+        self._held = []
+        return tables_to_lists(text[:-1]) + "\n" if text else ""
+
+    def feed(self, text: str) -> str:
+        out: list[str] = []
+        segments = text.split("\n")
+        for index, segment in enumerate(segments):
+            terminated = index < len(segments) - 1
+            if self._passing:
+                out.append(segment + ("\n" if terminated else ""))
+                self._passing = not terminated
+                continue
+            self._pending += segment
+            stripped = self._pending.lstrip()
+            if terminated:
+                if stripped.startswith("|"):
+                    self._held.append(self._pending)
+                else:
+                    out.append(self._release_held() + self._pending + "\n")
+                self._pending = ""
+            elif stripped and not stripped.startswith("|"):
+                out.append(self._release_held() + self._pending)
+                self._pending, self._passing = "", True
+        return "".join(out)
+
+    def flush(self) -> str:
+        pending, self._pending, self._passing = self._pending, "", False
+        if pending.lstrip().startswith("|"):
+            self._held.append(pending)
+            return self._release_held()[:-1]
+        return self._release_held() + pending
+
+
 def append_continuation(prefix: str, addition: str) -> str:
     if prefix and addition.startswith(prefix):
         return addition

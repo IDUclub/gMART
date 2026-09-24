@@ -1,6 +1,31 @@
 from __future__ import annotations
 
+import re
 from typing import Any
+
+_UNKNOWN_VERSIONS = {"", "unknown", "none", "null", "-", "—"}
+
+
+def display_version(name: str, version: str | None) -> str | None:
+    """A redaction worth printing, or ``None``.
+
+    IDU_DVD fills ``version`` with a number taken from the document code or date
+    («СП 2.4.3648-20» → «3648», «… от 4 декабря 2017 г.» → «2017»); printed as
+    «ред. 3648» it reads as a redaction that does not exist. When no edition is known it
+    stores the designation itself, which would only repeat the name.
+    """
+    version = (version or "").strip()
+    if version.casefold() in _UNKNOWN_VERSIONS:
+        return None
+    if " ".join(version.casefold().split()) == " ".join(
+        (name or "").casefold().split()
+    ):
+        return None
+    if re.fullmatch(r"\d+", version) and re.search(
+        rf"(?<!\d){version}(?!\d)", name or ""
+    ):
+        return None
+    return version
 
 
 class NormGraphContextBuilder:
@@ -10,8 +35,9 @@ class NormGraphContextBuilder:
 
     Each restriction becomes a block headed by
     ``[N] <document>, ред. <version>, п. <numbering> (id: <restriction_id>) — <breadcrumb>``
-    followed by the triple (``subject → object | kind | value``) and the verbatim clause
-    excerpt, so the answering model can cite by number and by ``restriction_id``. A separate
+    followed by two labelled lines: ``Структура`` (the extracted triple — our own notation,
+    never to be quoted as document text) and ``Текст пункта`` (the clause sentence the
+    triple was extracted from, the only quotable text). A separate
     "Обнаруженные противоречия" block lists any ``list_conflicts`` results so the critic can
     require them to be surfaced in the answer.
     """
@@ -58,7 +84,7 @@ class NormGraphContextBuilder:
         provenance = hit.get("provenance") or {}
         name = provenance.get("name") or "Документ без названия"
         header_bits = [f"[{index}] {name}"]
-        if version := provenance.get("version"):
+        if version := display_version(name, provenance.get("version")):
             header_bits.append(f"ред. {version}")
         if numbering := provenance.get("numbering"):
             header_bits.append(f"п. {numbering}")
@@ -76,7 +102,9 @@ class NormGraphContextBuilder:
         if len(excerpt) > self.MAX_EXCERPT_CHARS:
             excerpt = excerpt[: self.MAX_EXCERPT_CHARS].rstrip() + " […]"
 
-        body_lines = [line for line in (triple, excerpt) if line]
+        body_lines = [f"Структура (служебная, не цитата): {triple}"]
+        if excerpt:
+            body_lines.append(f"Текст пункта: «{excerpt}»")
         body = "\n".join(body_lines)
         return f"{header}\n{body}" if body else header
 

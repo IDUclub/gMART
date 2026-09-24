@@ -29,6 +29,17 @@ class FakeClient:
         self.calls.append(("restrictions_applicable", arguments))
         return {"hits": self.hits}
 
+    async def list_restrictions(self, limit, after_id=None):
+        self.calls.append(("list_restrictions", {"limit": limit, "after_id": after_id}))
+        ids = [hit["id"] for hit in self.hits]
+        start = 0 if after_id is None else ids.index(after_id) + 1
+        rows = self.hits[start : start + limit + 1]
+        more = len(rows) > limit
+        return {
+            "hits": rows[:limit],
+            "next_after_id": rows[limit - 1]["id"] if more else None,
+        }
+
 
 @pytest.mark.asyncio
 async def test_retriever_keeps_only_canonical_metric_restrictions():
@@ -202,10 +213,28 @@ async def test_compliance_retrieval_fetches_all_norms_without_llm_limit():
     )
 
     assert len(result.restrictions) == 300
+    # keyset pages within NormGraph's 500-row cap, never one corpus-sized window
     assert client.calls == [
-        ("search_restrictions", {"limit": 256, "neighbors_depth": 0}),
-        ("search_restrictions", {"limit": 512, "neighbors_depth": 0}),
+        ("list_restrictions", {"limit": 200, "after_id": None}),
+        ("list_restrictions", {"limit": 200, "after_id": "r-199"}),
     ]
+    assert result.tool_call["function"]["name"] == "list_restrictions"
+
+
+@pytest.mark.asyncio
+async def test_compliance_retrieval_rejects_a_cursor_that_does_not_advance():
+    class StuckClient(FakeClient):
+        async def list_restrictions(self, limit, after_id=None):
+            return {"hits": self.hits[:1], "next_after_id": "r-0"}
+
+    retriever = NormGraphRestrictionRetriever(llm_client=None)
+    with pytest.raises(RuntimeError, match="did not advance"):
+        await retriever.retrieve(
+            StuckClient([{"id": "r-0"}]),
+            "model",
+            "Проверь соответствие проекта",
+            retrieve_all=True,
+        )
 
 
 @pytest.mark.parametrize(
