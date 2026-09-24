@@ -3,7 +3,29 @@ import json
 import geopandas as gpd
 import pandas as pd
 
+from src.agents.services.readable_refs import object_label, readable_name
+
 MAX_AFFECTED_OBJECT_DETAILS = 10
+
+
+def _readable_reason(reason) -> dict:
+    """One restriction evidence item as the model may repeat it: names, no ids."""
+    if not isinstance(reason, dict):
+        return {"причина": str(reason)}
+    generator = reason.get("generator_ref")
+    provenance = reason.get("provenance") or {}
+    document = readable_name(provenance.get("document_name") or provenance.get("name"))
+    clause = provenance.get("clause_number") or provenance.get("numbering")
+    readable = {
+        "причина": reason.get("reason"),
+        "ограничение": reason.get("title"),
+        "описание": reason.get("description"),
+        "расстояние_м": reason.get("distance_m"),
+        "слой_источника": reason.get("source_layer"),
+        "источник": object_label(generator) if isinstance(generator, dict) else None,
+        "документ": f"{document}, п. {clause}" if document and clause else document,
+    }
+    return {key: value for key, value in readable.items() if value not in (None, "")}
 
 
 class RestrictionContextBuilder:
@@ -102,10 +124,12 @@ class RestrictionContextBuilder:
             object_ref = row.get("object_ref") or {}
             details.append(
                 {
-                    "object_id": object_ref.get("id"),
-                    "object_name": object_ref.get("name"),
+                    "object_name": object_label(object_ref),
                     "layer": row.get("source_layer"),
-                    "reasons": row.get("restriction_evidence") or [],
+                    "reasons": [
+                        _readable_reason(reason)
+                        for reason in row.get("restriction_evidence") or []
+                    ],
                 }
             )
         return json.dumps(

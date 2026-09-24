@@ -167,8 +167,6 @@ class DvdContextBuilder:
             header_bits.append(f"{label} {numbering}")
         if fragment_name := hit.get("fragment_name"):
             header_bits.append(fragment_name)
-        if not compact and (node_id := hit.get("id")):
-            header_bits.append(f"node_id={node_id}")
         if not compact and hit.get("matched") is not None:
             header_bits.append("полный исходный текст фрагмента")
         header = header_bits[0] + (
@@ -194,7 +192,6 @@ class DvdContextBuilder:
                 index,
                 {
                     **hit,
-                    "id": None,
                     "breadcrumb": None,
                     "fragment_name": (
                         hit.get("fragment_name")

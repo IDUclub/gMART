@@ -531,7 +531,7 @@ class ScenarioDataService(BaseLlmService):
                         + [
                             {
                                 "step_id": f"{kind.value}_types",
-                                "purpose": "Получить актуальный справочник типов и сопоставить ID",
+                                "purpose": "Получить актуальный справочник типов и сопоставить их с сущностями сценария",
                             }
                             for kind in type_intent.kinds
                         ],

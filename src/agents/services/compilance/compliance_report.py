@@ -15,6 +15,7 @@ from src.agents.services.compilance.compliance_sources import (
     merged_sources,
     source_reference,
 )
+from src.agents.services.readable_refs import object_label
 
 REPORT_SLOT = "compliance_report"
 REPORT_TITLE = "Отчёт о проверке соответствия нормам"
@@ -275,10 +276,7 @@ def _violators(result: dict[str, Any]) -> list[str]:
         "| ---: | --- | --- | --- | --- |",
     ]
     for index, item in enumerate(violations[:MAX_VIOLATORS_PER_NORM], 1):
-        obj = item.get("object_ref") or {}
-        name = obj.get("name") or obj.get("id") or "—"
-        if obj.get("id") and obj.get("id") != name:
-            name += f" (`{obj['id']}`)"
+        name = object_label(item.get("object_ref"))
         lines.append(
             f"| {index} | {_cell(name)} | {_cell(_measured(item))} "
             f"| {_cell(_condition(item))} | {_cell(_related(item))} |"
@@ -324,8 +322,7 @@ def _related(item: dict[str, Any]) -> str:
     for single in ("generator_ref", "zone_ref"):
         if item.get(single) and item[single] not in refs:
             refs.append(item[single])
-    names = list(dict.fromkeys(ref.get("name") or ref.get("id") for ref in refs))
-    names = [name for name in names if name]
+    names = list(dict.fromkeys(object_label(ref) for ref in refs if ref))
     if not names:
         return "—"
     text = "; ".join(names[:3])

@@ -29,6 +29,7 @@ from src.agents.services.normgraph.normgraph_reasoning import (
     is_placement_question,
 )
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
+from src.agents.services.readable_refs import NO_SYSTEM_IDS_RULE
 from src.agents.services.service_entities.normgraph_plan import (
     NormGraphPlan,
     PrimaryTool,
@@ -62,7 +63,7 @@ class NormGraphRagService(BaseLlmService):
         3. CONFLICT_CHECK — if the plan asked for it, ``list_conflicts`` is run over the top hits
            and merged into the context so contradicting restrictions get surfaced.
         4. ANSWER_DRAFTING — the answer is streamed to the client, grounded in the retrieved
-           restrictions and required to cite them (document, clause, restriction id).
+           restrictions and required to cite them (document and clause, never ids).
         5. SELF_REVIEW — a critic LLM checks the draft against the context (grounding, citations,
            conflict coverage). If rejected, a refined query/object is planned and the answer is
            rewritten on fresh context. The loop repeats up to ``MAX_ITERATIONS`` rounds.
@@ -624,6 +625,7 @@ class NormGraphRagService(BaseLlmService):
             "Не толкуй нормы и не расшифровывай сокращения, если толкования или "
             "расшифровки нет в контексте.",
             "Не используй таблицы: оформляй ответ списком.",
+            NO_SYSTEM_IDS_RULE,
             "Отвечай на русском языке, ясно и по существу.",
         ]
         if _CONFLICTS_HEADER in context:
@@ -798,9 +800,8 @@ class NormGraphRagService(BaseLlmService):
                 "code": "project_id_unavailable",
                 "scenario_id": scenario_id,
                 "message": (
-                    f"Не удалось получить идентификатор проекта (project_id) по "
-                    f"scenario_id={scenario_id}. Фильтр проекта не будет сохранён, "
-                    "выполнение запроса продолжается."
+                    "Не удалось определить проект выбранного сценария. Фильтр проекта "
+                    "не будет сохранён, выполнение запроса продолжается."
                 ),
             },
         }

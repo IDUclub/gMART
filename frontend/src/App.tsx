@@ -1037,9 +1037,7 @@ export default function App() {
     if (event.type === "step_started") {
       answerIteration.current = undefined;
       if (event.content?.step_id) {
-        updateStatus(
-          event.content?.purpose || `Выполняю ${event.content.step_id}`,
-        );
+        updateStatus(event.content?.purpose || "Выполняю шаг плана");
         return;
       }
       const step = event.content?.step,

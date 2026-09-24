@@ -59,6 +59,7 @@ from src.agents.services.pipeline_state import (
     PipelineStatus,
     PipelineStep,
 )
+from src.agents.services.readable_refs import NO_SYSTEM_IDS_RULE
 from src.agents.services.restriction.restriction_catalog import (
     RestrictionPlanBuilder,
     normalize_name,
@@ -1221,6 +1222,7 @@ class RestrictionParserService(BaseLlmService):
                 "content": f"""Коротко и дружелюбно объясни пользователю, почему для его запроса выбраны такие параметры.
                 Пиши обычным человеческим языком, без технических терминов.
                 Не упоминай JSON, модель, инструмент, пайплайн, схему, поля или внутренние названия.
+                {NO_SYSTEM_IDS_RULE}
                 Не спорь с пользователем и не перегружай деталями.
                 Объясни:
                 - что выбрано как источник построения зон;
@@ -1267,12 +1269,13 @@ class RestrictionParserService(BaseLlmService):
                 "content": f"""Дай комментарий к запросу пользователя на основе контекста статистики сгенерированных слоёв.
                 Ответ давай только в виде обычного текста. Внимательно анализируй предоставленную в контексте информацию.
                 Сообщи общее число затронутых объектов. Для каждого объекта из
-                affected_objects назови его понятное имя, составной object_id, применённое
-                ограничение и причину попадания. Если details_truncated=true, явно скажи,
-                что полный перечень находится в возвращённом GeoJSON. Если объектов нет,
-                сообщи об этом прямо. Не показывай программный код.
-                В качестве нормативных отсылок используй название документа, номер пункта
-                и restriction_id только тогда, когда они есть в evidence/provenance.
+                affected_objects назови его имя, применённое ограничение и причину
+                попадания. Если details_truncated=true, явно скажи, что полный перечень
+                объектов показан на карте. Если объектов нет, сообщи об этом прямо.
+                Не показывай программный код.
+                В качестве нормативной отсылки используй название документа и номер пункта,
+                только когда они есть в причинах.
+                {NO_SYSTEM_IDS_RULE}
 
                 Контекст для ответа:
 
@@ -1344,9 +1347,9 @@ class RestrictionParserService(BaseLlmService):
                 )
             return (
                 f"Проверка завершена: под заданные ограничения попали "
-                f"{affected_count} объектов. Полный перечень объектов возвращён в GeoJSON; "
-                "для каждого объекта там указаны понятное имя, составной идентификатор, "
-                "применённое ограничение и причина геометрического пересечения."
+                f"{affected_count} объектов. Полный перечень объектов показан на карте: "
+                "для каждого объекта указаны его имя, применённое ограничение и причина "
+                "геометрического пересечения."
             )
         return (
             "Проверка завершена. Полный результат возвращён в GeoJSON вместе с объектами "
@@ -1637,6 +1640,15 @@ class RestrictionParserService(BaseLlmService):
             }
 
     @staticmethod
+    def _document_reference(provenance) -> str | None:
+        """The rule's document and clause by name: the model repeats what it sees."""
+        if provenance is None or not provenance.document_name:
+            return None
+        if provenance.clause_number:
+            return f"{provenance.document_name}, п. {provenance.clause_number}"
+        return provenance.document_name
+
+    @staticmethod
     def _plan_summary(plan: RestrictionPlan) -> dict:
         return {
             "mode": plan.mode.value,
@@ -1648,11 +1660,8 @@ class RestrictionParserService(BaseLlmService):
                     "distance_m": rule.buffer_size,
                     "title": rule.title,
                     "origin": rule.origin,
-                    "restriction_id": rule.restriction_id,
-                    "provenance": (
-                        rule.provenance.model_dump(mode="json")
-                        if rule.provenance
-                        else None
+                    "document": RestrictionParserService._document_reference(
+                        rule.provenance
                     ),
                 }
                 for rule in plan.buffer_rules
@@ -1664,11 +1673,8 @@ class RestrictionParserService(BaseLlmService):
                     "title": rule.title,
                     "description": rule.description,
                     "origin": rule.origin,
-                    "restriction_id": rule.restriction_id,
-                    "provenance": (
-                        rule.provenance.model_dump(mode="json")
-                        if rule.provenance
-                        else None
+                    "document": RestrictionParserService._document_reference(
+                        rule.provenance
                     ),
                 }
                 for rule in plan.restriction_rules
