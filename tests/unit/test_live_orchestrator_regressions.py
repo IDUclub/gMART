@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.agents.services.compilance.compliance_scope import ScopeOutcome
 from src.agents.services.dvd.dvd_reasoning import RetrievalPlanner
 from src.agents.services.provision.provision_plan_builder import ProvisionPlanBuilder
 from src.agents.services.restriction.restriction_parser_service import (
@@ -95,6 +96,9 @@ async def test_compliance_does_not_generate_plans_when_graph_is_empty(distance):
     service._buf = AsyncMock(side_effect=lambda _id, event: event)
     service.compliance_result_harness = SimpleNamespace(
         prepare_follow_up=lambda *args: None
+    )
+    service.compliance_scope = SimpleNamespace(
+        resolve=AsyncMock(return_value=ScopeOutcome(kind="scoped"))
     )
     service.normgraph_retriever = SimpleNamespace(
         retrieve=AsyncMock(

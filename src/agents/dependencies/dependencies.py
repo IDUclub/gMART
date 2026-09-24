@@ -19,6 +19,9 @@ from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 from src.agents.mcp_clients.pzz_mcp_client import PzzMcpClient
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
 from src.agents.services.a2a_service import A2AService
+from src.agents.services.compilance.compliance_a2a_service import (
+    ComplianceA2AService,
+)
 from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.mcp_diagnostics_service import McpDiagnosticsService
@@ -554,6 +557,19 @@ async def get_a2a_service() -> A2AService:
     if not isinstance(a2a_service, A2AService):
         raise TypeError(f"Expected A2AService, got {type(a2a_service)}")
     return a2a_service
+
+
+async def get_compliance_a2a_service() -> ComplianceA2AService:
+    """
+    Function returns A2A service for the normative compliance agent.
+    Returns:
+        ComplianceA2AService: ComplianceA2AService instance.
+    """
+
+    service = app_deps["compliance_a2a_service"]
+    if not isinstance(service, ComplianceA2AService):
+        raise TypeError(f"Expected ComplianceA2AService, got {type(service)}")
+    return service
 
 
 async def get_system_service() -> SystemService:
