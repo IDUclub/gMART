@@ -11,10 +11,15 @@ def display_version(name: str, version: str | None) -> str | None:
 
     IDU_DVD fills ``version`` with a number taken from the document code or date
     («СП 2.4.3648-20» → «3648», «… от 4 декабря 2017 г.» → «2017»); printed as
-    «ред. 3648» it reads as a redaction that does not exist.
+    «ред. 3648» it reads as a redaction that does not exist. When no edition is known it
+    stores the designation itself, which would only repeat the name.
     """
     version = (version or "").strip()
     if version.casefold() in _UNKNOWN_VERSIONS:
+        return None
+    if " ".join(version.casefold().split()) == " ".join(
+        (name or "").casefold().split()
+    ):
         return None
     if re.fullmatch(r"\d+", version) and re.search(
         rf"(?<!\d){version}(?!\d)", name or ""
