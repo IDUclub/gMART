@@ -49,6 +49,14 @@ from src.agents.services.compilance.compliance_result_harness import (
     ComplianceResultHarness,
     PreparedComplianceFollowUp,
 )
+from src.agents.services.compilance.compliance_scope import (
+    ComplianceScope,
+    ComplianceScopeResolver,
+    ScopeOutcome,
+    clarification_options,
+    render_choice,
+    scope_for_choice,
+)
 from src.agents.services.compilance.compliance_sources import (
     grouped_references,
     source_reference,
@@ -129,6 +137,7 @@ class RestrictionParserService(BaseLlmService):
         self.tool_executor = RestrictionToolExecutor()
         self.compliance_executor = ComplianceTemplateExecutor()
         self.compliance_result_harness = ComplianceResultHarness()
+        self.compliance_scope = ComplianceScopeResolver(self.llm_client)
         self.context_builder = RestrictionContextBuilder()
         self.state_store = state_store
         self.file_store = file_store
@@ -174,8 +183,14 @@ class RestrictionParserService(BaseLlmService):
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
+        conversation_key: str | None = None,
     ) -> AsyncGenerator:
-        """Run the compliance pipeline with optional normative grounding."""
+        """Run the compliance pipeline with optional normative grounding.
+
+        ``conversation_key`` names the dialogue a pending document choice belongs
+        to; it defaults to the chat id. Callers without a chat of their own (the
+        orchestrator, A2A) pass their conversation identity instead.
+        """
 
         async for item in self._run_pipeline_entry(
             mcp_client=mcp_client,
@@ -189,6 +204,7 @@ class RestrictionParserService(BaseLlmService):
             persist_history=persist_history,
             normgraph_mcp_client=normgraph_mcp_client,
             history_agent="compliance",
+            conversation_key=conversation_key,
         ):
             yield item
 
@@ -205,6 +221,7 @@ class RestrictionParserService(BaseLlmService):
         persist_history: bool = True,
         normgraph_mcp_client: NormGraphMcpClient | None = None,
         history_agent: str = "restrictions",
+        conversation_key: str | None = None,
     ) -> AsyncGenerator:
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
@@ -233,6 +250,7 @@ class RestrictionParserService(BaseLlmService):
             persist_history=persist_history,
             normgraph_mcp_client=normgraph_mcp_client,
             history_agent=history_agent,
+            conversation_key=conversation_key,
         ):
             chat_id = self._chat_id_from_storage_event(item) or chat_id
             if item.get("type") == "tool_call":
@@ -289,6 +307,7 @@ class RestrictionParserService(BaseLlmService):
         persist_history: bool = True,
         normgraph_mcp_client: NormGraphMcpClient | None = None,
         history_agent: str = "restrictions",
+        conversation_key: str | None = None,
     ) -> AsyncGenerator:
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
@@ -388,7 +407,45 @@ class RestrictionParserService(BaseLlmService):
             except Exception as exc:
                 logger.warning(f"Failed to persist user question: {exc}")
 
-        if history_agent == "compliance" and not is_reconnect:
+        # A reply to a pending document choice continues the request it answers;
+        # anything else drops the choice and is handled as a new message.
+        scope_key = conversation_key or chat_id
+        chosen_scope: ComplianceScope | None = None
+        if (
+            history_agent == "compliance"
+            and not is_reconnect
+            and scope_key
+            and normgraph_mcp_client is not None
+        ):
+            pending_choice = await self.state_store.get_compliance_choice(scope_key)
+            if pending_choice:
+                reply = await self.compliance_scope.resolve_choice(
+                    model, user_query, pending_choice
+                )
+                if reply.kind == "unresolved":
+                    question = (
+                        "Не удалось понять выбор: такого варианта нет.\n\n"
+                        + render_choice(pending_choice)
+                    )
+                    # A reconnect replays this question instead of resolving "7"
+                    # as a fresh request.
+                    await self.state_store.save_checkpoint(
+                        request_id,
+                        PipelineStep.COMPLIANCE_SCOPE,
+                        ScopeOutcome(
+                            kind="choice", message=question, choice=pending_choice
+                        ).to_dict(),
+                    )
+                    yield await self._buf(
+                        request_id, self._clarification(question, pending_choice)
+                    )
+                    await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                    return
+                await self.state_store.set_compliance_choice(scope_key, None)
+                if reply.kind == "selected":
+                    chosen_scope = scope_for_choice(pending_choice, reply.documents)
+
+        if history_agent == "compliance" and not is_reconnect and chosen_scope is None:
             prepared_follow_up = self.compliance_result_harness.prepare_follow_up(
                 user_query, chat_messages, llm_history
             )
@@ -411,6 +468,57 @@ class RestrictionParserService(BaseLlmService):
 
         checkpoint = await self.state_store.get_checkpoint(request_id)
 
+        scope = ComplianceScope()
+        if history_agent == "compliance" and normgraph_mcp_client is not None:
+            if PipelineStep.COMPLIANCE_SCOPE in checkpoint:
+                outcome = ScopeOutcome.from_dict(
+                    checkpoint[PipelineStep.COMPLIANCE_SCOPE]
+                )
+            else:
+                yield await self._buf(
+                    request_id,
+                    self._status(
+                        "compliance_scope",
+                        "Определяю темы и документы, по которым проверять нормы",
+                    ),
+                )
+                outcome = (
+                    ScopeOutcome(kind="scoped", scope=chosen_scope)
+                    if chosen_scope is not None
+                    else await self.compliance_scope.resolve(
+                        normgraph_mcp_client, model, user_query, llm_history
+                    )
+                )
+                await self.state_store.save_checkpoint(
+                    request_id, PipelineStep.COMPLIANCE_SCOPE, outcome.to_dict()
+                )
+                if outcome.kind == "choice":
+                    if scope_key:
+                        await self.state_store.set_compliance_choice(
+                            scope_key, outcome.choice
+                        )
+                    yield await self._buf(
+                        request_id,
+                        self._clarification(outcome.message or "", outcome.choice),
+                    )
+                elif outcome.kind == "empty":
+                    yield await self._buf(
+                        request_id, self._chunk(outcome.message or "", done=True)
+                    )
+                elif outcome.scope.is_filtered:
+                    yield await self._buf(
+                        request_id,
+                        self._status(
+                            "compliance_scope",
+                            f"Проверяю нормы по условиям: {outcome.scope.label()}",
+                        ),
+                    )
+            # Replayed events already carry the question or the explanation.
+            if outcome.kind != "scoped":
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
+            scope = outcome.scope
+
         normgraph_restrictions: list[dict[str, Any]] = []
         skipped_without_plan = 0
         if normgraph_mcp_client is not None:
@@ -429,6 +537,7 @@ class RestrictionParserService(BaseLlmService):
                     history=llm_history,
                     require_check_plan=history_agent == "compliance",
                     retrieve_all=history_agent == "compliance",
+                    filters=scope.filters(),
                 )
                 normgraph_restrictions = retrieval.restrictions
                 skipped_without_plan = retrieval.unsupported_count
@@ -470,6 +579,19 @@ class RestrictionParserService(BaseLlmService):
                 )
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
+            # A narrowed check with nothing executable says why and where to look,
+            # rather than widening itself to the whole corpus.
+            if scope.is_filtered and not normgraph_restrictions:
+                if PipelineStep.FINAL_RESPONSE not in checkpoint:
+                    message = await self.compliance_scope.empty_scope_message(
+                        normgraph_mcp_client, scope, found=skipped_without_plan
+                    )
+                    yield await self._buf(request_id, self._chunk(message, done=True))
+                    await self.state_store.save_checkpoint(
+                        request_id, PipelineStep.FINAL_RESPONSE, True
+                    )
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
             async for event in self._run_executable_compliance(
                 mcp_client=mcp_client,
                 request_id=request_id,
@@ -478,6 +600,7 @@ class RestrictionParserService(BaseLlmService):
                 checkpoint=checkpoint,
                 skipped_without_plan=skipped_without_plan,
                 owner=self._report_owner(token_ref[0]),
+                scope=scope,
             ):
                 yield event
             return
@@ -763,6 +886,7 @@ class RestrictionParserService(BaseLlmService):
         checkpoint: dict[str, Any],
         skipped_without_plan: int = 0,
         owner: str | None = None,
+        scope: ComplianceScope | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Execute each NormGraph CheckPlan independently and emit replayable results."""
 
@@ -979,6 +1103,8 @@ class RestrictionParserService(BaseLlmService):
         summary["equivalent_sources"] = {
             rid: sources for rid, sources in sources_by_id.items() if len(sources) > 1
         }
+        if scope is not None and scope.is_filtered:
+            summary["scope"] = scope.to_dict()
         await self.state_store.save_checkpoint(
             request_id, PipelineStep.VERDICT_AGGREGATION, summary
         )
@@ -1152,6 +1278,8 @@ class RestrictionParserService(BaseLlmService):
     def _compliance_summary_text(summary: dict[str, Any]) -> str:
         if summary["total_norms"] == 0:
             return "Нормы с исполнимыми планами не найдены. Проверка соответствия не выполнена; отсутствие проверок не подтверждает отсутствие нарушений."
+        label = (summary.get("scope") or {}).get("label")
+        scope_line = f"Область проверки — {label}.\n\n" if label else ""
         vacuous = sum(
             result.get("compliance_status") == "passed"
             and "no_applicable_objects" in (result.get("warnings") or [])
@@ -1188,7 +1316,7 @@ class RestrictionParserService(BaseLlmService):
                 unchecked = result.get("coverage", {}).get("unchecked_objects", 0)
                 detail += f" Не проверено объектов: {unchecked}."
             violations.append(detail)
-        overview = " ".join(parts)
+        overview = scope_line + " ".join(parts)
         if violations:
             return overview + "\n\nНарушенные нормы:\n\n" + "\n".join(violations)
         return overview
@@ -1615,6 +1743,13 @@ class RestrictionParserService(BaseLlmService):
     @staticmethod
     def _chunk(text: str, done: bool) -> dict:
         return {"type": "chunk", "content": {"text": text, "done": done}}
+
+    @staticmethod
+    def _clarification(question: str, choice: dict | None = None) -> dict:
+        content: dict[str, Any] = {"question": question}
+        if choice:
+            content["options"] = clarification_options(choice)
+        return {"type": "clarification", "content": content}
 
     @staticmethod
     def _tool_call(

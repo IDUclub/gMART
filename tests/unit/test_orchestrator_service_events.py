@@ -728,3 +728,70 @@ async def test_failed_first_step_keeps_the_step_running_ahead(orchestrator, fake
     assert [s["status"] for s in final["steps"]] == ["failed", "completed"]
     assert log == ["documents:start", "documents:end"]
     assert len(documents.calls) == 1
+
+
+_PENDING_CHOICE = {
+    "query": "Проверь нормы по школам из СП 42",
+    "topics": ["школа"],
+    "entities": ["школа"],
+    "documents": [],
+    "references": ["СП 42"],
+    "matched": True,
+    "candidates": [
+        {"name": "СП 42.13330.2011", "executable_count": 1},
+        {"name": "СП 42.13330.2016", "executable_count": 4},
+    ],
+}
+
+
+@pytest.mark.asyncio
+async def test_reply_to_a_pending_document_choice_goes_back_to_compliance(
+    orchestrator, fake_llm, state_store
+):
+    from src.agents.services.compilance.compliance_scope import ChoiceReply
+
+    await state_store.set_compliance_choice("chat-1", _PENDING_CHOICE)
+    orchestrator.restriction_service.compliance_scope = SimpleNamespace(
+        resolve_choice=AsyncMock(
+            return_value=ChoiceReply(kind="selected", documents=("СП 42.13330.2016",))
+        )
+    )
+    pipeline = FakePipeline(RESTRICTION_EVENTS)
+    orchestrator.restriction_service.run_compliance_pipeline = pipeline
+    fake_llm.json_responses = []  # the planner must not be asked
+
+    events = await run_pipeline(orchestrator, chat_id="chat-1", user_query="2")
+
+    [plan] = events_of_type(events, "plan")
+    assert [step["agent"] for step in plan["content"]["steps"]] == ["compliance"]
+    assert pipeline.calls[0]["user_query"] == "2"
+    assert pipeline.calls[0]["conversation_key"] == "chat-1"
+    # The compliance step consumes the choice itself.
+    assert await state_store.get_compliance_choice("chat-1") == _PENDING_CHOICE
+
+
+@pytest.mark.asyncio
+async def test_new_request_drops_a_pending_document_choice(
+    orchestrator, fake_llm, state_store
+):
+    from src.agents.services.compilance.compliance_scope import ChoiceReply
+
+    await state_store.set_compliance_choice("chat-1", _PENDING_CHOICE)
+    orchestrator.restriction_service.compliance_scope = SimpleNamespace(
+        resolve_choice=AsyncMock(return_value=ChoiceReply(kind="not_choice"))
+    )
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [{"agent": "compliance", "task": "Проверь нормы по детским садам"}]
+        )
+    ]
+    pipeline = FakePipeline(RESTRICTION_EVENTS)
+    orchestrator.restriction_service.run_compliance_pipeline = pipeline
+
+    await run_pipeline(
+        orchestrator, chat_id="chat-1", user_query="Проверь нормы по детским садам"
+    )
+
+    assert await state_store.get_compliance_choice("chat-1") is None
+    assert pipeline.calls[0]["user_query"] == "Проверь нормы по детским садам"
+    assert pipeline.calls[0]["conversation_key"] == "chat-1"

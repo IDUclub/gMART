@@ -21,6 +21,7 @@ from src.agents.a2a.a2a_format import (
     utc_now_rfc3339,
 )
 from src.agents.a2a.agent import RestrictionA2AAgent
+from src.agents.a2a.compliance_agent import ComplianceA2AAgent
 from src.agents.a2a.executor import RestrictionAgentExecutor
 from src.agents.a2a.provision_agent import ProvisionA2AAgent
 from src.agents.a2a.task_store import A2ATaskStore
@@ -419,7 +420,9 @@ async def test_stream_happy_path_emits_completed_terminal():
 # ---------------------------------------------------------------------------
 # AgentCard: required scenario-context extension + discoverable JSON input
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("agent_cls", [RestrictionA2AAgent, ProvisionA2AAgent])
+@pytest.mark.parametrize(
+    "agent_cls", [RestrictionA2AAgent, ProvisionA2AAgent, ComplianceA2AAgent]
+)
 def test_agent_card_declares_required_scenario_extension(agent_cls):
     card = agent_cls().get_agent_card("http://host:80")
     extensions = card["capabilities"]["extensions"]

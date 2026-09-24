@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.agents.schema.restrictions_response import RestrictionsResponse
+from src.agents.services.compilance.compliance_scope import ScopeOutcome
 from src.agents.services.pipeline_state import PipelineStep
 from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
@@ -276,6 +277,9 @@ async def test_compliance_large_corpus_never_reaches_llm_and_executes_individual
     service._buf = AsyncMock(side_effect=lambda _id, event: event)
     service.compliance_result_harness = SimpleNamespace(
         prepare_follow_up=lambda *args: None
+    )
+    service.compliance_scope = SimpleNamespace(
+        resolve=AsyncMock(return_value=ScopeOutcome(kind="scoped"))
     )
     service.normgraph_retriever = NormGraphRestrictionRetriever(llm)
     service._build_plan = AsyncMock(side_effect=AssertionError("No LLM replanning"))

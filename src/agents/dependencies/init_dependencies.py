@@ -16,6 +16,9 @@ from src.agents.common.files.temporary_file_store import TemporaryFileStore
 from src.agents.common.logging.log_config import config_logger
 from src.agents.common.logging.redis_logging import LoggedRedis
 from src.agents.services.a2a_service import A2AService
+from src.agents.services.compilance.compliance_a2a_service import (
+    ComplianceA2AService,
+)
 from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.normgraph.normgraph_a2a_service import NormGraphA2AService
@@ -167,6 +170,7 @@ def init_dependencies() -> dict[str, object]:
         "pzz_service": pzz_service,
         "pzz_a2a_service": PzzA2AService(pzz_service),
         "a2a_service": A2AService(restriction_parser_service),
+        "compliance_a2a_service": ComplianceA2AService(restriction_parser_service),
         "provision_a2a_service": ProvisionA2AService(provision_service),
         "dvd_a2a_service": DocumentQaA2AService(dvd_rag_service),
         "normgraph_a2a_service": NormGraphA2AService(normgraph_rag_service),

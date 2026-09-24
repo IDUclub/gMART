@@ -17,7 +17,8 @@ class NormGraphMcpClient(BaseMcpClient):
 
     Exposed NormGraph MCP tools (see NormGraph/src/mcp_server/server.py): ``search_restrictions``,
     ``restrictions_applicable``, ``get_restriction``, ``traverse_restrictions``, ``list_entities``,
-    ``list_restriction_kinds``, ``list_conflicts``, ``list_restrictions``, ``health``.
+    ``list_restriction_kinds``, ``list_conflicts``, ``list_restrictions``,
+    ``resolve_entities``, ``list_restriction_documents``, ``health``.
     """
 
     # Graph reads return in seconds (a 1024-row window took ~12 s on dev); a longer wait
@@ -174,6 +175,51 @@ class NormGraphMcpClient(BaseMcpClient):
             arguments["query"] = query
         result = await self.execute_tool("list_entities", arguments)
         return [self._to_dict(item) for item in (result or [])]
+
+    async def resolve_entities(
+        self, terms: list[str], limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """
+        Candidate canonical entities per free-text topic (name/alias/stem, then vector).
+        Returns:
+            list[dict[str, Any]]: ``[{"term", "candidates": [{"normalized", "name",
+            "aliases", "restriction_count", "executable_count", "match", "score"}]}]``.
+        """
+
+        result = await self.execute_tool(
+            "resolve_entities", {"terms": list(terms), "limit": int(limit)}
+        )
+        resolutions = [self._to_dict(item) for item in (result or [])]
+        for resolution in resolutions:
+            resolution["candidates"] = [
+                self._to_dict(candidate)
+                for candidate in resolution.get("candidates") or []
+            ]
+        return resolutions
+
+    async def list_restriction_documents(
+        self,
+        executable_only: bool = False,
+        limit: int = 200,
+        **filters: Any,
+    ) -> list[dict[str, Any]]:
+        """
+        Documents holding matching restrictions (user-index documents excluded).
+        Returns:
+            list[dict[str, Any]]: ``[{"doc_id", "name", "version", "restriction_count",
+            "executable_count", ...}]`` ordered by ``executable_count``.
+        """
+
+        arguments = self._filters(
+            executable_only=executable_only or None,
+            limit=int(limit),
+            **filters,
+        )
+        result = self._to_dict(
+            await self.execute_tool("list_restriction_documents", arguments)
+        )
+        result = result if isinstance(result, dict) else {}
+        return [self._to_dict(item) for item in result.get("documents") or []]
 
     async def list_restriction_kinds(self) -> list[dict]:
         """The restriction-kind vocabulary, including auto-added pending kinds."""

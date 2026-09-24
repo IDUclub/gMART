@@ -28,6 +28,7 @@ class StatusResponse(BaseModel):
         "template_execution",
         "verdict_aggregation",
         "compliance_result_analysis",
+        "compliance_scope",
     ]
     text: str
 
@@ -37,8 +38,17 @@ class TextResponse(BaseModel):
     done: bool
 
 
+class ClarificationOption(BaseModel):
+    """One numbered answer the user can pick, e.g. a document to check against."""
+
+    number: int
+    label: str
+    value: str
+
+
 class ClarificationContent(BaseModel):
     question: str
+    options: list[ClarificationOption] | None = None
 
 
 class FeatureCollectionResponse(BaseModel):
@@ -104,6 +114,8 @@ class ComplianceSummaryEventContent(BaseModel):
     not_applicable_norms: int
     partial_norms: int
     results: list[ComplianceResult]
+    # Topic entities and documents the norms were filtered by; absent for a full audit.
+    scope: dict[str, Any] | None = None
 
 
 class ComplianceProgressEventContent(BaseModel):

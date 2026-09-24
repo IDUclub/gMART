@@ -88,9 +88,11 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
     equivalent_count = sum(len(_equivalents(item)) for item in groups)
     not_checked = len(results) - len(checked)
 
-    lines = [
-        f"# {REPORT_TITLE}",
-        "",
+    lines = [f"# {REPORT_TITLE}", ""]
+    label = (summary.get("scope") or {}).get("label")
+    if label:
+        lines += [f"Область проверки — {label}.", ""]
+    lines += [
         "## Сводка",
         "",
         "| Показатель | Количество |",

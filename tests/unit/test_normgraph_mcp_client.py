@@ -55,3 +55,52 @@ class TestToDict:
         assert normalized["count"] == 1
         provenance = normalized["hits"][0]["provenance"]
         assert provenance.get("name") == "СП 30-102-99"
+
+
+class RecordingClient(NormGraphMcpClient):
+    def __init__(self, result) -> None:
+        self.result = result
+        self.calls: list[tuple[str, dict]] = []
+
+    async def execute_tool(self, name, arguments):
+        self.calls.append((name, arguments))
+        return self.result
+
+
+async def test_resolve_entities_returns_plain_candidates():
+    client = RecordingClient(
+        [
+            SimpleNamespace(
+                term="школы",
+                candidates=[SimpleNamespace(normalized="школа", match="alias")],
+            )
+        ]
+    )
+
+    result = await client.resolve_entities(["школы"], limit=5)
+
+    assert client.calls == [("resolve_entities", {"terms": ["школы"], "limit": 5})]
+    assert result == [
+        {"term": "школы", "candidates": [{"normalized": "школа", "match": "alias"}]}
+    ]
+
+
+async def test_document_listing_sends_only_active_filters():
+    client = RecordingClient(
+        SimpleNamespace(
+            count=1,
+            documents=[SimpleNamespace(name="СП 42.13330.2016", executable_count=4)],
+        )
+    )
+
+    documents = await client.list_restriction_documents(
+        executable_only=True, limit=10, entities=["школа"], document_names=None
+    )
+
+    assert client.calls == [
+        (
+            "list_restriction_documents",
+            {"executable_only": True, "limit": 10, "entities": ["школа"]},
+        )
+    ]
+    assert documents == [{"name": "СП 42.13330.2016", "executable_count": 4}]

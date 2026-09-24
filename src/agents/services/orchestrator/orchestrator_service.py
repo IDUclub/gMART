@@ -253,7 +253,9 @@ class OrchestratorService(BaseLlmService):
             self._status("planning", "Определяю, какие агенты нужны для запроса…"),
         )
         agents = available_agents(self.app_config, scenario_id)
-        plan = await self.plan_builder.build_plan(
+        plan = await self._compliance_choice_plan(
+            model, user_query, chat_id, agents, normgraph_mcp_client
+        ) or await self.plan_builder.build_plan(
             model,
             user_query,
             agents,
@@ -291,6 +293,7 @@ class OrchestratorService(BaseLlmService):
             pzz_mcp_client=pzz_mcp_client,
             pzz_inputs=pzz_inputs,
             original_query=user_query,
+            conversation_key=chat_id,
         )
         # Read-only QA steps that do not need each other's results start together;
         # their events are still streamed step by step, in plan order.
@@ -341,6 +344,41 @@ class OrchestratorService(BaseLlmService):
                     for item in file_events
                 ],
             )
+
+    async def _compliance_choice_plan(
+        self,
+        model: str,
+        user_query: str,
+        chat_id: str | None,
+        agents: list[AgentCatalogEntry],
+        normgraph_mcp_client: "NormGraphMcpClient | None",
+    ) -> OrchestratorPlan | None:
+        """Route a reply to a pending compliance document choice straight back to it.
+
+        The planner would read «2» or «СП 42» as a new request; the compliance
+        step owns the choice and resolves the reply against it.
+        """
+        if (
+            not chat_id
+            or normgraph_mcp_client is None
+            or not any(entry.key == OrchestratorAgent.COMPLIANCE for entry in agents)
+        ):
+            return None
+        pending = await self.state_store.get_compliance_choice(chat_id)
+        if not pending:
+            return None
+        reply = await self.restriction_service.compliance_scope.resolve_choice(
+            model, user_query, pending
+        )
+        if reply.kind == "not_choice":
+            await self.state_store.set_compliance_choice(chat_id, None)
+            return None
+        return OrchestratorPlan(
+            mode=OrchestratorPlanMode.EXECUTE,
+            steps=[
+                OrchestratorStep(agent=OrchestratorAgent.COMPLIANCE, task=user_query)
+            ],
+        )
 
     @staticmethod
     def _runs_independently(plan: OrchestratorPlan) -> bool:
@@ -488,6 +526,7 @@ class OrchestratorService(BaseLlmService):
         pzz_inputs: PzzInputs | dict | None = None,
         original_query: str | None = None,
         context_note: str | None = None,
+        conversation_key: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         if step.agent == OrchestratorAgent.PZZ:
             if pzz_mcp_client is None or self.pzz_service is None:
@@ -517,6 +556,9 @@ class OrchestratorService(BaseLlmService):
                 scenario_id=scenario_id,
                 request_id=step_request_id,
                 persist_history=False,
+                # A document choice asked in this step is answered in the next
+                # message of the orchestrator's chat.
+                conversation_key=conversation_key,
             )
         if step.agent == OrchestratorAgent.RESTRICTION:
             if scenario_id is None:

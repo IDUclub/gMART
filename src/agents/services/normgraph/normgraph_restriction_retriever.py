@@ -57,12 +57,14 @@ class NormGraphRestrictionRetriever:
         retain_unsupported: bool = False,
         retrieve_all: bool = False,
         require_check_plan: bool = False,
+        filters: dict[str, Any] | None = None,
     ) -> NormGraphRestrictionRetrieval:
         # Compliance is an audit, not a relevance-ranked QA answer.  The LLM may
         # choose a small result window for ordinary questions, but it must never
-        # decide how many persisted norms an audit checks.
+        # decide how many persisted norms an audit checks.  ``filters`` narrow the
+        # audit to a resolved scope (topic entities, documents), never to a top-k.
         if retrieve_all:
-            hits, arguments = await self._retrieve_all(client)
+            hits, arguments = await self._retrieve_all(client, filters or {})
             return self._result(
                 hits,
                 arguments,
@@ -152,7 +154,7 @@ class NormGraphRestrictionRetriever:
         )
 
     async def _retrieve_all(
-        self, client: "NormGraphMcpClient"
+        self, client: "NormGraphMcpClient", filters: dict[str, Any]
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Fetch the complete NormGraph corpus without a silent top-k window.
 
@@ -166,7 +168,7 @@ class NormGraphRestrictionRetriever:
         unique: dict[str, dict[str, Any]] = {}
         after_id: str | None = None
         for _ in range(_ALL_RESTRICTIONS_MAX_PAGES):
-            arguments: dict[str, Any] = {"limit": _ALL_RESTRICTIONS_PAGE}
+            arguments: dict[str, Any] = {"limit": _ALL_RESTRICTIONS_PAGE, **filters}
             if after_id:
                 arguments["after_id"] = after_id
             page = await client.list_restrictions(**arguments)
@@ -175,7 +177,10 @@ class NormGraphRestrictionRetriever:
                     unique.setdefault(str(hit.get("id") or len(unique)), hit)
             next_after_id = page.get("next_after_id")
             if not next_after_id:
-                return list(unique.values()), {"limit": _ALL_RESTRICTIONS_PAGE}
+                return list(unique.values()), {
+                    "limit": _ALL_RESTRICTIONS_PAGE,
+                    **filters,
+                }
             if next_after_id == after_id:
                 raise RuntimeError("NormGraph listing cursor did not advance")
             after_id = next_after_id

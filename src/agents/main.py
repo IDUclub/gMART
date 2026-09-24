@@ -21,6 +21,7 @@ from src.agents.common.middlewares.exception_handler import (
 from src.agents.dependencies.dependencies import app_deps
 from src.agents.routers.a2a_controller import a2a_router, restriction_a2a_router
 from src.agents.routers.auth_controller import auth_router
+from src.agents.routers.compliance_a2a_controller import compliance_a2a_router
 from src.agents.routers.compliance_controller import compliance_router
 from src.agents.routers.dvd_a2a_controller import dvd_a2a_router
 from src.agents.routers.dvd_controller import dvd_router
@@ -130,6 +131,7 @@ app.include_router(restriction_a2a_router)
 app.include_router(provision_a2a_router)
 app.include_router(dvd_a2a_router)
 app.include_router(norms_a2a_router)
+app.include_router(compliance_a2a_router)
 app.include_router(a2a_router)
 app.include_router(system_router)
 app.include_router(synapse_router)
