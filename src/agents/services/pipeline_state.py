@@ -36,7 +36,9 @@ class PipelineStatus(StrEnum):
 
 
 class PipelineStep(StrEnum):
+    COMPLIANCE_TERRITORY = "compliance_territory"
     COMPLIANCE_SCOPE = "compliance_scope"
+    RESTRICTION_INVENTORY = "restriction_inventory"
     NORMGRAPH = "normgraph"
     CHECK_PLAN_VALIDATION = "check_plan_validation"
     REQUIREMENTS_RESOLUTION = "requirements_resolution"

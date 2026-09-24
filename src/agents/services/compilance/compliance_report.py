@@ -143,8 +143,10 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).rstrip() + "\n"
 
 
-def report_filename(scenario_id: int | str, created_at: datetime) -> str:
-    return f"{REPORT_SLOT}_{scenario_id}_{created_at:%Y%m%d-%H%M}.md"
+def report_filename(
+    scenario_id: int | str, created_at: datetime, *, slot: str = REPORT_SLOT
+) -> str:
+    return f"{slot}_{scenario_id}_{created_at:%Y%m%d-%H%M}.md"
 
 
 def _equivalents(result: dict[str, Any]) -> list[dict[str, Any]]:

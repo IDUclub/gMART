@@ -7,6 +7,7 @@ import pytest
 
 from src.agents.schema.restrictions_response import RestrictionsResponse
 from src.agents.services.compilance.compliance_scope import ScopeOutcome
+from src.agents.services.compilance.compliance_territory import TerritoryDocuments
 from src.agents.services.pipeline_state import PipelineStep
 from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
@@ -281,10 +282,15 @@ async def test_compliance_large_corpus_never_reaches_llm_and_executes_individual
     service.compliance_scope = SimpleNamespace(
         resolve=AsyncMock(return_value=ScopeOutcome(kind="scoped"))
     )
+    service.compliance_territory = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=TerritoryDocuments(status="ok", allowed=("СП 42.13330.2016",))
+        )
+    )
     service.normgraph_retriever = NormGraphRestrictionRetriever(llm)
     service._build_plan = AsyncMock(side_effect=AssertionError("No LLM replanning"))
 
-    def page(limit, after_id=None):
+    def page(limit, after_id=None, **filters):
         # NormGraph pages by id; the fake keeps list order, which the ids mirror.
         start = 0 if after_id is None else [h["id"] for h in hits].index(after_id) + 1
         rows = hits[start : start + limit + 1]

@@ -9,15 +9,18 @@ from fastapi.sse import EventSourceResponse
 from src.agents.a2a.compliance_executor import ComplianceMcpClients
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.dependencies.dependencies import (
+    a2a_dvd_mcp_client,
     a2a_idu_mcp_client,
     a2a_normgraph_mcp_client,
     get_app_config,
     get_compliance_a2a_service,
     get_idu_mcp_client,
+    get_optional_dvd_mcp_client,
     get_optional_normgraph_mcp_client,
     resolve_a2a_caller,
 )
 from src.agents.dto.a2a_dto import A2AJsonRpcPayloadDTO
+from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 from src.agents.services.compilance.compliance_a2a_service import (
@@ -54,6 +57,7 @@ async def handle_compliance_a2a_json_rpc(
     normgraph_mcp_client: NormGraphMcpClient | None = Depends(
         get_optional_normgraph_mcp_client
     ),
+    dvd_mcp_client: DvdMcpClient | None = Depends(get_optional_dvd_mcp_client),
     token: str = Depends(verify_bearer_token),
 ):
     """
@@ -71,7 +75,11 @@ async def handle_compliance_a2a_json_rpc(
         idu_mcp_client = await a2a_idu_mcp_client(caller.user_id)
         if get_app_config().NORM_GRAPH_MCP_URL:
             normgraph_mcp_client = await a2a_normgraph_mcp_client(caller.user_id)
-    clients = ComplianceMcpClients(idu=idu_mcp_client, normgraph=normgraph_mcp_client)
+        if get_app_config().DVD_MCP_URL:
+            dvd_mcp_client = await a2a_dvd_mcp_client(caller.user_id)
+    clients = ComplianceMcpClients(
+        idu=idu_mcp_client, normgraph=normgraph_mcp_client, dvd=dvd_mcp_client
+    )
     token = caller.pipeline_token
     if compliance_a2a_service.is_streaming_request(payload_data):
         return EventSourceResponse(

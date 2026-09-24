@@ -33,6 +33,19 @@ from src.agents.services.compilance.compliance_dedup import group_checks
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
 )
+from src.agents.services.compilance.compliance_inventory import (
+    ZONAL_TEMPLATES,
+    ZONE_KIND_TITLES,
+    RestrictionZone,
+    RestrictionZoneBuilder,
+    describe_zone,
+    zone_layer_name,
+)
+from src.agents.services.compilance.compliance_inventory_report import (
+    INVENTORY_REPORT_SLOT,
+    INVENTORY_REPORT_TITLE,
+    build_inventory_report,
+)
 from src.agents.services.compilance.compliance_layers import (
     PASSED_OBJECTS_LAYER,
     passed_objects_layer,
@@ -61,6 +74,10 @@ from src.agents.services.compilance.compliance_sources import (
     grouped_references,
     source_reference,
     source_references,
+)
+from src.agents.services.compilance.compliance_territory import (
+    ComplianceTerritoryFilter,
+    TerritoryDocuments,
 )
 from src.agents.services.layer_attributes import compact_layer, compact_layer_event
 from src.agents.services.normgraph.normgraph_restriction_retriever import (
@@ -94,6 +111,7 @@ from src.agents.services.service_entities.restriction_plan import (
 from src.common.service_auth import user_id_from_jwt
 
 if TYPE_CHECKING:
+    from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
     from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 
@@ -138,6 +156,8 @@ class RestrictionParserService(BaseLlmService):
         self.compliance_executor = ComplianceTemplateExecutor()
         self.compliance_result_harness = ComplianceResultHarness()
         self.compliance_scope = ComplianceScopeResolver(self.llm_client)
+        self.compliance_territory = ComplianceTerritoryFilter()
+        self.zone_builder = RestrictionZoneBuilder(self.compliance_executor)
         self.context_builder = RestrictionContextBuilder()
         self.state_store = state_store
         self.file_store = file_store
@@ -184,12 +204,15 @@ class RestrictionParserService(BaseLlmService):
         request_id: str | None = None,
         persist_history: bool = True,
         conversation_key: str | None = None,
+        dvd_mcp_client: DvdMcpClient | None = None,
     ) -> AsyncGenerator:
         """Run the compliance pipeline with optional normative grounding.
 
         ``conversation_key`` names the dialogue a pending document choice belongs
         to; it defaults to the chat id. Callers without a chat of their own (the
         orchestrator, A2A) pass their conversation identity instead.
+        ``dvd_mcp_client`` tells which documents are in force on the scenario's
+        territory; without it no norm is applied.
         """
 
         async for item in self._run_pipeline_entry(
@@ -205,6 +228,7 @@ class RestrictionParserService(BaseLlmService):
             normgraph_mcp_client=normgraph_mcp_client,
             history_agent="compliance",
             conversation_key=conversation_key,
+            dvd_mcp_client=dvd_mcp_client,
         ):
             yield item
 
@@ -222,6 +246,7 @@ class RestrictionParserService(BaseLlmService):
         normgraph_mcp_client: NormGraphMcpClient | None = None,
         history_agent: str = "restrictions",
         conversation_key: str | None = None,
+        dvd_mcp_client: DvdMcpClient | None = None,
     ) -> AsyncGenerator:
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
@@ -251,6 +276,7 @@ class RestrictionParserService(BaseLlmService):
             normgraph_mcp_client=normgraph_mcp_client,
             history_agent=history_agent,
             conversation_key=conversation_key,
+            dvd_mcp_client=dvd_mcp_client,
         ):
             chat_id = self._chat_id_from_storage_event(item) or chat_id
             if item.get("type") == "tool_call":
@@ -308,6 +334,7 @@ class RestrictionParserService(BaseLlmService):
         normgraph_mcp_client: NormGraphMcpClient | None = None,
         history_agent: str = "restrictions",
         conversation_key: str | None = None,
+        dvd_mcp_client: DvdMcpClient | None = None,
     ) -> AsyncGenerator:
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
@@ -468,6 +495,35 @@ class RestrictionParserService(BaseLlmService):
 
         checkpoint = await self.state_store.get_checkpoint(request_id)
 
+        # Only norms of documents in force where the scenario is are applied.
+        territory: TerritoryDocuments | None = None
+        if history_agent == "compliance" and normgraph_mcp_client is not None:
+            if PipelineStep.COMPLIANCE_TERRITORY in checkpoint:
+                territory = TerritoryDocuments.from_dict(
+                    checkpoint[PipelineStep.COMPLIANCE_TERRITORY]
+                )
+            else:
+                yield await self._buf(
+                    request_id,
+                    self._status(
+                        "compliance_territory",
+                        "Определяю документы, действующие на территории сценария",
+                    ),
+                )
+                territory = await self.compliance_territory.resolve(
+                    dvd_mcp_client, normgraph_mcp_client, scenario_id
+                )
+                await self.state_store.save_checkpoint(
+                    request_id, PipelineStep.COMPLIANCE_TERRITORY, territory.to_dict()
+                )
+                if territory.status != "ok":
+                    yield await self._buf(
+                        request_id, self._chunk(territory.message or "", done=True)
+                    )
+            if territory.status != "ok":
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
+
         scope = ComplianceScope()
         if history_agent == "compliance" and normgraph_mcp_client is not None:
             if PipelineStep.COMPLIANCE_SCOPE in checkpoint:
@@ -486,7 +542,11 @@ class RestrictionParserService(BaseLlmService):
                     ScopeOutcome(kind="scoped", scope=chosen_scope)
                     if chosen_scope is not None
                     else await self.compliance_scope.resolve(
-                        normgraph_mcp_client, model, user_query, llm_history
+                        normgraph_mcp_client,
+                        model,
+                        user_query,
+                        llm_history,
+                        allowed_documents=territory.allowed,
                     )
                 )
                 await self.state_store.save_checkpoint(
@@ -506,18 +566,23 @@ class RestrictionParserService(BaseLlmService):
                         request_id, self._chunk(outcome.message or "", done=True)
                     )
                 elif outcome.scope.is_filtered:
+                    action = (
+                        "Собираю ограничения"
+                        if outcome.scope.is_inventory
+                        else "Проверяю нормы"
+                    )
                     yield await self._buf(
                         request_id,
                         self._status(
                             "compliance_scope",
-                            f"Проверяю нормы по условиям: {outcome.scope.label()}",
+                            f"{action} по условиям: {outcome.scope.label()}",
                         ),
                     )
             # Replayed events already carry the question or the explanation.
             if outcome.kind != "scoped":
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
-            scope = outcome.scope
+            scope = outcome.scope.with_territory(territory.allowed)
 
         normgraph_restrictions: list[dict[str, Any]] = []
         skipped_without_plan = 0
@@ -592,7 +657,12 @@ class RestrictionParserService(BaseLlmService):
                     )
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
-            async for event in self._run_executable_compliance(
+            run = (
+                self._run_restriction_inventory
+                if scope.is_inventory
+                else self._run_executable_compliance
+            )
+            async for event in run(
                 mcp_client=mcp_client,
                 request_id=request_id,
                 scenario_id=scenario_id,
@@ -601,6 +671,7 @@ class RestrictionParserService(BaseLlmService):
                 skipped_without_plan=skipped_without_plan,
                 owner=self._report_owner(token_ref[0]),
                 scope=scope,
+                territory=territory,
             ):
                 yield event
             return
@@ -887,6 +958,7 @@ class RestrictionParserService(BaseLlmService):
         skipped_without_plan: int = 0,
         owner: str | None = None,
         scope: ComplianceScope | None = None,
+        territory: TerritoryDocuments | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Execute each NormGraph CheckPlan independently and emit replayable results."""
 
@@ -901,38 +973,11 @@ class RestrictionParserService(BaseLlmService):
                 "Проверяю версии и параметры нормативных планов",
             ),
         )
-        plans: list[dict[str, Any]] = []
-        for hit in restrictions:
-            # Apply the same gate to old checkpoints restored on reconnect.
-            if not NormGraphRestrictionRetriever.has_executable_plan(hit):
-                skipped_without_plan += 1
-                continue
-            raw_plan = hit["check_plan"]
-            source = dict(raw_plan["source"])
-            provenance = hit.get("provenance") or {}
-            # Older stored plans may lack source labels still present in the hit.
-            for field, value, limit in (
-                ("document_name", provenance.get("name"), 300),
-                ("clause_number", provenance.get("numbering"), 100),
-                ("extraction_text", hit.get("extraction_text"), 8000),
-            ):
-                if not (source.get(field) or "").strip() and isinstance(value, str):
-                    source[field] = value.strip()[:limit]
-            raw_plan = {**raw_plan, "source": source}
-            plans.append(raw_plan)
-        groups = await group_checks(
-            plans,
-            mcp_client,
-            scenario_id,
-            resolver=getattr(
-                getattr(self, "compliance_executor", None), "catalog_resolver", None
-            ),
+        plans, sources_by_id, duplicates, skipped_without_plan = (
+            await self._accepted_plans(
+                restrictions, mcp_client, scenario_id, skipped_without_plan
+            )
         )
-        duplicates = len(plans) - len(groups)
-        plans = [group.plan for group in groups]
-        sources_by_id = {
-            group.plan["source"]["restriction_id"]: group.sources for group in groups
-        }
         for raw_plan in plans:
             yield await self._buf(
                 request_id,
@@ -1105,6 +1150,8 @@ class RestrictionParserService(BaseLlmService):
         }
         if scope is not None and scope.is_filtered:
             summary["scope"] = scope.to_dict()
+        if territory is not None:
+            summary["territory"] = self._territory_summary(territory)
         await self.state_store.save_checkpoint(
             request_id, PipelineStep.VERDICT_AGGREGATION, summary
         )
@@ -1121,6 +1168,8 @@ class RestrictionParserService(BaseLlmService):
             notes.append(
                 f"Пропущено норм без исполнимого плана: {skipped_without_plan}."
             )
+        if territory is not None:
+            notes.append(territory.note())
         if notes:
             # A separate paragraph: appended to the list it read as part of the last norm.
             summary_text += "\n\n" + " ".join(notes)
@@ -1135,8 +1184,12 @@ class RestrictionParserService(BaseLlmService):
             for item in self._feature_collections({PASSED_OBJECTS_LAYER: passed_layer}):
                 yield await self._buf(request_id, item)
         # The report link closes the stream, after the final answer text.
-        report_event = self._compliance_report_event(
-            {**summary, "skipped_without_plan": skipped_without_plan},
+        report_event = self._report_event(
+            build_compliance_report(
+                {**summary, "skipped_without_plan": skipped_without_plan}
+            ),
+            slot=REPORT_SLOT,
+            title=REPORT_TITLE,
             scenario_id=scenario_id,
             owner=owner,
         )
@@ -1144,25 +1197,321 @@ class RestrictionParserService(BaseLlmService):
             yield await self._buf(request_id, report_event)
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
 
-    def _compliance_report_event(
+    async def _run_restriction_inventory(
         self,
-        summary: dict[str, Any],
         *,
+        mcp_client: IduMcpClient,
+        request_id: str,
+        scenario_id: int,
+        restrictions: list[dict[str, Any]],
+        checkpoint: dict[str, Any],
+        skipped_without_plan: int = 0,
+        owner: str | None = None,
+        scope: ComplianceScope | None = None,
+        territory: TerritoryDocuments | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Draw the area each executable norm governs instead of checking objects."""
+
+        if PipelineStep.RESTRICTION_INVENTORY in checkpoint:
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
+
+        yield await self._buf(
+            request_id,
+            self._status(
+                "check_plan_validation",
+                "Проверяю версии и параметры нормативных планов",
+            ),
+        )
+        plans, sources_by_id, duplicates, skipped_without_plan = (
+            await self._accepted_plans(
+                restrictions, mcp_client, scenario_id, skipped_without_plan
+            )
+        )
+        for raw_plan in plans:
+            yield await self._buf(
+                request_id,
+                {
+                    "type": "check_plan",
+                    "content": {
+                        "restriction_id": raw_plan["source"]["restriction_id"],
+                        "plan": raw_plan,
+                        "equivalent_sources": sources_by_id[
+                            raw_plan["source"]["restriction_id"]
+                        ],
+                    },
+                },
+            )
+        await self.state_store.save_checkpoint(
+            request_id, PipelineStep.CHECK_PLAN_VALIDATION, plans
+        )
+
+        yield await self._buf(
+            request_id,
+            self._status(
+                "restriction_zones", "Строю зоны действия норм на территории сценария"
+            ),
+        )
+        project_territory: dict[str, Any] | None = None
+        if any(raw_plan.get("template") in ZONAL_TEMPLATES for raw_plan in plans):
+            try:
+                project_territory, territory_call = (
+                    await self.zone_builder.project_territory(mcp_client, scenario_id)
+                )
+            except Exception:  # zonal norms then stay unclipped or unbuilt
+                logger.exception("Project territory retrieval failed")
+                territory_call = None
+            if territory_call is not None:
+                yield await self._buf(
+                    request_id,
+                    self._tool_call(
+                        "restriction_zones", [territory_call], "IDU_MCP_URL"
+                    ),
+                )
+
+        zones: list[RestrictionZone] = []
+        layer_name_counts: dict[str, int] = {}
+        for index, raw_plan in enumerate(plans, start=1):
+            try:
+                zone = await self.zone_builder.build(
+                    mcp_client, raw_plan, scenario_id, project_territory
+                )
+            except Exception as exc:  # one norm must not erase the others
+                logger.bind(
+                    restriction_id=(raw_plan.get("source") or {}).get("restriction_id"),
+                    template=raw_plan.get("template"),
+                ).exception("Restriction zone failed")
+                source = raw_plan.get("source") or {}
+                zone = RestrictionZone(
+                    restriction_id=str(source.get("restriction_id") or "unknown"),
+                    template=str(raw_plan.get("template") or "unknown"),
+                    template_version=int(raw_plan.get("template_version") or 1),
+                    status="unverifiable",
+                    source=dict(source),
+                    missing_requirements=[f"zone_build_failed: {str(exc)[:500]}"],
+                )
+            zone.source["equivalent_sources"] = sources_by_id.get(
+                zone.restriction_id, []
+            )
+            zones.append(zone)
+            logger.bind(
+                request_id=request_id,
+                restriction_id=zone.restriction_id,
+                template=zone.template,
+                status=zone.status,
+                zone_kind=zone.zone_kind,
+                zones=zone.zone_count,
+            ).info("Restriction zone completed")
+            # Only a drawn zone is replayable: its retrieval calls reopen as layers.
+            if zone.status == "shown" and zone.tool_calls:
+                yield await self._buf(
+                    request_id,
+                    self._tool_call(
+                        "restriction_zones", zone.tool_calls, "IDU_MCP_URL"
+                    ),
+                )
+            yield await self._buf(
+                request_id, {"type": "restriction_zone", "content": zone.payload()}
+            )
+            if zone.status == "shown":
+                name = zone_layer_name(zone)
+                layer_name_counts[name] = layer_name_counts.get(name, 0) + 1
+                if layer_name_counts[name] > 1:
+                    name += f" ({layer_name_counts[name]})"
+                for item in self._feature_collections({name: zone.zones}):
+                    yield await self._buf(request_id, item)
+            yield await self._buf(
+                request_id,
+                self._status(
+                    "restriction_zones", f"Обработано {index} из {len(plans)} норм"
+                ),
+            )
+
+        summary = self._inventory_summary(request_id, zones)
+        summary["duplicate_checks"] = duplicates
+        summary["skipped_without_plan"] = skipped_without_plan
+        if scope is not None and scope.is_filtered:
+            summary["scope"] = scope.to_dict()
+        if territory is not None:
+            summary["territory"] = self._territory_summary(territory)
+        await self.state_store.save_checkpoint(
+            request_id, PipelineStep.RESTRICTION_INVENTORY, summary
+        )
+        yield await self._buf(
+            request_id, {"type": "restriction_inventory", "content": summary}
+        )
+        text = self._inventory_text(summary)
+        notes = []
+        if duplicates:
+            notes.append(f"Одинаковых зон объединено: {duplicates}.")
+        if skipped_without_plan:
+            notes.append(
+                "Норм без исполнимого плана (зону для них построить нельзя): "
+                f"{skipped_without_plan}."
+            )
+        if territory is not None:
+            notes.append(territory.note())
+        if notes:
+            text += "\n\n" + " ".join(notes)
+        yield await self._buf(request_id, self._chunk(text, done=True))
+        report_event = self._report_event(
+            build_inventory_report(summary),
+            slot=INVENTORY_REPORT_SLOT,
+            title=INVENTORY_REPORT_TITLE,
+            scenario_id=scenario_id,
+            owner=owner,
+        )
+        if report_event is not None:
+            yield await self._buf(request_id, report_event)
+        await self.state_store.set_status(request_id, PipelineStatus.DONE)
+
+    @staticmethod
+    def _inventory_summary(
+        request_id: str, zones: list[RestrictionZone]
+    ) -> dict[str, Any]:
+        def count(status: str) -> int:
+            return sum(zone.status == status for zone in zones)
+
+        return {
+            "request_id": request_id,
+            "mode": "inventory",
+            "total_norms": len(zones),
+            "shown_norms": count("shown"),
+            "restriction_zones": sum(
+                zone.status == "shown" and zone.zone_kind == "restriction"
+                for zone in zones
+            ),
+            "required_zones": sum(
+                zone.status == "shown" and zone.zone_kind == "required"
+                for zone in zones
+            ),
+            "no_objects_norms": count("no_objects"),
+            "unverifiable_norms": count("unverifiable"),
+            "unsupported_norms": count("unsupported"),
+            "zones": [zone.payload() for zone in zones],
+        }
+
+    @staticmethod
+    def _territory_summary(territory: TerritoryDocuments) -> dict[str, Any]:
+        return {
+            "documents_in_force": len(territory.allowed),
+            "documents_out_of_force": len(territory.excluded),
+        }
+
+    @staticmethod
+    def _inventory_text(summary: dict[str, Any]) -> str:
+        label = (summary.get("scope") or {}).get("label")
+        scope_line = f"Область — {label}.\n\n" if label else ""
+        if summary["total_norms"] == 0:
+            return scope_line + (
+                "Нормы с исполнимыми планами, действующие на территории сценария, не "
+                "найдены. Зоны ограничений не построены; это не означает, что "
+                "ограничений на территории нет."
+            )
+        parts = [
+            f"Норм с пространственным планом: {summary['total_norms']}.",
+            f"Показано на карте: {summary['shown_norms']} (зон ограничения — "
+            f"{summary['restriction_zones']}, зон требуемого размещения — "
+            f"{summary['required_zones']}).",
+        ]
+        if summary["no_objects_norms"]:
+            parts.append(
+                "Не показаны, потому что в сценарии нет объектов, от которых они "
+                f"действуют: {summary['no_objects_norms']}."
+            )
+        if summary["unverifiable_norms"]:
+            parts.append(
+                f"Не удалось построить из-за данных: {summary['unverifiable_norms']}."
+            )
+        if summary["unsupported_norms"]:
+            parts.append(f"Не поддерживается: {summary['unsupported_norms']}.")
+        lines = []
+        for payload in summary.get("zones") or []:
+            if payload.get("status") != "shown":
+                continue
+            source = payload.get("source") or {}
+            kind = ZONE_KIND_TITLES[payload["zone_kind"]].lower()
+            line = (
+                f"- {'; '.join(source_references(source))} — {kind}: "
+                f"{describe_zone(payload)} (зон: {payload['zone_count']})."
+            )
+            text = " ".join((source.get("extraction_text") or "").split())
+            if text:
+                line += f" Требование: {text}"
+            lines.append(line)
+        overview = scope_line + " ".join(parts)
+        if lines:
+            return overview + "\n\nЗоны на карте:\n\n" + "\n".join(lines)
+        return overview
+
+    async def _accepted_plans(
+        self,
+        restrictions: list[dict[str, Any]],
+        mcp_client: IduMcpClient,
+        scenario_id: int,
+        skipped_without_plan: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], int, int]:
+        """Executable plans, one per equivalent group, with their merged sources.
+
+        Returns the plans, the sources of each plan by restriction id, the number
+        of merged duplicates and the updated count of norms without a plan.
+        """
+
+        plans: list[dict[str, Any]] = []
+        for hit in restrictions:
+            # Apply the same gate to old checkpoints restored on reconnect.
+            if not NormGraphRestrictionRetriever.has_executable_plan(hit):
+                skipped_without_plan += 1
+                continue
+            raw_plan = hit["check_plan"]
+            source = dict(raw_plan["source"])
+            provenance = hit.get("provenance") or {}
+            # Older stored plans may lack source labels still present in the hit.
+            for field, value, limit in (
+                ("document_name", provenance.get("name"), 300),
+                ("clause_number", provenance.get("numbering"), 100),
+                ("extraction_text", hit.get("extraction_text"), 8000),
+            ):
+                if not (source.get(field) or "").strip() and isinstance(value, str):
+                    source[field] = value.strip()[:limit]
+            raw_plan = {**raw_plan, "source": source}
+            plans.append(raw_plan)
+        groups = await group_checks(
+            plans,
+            mcp_client,
+            scenario_id,
+            resolver=getattr(
+                getattr(self, "compliance_executor", None), "catalog_resolver", None
+            ),
+        )
+        sources_by_id = {
+            group.plan["source"]["restriction_id"]: group.sources for group in groups
+        }
+        return (
+            [group.plan for group in groups],
+            sources_by_id,
+            len(plans) - len(groups),
+            skipped_without_plan,
+        )
+
+    def _report_event(
+        self,
+        report: str | None,
+        *,
+        slot: str,
+        title: str,
         scenario_id: int,
         owner: str | None,
     ) -> dict | None:
-        """Store the Markdown report and describe it as a ``file`` event."""
+        """Store a Markdown report and describe it as a ``file`` event."""
 
         file_store: TemporaryFileStore | None = getattr(self, "file_store", None)
-        if file_store is None or not owner:
+        if file_store is None or not owner or report is None:
             return None
-        report = build_compliance_report(summary)
-        if report is None:
-            return None
-        filename = report_filename(scenario_id, datetime.now(timezone.utc))
+        filename = report_filename(scenario_id, datetime.now(timezone.utc), slot=slot)
         try:
             stored = file_store.save(
-                REPORT_SLOT,
+                slot,
                 report.encode("utf-8"),
                 owner=owner,
                 filename=filename,
@@ -1175,8 +1524,8 @@ class RestrictionParserService(BaseLlmService):
         return {
             "type": "file",
             "content": {
-                "name": REPORT_SLOT,
-                "title": REPORT_TITLE,
+                "name": slot,
+                "title": title,
                 "role": "result",
                 "url": stored.url,
                 "download_url": stored.download_url,

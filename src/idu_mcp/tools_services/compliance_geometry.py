@@ -611,6 +611,118 @@ class ComplianceGeometryTools:
         zones["_violated"] = violation_values
         return self._result(zones, evidence, result_mode)
 
+    def restriction_zones(
+        self,
+        *,
+        geometry_mode: str,
+        source_layer: str,
+        layers: dict[str, dict],
+        properties: dict[str, Any] | None = None,
+        distance_m: float | None = None,
+        attribute_field: str | None = None,
+        bands: list[dict[str, Any]] | None = None,
+        threshold_field: str | None = None,
+        clip_layer: str | None = None,
+    ) -> dict[str, Any]:
+        """Areas a norm governs: buffers around its sources or the zones themselves.
+
+        ``buffer`` uses one distance, ``attribute_buffer`` picks it per source from
+        ``bands`` (sources without a matching value are skipped), ``geometry``
+        keeps the source geometry. ``threshold_field`` copies each source's own
+        threshold into ``threshold`` and skips sources without one. With
+        ``clip_layer`` the zones are cut to that layer's union.
+        """
+        source = self._layer(source_layer, layers)
+        skipped = 0
+        if geometry_mode == "buffer":
+            if distance_m is None or distance_m <= 0:
+                raise ValueError("distance_m must be positive for buffer zones")
+            zones = GeometryTools.create_buffer(
+                source,
+                distance_m,
+                BufferTypeEnum.ROUND,
+                str((properties or {}).get("restriction_title") or "Зона нормы"),
+                layer_name=source_layer,
+            )
+        elif geometry_mode == "attribute_buffer":
+            if not attribute_field or not bands:
+                raise ValueError("attribute_field and bands are required")
+            if not source.empty and attribute_field not in source.columns:
+                raise ValueError(f"Attribute {attribute_field!r} is missing")
+            metric = source.to_crs(self._metric_crs(source)).copy()
+            values = (
+                pd.to_numeric(metric[attribute_field], errors="coerce")
+                if attribute_field in metric.columns
+                else pd.Series([], dtype=float)
+            )
+            distances = [
+                next(
+                    (
+                        float(band["distance_m"])
+                        for band in bands
+                        if not pd.isna(value)
+                        and value >= band["min"]
+                        and (band.get("max") is None or value <= band["max"])
+                    ),
+                    None,
+                )
+                for value in values
+            ]
+            mask = pd.Series(
+                [item is not None for item in distances], index=metric.index
+            )
+            skipped += int((~mask).sum())
+            zones = metric.loc[mask].copy()
+            zones["buffer_size"] = [item for item in distances if item is not None]
+            if not zones.empty:
+                zones["geometry"] = [
+                    geom.buffer(distance, cap_style=BufferTypeEnum.ROUND)
+                    for geom, distance in zip(zones.geometry, zones["buffer_size"])
+                ]
+            zones = zones.to_crs(4326)
+        elif geometry_mode == "geometry":
+            if distance_m is not None:
+                raise ValueError("distance_m is forbidden for geometry zones")
+            zones = source.copy()
+        else:
+            raise ValueError(f"Unknown geometry mode {geometry_mode!r}")
+
+        if threshold_field:
+            if not zones.empty and threshold_field not in zones.columns:
+                raise ValueError(f"Attribute {threshold_field!r} is missing")
+            values = (
+                pd.to_numeric(zones[threshold_field], errors="coerce")
+                if threshold_field in zones.columns
+                else pd.Series([], dtype=float)
+            )
+            skipped += int(values.isna().sum())
+            zones = zones.loc[values.notna()].copy()
+            zones["threshold"] = values.loc[values.notna()].astype(float).values
+
+        if clip_layer and not zones.empty:
+            boundary = self._layer(clip_layer, layers)
+            if boundary.empty:
+                zones = zones.iloc[0:0]
+            else:
+                area = boundary.geometry.make_valid().union_all()
+                zones = zones.copy()
+                zones["geometry"] = zones.geometry.make_valid().intersection(area)
+                zones = zones.loc[~zones.geometry.is_empty & zones.geometry.notna()]
+
+        for key, value in (properties or {}).items():
+            if key == "threshold" and threshold_field:
+                continue
+            zones[key] = [value] * len(zones)
+        collection = self._to_fc(zones)
+        collection["meta"] = {
+            "complete": True,
+            "truncated": False,
+            "source_objects": len(source),
+            "zones": len(zones),
+            "skipped_objects": skipped,
+        }
+        return collection
+
     def _result(
         self,
         annotated: gpd.GeoDataFrame,
