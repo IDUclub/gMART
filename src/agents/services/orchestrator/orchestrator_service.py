@@ -63,6 +63,12 @@ _SUPPRESSED_INNER_EVENTS = {"pipeline_started", "service_event"}
 # Read-only QA agents whose steps never depend on another step's result.
 _INDEPENDENT_AGENTS = {OrchestratorAgent.NORMS, OrchestratorAgent.DOCUMENTS}
 
+# What later steps see in place of a failed step's result.
+_FAILED_STEP_CONTEXT = (
+    "Шаг не выполнен, его результата нет. Не подставляй вместо него значения "
+    "или предположения."
+)
+
 
 def _run_ahead(pipeline: AsyncGenerator) -> tuple[AsyncGenerator, asyncio.Task]:
     """Start consuming ``pipeline`` now; replay its items, then its outcome, later.
@@ -450,9 +456,14 @@ class OrchestratorService(BaseLlmService):
             if status == "completed":
                 digests.append((step, digest))
                 table_parts.extend(step_tables)
+            elif status == "failed":
+                # Agents fetch their own scenario data, so later steps still run.
+                # One that needed this result is told it is missing instead of
+                # silently working without it.
+                digests.append((step, _FAILED_STEP_CONTEXT))
             else:
-                # Later steps consume earlier digests; running them after a
-                # failure would produce misleading results — abort the plan.
+                # A suspended step or a clarification waits for the user; later
+                # steps would run on an unfinished premise — stop the plan.
                 aborted = True
 
     # ------------------------------------------------------------------

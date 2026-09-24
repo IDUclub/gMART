@@ -393,7 +393,7 @@ async def test_clarification_plan_calls_no_agents(orchestrator, fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_error_step_aborts_remaining_steps(orchestrator, fake_llm):
+async def test_error_step_does_not_skip_remaining_steps(orchestrator, fake_llm):
     fake_llm.json_responses = [
         orchestration_plan_json(
             [
@@ -415,11 +415,13 @@ async def test_error_step_aborts_remaining_steps(orchestrator, fake_llm):
     events = await run_pipeline(orchestrator)
 
     finished = events_of_type(events, "step_finished")
-    assert len(finished) == 1
-    assert finished[0]["content"]["status"] == "failed"
-    assert not provision.calls
+    assert [f["content"]["status"] for f in finished] == ["failed", "completed"]
     final = events_of_type(events, "orchestrator_final")[0]["content"]
-    assert [s["status"] for s in final["steps"]] == ["failed", "skipped"]
+    assert [s["status"] for s in final["steps"]] == ["failed", "completed"]
+    # a later step learns the earlier result is missing instead of guessing it
+    query = provision.calls[0]["user_query"]
+    assert query.startswith("Оцени обеспеченность")
+    assert "[Шаг 1, " in query and "Шаг не выполнен, его результата нет" in query
     # the inner error event is forwarded so the client sees the reason
     inner_types = [
         e["content"]["event"]["type"] for e in events_of_type(events, "step_event")
@@ -700,7 +702,7 @@ async def test_independent_qa_steps_run_together_but_stream_in_order(
 
 
 @pytest.mark.asyncio
-async def test_failed_first_step_cancels_the_step_running_ahead(orchestrator, fake_llm):
+async def test_failed_first_step_keeps_the_step_running_ahead(orchestrator, fake_llm):
     fake_llm.json_responses = [
         orchestration_plan_json(
             [
@@ -711,13 +713,18 @@ async def test_failed_first_step_cancels_the_step_running_ahead(orchestrator, fa
     ]
     log: list[str] = []
     norms = FakePipeline(raise_exc=RuntimeError("boom"))
-    documents = SlowPipeline([], 5.0, log, "documents")
+    documents = SlowPipeline(
+        [{"type": "chunk", "content": {"text": "Ответ", "done": True}}],
+        0.05,
+        log,
+        "documents",
+    )
     orchestrator.normgraph_service.run_norms_qa_pipeline = norms
     orchestrator.dvd_service.run_document_qa_pipeline = documents
 
     events = await run_pipeline(orchestrator)
 
     final = events_of_type(events, "orchestrator_final")[0]["content"]
-    assert [s["status"] for s in final["steps"]] == ["failed", "skipped"]
-    await asyncio.sleep(0)
-    assert log == ["documents:start", "documents:cancelled"]
+    assert [s["status"] for s in final["steps"]] == ["failed", "completed"]
+    assert log == ["documents:start", "documents:end"]
+    assert len(documents.calls) == 1
