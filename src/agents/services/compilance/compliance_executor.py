@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
@@ -249,26 +248,6 @@ class ComplianceTemplateExecutor:
                 timings_ms=timings_ms,
             )
 
-        entry = self.registry.get(plan.template, plan.template_version)
-        limit_error = self._limit_error(entry, resolution.layers)
-        if limit_error:
-            return ComplianceExecution(
-                plan=plan,
-                result=self._outcome(
-                    restriction_id=plan.source.restriction_id,
-                    template=plan.template,
-                    template_version=plan.template_version,
-                    verification_status="unverifiable",
-                    missing=[limit_error],
-                    effective_requirements=requirements,
-                    resolved_requirements=resolution.resolved,
-                    source=self._result_source(plan),
-                ),
-                tool_calls=retrieval_calls,
-                layers=layers,
-                timings_ms=timings_ms,
-            )
-
         tool_name, arguments = self._tool_call(plan, params, resolution)
         execution_started = perf_counter()
         raw_result = await self.tools.execute_named_tool(
@@ -505,17 +484,6 @@ class ComplianceTemplateExecutor:
             "planner_status": plan.planner_status,
             "check_plan": plan.model_dump(mode="json"),
         }
-
-    @staticmethod
-    def _limit_error(entry, layers: dict[str, dict[str, Any]]) -> str | None:
-        for name, layer in layers.items():
-            count = len(layer.get("features") or [])
-            if count > entry.max_features:
-                return f"layer:{name}:feature_limit:{entry.max_features}"
-        payload_size = len(json.dumps(layers, ensure_ascii=False).encode("utf-8"))
-        if payload_size > entry.max_payload_bytes:
-            return f"payload_limit:{entry.max_payload_bytes}"
-        return None
 
     @staticmethod
     def _outcome(
