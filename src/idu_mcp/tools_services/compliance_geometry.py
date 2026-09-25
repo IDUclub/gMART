@@ -22,10 +22,7 @@ _OPERATORS: dict[str, Callable[[Any, Any], Any]] = {
 
 
 class ComplianceGeometryTools:
-    """Bounded operations returning explicit passed, violated and unchecked baskets."""
-
-    def __init__(self, max_features: int = 50_000) -> None:
-        self.max_features = max_features
+    """Operations returning explicit passed, violated and unchecked baskets."""
 
     def _layer(self, name: str, layers: dict[str, dict]) -> gpd.GeoDataFrame:
         if name not in layers:
@@ -43,10 +40,6 @@ class ComplianceGeometryTools:
         for column in flattened.columns:
             if column not in frame.columns:
                 frame[column] = flattened[column].values
-        if len(frame) > self.max_features:
-            raise ValueError(
-                f"Layer {name!r} exceeds the {self.max_features} feature limit"
-            )
         if frame.crs is None:
             frame = frame.set_crs(4326)
         return frame.to_crs(4326)

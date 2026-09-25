@@ -27,8 +27,6 @@ class TemplateRegistration:
     executor: str
     tool_names: tuple[str, ...]
     geometry_types: tuple[str, ...]
-    max_features: int = 50_000
-    max_payload_bytes: int = 64 * 1024 * 1024
     timeout_seconds: int = 120
     evidence_schema_version: str = "1.0"
     enabled: bool = True
@@ -43,8 +41,6 @@ class TemplateRegistration:
             "tool_names": list(self.tool_names),
             "geometry_types": list(self.geometry_types),
             "limits": {
-                "max_features": self.max_features,
-                "max_payload_bytes": self.max_payload_bytes,
                 "timeout_seconds": self.timeout_seconds,
             },
             "evidence_schema_version": self.evidence_schema_version,
@@ -235,7 +231,6 @@ def build_default_registry(
             "execute_zonal_ratio",
             ("CheckZonalRatio",),
             ("Polygon", "MultiPolygon"),
-            max_features=20_000,
             timeout_seconds=180,
             enabled="zonal_ratio" not in disabled,
         ),

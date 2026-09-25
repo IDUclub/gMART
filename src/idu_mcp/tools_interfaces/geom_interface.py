@@ -1,5 +1,4 @@
 import asyncio
-import json
 from typing import Any, Literal
 
 from fastmcp import FastMCP
@@ -170,22 +169,11 @@ async def _run_compliance_operation(
     method,
     *,
     timeout_seconds: int = 120,
-    max_payload_bytes: int = 64 * 1024 * 1024,
     **kwargs,
 ) -> dict[str, Any]:
-    def invoke():
-        payload_size = len(
-            json.dumps(kwargs.get("layers") or {}, ensure_ascii=False).encode("utf-8")
-        )
-        if payload_size > max_payload_bytes:
-            raise ValueError(
-                f"Payload exceeds the {max_payload_bytes} byte operation limit"
-            )
-        return method(**kwargs)
-
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(invoke), timeout=timeout_seconds
+            asyncio.to_thread(method, **kwargs), timeout=timeout_seconds
         )
     except TimeoutError as exc:
         raise ToolError("Операция проверки превысила лимит времени") from exc
