@@ -23,6 +23,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient, UrbanMcpTool
+from src.agents.model_clients.llm_pace import PacedDeadline, PipelineDeadlineExceeded
 from src.agents.services.scenario_data.scenario_data_aggregate import (
     aggregate_result,
     answer_records,
@@ -66,8 +67,31 @@ if TYPE_CHECKING:
 MAX_URBAN_CALLS = 10
 MAX_WORKSPACE_CALLS = 20
 MAX_REPLANS = 3
+# Both limits are seconds of work at the LLM's nominal speed (see llm_pace):
+# they stretch, up to LLM_DEADLINE_MAX_FACTOR, while the shared server is slow.
 ACTIVE_DEADLINE_SECONDS = 5 * 60
 ABSOLUTE_DEADLINE_SECONDS = 15 * 60
+# The run may outlive PIPELINE_TTL, so its Redis keys are refreshed while it works.
+KEEP_ALIVE_SECONDS = 60
+
+
+class _WorkflowDeadline:
+    """Active time excludes token-refresh waits; absolute time includes them."""
+
+    def __init__(self):
+        self.active = PacedDeadline(ACTIVE_DEADLINE_SECONDS)
+        self.absolute = PacedDeadline(ABSOLUTE_DEADLINE_SECONDS)
+        self.kept_alive_at = time.monotonic()
+
+    def exceeded(self, token_wait_seconds: float) -> bool:
+        active = self.active.exceeded(token_wait_seconds)
+        absolute = self.absolute.exceeded()
+        return active or absolute
+
+    def error(self) -> PipelineDeadlineExceeded:
+        return PipelineDeadlineExceeded(
+            "scenario-data workflow deadline exceeded", self.absolute.wall_seconds
+        )
 
 
 class ScenarioDataLinearWorkflow:
@@ -107,7 +131,7 @@ class ScenarioDataLinearWorkflow:
         parts: list,
         persist_history: bool,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        started = time.monotonic()
+        deadline = _WorkflowDeadline()
         ledger = ExecutionLedger()
         fingerprints: set[str] = set()
         artifact_handles: dict[str, str] = {}
@@ -132,7 +156,7 @@ class ScenarioDataLinearWorkflow:
         )
         acquisition = await self._bounded_llm(
             request_id,
-            started,
+            deadline,
             self.owner.plan_builder.build_acquisition_plan(
                 model,
                 user_query,
@@ -190,7 +214,7 @@ class ScenarioDataLinearWorkflow:
             )
             search_plan = await self._bounded_llm(
                 request_id,
-                started,
+                deadline,
                 self.type_mapper.build_search_plan(
                     model,
                     user_query,
@@ -400,7 +424,7 @@ class ScenarioDataLinearWorkflow:
             )
             resolution = await self._bounded_llm(
                 request_id,
-                started,
+                deadline,
                 self.type_mapper.resolve_candidates(
                     model,
                     user_query,
@@ -492,7 +516,7 @@ class ScenarioDataLinearWorkflow:
         try:
             plan = await self._bounded_llm(
                 request_id,
-                started,
+                deadline,
                 self.owner.plan_builder.build_execution_plan(
                     model,
                     user_query,
@@ -567,8 +591,10 @@ class ScenarioDataLinearWorkflow:
 
             plan_failed = False
             for step in plan.steps:
-                if await self._deadline_exceeded(request_id, started):
-                    validation_reasons = ["превышен лимит активной работы 5 минут"]
+                if await self._deadline_exceeded(request_id, deadline):
+                    validation_reasons = [
+                        "превышен лимит времени работы с учётом загрузки модели"
+                    ]
                     plan_failed = True
                     break
                 if await self.owner.state_store.is_cancelled(request_id):
@@ -844,7 +870,7 @@ class ScenarioDataLinearWorkflow:
             if not plan_failed:
                 answer = await self._bounded_llm(
                     request_id,
-                    started,
+                    deadline,
                     self.owner._draft_answer(
                         model, user_query, observations, temperature, history
                     ),
@@ -856,7 +882,7 @@ class ScenarioDataLinearWorkflow:
                 else:
                     verdict = await self._bounded_llm(
                         request_id,
-                        started,
+                        deadline,
                         self.owner.evaluator.evaluate(
                             model,
                             user_query,
@@ -892,10 +918,10 @@ class ScenarioDataLinearWorkflow:
                 ledger.replans >= MAX_REPLANS
                 or ledger.urban_calls >= MAX_URBAN_CALLS
                 or ledger.workspace_calls >= MAX_WORKSPACE_CALLS
-                or await self._deadline_exceeded(request_id, started)
+                or await self._deadline_exceeded(request_id, deadline)
             ):
                 if not answer:
-                    if await self._deadline_exceeded(request_id, started):
+                    if await self._deadline_exceeded(request_id, deadline):
                         answer = (
                             "Не удалось завершить сбор данных в установленный срок. "
                             "Уточните требуемый набор данных или сократите область запроса."
@@ -903,7 +929,7 @@ class ScenarioDataLinearWorkflow:
                     else:
                         answer = await self._bounded_llm(
                             request_id,
-                            started,
+                            deadline,
                             self.owner._draft_answer(
                                 model,
                                 user_query,
@@ -945,7 +971,7 @@ class ScenarioDataLinearWorkflow:
             try:
                 plan = await self._bounded_llm(
                     request_id,
-                    started,
+                    deadline,
                     self.owner.plan_builder.build_execution_plan(
                         model,
                         user_query,
@@ -1365,15 +1391,15 @@ class ScenarioDataLinearWorkflow:
             request_id, {"type": event_type, "content": content}
         )
 
-    async def _deadline_exceeded(self, request_id: str, started: float) -> bool:
-        state = await self.owner.state_store.get_state(request_id) or {}
-        wall = (
-            time.time() - float(state["started_at"])
-            if state.get("started_at")
-            else time.monotonic() - started
-        )
-        active = wall - float(state.get("token_wait_seconds", 0))
-        return wall >= ABSOLUTE_DEADLINE_SECONDS or active >= ACTIVE_DEADLINE_SECONDS
+    async def _deadline_exceeded(
+        self, request_id: str, deadline: _WorkflowDeadline
+    ) -> bool:
+        store = self.owner.state_store
+        state = await store.get_state(request_id) or {}
+        if time.monotonic() - deadline.kept_alive_at >= KEEP_ALIVE_SECONDS:
+            await store.keep_alive(request_id, chat_id=state.get("chat_id"))
+            deadline.kept_alive_at = time.monotonic()
+        return deadline.exceeded(float(state.get("token_wait_seconds", 0)))
 
     @staticmethod
     def _plan_completion_reasons(
@@ -1425,7 +1451,9 @@ class ScenarioDataLinearWorkflow:
             return ["требуемая таблица была сформирована не полностью"]
         return []
 
-    async def _bounded_llm(self, request_id: str, started: float, awaitable):
+    async def _bounded_llm(
+        self, request_id: str, deadline: _WorkflowDeadline, awaitable
+    ):
         """Bound LLM calls while still reacting promptly to an explicit cancel."""
 
         task = asyncio.create_task(awaitable)
@@ -1437,9 +1465,9 @@ class ScenarioDataLinearWorkflow:
                 if await self.owner.state_store.is_cancelled(request_id):
                     task.cancel()
                     raise asyncio.CancelledError
-                if await self._deadline_exceeded(request_id, started):
+                if await self._deadline_exceeded(request_id, deadline):
                     task.cancel()
-                    raise TimeoutError("scenario-data workflow deadline exceeded")
+                    raise deadline.error()
         finally:
             if not task.done():
                 task.cancel()

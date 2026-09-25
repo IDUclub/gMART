@@ -290,3 +290,46 @@ async def test_empty_functional_zones_are_not_recorded():
     assert [call["function"]["arguments"]["zone_type_names"] for call in calls] == [
         ["Жилая зона"]
     ]
+
+
+async def test_an_object_with_many_sources_keeps_its_result():
+    class ManySchools(FakeMcpClient):
+        async def execute_tool(self, name, arguments, meta=None):
+            if name == "GetServices":
+                self.calls.append((name, arguments, meta))
+                return {
+                    "Школа": {
+                        "type": "FeatureCollection",
+                        "features": [
+                            _feature(30.0 + index * 1e-6, service_id=index)
+                            for index in range(120)
+                        ],
+                    }
+                }
+            return await super().execute_tool(name, arguments, meta)
+
+    execution = await ComplianceTemplateExecutor().execute(ManySchools(), _plan(), 772)
+
+    assert execution.result.compliance_status == "violated"
+    crowded = next(item for item in execution.result.evidence if item.violated)
+    assert crowded.measured_value == 120
+    assert len(crowded.generator_refs) == 120
+    assert crowded.warnings == []
+
+
+def test_geometry_checks_every_object_of_a_large_layer():
+    many = {
+        "type": "FeatureCollection",
+        "features": [_feature(30.0 + index * 1e-3) for index in range(60_000)],
+    }
+    frame = ComplianceGeometryTools()._layer("objects", {"objects": many})
+    assert len(frame) == 60_000
+
+
+def test_registry_sets_no_object_limit():
+    from src.agents.services.compilance.compliance_registry import (
+        build_default_registry,
+    )
+
+    for entry in build_default_registry()._entries.values():
+        assert set(entry.manifest()["limits"]) == {"timeout_seconds"}

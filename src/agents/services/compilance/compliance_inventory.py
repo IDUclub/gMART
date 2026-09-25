@@ -214,12 +214,6 @@ class RestrictionZoneBuilder:
             # The complete scenario layer has nothing the norm draws around.
             zone.status = "no_objects"
             return zone
-        entry = registry.get(plan.template, plan.template_version)
-        limit_error = self.executor._limit_error(entry, resolution.layers)
-        if limit_error:
-            zone.missing_requirements = [limit_error]
-            zone.tool_calls = calls
-            return zone
 
         source_layer = resolution.role_layers[source_role]
         arguments: dict[str, Any] = {

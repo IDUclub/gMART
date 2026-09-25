@@ -376,6 +376,31 @@ class PipelineStateStore:
 
         return await self._retry(acquire_once, _request_id=request_id)
 
+    async def keep_alive(self, request_id: str, *, chat_id: str | None = None) -> None:
+        """Restart PIPELINE_TTL for a run that is still working.
+
+        A load-adjusted deadline can outlast the TTL set at creation; without this
+        the state, the event journal and the chat lock would expire mid-run.
+        """
+
+        async def refresh():
+            async with self._redis.pipeline(transaction=True) as pipe:
+                for kind in ("state", "checkpoint", "events", "event_ids"):
+                    pipe.expire(self._key(request_id, kind), PIPELINE_TTL)
+                await pipe.execute()
+            if not chat_id:
+                return
+            key = self._key(chat_id, "active_request")
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(key)
+                if await pipe.get(key) != request_id:
+                    return
+                pipe.multi()
+                pipe.expire(key, PIPELINE_TTL)
+                await pipe.execute()
+
+        await self._retry(refresh, _request_id=request_id)
+
     async def release_chat(self, chat_id: str, request_id: str) -> None:
         """Release a chat lock only when this pipeline still owns it."""
 

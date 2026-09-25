@@ -86,6 +86,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_THINK_MODE: ${{ vars.OPENAI_THINK_MODE }}
           OPENAI_THINK_EFFORT: ${{ vars.OPENAI_THINK_EFFORT }}
+          LLM_NOMINAL_TOKENS_PER_SECOND: ${{ vars.LLM_NOMINAL_TOKENS_PER_SECOND }}
+          LLM_DEADLINE_MAX_FACTOR: ${{ vars.LLM_DEADLINE_MAX_FACTOR }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
           SYSTEM_PASSWORD: ${{ secrets.SYSTEM_PASSWORD }}
           AUTH_HELPER_URL: ${{ vars.AUTH_HELPER_URL }}

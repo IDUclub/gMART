@@ -263,16 +263,16 @@ class ComplianceEvidence(StrictModel):
     template_version: int
     object_ref: dict[str, Any]
     generator_ref: dict[str, Any] | None = None
-    generator_refs: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    generator_refs: list[dict[str, Any]] = Field(default_factory=list)
     zone_ref: dict[str, Any] | None = None
-    zone_refs: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    zone_refs: list[dict[str, Any]] = Field(default_factory=list)
     operation: str
     measured_value: float | int | None = None
     unit: str | None = None
     threshold: float | int | None = None
     operator: str | None = None
     violated: bool
-    used_fields: list[dict[str, Any]] = Field(default_factory=list, max_length=24)
+    used_fields: list[dict[str, Any]] = Field(default_factory=list)
     provenance: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list, max_length=50)
     input_revision: str | None = None
