@@ -10,7 +10,13 @@ from src.agents.common.exceptions.base_exceptions import (
     AgentsNotFound,
     AgentsUnauthorizedException,
 )
+from src.agents.model_clients.llm_pace import PacedDeadline, PipelineDeadlineExceeded
 from src.agents.services.pipeline_state import PIPELINE_TTL, PipelineStatus
+
+# Seconds of work at the LLM's nominal speed; stretched while the server is slow.
+RUN_DEADLINE_SECONDS = PIPELINE_TTL - 30
+# The run may outlive PIPELINE_TTL, so its Redis keys are refreshed while it works.
+KEEP_ALIVE_SECONDS = 60
 
 _tasks: set[asyncio.Task] = set()
 
@@ -59,19 +65,25 @@ async def _produce(service, request_id, owner, kwargs):
             pass  # The service commits each event before yielding it.
 
     task = asyncio.create_task(consume())
-    started = time.monotonic()
-    heartbeat_at = started - 5
+    deadline = PacedDeadline(RUN_DEADLINE_SECONDS)
+    heartbeat_at = deadline.started - 5
+    kept_alive_at = deadline.started
     try:
         while not task.done():
             if await store.is_cancelled(request_id):
                 status = "cancelled"
                 task.cancel()
                 break
-            if time.monotonic() - started >= PIPELINE_TTL - 30:
-                raise TimeoutError("document run deadline exceeded")
+            if deadline.exceeded():
+                raise PipelineDeadlineExceeded(
+                    "document run deadline exceeded", deadline.wall_seconds
+                )
             if time.monotonic() - heartbeat_at >= 5:
                 await metadata()
                 heartbeat_at = time.monotonic()
+            if time.monotonic() - kept_alive_at >= KEEP_ALIVE_SECONDS:
+                await store.keep_alive(request_id)
+                kept_alive_at = time.monotonic()
             await asyncio.wait({task}, timeout=0.25)
         if status == "cancelled":
             await asyncio.gather(task, return_exceptions=True)
@@ -102,7 +114,11 @@ async def _produce(service, request_id, owner, kwargs):
             dict(
                 type="error",
                 content=dict(
-                    message="Не удалось завершить запрос. Повторите попытку.",
+                    message=(
+                        exc.user_message
+                        if isinstance(exc, PipelineDeadlineExceeded)
+                        else "Не удалось завершить запрос. Повторите попытку."
+                    ),
                     traceback="",
                 ),
             ),

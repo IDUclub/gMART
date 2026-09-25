@@ -6,7 +6,6 @@ the resulting records or facts. Empty reads terminate without changing scope.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from typing import Literal
@@ -22,6 +21,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.common.exceptions.token_exceptions import TokenExpiredError
+from src.agents.model_clients.llm_pace import paced_wait_for
 from src.agents.services.scenario_data.scenario_data_columns import ids_requested
 from src.agents.services.scenario_data.scenario_data_evaluator import wants_layers
 from src.agents.services.scenario_data.scenario_data_type_mapper import UrbanTypeMapper
@@ -472,7 +472,7 @@ class UrbanReadWorkflow:
         tools = scoped_tools(tools, query)
         named = {tool.name: tool for tool in tools}
         try:
-            plan = await asyncio.wait_for(
+            plan = await paced_wait_for(
                 UrbanTypeMapper(host.llm_client)._request_json(
                     model,
                     read_messages(query, tools, selected, project_id),
@@ -482,7 +482,7 @@ class UrbanReadWorkflow:
                         p, tools, query, selected, project_id
                     ),
                 ),
-                timeout=120,
+                120,
             )
         except (ValueError, TimeoutError):
             plan = UrbanReadPlan(calls=[], operation="unsupported")

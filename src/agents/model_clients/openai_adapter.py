@@ -48,6 +48,7 @@ from src.agents.model_clients.llm_base import (
     LlmMessage,
     LlmResponseError,
 )
+from src.agents.model_clients.llm_pace import llm_pace
 
 THINK_REASONING_EFFORT = "reasoning_effort"
 THINK_CHAT_TEMPLATE = "chat_template"
@@ -302,7 +303,9 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         )
 
     @classmethod
-    async def _as_stream(cls, stream: Any) -> AsyncIterator[LlmChatResponse]:
+    async def _as_stream(
+        cls, stream: Any, pace_call: int | None = None
+    ) -> AsyncIterator[LlmChatResponse]:
         """Yield chunks, always ending on one with ``done=True``.
 
         Two shapes have to be absorbed for the call sites — which loop until
@@ -315,29 +318,48 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
 
         model = ""
         finished = False
-        async for chunk in stream:
-            model = getattr(chunk, "model", "") or model
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                continue
-            choice = choices[0]
-            delta = getattr(choice, "delta", None)
-            finish_reason = getattr(choice, "finish_reason", None)
-            finished = finished or finish_reason is not None
-            yield LlmChatResponse(
-                model=model,
-                message=LlmMessage(
-                    role=getattr(delta, "role", "assistant") or "assistant",
-                    content=getattr(delta, "content", None) or "",
-                    thinking=cls._reasoning(delta),
-                ),
-                done=finish_reason is not None,
-                done_reason=finish_reason,
-            )
-        if not finished:
-            # EOF is terminal for consumers, but is not proof that the model
-            # finished its answer. Never disguise a truncated stream as success.
-            yield LlmChatResponse(model=model, done=True, done_reason="incomplete")
+        # vLLM streams one token per chunk; a trailing usage chunk is exact.
+        chunks = 0
+        usage = None
+        try:
+            async for chunk in stream:
+                model = getattr(chunk, "model", "") or model
+                usage = getattr(chunk, "usage", None) or usage
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                finish_reason = getattr(choice, "finish_reason", None)
+                finished = finished or finish_reason is not None
+                content = getattr(delta, "content", None) or ""
+                thinking = cls._reasoning(delta)
+                chunks += bool(content or thinking)
+                yield LlmChatResponse(
+                    model=model,
+                    message=LlmMessage(
+                        role=getattr(delta, "role", "assistant") or "assistant",
+                        content=content,
+                        thinking=thinking,
+                    ),
+                    done=finish_reason is not None,
+                    done_reason=finish_reason,
+                )
+            if not finished:
+                # EOF is terminal for consumers, but is not proof that the model
+                # finished its answer. Never disguise a truncated stream as success.
+                yield LlmChatResponse(model=model, done=True, done_reason="incomplete")
+        finally:
+            if pace_call is not None:
+                llm_pace.finished(
+                    pace_call,
+                    completion_tokens=(
+                        getattr(usage, "completion_tokens", None) or chunks
+                        if finished
+                        else None
+                    ),
+                    prompt_tokens=getattr(usage, "prompt_tokens", None),
+                )
 
     # ------------------------------------------------------------------ #
     # BaseLlmAdapter
@@ -354,8 +376,17 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         **kwargs: Any,
     ) -> LlmChatResponse | AsyncIterator[LlmChatResponse]:
         call = self._build(model, messages, stream, think, format, options, kwargs)
+        pace_call = None
         try:
-            result = await self.client.chat.completions.create(**call)
+            if stream:
+                pace_call = llm_pace.started(call.get("max_tokens"))
+                try:
+                    result = await self.client.chat.completions.create(**call)
+                except BaseException:
+                    llm_pace.finished(pace_call, completion_tokens=None)
+                    raise
+            else:
+                result = await self._create(call)
             if not stream and call.get("response_format"):
                 response = self._as_response(result)
                 if (
@@ -395,7 +426,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                         "Retrying incomplete structured LLM response with max_tokens={}",
                         call["max_tokens"],
                     )
-                    result = await self.client.chat.completions.create(**call)
+                    result = await self._create(call)
                     response = self._as_response(result)
                     if (
                         response.done_reason == "length"
@@ -415,7 +446,25 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             raise LlmResponseError(str(exc), exc.status_code) from exc
         except OpenAIError as exc:
             raise LlmResponseError(str(exc)) from exc
-        return self._as_stream(result) if stream else self._as_response(result)
+        return (
+            self._as_stream(result, pace_call) if stream else self._as_response(result)
+        )
+
+    async def _create(self, call: dict[str, Any]) -> Any:
+        """One non-streaming completion, timed for the deadline pace estimate."""
+
+        pace_call = llm_pace.started(call.get("max_tokens"))
+        usage = None
+        try:
+            result = await self.client.chat.completions.create(**call)
+            usage = getattr(result, "usage", None)
+            return result
+        finally:
+            llm_pace.finished(
+                pace_call,
+                completion_tokens=getattr(usage, "completion_tokens", None),
+                prompt_tokens=getattr(usage, "prompt_tokens", None),
+            )
 
     async def generate(
         self, model: str, prompt: str, *, stream: bool = False, **kwargs: Any
