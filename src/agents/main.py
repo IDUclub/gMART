@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
@@ -9,6 +10,10 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import StaticFiles
 
 from src.agents.__version__ import APP_DESCRIPTION, APP_TITLE, APP_VERSION
+from src.agents.common.files.temporary_file_store import (
+    FILES_MOUNT_PATH,
+    OwnedFilesApp,
+)
 from src.agents.common.logging.log_config import config_logger
 from src.agents.common.middlewares.exception_handler import (
     ExceptionHandlerMiddleware,
@@ -16,6 +21,7 @@ from src.agents.common.middlewares.exception_handler import (
 from src.agents.dependencies.dependencies import app_deps
 from src.agents.routers.a2a_controller import a2a_router, restriction_a2a_router
 from src.agents.routers.auth_controller import auth_router
+from src.agents.routers.compliance_a2a_controller import compliance_a2a_router
 from src.agents.routers.compliance_controller import compliance_router
 from src.agents.routers.dvd_a2a_controller import dvd_a2a_router
 from src.agents.routers.dvd_controller import dvd_router
@@ -39,6 +45,20 @@ from src.common.service_auth import service_auth_lifespan
 config_logger()
 
 UI_DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+FILES_PURGE_INTERVAL_SECONDS = 5 * 60
+
+
+async def purge_expired_files(file_store) -> None:
+    """Delete generated files once their TTL is over, even if nobody asks for them."""
+
+    while True:
+        await asyncio.sleep(FILES_PURGE_INTERVAL_SECONDS)
+        try:
+            removed = await asyncio.to_thread(file_store.purge_expired)
+            if removed:
+                logger.info(f"Removed expired generated files: {removed}")
+        except OSError as exc:
+            logger.warning(f"Could not purge generated files: {exc}")
 
 
 @asynccontextmanager
@@ -53,9 +73,11 @@ async def lifespan(app: FastAPI):
         synapse_service = app_deps.get("synapse_gateway_service")
         if synapse_service is not None:
             await synapse_service.recover_active_runs()
+        purge_task = asyncio.create_task(purge_expired_files(app_deps["file_store"]))
         try:
             yield
         finally:
+            purge_task.cancel()
             if synapse_service is not None:
                 await synapse_service.close()
 
@@ -109,9 +131,12 @@ app.include_router(restriction_a2a_router)
 app.include_router(provision_a2a_router)
 app.include_router(dvd_a2a_router)
 app.include_router(norms_a2a_router)
+app.include_router(compliance_a2a_router)
 app.include_router(a2a_router)
 app.include_router(system_router)
 app.include_router(synapse_router)
+
+app.mount(FILES_MOUNT_PATH, OwnedFilesApp(app_deps["file_store"]), name="files")
 
 if UI_DIST_DIR.exists():
     app.mount("/ui", StaticFiles(directory=UI_DIST_DIR, html=True), name="ui")

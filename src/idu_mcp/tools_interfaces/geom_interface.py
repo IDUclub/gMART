@@ -360,6 +360,57 @@ async def check_zonal_attribute_threshold(
 
 
 @geometry_mcp.tool(
+    name="CreateRestrictionZones",
+    title="Построить зоны действия нормы",
+    description="""Строит территорию, на которую действует исполнимая норма, без проверки объектов.
+
+    Режимы geometry_mode:
+    - buffer — буфер distance_m метров вокруг каждого объекта слоя source_layer
+      (санитарные разрывы, расстояния от школ и т. п.);
+    - attribute_buffer — буфер индивидуального радиуса: значение attribute_field объекта
+      выбирает диапазон из bands ([{"min": 0, "max": 50, "distance_m": 100}, …]);
+      объекты без подходящего значения пропускаются;
+    - geometry — сами геометрии source_layer (функциональные зоны, территория проекта).
+
+    threshold_field копирует порог нормы из атрибута объекта-зоны в поле threshold и
+    пропускает зоны без значения. clip_layer обрезает зоны по объединению этого слоя
+    (например, по территории проекта). properties — атрибуты нормы, которые получает
+    каждая зона (restriction_title, restriction_description, zone_kind, provenance, …).
+
+    Выход: {layer_name: FeatureCollection} в WGS84; meta содержит число исходных
+    объектов, построенных зон и пропущенных объектов.""",
+    annotations={"title": "Build norm zones", "readOnlyHint": True},
+    tags={"geometry", "compliance"},
+)
+async def create_restriction_zones(
+    layer_name: str,
+    geometry_mode: Literal["buffer", "attribute_buffer", "geometry"],
+    source_layer: str,
+    layers: dict,
+    properties: dict[str, Any] | None = None,
+    distance_m: float | None = None,
+    attribute_field: str | None = None,
+    bands: list[dict[str, Any]] | None = None,
+    threshold_field: str | None = None,
+    clip_layer: str | None = None,
+    tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
+) -> dict[str, Any]:
+    zones = await _run_compliance_operation(
+        tools.restriction_zones,
+        geometry_mode=geometry_mode,
+        source_layer=source_layer,
+        layers=layers,
+        properties=properties,
+        distance_m=distance_m,
+        attribute_field=attribute_field,
+        bands=bands,
+        threshold_field=threshold_field,
+        clip_layer=clip_layer,
+    )
+    return {layer_name: zones}
+
+
+@geometry_mcp.tool(
     name="CheckZonalRatio",
     title="Проверить долю площади в зоне",
     description=(

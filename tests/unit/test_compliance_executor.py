@@ -6,6 +6,7 @@ import pytest
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
 )
+from src.agents.services.service_entities.compliance import DeclaredRequirements
 from src.idu_mcp.tools_services.compliance_geometry import ComplianceGeometryTools
 
 
@@ -240,3 +241,52 @@ async def test_executor_normalizes_stored_plan_via_catalog_tool(source, target):
         "layers"
     ]
     assert [layer["entity"] for layer in stored_layers] == [source, target]
+
+
+async def test_history_keeps_only_retrievals_that_found_objects():
+    # A client reopening the chat replays these calls into map layers; a call
+    # that found nothing would come back as an empty layer.
+    client = FakeMcpClient(zero_services=True)
+    execution = await ComplianceTemplateExecutor().execute(client, _plan(), 772)
+
+    recorded = [call["function"]["name"] for call in execution.tool_calls]
+    assert "GetServices" not in recorded
+    assert "GetPhysicalObjects" in recorded
+    # The empty layer still reached the check itself.
+    assert execution.layers["Школа"]["features"] == []
+
+
+async def test_empty_functional_zones_are_not_recorded():
+    class Tools:
+        async def execute_named_tool(self, mcp_client, name, arguments):
+            if arguments["zone_type_names"] == ["Жилая зона"]:
+                return {"functional_zones": _fc(30.0)}
+            return {
+                "functional_zones": {
+                    "type": "FeatureCollection",
+                    "features": [],
+                    "meta": {"complete": True, "source": "OSM"},
+                }
+            }
+
+    executor = ComplianceTemplateExecutor()
+    executor.tools = Tools()
+    requirements = DeclaredRequirements.model_validate(
+        {
+            "layers": [
+                {
+                    "role": "zones",
+                    "entity": "Жилая зона",
+                    "entity_type": "functional_zone",
+                },
+                {"role": "other", "entity": "Зона", "entity_type": "functional_zone"},
+            ]
+        }
+    )
+
+    layers, calls = await executor._retrieve_layers(object(), requirements, 772)
+
+    assert set(layers) == {"Жилая зона", "Зона"}
+    assert [call["function"]["arguments"]["zone_type_names"] for call in calls] == [
+        ["Жилая зона"]
+    ]

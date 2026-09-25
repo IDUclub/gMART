@@ -262,6 +262,48 @@ def test_buffers_only_plan_is_valid_when_only_geometry_is_requested():
     )
 
 
+def _school_buffer_plan(mode: str) -> RestrictionPlan:
+    return RestrictionPlan(
+        mode=mode,
+        source_entities=[EntityRef(name="школа", entity_type="service")],
+        buffer_rules=[BufferRule(source_name="школа", buffer_size=50, title="50 м")],
+        original="test",
+    )
+
+
+def test_restriction_zones_without_targets_are_built_as_buffers():
+    # Dev run: «зоны ограничений» made the model pick the restrictions mode and
+    # the complete buffer plan ended in a clarification request.
+    catalog = ["школа", "детский сад"]
+    plan = RestrictionPlanBuilder(FakeLlmClient()).validate_and_canonicalize_plan(
+        _school_buffer_plan("restrictions"),
+        "Построй зоны ограничений 50 метров вокруг школ",
+        catalog,
+        ["жилой дом"],
+    )
+    assert plan.mode == RestrictionTaskMode.BUFFERS_ONLY
+    assert plan.clarification_question is None
+
+
+def test_restrictions_without_targets_still_ask_when_objects_are_requested():
+    plan = RestrictionPlanBuilder(FakeLlmClient()).validate_and_canonicalize_plan(
+        _school_buffer_plan("restrictions"),
+        "Какие объекты попадают в зону 50 метров вокруг школ?",
+        ["школа"],
+        ["жилой дом"],
+    )
+    assert plan.mode == RestrictionTaskMode.NEEDS_CLARIFICATION
+
+
+def test_clarification_lists_each_catalog_entry_once():
+    plan = RestrictionPlanBuilder._enrich_clarification(
+        _school_buffer_plan("needs_clarification"),
+        ["школа"],
+        ["река", "лес", "река", "лес"],
+    )
+    assert "Доступные физические объекты: река, лес." in plan.clarification_question
+
+
 def test_user_rule_is_rejected_when_canonical_hit_was_retrieved():
     plan = RestrictionPlan(
         mode="restrictions",

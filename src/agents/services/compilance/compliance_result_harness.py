@@ -16,6 +16,7 @@ from src.agents.services.compilance.compliance_sources import (
     source_reference,
     source_references,
 )
+from src.agents.services.readable_refs import object_label
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,10 @@ class ComplianceResultHarness:
     _EXPLICIT_RERUN = re.compile(
         r"\b(?:проверь|проверьте|перепроверь|перепроверьте|повтори|повторите|"
         r"запусти|запустите|выполни|выполните|пересчитай|пересчитайте)\b|"
-        r"\b(?:заново|повторно|снова)\b",
+        r"\b(?:заново|повторно|снова)\b|"
+        # «Какие ограничения есть на территории?» asks for the zones, not the verdicts.
+        r"\bкакие\s+(?:\w+\s+)?ограничени\w*\s+(?:есть|действу\w*|наклад\w*)|"
+        r"\bпокажи\w*\s+(?:зоны|ограничени\w*)",
         re.IGNORECASE,
     )
     _PERSISTED_EVENT_TYPE = "compliance_summary"
@@ -78,7 +82,8 @@ class ComplianceResultHarness:
 текстовую отсылку из source_references (краткое обозначение документа и пункт,
 если он указан) и текст нормы, когда он есть. Для каждой нарушенной нормы
 обязательно приведи такую отсылку. Если название отсутствует, пиши
-«Источник не указан»; пункт добавляй только при его наличии. UUID и restriction_id
+«Источник не указан»; пункт добавляй только при его наличии. Объекты называй
+по именам из evidence. UUID, restriction_id и другие системные идентификаторы
 в ответ не включай, даже если они встречаются в истории. Не придумывай ссылки,
 названия документов или номера пунктов. Причины бери из
 missing_requirements, warnings и resolved_requirements.reason. Техническую ошибку
@@ -134,7 +139,6 @@ missing_requirements, warnings и resolved_requirements.reason. Техничес
         count_fields = {
             key: summary.get(key, 0)
             for key in (
-                "request_id",
                 "total_norms",
                 "violated_norms",
                 "passed_norms",
@@ -210,20 +214,24 @@ missing_requirements, warnings и resolved_requirements.reason. Техничес
         ]
         compact["evidence"] = [
             {
-                key: item.get(key)
-                for key in (
-                    "object_ref",
-                    "generator_ref",
-                    "zone_ref",
-                    "operation",
-                    "measured_value",
-                    "unit",
-                    "threshold",
-                    "operator",
-                    "violated",
-                    "warnings",
-                )
-                if item.get(key) is not None
+                **{
+                    key: object_label(item[key])
+                    for key in ("object_ref", "generator_ref", "zone_ref")
+                    if isinstance(item.get(key), dict)
+                },
+                **{
+                    key: item.get(key)
+                    for key in (
+                        "operation",
+                        "measured_value",
+                        "unit",
+                        "threshold",
+                        "operator",
+                        "violated",
+                        "warnings",
+                    )
+                    if item.get(key) is not None
+                },
             }
             for item in (result.get("evidence") or [])[: cls._MAX_EVIDENCE_PER_RESULT]
             if isinstance(item, dict)

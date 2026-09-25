@@ -219,7 +219,15 @@ async def test_quote_mismatch_then_reasoning_exhaustion_retries_smaller_source_p
     from tests.unit.test_llm_adapters import _adapter_with, _Choice, _Completion, _Delta
 
     adapter, _ = _adapter_with(None)
-    adapter.client.post = AsyncMock(return_value={"count": 1000})
+
+    async def tokenize(endpoint, *, body, **_):
+        messages = body["messages"]
+        if len(messages) == 1 and messages[0]["content"].startswith("[5]"):
+            # The evidence itself: large enough to need reduction.
+            return {"count": len(messages[0]["content"].encode("utf-8"))}
+        return {"count": 1000}
+
+    adapter.client.post = tokenize
     calls = []
 
     async def create(**request):

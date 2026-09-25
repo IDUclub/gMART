@@ -37,6 +37,11 @@ class _BaseRetrievalPlan(BaseModel):
         types (list[str] | None): Restrict to these structural levels (``chapter`` /
             ``section`` / ``clause`` / ``subclause`` / ``table`` / ``definition`` / ...);
             ``None`` searches all levels.
+        alternative_queries (list[str]): Up to two more topical phrasings; semantic
+            retrieval merges their hits with ``search_query``.
+        intent (str): ``norm`` for a question about requirements themselves,
+            ``document_list`` for "which documents/regulations cover a subject".
+        tags (list[str] | None): Restrict to documents carrying any of these IDU_DVD tags.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -48,6 +53,9 @@ class _BaseRetrievalPlan(BaseModel):
     document_names: list[str] | None = None
     block: str | None = None
     types: list[str] | None = None
+    alternative_queries: list[str] = Field(default_factory=list)
+    intent: Literal["norm", "document_list"] = "norm"
+    tags: list[str] | None = None
     pattern: str | None = None
     name_query: str | None = None
     name_mode: Literal["strict", "expanded"] = "strict"
@@ -120,6 +128,20 @@ class AuditedClaim(BaseModel):
     evidence: list[ClaimEvidence] = Field(default_factory=list)
 
 
+class Correction(BaseModel):
+    """One local edit the critic asks for; the rest of the answer stays verbatim.
+
+    ``target`` is the exact answer line to change, or empty when the fix adds a
+    line or the line is not known (literal checks). ``quote`` from fragment
+    ``source_id`` supports the fixed or added text.
+    """
+
+    target: str = ""
+    instruction: str
+    source_id: str = ""
+    quote: str = ""
+
+
 class CriticVerdict(BaseModel):
     """
     LLM critic's verdict on a drafted answer.
@@ -127,9 +149,15 @@ class CriticVerdict(BaseModel):
         satisfied (bool): Whether the answer is accepted as-is.
         critique (str): Short explanation of what is wrong (empty when satisfied).
         refined_search_query (str | None): A better search query to use on the next round.
+        needs_evidence (bool): The rejection is caused by missing evidence, so rewriting
+            the answer over the same fragments cannot fix it.
+        corrections (list[Correction]): Local edits that repair the answer over the
+            same fragments; lines they do not name are kept as they are.
     """
 
     satisfied: bool
     critique: str = ""
     refined_search_query: str | None = None
+    needs_evidence: bool = False
     claims: list[AuditedClaim] = Field(default_factory=list)
+    corrections: list[Correction] = Field(default_factory=list)

@@ -69,6 +69,7 @@ from src.agents.services.scenario_data.scenario_data_read import (
 from src.agents.services.scenario_data.scenario_data_selection import (
     may_select_entities,
     selection_candidates,
+    several_types,
     verified_entity_records,
 )
 from src.agents.services.scenario_data.scenario_data_type_mapper import UrbanTypeMapper
@@ -530,7 +531,7 @@ class ScenarioDataService(BaseLlmService):
                         + [
                             {
                                 "step_id": f"{kind.value}_types",
-                                "purpose": "Получить актуальный справочник типов и сопоставить ID",
+                                "purpose": "Получить актуальный справочник типов и сопоставить их с сущностями сценария",
                             }
                             for kind in type_intent.kinds
                         ],
@@ -988,6 +989,9 @@ class ScenarioDataService(BaseLlmService):
             request = await mapper.classify_scenario_entity_request(model, user_query)
             if request.operation == "unsupported":
                 return
+            requested_types = request.types()
+            if len(requested_types) > 1 and wants_layers(user_query):
+                return
             catalogues = {}
             for domain, (catalog_name, _) in domains.items():
                 box = []
@@ -1000,42 +1004,120 @@ class ScenarioDataService(BaseLlmService):
                 request_id,
                 self._status("planning", "Сопоставляю запрос с типами сценария…"),
             )
-            candidates = selection_candidates(catalogues)
-            selection = await mapper.select_scenario_entities(
-                model, user_query, candidates, requested_type=request.requested_type
-            )
-            # Scenario catalogues contain represented types only. Check the global
-            # catalogue before confusing an absent type with an unknown concept.
-            if selection.candidate is None:
-                global_names = {
-                    "physical_object_type": "GetPhysicalObjectTypes",
-                    "service_type": "GetServiceTypes",
-                }
-                if all(
-                    ("dictionaries", name) in named for name in global_names.values()
-                ):
-                    global_catalogues = {}
-                    for domain, catalog_name in global_names.items():
-                        box = []
-                        async for event in execute(
-                            named[("dictionaries", catalog_name)], {}, box
+            scenario_candidates = selection_candidates(catalogues)
+            global_candidates = None
+            selected = []
+            for requested_type in requested_types:
+                candidates = scenario_candidates
+                selection = await mapper.select_scenario_entities(
+                    model, user_query, candidates, requested_type=requested_type
+                )
+                # Scenario catalogues contain represented types only. Check the global
+                # catalogue before confusing an absent type with an unknown concept.
+                if selection.candidate is None:
+                    if global_candidates is None:
+                        global_candidates = {}
+                        global_names = {
+                            "physical_object_type": "GetPhysicalObjectTypes",
+                            "service_type": "GetServiceTypes",
+                        }
+                        if all(
+                            ("dictionaries", name) in named
+                            for name in global_names.values()
                         ):
-                            yield event
-                        global_catalogues[domain] = self._unwrap_result(box[0])
-                    candidates = selection_candidates(global_catalogues)
-                    selection = await mapper.select_scenario_entities(
-                        model,
-                        user_query,
-                        candidates,
-                        requested_type=request.requested_type,
+                            global_catalogues = {}
+                            for domain, catalog_name in global_names.items():
+                                box = []
+                                async for event in execute(
+                                    named[("dictionaries", catalog_name)], {}, box
+                                ):
+                                    yield event
+                                global_catalogues[domain] = self._unwrap_result(box[0])
+                            global_candidates = selection_candidates(global_catalogues)
+                    if global_candidates:
+                        candidates = global_candidates
+                        selection = await mapper.select_scenario_entities(
+                            model,
+                            user_query,
+                            candidates,
+                            requested_type=requested_type,
+                        )
+                selected.append(
+                    (
+                        requested_type,
+                        (
+                            candidates[selection.candidate]
+                            if selection.candidate is not None
+                            else None
+                        ),
                     )
-            if selection.candidate is None:
+                )
+            if (
+                len(selected) == 1
+                and selected[0][1] is None
+                and several_types(selected[0][0])
+            ):
+                # «школы и детские сады» squeezed into one type is a multi-type
+                # question; the general planner handles it instead of a dead end.
+                return
+            if len(selected) > 1 and any(item for _, item in selected):
+                rows, parts_text, missing, seen = [], [], [], set()
+                for requested_type, candidate in selected:
+                    if candidate is None:
+                        missing.append(requested_type)
+                        continue
+                    key = (candidate["domain"], candidate["type_id"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    domain = candidate["domain"]
+                    box = []
+                    async for event in execute(
+                        named[("projects", domains[domain][1])],
+                        {f"{domain}_id": candidate["type_id"]},
+                        box,
+                    ):
+                        yield event
+                    count = len(
+                        verified_entity_records(self._unwrap_result(box[0]), candidate)
+                    )
+                    noun = (
+                        "сервисов"
+                        if domain == "service_type"
+                        else "физических объектов"
+                    )
+                    rows.append({"type_name": candidate["name"], "count": count})
+                    parts_text.append(f"{noun} типа «{candidate['name']}» — {count}")
+                answer = "В выбранном сценарии: " + "; ".join(parts_text) + "."
+                if missing:
+                    answer += (
+                        " В справочниках не найден тип: "
+                        + ", ".join(f"«{name}»" for name in missing)
+                        + ". Уточните его название."
+                    )
+                artifacts.append(
+                    {
+                        "type": "table",
+                        "content": {
+                            "name": "scenario_entity_count",
+                            "title": "Количество по типам",
+                            "columns": [
+                                {"key": "type_name", "label": "Тип"},
+                                {"key": "count", "label": "Количество"},
+                            ],
+                            "rows": rows,
+                            "total_rows": len(rows),
+                            "complete": True,
+                        },
+                    }
+                )
+            elif not any(item for _, item in selected):
                 answer = (
                     "В справочниках выбранного сценария не найден тип, точно соответствующий запросу. "
                     "Уточните название типа. Это не подтверждает отсутствие таких объектов в других данных."
                 )
             else:
-                candidate = candidates[selection.candidate]
+                candidate = selected[0][1]
                 if wants_layers(user_query):
                     request.operation = "map"
                 domain = candidate["domain"]

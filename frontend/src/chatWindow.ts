@@ -1,4 +1,4 @@
-import type { Message, TableData } from "./types";
+import type { FileDescriptor, Message, TableData } from "./types";
 // Explicit extension: this module is loaded directly by the node test runner,
 // which cannot resolve extensionless specifiers the way Vite does.
 import { uid } from "./uid.ts";
@@ -16,6 +16,7 @@ export type SseExchange = {
   question: string;
   answer: string;
   tables: TableData[];
+  files?: FileDescriptor[];
 };
 
 export type IterationChunk = {
@@ -141,6 +142,11 @@ export function appendSseExchange(
         kind: "table",
         payload: table,
       })),
+      ...(exchange.files || []).map((file, index) => ({
+        part_seq: exchange.tables.length + index + 2,
+        kind: "file",
+        payload: file,
+      })),
     ],
     metadata: { source: "sse" },
     created_at: createdAt,
@@ -157,6 +163,35 @@ export function oldestServerSequence(messages: Message[]): number | null {
     if (Number.isFinite(seq)) return seq;
   }
   return null;
+}
+
+/** Attach a file that arrived after the answer to the latest assistant message. */
+export function appendFilePart(
+  messages: Message[],
+  file: FileDescriptor,
+): Message[] {
+  let index = messages.length - 1;
+  while (index >= 0 && messages[index].role.toLowerCase() !== "assistant")
+    index -= 1;
+  if (index < 0) return messages;
+  const message = messages[index];
+  if (
+    message.parts.some(
+      (part) => part.kind === "file" && part.payload?.url === file.url,
+    )
+  )
+    return messages;
+  const nextSeq =
+    message.parts.reduce(
+      (highest, part) => Math.max(highest, Number(part.part_seq) || 0),
+      0,
+    ) + 1;
+  const next = [...messages];
+  next[index] = {
+    ...message,
+    parts: [...message.parts, { part_seq: nextSeq, kind: "file", payload: file }],
+  };
+  return next;
 }
 
 export function finalizeSseExchange(

@@ -150,3 +150,10 @@ class StructuredPartRequest(BaseModel):
 
     kind: StructuredPartKind
     payload: dict[str, Any]
+
+
+class FilePartRequest(BaseModel):
+    """Reference to a generated file; ChatStorage never stores the bytes."""
+
+    kind: Literal["file"]
+    payload: dict[str, Any]

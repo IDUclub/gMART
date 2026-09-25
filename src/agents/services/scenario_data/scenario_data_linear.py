@@ -589,7 +589,7 @@ class ScenarioDataLinearWorkflow:
                     break
                 if not set(step.depends_on).issubset(ledger.completed_step_ids):
                     validation_reasons = [
-                        f"не выполнены зависимости шага {step.step_id}"
+                        f"не выполнены предыдущие шаги для «{step.purpose}»"
                     ]
                     plan_failed = True
                     break
@@ -822,7 +822,7 @@ class ScenarioDataLinearWorkflow:
                         "step_failed",
                         attempt.model_dump(mode="json"),
                     )
-                    validation_reasons = [f"шаг {step.step_id} завершился ошибкой"]
+                    validation_reasons = [f"шаг «{step.purpose}» завершился ошибкой"]
                     plan_failed = True
                     break
 
@@ -1381,7 +1381,7 @@ class ScenarioDataLinearWorkflow:
     ) -> list[str]:
         completed = ledger.completed_step_ids
         missing_steps = [
-            step.step_id for step in plan.steps if step.step_id not in completed
+            f"«{step.purpose}»" for step in plan.steps if step.step_id not in completed
         ]
         covered = set(bootstrap_satisfied) | {
             requirement
@@ -1390,7 +1390,7 @@ class ScenarioDataLinearWorkflow:
             for requirement in step.satisfies
         }
         missing_requirements = [
-            item.requirement_id
+            item.description
             for item in acquisition.requirements
             if item.requirement_id not in covered
         ]

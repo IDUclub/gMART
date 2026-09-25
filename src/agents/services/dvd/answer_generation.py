@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 
 from loguru import logger
 
-from src.agents.model_clients.context_budget import remaining_output_tokens
+from src.agents.model_clients.context_budget import (
+    ANSWER_OUTPUT,
+    output_budget,
+    remaining_output_tokens,
+)
 
 from .context_reducer import DvdContextReducer, cost
 
@@ -44,6 +49,99 @@ class AnswerGenerationError(ValueError):
 def message_cost(messages: list[dict]) -> int:
     # Same conservative UTF-8 upper estimate as evidence reduction, plus framing.
     return 256 + sum(64 + cost(str(m.get("content", ""))) for m in messages)
+
+
+_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)*\|?\s*$")
+
+
+def _cells(row: str) -> list[str]:
+    return [cell.strip() for cell in row.strip().strip("|").split("|")]
+
+
+def tables_to_lists(text: str) -> str:
+    """Rewrite Markdown tables as bullet lists, one row per line.
+
+    The draft prompt forbids tables, yet gpt-oss still writes them for overviews.
+    A row keeps every cell with its column name, so labels [N] stay on the line
+    the critic audits and the user reads.
+    """
+
+    lines = text.split("\n")
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        is_table = (
+            index + 1 < len(lines)
+            and _TABLE_ROW.match(lines[index])
+            and _TABLE_RULE.match(lines[index + 1])
+        )
+        if not is_table:
+            out.append(lines[index])
+            index += 1
+            continue
+        header = _cells(lines[index])
+        index += 2
+        while index < len(lines) and _TABLE_ROW.match(lines[index]):
+            pairs = []
+            for name, cell in zip(header, _cells(lines[index])):
+                cell = " ".join(cell.replace("<br>", " ").replace("•", "").split())
+                # The row number column carries no content.
+                if not cell or name in {"№", "#", "N"}:
+                    continue
+                pairs.append(f"{name}: {cell}" if name else cell)
+            if pairs:
+                out.append("- " + "; ".join(pairs))
+            index += 1
+    return "\n".join(out)
+
+
+class StreamingTableRewriter:
+    """``tables_to_lists`` for a streamed draft.
+
+    Ordinary text passes through as it arrives. Lines that start with ``|`` are held
+    until the block ends, then released rewritten, so the reader never sees a table
+    that is later replaced. ``flush`` releases whatever is held at the end.
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""  # start of the current line, undecided (blank or a row)
+        self._passing = False  # the current line is plain text, already released
+        self._held: list[str] = []  # complete lines of a possible table
+
+    def _release_held(self) -> str:
+        text = "".join(line + "\n" for line in self._held)
+        self._held = []
+        return tables_to_lists(text[:-1]) + "\n" if text else ""
+
+    def feed(self, text: str) -> str:
+        out: list[str] = []
+        segments = text.split("\n")
+        for index, segment in enumerate(segments):
+            terminated = index < len(segments) - 1
+            if self._passing:
+                out.append(segment + ("\n" if terminated else ""))
+                self._passing = not terminated
+                continue
+            self._pending += segment
+            stripped = self._pending.lstrip()
+            if terminated:
+                if stripped.startswith("|"):
+                    self._held.append(self._pending)
+                else:
+                    out.append(self._release_held() + self._pending + "\n")
+                self._pending = ""
+            elif stripped and not stripped.startswith("|"):
+                out.append(self._release_held() + self._pending)
+                self._pending, self._passing = "", True
+        return "".join(out)
+
+    def flush(self) -> str:
+        pending, self._pending, self._passing = self._pending, "", False
+        if pending.lstrip().startswith("|"):
+            self._held.append(pending)
+            return self._release_held()[:-1]
+        return self._release_held() + pending
 
 
 def append_continuation(prefix: str, addition: str) -> str:
@@ -94,13 +192,16 @@ class DvdAnswerGenerator:
             )
             evidence = context
             messages = build_messages(evidence) + continuation
-            budget = await remaining_output_tokens(
+            # The draft grows with the evidence it covers; a truncated draft is
+            # continued below, so the limit bounds each request, not the answer.
+            room = await output_budget(
                 self.llm_client,
                 model,
                 messages,
                 self.reducer.window,
+                output=ANSWER_OUTPUT,
             )
-            if budget < 128:
+            if room.window_rest < 128:
                 # Only evidence can be reduced. Preserve instructions, history
                 # and every visible continuation prefix.
                 fixed_available = await remaining_output_tokens(
@@ -131,15 +232,17 @@ class DvdAnswerGenerator:
                     self.failed_parts.extend(prepared.failed_parts)
                 context = prepared.text
                 messages = build_messages(context) + continuation
-                budget = await remaining_output_tokens(
+                room = await output_budget(
                     self.llm_client,
                     model,
                     messages,
                     self.reducer.window,
+                    output=ANSWER_OUTPUT,
                 )
-                if budget < 128:
+                if room.window_rest < 128:
                     raise AnswerGenerationError("answer_generation_no_context_room")
-            input_cost = self.reducer.window - budget
+            budget = room.tokens
+            input_cost = self.reducer.window - room.window_rest
             logger.info(
                 "DVD answer model={} iteration={} attempt={} input_upper_estimate={} "
                 "output_budget={} window={} prefix_bytes={}",

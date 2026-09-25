@@ -23,9 +23,11 @@ A2A details are in [`frontend-scenario-data.md`](frontend-scenario-data.md).
 The Synapse gateway frontend contract is documented in
 [`integrations/synapse-front.md`](integrations/synapse-front.md).
 The executable-norm compliance REST/SSE contract, CheckPlan registry and review
-API are documented in [`compliance-agent.md`](compliance-agent.md).
+API are documented in [`compliance-agent.md`](compliance-agent.md). The compliance A2A
+agent can stop in `input-required` to let the caller choose a document; the next message
+with the same `contextId` answers it (see "Область проверки" there).
 
-The agents app exposes **five A2A agents**, each as a JSON-RPC 2.0 endpoint with an
+The agents app exposes **six A2A agents**, each as a JSON-RPC 2.0 endpoint with an
 A2A AgentCard for discovery:
 
 | Agent | Card `name` | JSON-RPC endpoint | Needs `scenario_id` |
@@ -35,6 +37,7 @@ A2A AgentCard for discovery:
 | Document QA (RAG) | `document-qa-agent` | `POST /documents/a2a` | optional |
 | NormGraph QA | `norms-qa-agent` | `POST /norms/a2a` | optional |
 | Scenario data | `scenario-data-agent` | `POST /scenario-data/a2a` | optional |
+| Normative compliance | `compliance-agent` | `POST /compliance/a2a` | **required** |
 
 Protocol: **A2A 0.3.0**, transport **JSONRPC**. The agents also accept the 1.0 method
 binding names (`SendMessage`, `GetTask`, …) as aliases, but responses are serialized in the
@@ -51,6 +54,7 @@ Each agent publishes a card (no auth required):
 | Document QA | `GET /documents/.well-known/agent-card.json` |
 | NormGraph QA | `GET /norms/.well-known/agent-card.json` |
 | Scenario data | `GET /scenario-data/.well-known/agent-card.json` |
+| Compliance | `GET /compliance/.well-known/agent-card.json` |
 
 Legacy aliases also resolve: `GET /.well-known/agent-card.json`,
 `GET /.well-known/agent.json`, `GET /restriction/agent.json`.
@@ -297,9 +301,11 @@ gMART состоит из двух разворачиваемых приложе
 Интеграция frontend с Synapse через gMART описана в
 [`integrations/synapse-front.md`](integrations/synapse-front.md).
 Исполнение нормативных CheckPlan, compliance SSE и экспертное ревью описаны в
-[`compliance-agent.md`](compliance-agent.md).
+[`compliance-agent.md`](compliance-agent.md). A2A-агент соответствия может остановиться в
+`input-required`, чтобы вызывающая сторона выбрала документ; ответом служит следующее
+сообщение с тем же `contextId` (раздел «Область проверки» там же).
 
-Приложение agents предоставляет **пять A2A-агентов**, каждый — это эндпоинт JSON-RPC 2.0 с
+Приложение agents предоставляет **шесть A2A-агентов**, каждый — это эндпоинт JSON-RPC 2.0 с
 карточкой агента (AgentCard) для обнаружения:
 
 | Агент | `name` карточки | Эндпоинт JSON-RPC | Нужен `scenario_id` |
@@ -309,6 +315,7 @@ gMART состоит из двух разворачиваемых приложе
 | QA по документам (RAG) | `document-qa-agent` | `POST /documents/a2a` | опционален |
 | QA по NormGraph | `norms-qa-agent` | `POST /norms/a2a` | опционален |
 | Городские данные | `scenario-data-agent` | `POST /scenario-data/a2a` | опционален |
+| Нормативное соответствие | `compliance-agent` | `POST /compliance/a2a` | **обязателен** |
 
 Протокол: **A2A 0.3.0**, транспорт **JSONRPC**. Агенты также принимают имена методов из
 биндинга 1.0 (`SendMessage`, `GetTask`, …) как алиасы, но ответы сериализуются в формате 0.3.
@@ -324,6 +331,7 @@ gMART состоит из двух разворачиваемых приложе
 | Документы | `GET /documents/.well-known/agent-card.json` |
 | NormGraph | `GET /norms/.well-known/agent-card.json` |
 | Городские данные | `GET /scenario-data/.well-known/agent-card.json` |
+| Соответствие нормам | `GET /compliance/.well-known/agent-card.json` |
 
 Также работают устаревшие алиасы: `GET /.well-known/agent-card.json`,
 `GET /.well-known/agent.json`, `GET /restriction/agent.json`.

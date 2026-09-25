@@ -12,9 +12,13 @@ from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
 from src.agents.common.auth.synapse_auth import SynapseCallerVerifier
 from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.common.config.app_config_loader import load_config
+from src.agents.common.files.temporary_file_store import TemporaryFileStore
 from src.agents.common.logging.log_config import config_logger
 from src.agents.common.logging.redis_logging import LoggedRedis
 from src.agents.services.a2a_service import A2AService
+from src.agents.services.compilance.compliance_a2a_service import (
+    ComplianceA2AService,
+)
 from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.normgraph.normgraph_a2a_service import NormGraphA2AService
@@ -94,11 +98,13 @@ def init_dependencies() -> dict[str, object]:
             service_client_id=app_config.SYNAPSE_A2A_CLIENT_ID,
             audience=app_config.SYNAPSE_AUTH_AUDIENCE,
         )
+    file_store = TemporaryFileStore(public_base_url=app_config.PUBLIC_BASE_URL)
     restriction_parser_service = RestrictionParserService(
         app_config.OLLAMA_URL,
         chat_storage_client,
         urban_api_client,
         pipeline_state_store,
+        file_store=file_store,
     )
     provision_service = ProvisionService(
         app_config.OLLAMA_URL,
@@ -164,6 +170,7 @@ def init_dependencies() -> dict[str, object]:
         "pzz_service": pzz_service,
         "pzz_a2a_service": PzzA2AService(pzz_service),
         "a2a_service": A2AService(restriction_parser_service),
+        "compliance_a2a_service": ComplianceA2AService(restriction_parser_service),
         "provision_a2a_service": ProvisionA2AService(provision_service),
         "dvd_a2a_service": DocumentQaA2AService(dvd_rag_service),
         "normgraph_a2a_service": NormGraphA2AService(normgraph_rag_service),
@@ -176,4 +183,5 @@ def init_dependencies() -> dict[str, object]:
         "synapse_run_store": synapse_run_store,
         "synapse_gateway_service": synapse_gateway_service,
         "synapse_caller_verifier": synapse_caller_verifier,
+        "file_store": file_store,
     }

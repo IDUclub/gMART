@@ -46,10 +46,12 @@ async def test_partial_output_preserves_source_scope_despite_false_model_approva
     client = FakeDvdMcpClient(default_hits=[{"name": "Правила", "text": source}])
     # Regression from the live gpt-oss audit: both model stages can mistakenly
     # approve the broader assertion even though the quoted evidence is correct.
-    fake_llm.json_responses = [plan_json(), audit(unsafe, source)] * 3 + [
-        json.dumps({"approved_ids": [0]})
-    ]
-    fake_llm.answer_texts = [unsafe] * 3
+    fake_llm.json_responses = (
+        [plan_json()]
+        + [audit(unsafe, source)] * 2
+        + [json.dumps({"approved_ids": [0]})]
+    )
+    fake_llm.answer_texts = [unsafe] * 2
     events = await _run(service, client)
     answer = answer_text(events)
     assert unsafe not in answer
@@ -58,11 +60,12 @@ async def test_partial_output_preserves_source_scope_despite_false_model_approva
     assert events[-1]["content"]["done"]
 
 
-def audit(text, quote, status="supported", label="[1]"):
+def audit(text, quote, status="supported", label="[1]", refined=None):
     return json.dumps(
         {
             "satisfied": False,
             "critique": "PRIVATE: остальная часть не подтверждена",
+            "refined_search_query": refined,
             "claims": [
                 {
                     "text": text,
@@ -87,12 +90,10 @@ async def test_partial_answer_uses_verified_claims_from_all_rounds(service, fake
             for i, fact in enumerate(facts, 1)
         ]
     )
-    fake_llm.json_responses = []
+    # Each rejection proposes a new query, so every round reads new sources.
+    fake_llm.json_responses = [plan_json(search_query="q0")]
     for i, fact in enumerate(facts):
-        fake_llm.json_responses += [
-            plan_json(search_query=f"q{i}"),
-            audit(fact + " [1]", fact),
-        ]
+        fake_llm.json_responses.append(audit(fact + " [1]", fact, refined=f"q{i + 1}"))
     fake_llm.json_responses += [json.dumps({"approved_ids": [0, 1, 2]})]
     fake_llm.answer_texts = [fact + " [1]\nНЕПРОВЕРЕННЫЙ текст." for fact in facts]
     events = await _run(service, client)
@@ -134,15 +135,24 @@ async def test_no_verified_claims_returns_honest_empty_answer(
     )
     if kind == "invented_quote":
         review = audit(fact + " [1]", "Цитата, которой нет.")
-    fake_llm.json_responses = [plan_json(), review] * 3
+    repairable = kind in ("insufficient", "contradicted")
+    # A rejected line gets a local correction; a repair that changes nothing
+    # falls back to a new draft, and to the partial answer once drafts run out.
+    no_edit = json.dumps({"edits": []})
+    fake_llm.json_responses = (
+        [plan_json(), review, no_edit, review, no_edit]
+        if repairable
+        else [plan_json(), review, review]
+    )
     fake_llm.answer_texts = [
         "Другой черновик [1]" if kind == "not_in_draft" else fact + " [1]"
-    ] * 3
+    ] * 2
     events = await _run(service, fake_mcp)
     assert "Не удалось подтвердить" in answer_text(events)
     assert fact not in answer_text(events)
     assert not any(e["type"] == "error" for e in events)
-    assert len(fake_llm.chat_calls) == 9  # no final model request without candidates
+    # plan + 2 × (draft, review) [+ 2 repairs]; no final request without candidates
+    assert len(fake_llm.chat_calls) == (7 if repairable else 5)
 
 
 async def test_final_selection_cannot_include_contradicted_claim(
@@ -151,10 +161,8 @@ async def test_final_selection_cannot_include_contradicted_claim(
     fact = fake_mcp.default_hits[0]["text"]
     fake_llm.json_responses = [
         plan_json(),
-        audit(fact + " [1]", fact),
-        plan_json(),
-        audit(fact + " [1]", fact, "contradicted"),
-        plan_json(),
+        audit(fact + " [1]", fact, refined="r2"),
+        audit(fact + " [1]", fact, "contradicted", refined="r3"),
         audit(fact + " [1]", fact, "insufficient"),
     ]
     fake_llm.answer_texts = [fact + " [1]"] * 3
@@ -167,10 +175,12 @@ async def test_final_selector_can_remove_conflicting_supported_claims(
     service, fake_llm, fake_mcp
 ):
     fact = fake_mcp.default_hits[0]["text"]
-    fake_llm.json_responses = [plan_json(), audit(fact + " [1]", fact)] * 3 + [
-        json.dumps({"approved_ids": []})
-    ]
-    fake_llm.answer_texts = [fact + " [1]"] * 3
+    fake_llm.json_responses = (
+        [plan_json()]
+        + [audit(fact + " [1]", fact)] * 2
+        + [json.dumps({"approved_ids": []})]
+    )
+    fake_llm.answer_texts = [fact + " [1]"] * 2
     events = await _run(service, fake_mcp)
     assert "Не удалось подтвердить" in answer_text(events)
 
@@ -179,10 +189,12 @@ async def test_fabricated_selection_is_technical_error_not_partial_success(
     service, fake_llm, fake_mcp
 ):
     fact = fake_mcp.default_hits[0]["text"]
-    fake_llm.json_responses = [plan_json(), audit(fact + " [1]", fact)] * 3 + [
-        json.dumps({"approved_ids": [999]})
-    ]
-    fake_llm.answer_texts = [fact + " [1]"] * 3
+    fake_llm.json_responses = (
+        [plan_json()]
+        + [audit(fact + " [1]", fact)] * 2
+        + [json.dumps({"approved_ids": [999]})]
+    )
+    fake_llm.answer_texts = [fact + " [1]"] * 2
     events = [
         e
         async for e in stream_document_run(
@@ -256,10 +268,10 @@ async def test_final_empty_search_can_use_earlier_verified_evidence(service, fak
     client = FakeDvdMcpClient(
         hits_per_call=[[{"name": "Источник", "text": fact}], [], []]
     )
+    # The critic's query finds nothing; only then does the planner run again.
     fake_llm.json_responses = [
         plan_json(search_query="q1"),
-        audit(fact + " [1]", fact),
-        plan_json(search_query="q2"),
+        audit(fact + " [1]", fact, refined="q2"),
         plan_json(search_query="q3"),
         json.dumps({"approved_ids": [0]}),
     ]
@@ -284,12 +296,9 @@ async def test_conflicting_rounds_reach_final_audit_with_source_provenance(
             for i, fact in enumerate(facts)
         ]
     )
-    fake_llm.json_responses = []
+    fake_llm.json_responses = [plan_json(search_query="q0")]
     for i, fact in enumerate(facts):
-        fake_llm.json_responses += [
-            plan_json(search_query=f"q{i}"),
-            audit(fact + " [1]", fact),
-        ]
+        fake_llm.json_responses.append(audit(fact + " [1]", fact, refined=f"q{i + 1}"))
     fake_llm.json_responses += [json.dumps({"approved_ids": [2]})]
     fake_llm.answer_texts = [fact + " [1]" for fact in facts]
     events = await _run(service, client)

@@ -185,7 +185,7 @@ async def test_retry_tells_model_why_summary_was_rejected():
     assert "incomplete" in llm.calls[1][0]["content"]
 
 
-async def test_reducer_and_openai_adapter_use_full_window_despite_legacy_cap(
+async def test_reducer_output_follows_input_size_despite_legacy_cap(
     monkeypatch,
 ):
     """A legacy small output cap must no longer starve reasoning."""
@@ -229,5 +229,6 @@ async def test_reducer_and_openai_adapter_use_full_window_despite_legacy_cap(
         "gpt-oss-20b", "School distance?", "[1] Standard\nSchool distance: 500 m.", 1200
     )
     assert "[1] Standard\nSchool distance: 500 m." in summary
-    assert len(calls) == 1 and calls[0]["max_tokens"] == 8192 - 1000 - 256
+    # Extraction may quote its whole input: the floor plus one token per input token.
+    assert len(calls) == 1 and calls[0]["max_tokens"] == 2048 + 1000
     await adapter.client.close()

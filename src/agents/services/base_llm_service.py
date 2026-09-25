@@ -8,6 +8,7 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 )
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
+    FilePartRequest,
     StatusPartRequest,
     StructuredPartRequest,
     TablePartRequest,
@@ -273,6 +274,7 @@ class BaseLlmService(BaseLlmClient):
             | ToolCallPartRequest
             | TablePartRequest
             | StructuredPartRequest
+            | FilePartRequest
         ],
         **kwargs,
     ):

@@ -98,9 +98,29 @@ async def test_reported_model_window_avoids_unnecessary_reduction(monkeypatch):
     source = "[1] Source\n" + "text " * 4000
     async with reducer.model_window("m"):
         result = await reducer.prepare("m", "q", source)
-        assert reducer.window == 32000 and result.text == source
+        # The default window follows a larger deployed max_model_len.
+        assert reducer.window == 65536 and result.text == source
         llm.chat.assert_not_called()
     assert reducer.window == 32000
+
+
+async def test_evidence_that_fits_in_model_tokens_is_not_reduced():
+    # ~20 KB of Cyrillic is ~3 000 model tokens: it fits a 32k window as is, even
+    # though its UTF-8 size exceeds the token budget.
+    source = "[1] СП 2.4.3648\n" + "Расстояние до жилых зданий не более 500 м. " * 300
+    llm = SimpleNamespace(
+        chat=AsyncMock(),
+        model_input_tokens=AsyncMock(
+            side_effect=lambda model, messages, **_: sum(
+                len(m["content"]) // 4 for m in messages
+            )
+        ),
+    )
+    reducer = DvdContextReducer(llm, window_tokens=32000)
+    assert len(source.encode("utf-8")) > 20000
+    result = await reducer.prepare("m", "q", source)
+    assert result.text == source and result.reduction_rounds == 0
+    llm.chat.assert_not_called()
 
 
 async def test_explicit_window_is_capped_by_server_and_is_task_local(monkeypatch):

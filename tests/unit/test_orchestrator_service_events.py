@@ -393,7 +393,7 @@ async def test_clarification_plan_calls_no_agents(orchestrator, fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_error_step_aborts_remaining_steps(orchestrator, fake_llm):
+async def test_error_step_does_not_skip_remaining_steps(orchestrator, fake_llm):
     fake_llm.json_responses = [
         orchestration_plan_json(
             [
@@ -415,11 +415,13 @@ async def test_error_step_aborts_remaining_steps(orchestrator, fake_llm):
     events = await run_pipeline(orchestrator)
 
     finished = events_of_type(events, "step_finished")
-    assert len(finished) == 1
-    assert finished[0]["content"]["status"] == "failed"
-    assert not provision.calls
+    assert [f["content"]["status"] for f in finished] == ["failed", "completed"]
     final = events_of_type(events, "orchestrator_final")[0]["content"]
-    assert [s["status"] for s in final["steps"]] == ["failed", "skipped"]
+    assert [s["status"] for s in final["steps"]] == ["failed", "completed"]
+    # a later step learns the earlier result is missing instead of guessing it
+    query = provision.calls[0]["user_query"]
+    assert query.startswith("Оцени обеспеченность")
+    assert "[Шаг 1, " in query and "Шаг не выполнен, его результата нет" in query
     # the inner error event is forwarded so the client sees the reason
     inner_types = [
         e["content"]["event"]["type"] for e in events_of_type(events, "step_event")
@@ -573,3 +575,223 @@ async def test_pzz_dispatch_forwards_inputs_and_wraps_report(orchestrator, fake_
         for e in events
     )
     assert events[-1]["content"]["steps"][0]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_file_event_closes_the_stream_and_is_persisted(orchestrator, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json([{"agent": "compliance", "task": "Проверь нормы"}])
+    ]
+    descriptor = {
+        "name": "compliance_report",
+        "title": "Отчёт о проверке соответствия нормам",
+        "role": "result",
+        "url": "http://gmart/files/compliance_report/abc",
+        "download_url": "http://gmart/files/compliance_report/abc?download=1",
+        "filename": "compliance_report_772_20260923-1200.md",
+        "mime_type": "text/markdown",
+        "source_service": "gmart",
+    }
+    orchestrator.restriction_service.run_compliance_pipeline = FakePipeline(
+        [
+            {"type": "chunk", "content": {"text": "Проверка завершена.", "done": True}},
+            {"type": "file", "content": descriptor},
+        ]
+    )
+
+    events = await run_pipeline(orchestrator, normgraph_mcp_client=Mock())
+    await asyncio.sleep(0)
+
+    assert types_of(events)[-2:] == ["orchestrator_final", "file"]
+    assert events[-1]["content"] == descriptor
+    assert all(
+        event["content"]["event"]["type"] != "file"
+        for event in events_of_type(events, "step_event")
+    )
+    parts = orchestrator.add_complex_message.await_args.args[3]
+    file_parts = [part for part in parts if part.kind == "file"]
+    assert len(file_parts) == 1
+    assert "download_url" not in file_parts[0].payload
+    assert file_parts[0].payload["url"] == descriptor["url"]
+
+
+@pytest.mark.asyncio
+async def test_documents_step_gets_the_user_question_and_router_task(
+    orchestrator, fake_llm
+):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [{"agent": "documents", "task": "Найти документы о школах"}]
+        )
+    ]
+    documents = FakePipeline([{"type": "chunk", "content": {"text": "", "done": True}}])
+    orchestrator.dvd_service.run_document_qa_pipeline = documents
+
+    await run_pipeline(orchestrator, user_query="Какие регламенты застройки школ?")
+
+    call = documents.calls[0]
+    assert call["user_query"] == "Какие регламенты застройки школ?"
+    assert call["task"] == "Найти документы о школах"
+    assert call["context_note"] is None
+
+
+class SlowPipeline(FakePipeline):
+    """Records when its producer starts and finishes; yields after ``delay``."""
+
+    def __init__(self, events, delay, log, name):
+        super().__init__(events)
+        self.delay, self.log, self.name = delay, log, name
+
+    async def _run(self):
+        self.log.append(f"{self.name}:start")
+        try:
+            await asyncio.sleep(self.delay)
+        except asyncio.CancelledError:
+            self.log.append(f"{self.name}:cancelled")
+            raise
+        for event in self.events:
+            yield event
+        self.log.append(f"{self.name}:end")
+
+
+@pytest.mark.asyncio
+async def test_independent_qa_steps_run_together_but_stream_in_order(
+    orchestrator, fake_llm
+):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [
+                {"agent": "norms", "task": "Ограничения для школ"},
+                {"agent": "documents", "task": "Документы о школах"},
+            ]
+        )
+    ]
+    log: list[str] = []
+    done = {"type": "chunk", "content": {"text": "", "done": True}}
+    norms = SlowPipeline(
+        [{"type": "chunk", "content": {"text": "граф", "done": False}}, done],
+        0.2,
+        log,
+        "norms",
+    )
+    documents = SlowPipeline(
+        [{"type": "chunk", "content": {"text": "документы", "done": False}}, done],
+        0.0,
+        log,
+        "documents",
+    )
+    orchestrator.normgraph_service.run_norms_qa_pipeline = norms
+    orchestrator.dvd_service.run_document_qa_pipeline = documents
+
+    started = asyncio.get_running_loop().time()
+    events = await run_pipeline(orchestrator, user_query="Какие регламенты школ?")
+
+    # The documents producer finished while norms was still working...
+    assert log.index("documents:end") < log.index("norms:end")
+    # ...yet the client sees step 1 fully before step 2.
+    steps = [
+        e["content"]["step"]
+        for e in events
+        if e["type"] in {"step_started", "step_event", "step_finished"}
+    ]
+    assert steps == sorted(steps)
+    final = events_of_type(events, "orchestrator_final")[0]["content"]
+    assert [s["status"] for s in final["steps"]] == ["completed", "completed"]
+    assert documents.calls[0]["context_note"] is None
+    assert asyncio.get_running_loop().time() - started < 0.4
+
+
+@pytest.mark.asyncio
+async def test_failed_first_step_keeps_the_step_running_ahead(orchestrator, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [
+                {"agent": "norms", "task": "Ограничения"},
+                {"agent": "documents", "task": "Документы"},
+            ]
+        )
+    ]
+    log: list[str] = []
+    norms = FakePipeline(raise_exc=RuntimeError("boom"))
+    documents = SlowPipeline(
+        [{"type": "chunk", "content": {"text": "Ответ", "done": True}}],
+        0.05,
+        log,
+        "documents",
+    )
+    orchestrator.normgraph_service.run_norms_qa_pipeline = norms
+    orchestrator.dvd_service.run_document_qa_pipeline = documents
+
+    events = await run_pipeline(orchestrator)
+
+    final = events_of_type(events, "orchestrator_final")[0]["content"]
+    assert [s["status"] for s in final["steps"]] == ["failed", "completed"]
+    assert log == ["documents:start", "documents:end"]
+    assert len(documents.calls) == 1
+
+
+_PENDING_CHOICE = {
+    "query": "Проверь нормы по школам из СП 42",
+    "topics": ["школа"],
+    "entities": ["школа"],
+    "documents": [],
+    "references": ["СП 42"],
+    "matched": True,
+    "candidates": [
+        {"name": "СП 42.13330.2011", "executable_count": 1},
+        {"name": "СП 42.13330.2016", "executable_count": 4},
+    ],
+}
+
+
+@pytest.mark.asyncio
+async def test_reply_to_a_pending_document_choice_goes_back_to_compliance(
+    orchestrator, fake_llm, state_store
+):
+    from src.agents.services.compilance.compliance_scope import ChoiceReply
+
+    await state_store.set_compliance_choice("chat-1", _PENDING_CHOICE)
+    orchestrator.restriction_service.compliance_scope = SimpleNamespace(
+        resolve_choice=AsyncMock(
+            return_value=ChoiceReply(kind="selected", documents=("СП 42.13330.2016",))
+        )
+    )
+    pipeline = FakePipeline(RESTRICTION_EVENTS)
+    orchestrator.restriction_service.run_compliance_pipeline = pipeline
+    fake_llm.json_responses = []  # the planner must not be asked
+
+    events = await run_pipeline(orchestrator, chat_id="chat-1", user_query="2")
+
+    [plan] = events_of_type(events, "plan")
+    assert [step["agent"] for step in plan["content"]["steps"]] == ["compliance"]
+    assert pipeline.calls[0]["user_query"] == "2"
+    assert pipeline.calls[0]["conversation_key"] == "chat-1"
+    # The compliance step consumes the choice itself.
+    assert await state_store.get_compliance_choice("chat-1") == _PENDING_CHOICE
+
+
+@pytest.mark.asyncio
+async def test_new_request_drops_a_pending_document_choice(
+    orchestrator, fake_llm, state_store
+):
+    from src.agents.services.compilance.compliance_scope import ChoiceReply
+
+    await state_store.set_compliance_choice("chat-1", _PENDING_CHOICE)
+    orchestrator.restriction_service.compliance_scope = SimpleNamespace(
+        resolve_choice=AsyncMock(return_value=ChoiceReply(kind="not_choice"))
+    )
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [{"agent": "compliance", "task": "Проверь нормы по детским садам"}]
+        )
+    ]
+    pipeline = FakePipeline(RESTRICTION_EVENTS)
+    orchestrator.restriction_service.run_compliance_pipeline = pipeline
+
+    await run_pipeline(
+        orchestrator, chat_id="chat-1", user_query="Проверь нормы по детским садам"
+    )
+
+    assert await state_store.get_compliance_choice("chat-1") is None
+    assert pipeline.calls[0]["user_query"] == "Проверь нормы по детским садам"
+    assert pipeline.calls[0]["conversation_key"] == "chat-1"

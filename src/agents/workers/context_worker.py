@@ -13,7 +13,10 @@ from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
 
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
-from src.agents.model_clients.context_budget import remaining_output_tokens
+from src.agents.model_clients.context_budget import (
+    OutputShare,
+    remaining_output_tokens,
+)
 from src.agents.model_clients.factory import build_llm_adapter
 from src.agents.services.dvd.context_reducer import (
     DvdContextReducer,
@@ -21,6 +24,9 @@ from src.agents.services.dvd.context_reducer import (
 )
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.common.service_auth import build_service_auth, service_auth_lifespan
+
+# The prompt asks for about 6000 tokens; the floor adds room for medium reasoning.
+_SUMMARY_OUTPUT = OutputShare(ratio=0.5, floor=8192)
 
 
 class ContextContent(BaseModel):
@@ -154,6 +160,7 @@ failed_attempts. Общий ответ не должен превышать пр
                     window,
                     schema=ContextContent.model_json_schema(),
                     reasoning_effort="medium",
+                    output=_SUMMARY_OUTPUT,
                 )
                 if available <= 0:
                     raise ValueError("Document summary exceeds model context window")

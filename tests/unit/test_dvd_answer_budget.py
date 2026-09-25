@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.agents.model_clients.context_budget import ANSWER_OUTPUT
 from src.agents.services.dvd.answer_generation import (
     DvdAnswerGenerator,
     append_continuation,
@@ -27,6 +28,11 @@ class InterruptedModel:
             )
 
         return stream()
+
+
+def proportional_budget(call, window=32000):
+    used = message_cost(call["messages"])
+    return min(window - used, ANSWER_OUTPUT.limit(used))
 
 
 def service_for(replies):
@@ -55,7 +61,9 @@ async def test_length_continues_visible_prefix_with_remaining_window():
     events = await answer(service)
     assert "".join(e["content"]["text"] for e in events) == "Не менее 15 м [1]."
     first, second = service.llm_client.calls
-    assert second["options"]["num_predict"] < first["options"]["num_predict"]
+    # Each request is limited in proportion to its own input, prefix included.
+    for call in (first, second):
+        assert call["options"]["num_predict"] == proportional_budget(call)
     assert {"role": "assistant", "content": "Не менее "} in second["messages"]
     assert all(not e["content"]["done"] for e in events)
 
@@ -85,13 +93,33 @@ async def test_content_filter_is_not_retried_as_token_exhaustion():
     assert len(service.llm_client.calls) == 1
 
 
-async def test_generation_uses_all_remaining_tokens_even_with_legacy_cap(monkeypatch):
+async def test_generation_output_follows_input_size_despite_legacy_cap(monkeypatch):
     monkeypatch.setenv("DVD_ANSWER_MAX_TOKENS", "1536")
     service = service_for([("15 м [1].", "stop")])
     await answer(service)
     call = service.llm_client.calls[0]
-    assert call["options"]["num_predict"] == 32000 - message_cost(call["messages"])
-    assert call["options"]["num_predict"] > 16384
+    used = message_cost(call["messages"])
+    assert call["options"]["num_predict"] == ANSWER_OUTPUT.limit(used)
+    assert 1536 < call["options"]["num_predict"] < 32000 - used
+
+
+async def test_larger_evidence_gets_a_larger_answer_budget():
+    short, long = service_for([("15 м [1].", "stop")]), service_for(
+        [("15 м [1].", "stop")]
+    )
+    await answer(short)
+    await long._generate_answer(
+        "gpt-oss-20b",
+        "Какое расстояние?",
+        "[1] Источник\n" + "Не менее 15 м. " * 800,
+        0,
+        [],
+        1,
+    ).__anext__()
+    assert (
+        long.llm_client.calls[0]["options"]["num_predict"]
+        > short.llm_client.calls[0]["options"]["num_predict"]
+    )
 
 
 async def test_oversized_evidence_is_reduced_and_history_survives_continuation():
@@ -120,7 +148,6 @@ async def test_oversized_evidence_is_reduced_and_history_survives_continuation()
     assert result == "Rule: 15 m [1]."
     service.context_reducer.prepare.assert_awaited_once()
     first, second = service.llm_client.calls
-    assert second["options"]["num_predict"] < first["options"]["num_predict"]
     assert second["messages"][0]["content"] == "[1] 15 m"
     assert history in second["messages"]
     for call in service.llm_client.calls:

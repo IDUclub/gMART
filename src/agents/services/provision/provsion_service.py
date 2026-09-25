@@ -741,7 +741,7 @@ class ProvisionService(BaseLlmService):
         )
         yield await self._buf(
             request_id,
-            self._status("service_lookup", f"Сервис найден: id={service_type_id}"),
+            self._status("service_lookup", f"Сервис «{service_name}» найден"),
         )
 
         # ── Step 2: CALCULATE_EFFECTS ─────────────────────────────────

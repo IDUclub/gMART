@@ -29,6 +29,19 @@ class FakeClient:
         self.calls.append(("restrictions_applicable", arguments))
         return {"hits": self.hits}
 
+    async def list_restrictions(self, limit, after_id=None, **filters):
+        self.calls.append(
+            ("list_restrictions", {"limit": limit, "after_id": after_id, **filters})
+        )
+        ids = [hit["id"] for hit in self.hits]
+        start = 0 if after_id is None else ids.index(after_id) + 1
+        rows = self.hits[start : start + limit + 1]
+        more = len(rows) > limit
+        return {
+            "hits": rows[:limit],
+            "next_after_id": rows[limit - 1]["id"] if more else None,
+        }
+
 
 @pytest.mark.asyncio
 async def test_retriever_keeps_only_canonical_metric_restrictions():
@@ -202,10 +215,28 @@ async def test_compliance_retrieval_fetches_all_norms_without_llm_limit():
     )
 
     assert len(result.restrictions) == 300
+    # keyset pages within NormGraph's 500-row cap, never one corpus-sized window
     assert client.calls == [
-        ("search_restrictions", {"limit": 256, "neighbors_depth": 0}),
-        ("search_restrictions", {"limit": 512, "neighbors_depth": 0}),
+        ("list_restrictions", {"limit": 200, "after_id": None}),
+        ("list_restrictions", {"limit": 200, "after_id": "r-199"}),
     ]
+    assert result.tool_call["function"]["name"] == "list_restrictions"
+
+
+@pytest.mark.asyncio
+async def test_compliance_retrieval_rejects_a_cursor_that_does_not_advance():
+    class StuckClient(FakeClient):
+        async def list_restrictions(self, limit, after_id=None):
+            return {"hits": self.hits[:1], "next_after_id": "r-0"}
+
+    retriever = NormGraphRestrictionRetriever(llm_client=None)
+    with pytest.raises(RuntimeError, match="did not advance"):
+        await retriever.retrieve(
+            StuckClient([{"id": "r-0"}]),
+            "model",
+            "Проверь соответствие проекта",
+            retrieve_all=True,
+        )
 
 
 @pytest.mark.parametrize(
@@ -238,3 +269,26 @@ def test_compliance_keeps_reviewed_plans_without_metric_restriction_fields():
 
     hit = {"check_plan": {**_plan(), "planner_status": "reviewed"}}
     assert NormGraphRestrictionRetriever.has_executable_plan(hit)
+
+
+@pytest.mark.asyncio
+async def test_complete_listing_keeps_scope_filters_on_every_page():
+    hits = [{"id": f"r-{i:03d}"} for i in range(250)]
+    client = FakeClient(hits)
+    retriever = NormGraphRestrictionRetriever(llm_client=None)
+    filters = {"entities": ["школа"], "document_names": ["СП 42.13330.2016"]}
+
+    result = await retriever.retrieve(
+        client,
+        "m",
+        "Проверь нормы",
+        retrieve_all=True,
+        require_check_plan=True,
+        filters=filters,
+    )
+
+    assert [call[1] for call in client.calls] == [
+        {"limit": 200, "after_id": None, **filters},
+        {"limit": 200, "after_id": "r-199", **filters},
+    ]
+    assert result.tool_call["function"]["arguments"] == {"limit": 200, **filters}

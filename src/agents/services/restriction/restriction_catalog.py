@@ -210,6 +210,7 @@ class RestrictionPlanBuilder:
             target_entities,
             buffer_rules,
             restriction_rules,
+            user_query,
         )
 
         return RestrictionPlan(
@@ -475,17 +476,7 @@ class RestrictionPlanBuilder:
         """Detect plans that silently drop an explicitly requested intersection check."""
 
         query = normalize_name(user_query)
-        intersection_intent = any(
-            marker in query
-            for marker in (
-                "попада",
-                "пересеч",
-                "затронут",
-                "провер",
-                "какие объекты",
-                "выведи объекты",
-            )
-        )
+        intersection_intent = RestrictionPlanBuilder._asks_for_affected_objects(query)
         if plan.mode == RestrictionTaskMode.BUFFERS_ONLY and intersection_intent:
             return [
                 "Пользователь запросил проверку и вывод затронутых объектов, но план "
@@ -838,12 +829,27 @@ class RestrictionPlanBuilder:
         return RestrictionProvenance(**known, extra=extra)
 
     @staticmethod
+    def _asks_for_affected_objects(normalized_query: str) -> bool:
+        return any(
+            marker in normalized_query
+            for marker in (
+                "попада",
+                "пересеч",
+                "затронут",
+                "провер",
+                "какие объекты",
+                "выведи объекты",
+            )
+        )
+
+    @staticmethod
     def _validate_mode(
         plan: RestrictionPlan,
         source_entities: list[EntityRef],
         target_entities: list[EntityRef],
         buffer_rules: list[BufferRule],
         restriction_rules: list[RestrictionRule],
+        user_query: str = "",
     ) -> tuple[RestrictionTaskMode, str | None]:
         if not source_entities or not buffer_rules:
             return (
@@ -851,6 +857,18 @@ class RestrictionPlanBuilder:
                 plan.clarification_question
                 or "Уточните, от каких объектов и на каком расстоянии нужно построить буферы.",
             )
+        if (
+            plan.mode == RestrictionTaskMode.RESTRICTIONS
+            and not target_entities
+            and not restriction_rules
+            and not RestrictionPlanBuilder._asks_for_affected_objects(
+                normalize_name(user_query)
+            )
+        ):
+            # «Построй зоны ограничений 50 м вокруг школ»: the words «зоны
+            # ограничений» led the model to the restrictions mode, yet nothing
+            # asks which objects fall inside. The buffers alone answer it.
+            return RestrictionTaskMode.BUFFERS_ONLY, None
         if plan.mode == RestrictionTaskMode.RESTRICTIONS and (
             not target_entities or not restriction_rules
         ):
@@ -869,6 +887,9 @@ class RestrictionPlanBuilder:
     ) -> RestrictionPlan:
         base_question = (plan.clarification_question or "").strip()
 
+        # The catalogue merges scenario and dictionary types; list each once.
+        services_catalog = list(dict.fromkeys(services_catalog))
+        physical_objects_catalog = list(dict.fromkeys(physical_objects_catalog))
         catalog_lines: list[str] = []
         if services_catalog:
             catalog_lines.append(

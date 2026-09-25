@@ -22,6 +22,8 @@ from src.agents.common.logging.redis_logging import redis_attempt, redis_request
 
 TOKEN_REFRESH_TIMEOUT: float = 60.0
 PIPELINE_TTL: int = 15 * 60  # absolute reconnect/token-refresh window
+# A document choice waits for the user's next message, which can come much later.
+COMPLIANCE_CHOICE_TTL: int = 24 * 60 * 60
 
 
 class PipelineStatus(StrEnum):
@@ -34,6 +36,9 @@ class PipelineStatus(StrEnum):
 
 
 class PipelineStep(StrEnum):
+    COMPLIANCE_TERRITORY = "compliance_territory"
+    COMPLIANCE_SCOPE = "compliance_scope"
+    RESTRICTION_INVENTORY = "restriction_inventory"
     NORMGRAPH = "normgraph"
     CHECK_PLAN_VALIDATION = "check_plan_validation"
     REQUIREMENTS_RESOLUTION = "requirements_resolution"
@@ -235,6 +240,26 @@ class PipelineStateStore:
                 key,
                 PIPELINE_TTL,
                 json.dumps(question, ensure_ascii=False),
+            )
+
+    async def get_compliance_choice(self, conversation_key: str) -> dict | None:
+        raw = await self._retry(
+            self._redis.get, self._key(conversation_key, "compliance_choice")
+        )
+        return json.loads(raw) if raw else None
+
+    async def set_compliance_choice(
+        self, conversation_key: str, choice: dict | None
+    ) -> None:
+        key = self._key(conversation_key, "compliance_choice")
+        if choice is None:
+            await self._retry(self._redis.delete, key)
+        else:
+            await self._retry(
+                self._redis.setex,
+                key,
+                COMPLIANCE_CHOICE_TTL,
+                json.dumps(choice, ensure_ascii=False),
             )
 
     async def set_status(self, request_id: str, status: PipelineStatus) -> None:

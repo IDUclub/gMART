@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  appendFilePart,
   appendIterationChunk,
   appendSseExchange,
   finalizeSseExchange,
@@ -125,4 +126,43 @@ test("finalization preserves the completed answer", () => {
   const exchange = { answer: "Текст пункта [1]", finalized: false };
   finalizeSseExchange(exchange, "fallback");
   assert.equal(exchange.answer, "Текст пункта [1]");
+});
+
+const report = {
+  name: "compliance_report",
+  title: "Отчёт о проверке соответствия нормам",
+  url: "http://gmart/files/compliance_report/abc",
+  filename: "compliance_report_772.md",
+};
+
+test("file arriving with the exchange becomes a part of the assistant message", () => {
+  const result = appendSseExchange("chat", [], {
+    question: "Проверь нормы",
+    answer: "Готово",
+    tables: [],
+    files: [report],
+  });
+  const assistant = result.messages.at(-1)!;
+  assert.deepEqual(
+    assistant.parts.map((part) => [part.part_seq, part.kind]),
+    [
+      [1, "text"],
+      [2, "file"],
+    ],
+  );
+});
+
+test("late file is attached once to the latest assistant message", () => {
+  const messages = [message("q", 1), message("a", 2), message("q2", 3)];
+  const next = appendFilePart(messages, report);
+  assert.deepEqual(
+    next[1].parts.map((part) => [part.part_seq, part.kind]),
+    [
+      [1, "text"],
+      [2, "file"],
+    ],
+  );
+  assert.equal(messages[1].parts.length, 1, "input is not mutated");
+  assert.equal(appendFilePart(next, report), next);
+  assert.equal(appendFilePart([message("q", 1)], report).length, 1);
 });

@@ -11,6 +11,7 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 )
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
+    FilePartRequest,
     TablePartRequest,
     TablePayload,
     TextPartRequest,
@@ -57,6 +58,47 @@ if TYPE_CHECKING:
 # Inner sub-agent event types that are never forwarded to the client: the outer
 # stream announces the step itself (step_started) and owns the chat lifecycle.
 _SUPPRESSED_INNER_EVENTS = {"pipeline_started", "service_event"}
+
+
+# Read-only QA agents whose steps never depend on another step's result.
+_INDEPENDENT_AGENTS = {OrchestratorAgent.NORMS, OrchestratorAgent.DOCUMENTS}
+
+# What later steps see in place of a failed step's result.
+_FAILED_STEP_CONTEXT = (
+    "Шаг не выполнен, его результата нет. Не подставляй вместо него значения "
+    "или предположения."
+)
+
+
+def _run_ahead(pipeline: AsyncGenerator) -> tuple[AsyncGenerator, asyncio.Task]:
+    """Start consuming ``pipeline`` now; replay its items, then its outcome, later.
+
+    The returned task must be cancelled if the replay is abandoned.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def pump() -> None:
+        try:
+            async for item in pipeline:
+                await queue.put((True, item))
+        except Exception as exc:  # re-raised at the same point of the replay
+            await queue.put((False, exc))
+        else:
+            await queue.put((False, None))
+
+    task = asyncio.create_task(pump())
+
+    async def replay() -> AsyncGenerator[dict[str, Any], None]:
+        while True:
+            is_item, value = await queue.get()
+            if is_item:
+                yield value
+            elif value is None:
+                return
+            else:
+                raise value
+
+    return replay(), task
 
 
 class OrchestratorService(BaseLlmService):
@@ -211,7 +253,9 @@ class OrchestratorService(BaseLlmService):
             self._status("planning", "Определяю, какие агенты нужны для запроса…"),
         )
         agents = available_agents(self.app_config, scenario_id)
-        plan = await self.plan_builder.build_plan(
+        plan = await self._compliance_choice_plan(
+            model, user_query, chat_id, agents, normgraph_mcp_client
+        ) or await self.plan_builder.build_plan(
             model,
             user_query,
             agents,
@@ -234,8 +278,128 @@ class OrchestratorService(BaseLlmService):
         summary_steps: list[dict[str, Any]] = []
         digests: list[tuple[OrchestratorStep, str]] = []
         table_parts: list[TablePartRequest] = []
-        aborted = False
+        file_events: list[dict[str, Any]] = []
 
+        step_kwargs = dict(
+            idu_mcp_client=idu_mcp_client,
+            effects_mcp_client=effects_mcp_client,
+            dvd_mcp_client=dvd_mcp_client,
+            normgraph_mcp_client=normgraph_mcp_client,
+            urban_mcp_client=urban_mcp_client,
+            token=token,
+            model=model,
+            temperature=temperature,
+            scenario_id=scenario_id,
+            pzz_mcp_client=pzz_mcp_client,
+            pzz_inputs=pzz_inputs,
+            original_query=user_query,
+            conversation_key=chat_id,
+        )
+        # Read-only QA steps that do not need each other's results start together;
+        # their events are still streamed step by step, in plan order.
+        ahead: dict[int, tuple[str, AsyncGenerator, asyncio.Task]] = {}
+        if self._runs_independently(plan):
+            for number, later in enumerate(plan.steps[1:], start=2):
+                ahead_id = self.state_store.new_request_id()
+                try:
+                    pipeline = self._build_step_pipeline(
+                        later, later.task, ahead_id, **step_kwargs
+                    )
+                except Exception:
+                    continue  # built again in order; the loop reports the error
+                ahead[number] = (ahead_id, *_run_ahead(pipeline))
+
+        try:
+            async for event in self._run_steps(
+                plan,
+                request_id,
+                ahead,
+                step_kwargs,
+                summary_steps,
+                digests,
+                table_parts,
+                file_events,
+            ):
+                yield event
+        finally:
+            for _, _, task in ahead.values():
+                task.cancel()
+        aborted = any(s["status"] != "completed" for s in summary_steps)
+
+        yield await self._buf(request_id, self._final_event(summary_steps))
+        for item in file_events:
+            yield await self._buf(request_id, item)
+        await self.state_store.set_status(
+            request_id, PipelineStatus.FAILED if aborted else PipelineStatus.DONE
+        )
+        if persist_history:
+            self._schedule_persist_summary(
+                token,
+                chat_id,
+                summary_steps,
+                scenario_id,
+                table_parts=table_parts,
+                file_parts=[
+                    RestrictionParserService._pipeline_item_to_chat_part(item)
+                    for item in file_events
+                ],
+            )
+
+    async def _compliance_choice_plan(
+        self,
+        model: str,
+        user_query: str,
+        chat_id: str | None,
+        agents: list[AgentCatalogEntry],
+        normgraph_mcp_client: "NormGraphMcpClient | None",
+    ) -> OrchestratorPlan | None:
+        """Route a reply to a pending compliance document choice straight back to it.
+
+        The planner would read «2» or «СП 42» as a new request; the compliance
+        step owns the choice and resolves the reply against it.
+        """
+        if (
+            not chat_id
+            or normgraph_mcp_client is None
+            or not any(entry.key == OrchestratorAgent.COMPLIANCE for entry in agents)
+        ):
+            return None
+        pending = await self.state_store.get_compliance_choice(chat_id)
+        if not pending:
+            return None
+        reply = await self.restriction_service.compliance_scope.resolve_choice(
+            model, user_query, pending
+        )
+        if reply.kind == "not_choice":
+            await self.state_store.set_compliance_choice(chat_id, None)
+            return None
+        return OrchestratorPlan(
+            mode=OrchestratorPlanMode.EXECUTE,
+            steps=[
+                OrchestratorStep(agent=OrchestratorAgent.COMPLIANCE, task=user_query)
+            ],
+        )
+
+    @staticmethod
+    def _runs_independently(plan: OrchestratorPlan) -> bool:
+        """Norms and documents answer from their own sources; neither needs the
+        other's digest, so a plan made only of them can run concurrently."""
+        return len(plan.steps) > 1 and all(
+            step.agent in _INDEPENDENT_AGENTS for step in plan.steps
+        )
+
+    async def _run_steps(
+        self,
+        plan: OrchestratorPlan,
+        request_id: str,
+        ahead: dict[int, tuple[str, AsyncGenerator, asyncio.Task]],
+        step_kwargs: dict[str, Any],
+        summary_steps: list[dict[str, Any]],
+        digests: list[tuple[OrchestratorStep, str]],
+        table_parts: list[TablePartRequest],
+        file_events: list[dict[str, Any]],
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        aborted = False
         for step_number, step in enumerate(plan.steps, start=1):
             if aborted:
                 summary_steps.append(
@@ -243,8 +407,13 @@ class OrchestratorService(BaseLlmService):
                 )
                 continue
 
-            effective_query = self._compose_step_query(step, digests)
-            step_request_id = self.state_store.new_request_id()
+            started = ahead.get(step_number)
+            if started:
+                effective_query = step.task
+                step_request_id = started[0]
+            else:
+                effective_query = self._compose_step_query(step, digests)
+                step_request_id = self.state_store.new_request_id()
             yield await self._buf(
                 request_id,
                 self._step_started_event(
@@ -256,24 +425,23 @@ class OrchestratorService(BaseLlmService):
             collected: dict[str, Any] = {"chunks": {}, "notes": []}
             step_tables: list[TablePartRequest] = []
             try:
-                pipeline = self._build_step_pipeline(
-                    step,
-                    effective_query,
-                    step_request_id,
-                    idu_mcp_client,
-                    effects_mcp_client,
-                    dvd_mcp_client,
-                    normgraph_mcp_client,
-                    urban_mcp_client,
-                    token,
-                    model,
-                    temperature,
-                    scenario_id,
-                    pzz_mcp_client=pzz_mcp_client,
-                    pzz_inputs=pzz_inputs,
+                pipeline = (
+                    started[1]
+                    if started
+                    else self._build_step_pipeline(
+                        step,
+                        effective_query,
+                        step_request_id,
+                        context_note=self._digest_lines(digests) or None,
+                        **step_kwargs,
+                    )
                 )
                 async for item in pipeline:
                     if item.get("type") in _SUPPRESSED_INNER_EVENTS:
+                        continue
+                    if item.get("type") == "file":
+                        # File links are top-level events that close the stream.
+                        file_events.append(item)
                         continue
                     self._collect_digest(collected, item)
                     table_part = self._table_part(item)
@@ -326,23 +494,15 @@ class OrchestratorService(BaseLlmService):
             if status == "completed":
                 digests.append((step, digest))
                 table_parts.extend(step_tables)
+            elif status == "failed":
+                # Agents fetch their own scenario data, so later steps still run.
+                # One that needed this result is told it is missing instead of
+                # silently working without it.
+                digests.append((step, _FAILED_STEP_CONTEXT))
             else:
-                # Later steps consume earlier digests; running them after a
-                # failure would produce misleading results — abort the plan.
+                # A suspended step or a clarification waits for the user; later
+                # steps would run on an unfinished premise — stop the plan.
                 aborted = True
-
-        yield await self._buf(request_id, self._final_event(summary_steps))
-        await self.state_store.set_status(
-            request_id, PipelineStatus.FAILED if aborted else PipelineStatus.DONE
-        )
-        if persist_history:
-            self._schedule_persist_summary(
-                token,
-                chat_id,
-                summary_steps,
-                scenario_id,
-                table_parts=table_parts,
-            )
 
     # ------------------------------------------------------------------
     # Step dispatch (in-process pipeline invocation)
@@ -364,6 +524,9 @@ class OrchestratorService(BaseLlmService):
         scenario_id: int | None,
         pzz_mcp_client: "PzzMcpClient | None" = None,
         pzz_inputs: PzzInputs | dict | None = None,
+        original_query: str | None = None,
+        context_note: str | None = None,
+        conversation_key: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         if step.agent == OrchestratorAgent.PZZ:
             if pzz_mcp_client is None or self.pzz_service is None:
@@ -386,6 +549,7 @@ class OrchestratorService(BaseLlmService):
             return self.restriction_service.run_compliance_pipeline(
                 mcp_client=idu_mcp_client,
                 normgraph_mcp_client=normgraph_mcp_client,
+                dvd_mcp_client=dvd_mcp_client,
                 token=token,
                 temperature=temperature,
                 model=model,
@@ -393,6 +557,9 @@ class OrchestratorService(BaseLlmService):
                 scenario_id=scenario_id,
                 request_id=step_request_id,
                 persist_history=False,
+                # A document choice asked in this step is answered in the next
+                # message of the orchestrator's chat.
+                conversation_key=conversation_key,
             )
         if step.agent == OrchestratorAgent.RESTRICTION:
             if scenario_id is None:
@@ -437,15 +604,19 @@ class OrchestratorService(BaseLlmService):
         if step.agent == OrchestratorAgent.DOCUMENTS:
             if dvd_mcp_client is None:
                 raise ValueError("documents step requires DVD_MCP_SERVER")
+            # The user's own words drive retrieval; the router's task wording is
+            # an instruction and earlier results are context, never search terms.
             return self.dvd_service.run_document_qa_pipeline(
                 dvd_mcp_client=dvd_mcp_client,
                 token=token,
                 model=model,
                 temperature=temperature,
-                user_query=user_query,
+                user_query=original_query or step.task,
                 scenario_id=scenario_id,
                 request_id=step_request_id,
                 persist_history=False,
+                task=step.task if original_query else None,
+                context_note=context_note,
             )
         if step.agent == OrchestratorAgent.NORMS:
             if normgraph_mcp_client is None:
@@ -466,6 +637,13 @@ class OrchestratorService(BaseLlmService):
     # Text digest between steps
     # ------------------------------------------------------------------
 
+    def _digest_lines(self, digests: list[tuple[OrchestratorStep, str]]) -> str:
+        return "\n".join(
+            f"[Шаг {number}, {self._agent_title(prev.agent)}] {digest}"
+            for number, (prev, digest) in enumerate(digests, start=1)
+            if digest
+        )
+
     def _compose_step_query(
         self,
         step: OrchestratorStep,
@@ -473,11 +651,7 @@ class OrchestratorService(BaseLlmService):
     ) -> str:
         if not digests:
             return step.task
-        context_lines = "\n".join(
-            f"[Шаг {number}, {self._agent_title(prev.agent)}] {digest}"
-            for number, (prev, digest) in enumerate(digests, start=1)
-            if digest
-        )
+        context_lines = self._digest_lines(digests)
         if not context_lines:
             return step.task
         return (
@@ -525,6 +699,7 @@ class OrchestratorService(BaseLlmService):
         scenario_id: int | None,
         *,
         table_parts: list[TablePartRequest] | None = None,
+        file_parts: list[FilePartRequest] | None = None,
     ) -> None:
         text_blocks = [
             f"Шаг {step['step']} — {self._agent_title(step['agent'])}: "
@@ -541,7 +716,8 @@ class OrchestratorService(BaseLlmService):
                 TextPartRequest(kind="text", payload=TextPayload(text=block))
                 for block in text_blocks
             ]
-            + list(table_parts or []),
+            + list(table_parts or [])
+            + list(file_parts or []),
             scenario_id,
         )
 
@@ -565,7 +741,7 @@ class OrchestratorService(BaseLlmService):
         self,
         token: str,
         chat_id: str | None,
-        parts: list[TextPartRequest | TablePartRequest],
+        parts: list[TextPartRequest | TablePartRequest | FilePartRequest],
         scenario_id: int | None,
     ) -> None:
         if not chat_id:

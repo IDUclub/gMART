@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TypeVar
 
 from loguru import logger
@@ -17,6 +18,49 @@ T = TypeVar("T", bound=BaseModel)
 
 _LIMIT_MIN, _LIMIT_MAX = 1, 20
 _NEIGHBORS_DEPTH_MIN, _NEIGHBORS_DEPTH_MAX = 0, 2
+
+# Seed kinds of the NormGraph vocabulary that describe where a facility may stand.
+PLACEMENT_KINDS = (
+    "минимальное_расстояние",
+    "требование_размещения",
+    "запрет_размещения",
+)
+_PLACEMENT_QUESTION = re.compile(
+    r"размещ|располож|расстояни|удален|отступ|разрыв|рядом|вблизи|вокруг|возле|около|"
+    r"доступност|санитарно-защитн|\bсзз\b",
+    re.I,
+)
+
+
+def is_placement_question(query: str) -> bool:
+    """Where a facility may stand, not what it must contain."""
+    return bool(_PLACEMENT_QUESTION.search(query or ""))
+
+
+# A quantity is a number followed by a unit; clause numbers and [N] labels are not.
+_QUANTITY = re.compile(
+    r"(\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+(?:[.,]\d+)?)\s*"
+    r"(?:км|километр\w*|метр\w*|мест\w*|м²|м2|м|га|%|эт\w*|чел\w*)(?![а-яё])",
+    re.I,
+)
+_NUMBER = re.compile(r"\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+(?:[.,]\d+)?")
+
+
+def _normalize_number(raw: str) -> str:
+    value = float(re.sub(r"[ \u00a0\u202f]", "", raw).replace(",", "."))
+    return f"{value:g}"
+
+
+def ungrounded_quantities(answer: str, context: str) -> list[str]:
+    """Quantities in the answer whose number does not occur anywhere in the context."""
+    known = {_normalize_number(raw) for raw in _NUMBER.findall(context or "")}
+    missing: list[str] = []
+    for match in _QUANTITY.finditer(answer or ""):
+        if _normalize_number(match.group(1)) not in known:
+            quantity = " ".join(match.group(0).split())
+            if quantity not in missing:
+                missing.append(quantity)
+    return missing
 
 
 def _clean_str_list(values: list[str] | None) -> list[str] | None:
@@ -117,6 +161,8 @@ class NormGraphRetrievalPlanner:
             "object": (plan.object or "").strip() or None,
             "subject": (plan.subject or "").strip() or None,
             "kind": (plan.kind or "").strip() or None,
+            # Kind lists are chosen by code from the question, not by the model.
+            "kinds": None,
             "document_names": _clean_str_list(plan.document_names),
             "tags": _clean_str_list(plan.tags),
             "limit": min(max(plan.limit, _LIMIT_MIN), _LIMIT_MAX),
@@ -165,6 +211,11 @@ null, если не сужает запрос.
 - document_names — null по умолчанию (искать по всей базе); заполняй, только если пользователь \
 явно назвал документ («по СП 42.13330», «согласно СанПиН…»).
 - tags — null, если не сужает запрос.
+- Если вопрос о размещении объекта (где его можно или нельзя размещать, на каком расстоянии, \
+что допустимо рядом или вокруг), пиши search_query лексикой размещения: «расстояние от <объекта> \
+до …», «пешеходная доступность <объекта>», «запрет размещения <объекта> в зонах», \
+«санитарно-защитная зона». Не пиши общее «ограничения размещения <объекта>»: оно находит \
+требования к помещениям и оборудованию вместо норм размещения.
 - limit — сколько ограничений извлечь (целое 1–20). Больше для широких/обзорных вопросов.
 - neighbors_depth — 0 по умолчанию; 1–2, если вопрос требует понять связанные/смежные ограничения \
 (например «а что ещё с этим связано», «какие ещё нормы это затрагивает»).
@@ -196,6 +247,21 @@ class NormGraphAnswerCritic:
         context: str,
         answer: str,
     ) -> NormGraphCriticVerdict:
+        if missing := ungrounded_quantities(answer, context):
+            # A number the context does not contain is invented; no model is needed
+            # to see that, and a model reviewer has repeatedly let such values pass.
+            verdict = NormGraphCriticVerdict(
+                satisfied=False,
+                critique=(
+                    "В ответе есть значения, которых нет в приведённых ограничениях: "
+                    + ", ".join(missing)
+                    + ". Приводи только значения из контекста."
+                ),
+            )
+            logger.info(
+                f"NormGraph critic verdict: {verdict.model_dump_json(ensure_ascii=False)}"
+            )
+            return verdict
         messages: list[dict] = [
             {"role": "system", "content": self._prompt()},
             {"role": "user", "content": self._payload(user_query, context, answer)},
@@ -229,9 +295,18 @@ class NormGraphAnswerCritic:
 
 Критерии отказа (satisfied = false):
 - В ответе есть утверждения, не подтверждённые приведёнными ограничениями (галлюцинации).
+- В ответе есть толкования, выводы или расшифровки сокращений, которых нет в контексте \
+(например, сокращение объяснено по догадке).
 - Ответ неполный или не отвечает на вопрос пользователя.
-- Не указаны источники (документ, редакция, номер пункта или restriction_id для каждого \
-приведённого ограничения), хотя они есть в контексте.
+- В ответ включены ограничения не по предмету вопроса: например, спрашивают о размещении \
+объекта (расстояния, зоны, доступность), а в ответе требования к его помещениям, оборудованию \
+или внутренней территории; или спрашивают о школах, а приведены нормы для других учреждений.
+- В кавычках «» приведён текст, которого нет дословно в строках «Текст пункта» контекста \
+(строка «Структура» — служебная, её нельзя выдавать за цитату документа).
+- Не указаны источники (документ, редакция или номер пункта для каждого приведённого \
+ограничения), хотя они есть в контексте.
+- В ответе есть системные идентификаторы (id, UUID, хеши) вместо названий документов и \
+пунктов.
 - В контексте приведены противоречащие друг другу ограничения (раздел «Обнаруженные \
 противоречия»), но ответ их не упоминает.
 - В контексте недостаточно данных — тогда обязательно предложи refined_search_query и/или \

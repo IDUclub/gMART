@@ -1,5 +1,6 @@
 """A2A runs must leave no trace in ChatStorage: every A2A executor calls its
-pipeline with persist_history=False (the DVD executor is covered in test_dvd_a2a.py)."""
+pipeline with persist_history=False (the DVD executor is covered in test_dvd_a2a.py,
+the compliance executor in test_compliance_a2a.py)."""
 
 from __future__ import annotations
 

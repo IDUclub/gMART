@@ -1,7 +1,10 @@
 """Bounded parallel map/reduce over document evidence, with explicit coverage failures.
 
-Budgets use UTF-8 bytes as a conservative token upper estimate (no model-specific
-tokenizer dependency). Configure the actual model window via DVD_CONTEXT_WINDOW_TOKENS.
+Whether evidence needs reduction at all is decided in model tokens (server
+``/tokenize`` when available). Splitting and summary limits work in UTF-8 bytes,
+converted with the measured bytes-per-token ratio of the same text: Cyrillic takes
+~7 bytes per token, so comparing bytes with a token budget reduced evidence that
+already fit. Configure the model window via DVD_CONTEXT_WINDOW_TOKENS.
 No source text is sliced off: oversized blocks are split into consecutive parts.
 """
 
@@ -18,19 +21,30 @@ from dataclasses import dataclass, field
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
-from src.agents.model_clients.context_budget import remaining_output_tokens
+from src.agents.model_clients.context_budget import (
+    EVIDENCE_OUTPUT,
+    remaining_output_tokens,
+)
 from src.agents.model_clients.llm_base import LlmResponseError
 
 from .dvd_context import SOURCE_SEPARATOR, source_records
 
+# Without a server-reported max_model_len a larger window is not trusted: Ollama
+# would allocate it, and another OpenAI-compatible server would reject the request.
 MAX_CONTEXT_WINDOW_TOKENS = 32000
+DEFAULT_CONTEXT_WINDOW_TOKENS = 100000
 _MODEL_WINDOW = ContextVar("dvd_model_window", default=None)
+
+
+def configured_context_window() -> int:
+    return int(
+        os.getenv("DVD_CONTEXT_WINDOW_TOKENS", str(DEFAULT_CONTEXT_WINDOW_TOKENS))
+    )
 
 
 def current_context_window() -> int:
     return _MODEL_WINDOW.get() or min(
-        MAX_CONTEXT_WINDOW_TOKENS,
-        int(os.getenv("DVD_CONTEXT_WINDOW_TOKENS", str(MAX_CONTEXT_WINDOW_TOKENS))),
+        MAX_CONTEXT_WINDOW_TOKENS, configured_context_window()
     )
 
 
@@ -96,8 +110,7 @@ class PreparedContext:
 class DvdContextReducer:
     def __init__(self, llm_client, *, window_tokens=None, concurrency=None, retries=2):
         self.llm_client = llm_client
-        configured = window_tokens or os.getenv("DVD_CONTEXT_WINDOW_TOKENS")
-        self.configured_window = int(configured) if configured else None
+        self.configured_window = int(window_tokens or configured_context_window())
         self.concurrency = int(concurrency or os.getenv("DVD_CONTEXT_CONCURRENCY", "4"))
         self.retries = retries
         if self.window < 4096 or not 1 <= self.concurrency <= 16:
@@ -106,8 +119,7 @@ class DvdContextReducer:
     @property
     def window(self) -> int:
         return _MODEL_WINDOW.get() or min(
-            self.configured_window or MAX_CONTEXT_WINDOW_TOKENS,
-            MAX_CONTEXT_WINDOW_TOKENS,
+            self.configured_window, MAX_CONTEXT_WINDOW_TOKENS
         )
 
     @asynccontextmanager
@@ -116,12 +128,11 @@ class DvdContextReducer:
         reported = await resolver(model) if resolver else None
         if type(reported) is not int or reported < 4096:
             reported = None
-        selected = min(
-            self.configured_window or MAX_CONTEXT_WINDOW_TOKENS,
-            MAX_CONTEXT_WINDOW_TOKENS,
+        selected = (
+            min(self.configured_window, reported)
+            if reported
+            else min(self.configured_window, MAX_CONTEXT_WINDOW_TOKENS)
         )
-        if reported:
-            selected = min(selected, reported)
         token = _MODEL_WINDOW.set(selected)
         logger.info(
             "DVD model={} context_window={} server_window={}", model, selected, reported
@@ -143,6 +154,16 @@ class DvdContextReducer:
                 "question/history leaves no document context budget; shorten history or configure a larger model window"
             )
         return available
+
+    async def _tokens(self, model: str, text: str) -> int:
+        """Model tokens of ``text``; UTF-8 bytes when the server cannot count."""
+        counter = getattr(self.llm_client, "model_input_tokens", None)
+        count = (
+            await counter(model, [{"role": "user", "content": text}])
+            if counter
+            else None
+        )
+        return count if type(count) is int and count >= 0 else cost(text)
 
     @staticmethod
     def _sources(text: str) -> set[str]:
@@ -199,8 +220,11 @@ class DvdContextReducer:
         if budget < 512:
             raise ValueError("context budget is too small")
         result = PreparedContext(context)
-        if cost(context) <= budget:
+        tokens = await self._tokens(model, context)
+        if tokens <= budget:
             return result
+        # Reduction below measures text in bytes; keep it on the same scale.
+        budget = int(budget * max(1.0, cost(context) / max(tokens, 1)))
         semaphore = asyncio.Semaphore(self.concurrency)
         for level in range(8):
             if cost(result.text) <= budget:
@@ -261,7 +285,7 @@ class DvdContextReducer:
                                 feedback in {"output_truncated", "empty_completion"}
                                 and attempt < self.retries
                             ):
-                                # A full output budget cannot grow further. Reduce the
+                                # The output budget follows the input size. Reduce the
                                 # source workload instead of repeating the same request.
                                 # Retry count still bounds this split (at most twice).
                                 inputs = [
@@ -382,6 +406,7 @@ class DvdContextReducer:
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             self.window,
             schema=schema,
+            output=EVIDENCE_OUTPUT,
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")
@@ -479,6 +504,7 @@ class DvdContextReducer:
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             self.window,
             schema=schema,
+            output=EVIDENCE_OUTPUT,
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")

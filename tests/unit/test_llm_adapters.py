@@ -631,7 +631,7 @@ async def test_unavailable_tokenizer_uses_conservative_fallback():
         await adapter.client.close()
 
 
-async def test_planner_allows_reasoning_to_use_entire_remaining_context():
+async def test_planner_output_is_proportional_to_its_input():
     from unittest.mock import AsyncMock
 
     from src.agents.services.dvd.dvd_reasoning import RetrievalPlanner
@@ -646,7 +646,8 @@ async def test_planner_allows_reasoning_to_use_entire_remaining_context():
             "gpt-oss-20b", "Что написано в СП 55 пункт 3?"
         )
         assert plan.pattern == "3"
-        assert calls.calls[0]["max_tokens"] == 32000 - 3000 - 256
+        # Room for reasoning plus half the input, far below the 28k window rest.
+        assert calls.calls[0]["max_tokens"] == 4096 + 3000 // 2
         assert calls.calls[0]["reasoning_effort"] == "low"
     finally:
         await adapter.client.close()

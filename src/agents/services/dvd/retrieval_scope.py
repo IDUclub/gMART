@@ -15,6 +15,15 @@ def resets_scope(query):
     )
 
 
+def continues_document(query):
+    """An address («пункт 3.3») or anaphora («в нём», «там») refers to the
+    document already under discussion; a new topic does not."""
+    return bool(
+        parse_reference(query).pattern
+        or re.search(r"\b(?:н[её]м|него|этом|этого|там|тот же|тому же)\b", query, re.I)
+    )
+
+
 def document_scope(candidates):
     """Persist only an unambiguous document/edition, never a guessed identity."""
     if not candidates:
@@ -64,10 +73,7 @@ def apply_scope(plan, query, scope=None, history=None):
                 break
     # Do not overwrite an explicit document name supplied in free text and resolved
     # by the planner. An address/anaphoric continuation uses the established scope.
-    continuation = parse_reference(query).pattern or re.search(
-        r"\b(?:н[её]м|него|этом|этого|там|тот же|тому же)\b", query, re.I
-    )
-    if plan.document_names and not continuation:
+    if plan.document_names and not continues_document(query):
         return plan
     updates = {
         k: v
