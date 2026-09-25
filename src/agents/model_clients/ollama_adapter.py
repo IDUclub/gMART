@@ -20,6 +20,7 @@ from src.agents.model_clients.llm_base import (
     LlmGenerateResponse,
     LlmResponseError,
 )
+from src.agents.model_clients.llm_pace import llm_pace
 
 
 class OllamaAdapter(BaseLlmAdapter):
@@ -48,10 +49,26 @@ class OllamaAdapter(BaseLlmAdapter):
         if options is not None:
             call["options"] = options
         call.update(kwargs)
+        if stream:
+            try:
+                return await self.client.chat(**call)
+            except ResponseError as exc:
+                raise LlmResponseError(
+                    str(exc), getattr(exc, "status_code", None)
+                ) from exc
+        pace_call = llm_pace.started((options or {}).get("num_predict"))
+        response = None
         try:
-            return await self.client.chat(**call)
+            response = await self.client.chat(**call)
+            return response
         except ResponseError as exc:
             raise LlmResponseError(str(exc), getattr(exc, "status_code", None)) from exc
+        finally:
+            llm_pace.finished(
+                pace_call,
+                completion_tokens=getattr(response, "eval_count", None),
+                prompt_tokens=getattr(response, "prompt_eval_count", None),
+            )
 
     async def generate(
         self, model: str, prompt: str, *, stream: bool = False, **kwargs: Any

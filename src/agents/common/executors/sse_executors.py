@@ -8,6 +8,7 @@ from loguru import logger
 from src.agents.common.exceptions.base_exceptions import PipelineStorageUnavailable
 from src.agents.model_clients.base_client import BaseLlmClient
 from src.agents.model_clients.llm_base import LlmResponseError
+from src.agents.model_clients.llm_pace import PipelineDeadlineExceeded
 
 StreamGenerator = Callable[..., AsyncIterator[dict[str, Any]]]
 
@@ -105,6 +106,19 @@ async def stream_with_error_handling(
     except PipelineStorageUnavailable as exc:
         logger.error("Pipeline storage unavailable; the pipeline will not be rerun")
         yield {"type": "error", "content": {"message": exc.message, "traceback": ""}}
+        return
+
+    except PipelineDeadlineExceeded as exc:
+        # A rerun would face the same slow server and double the wait.
+        logger.error(
+            "Pipeline deadline exceeded after {:.0f} s; not rerun", exc.wall_seconds
+        )
+        yield {"type": "chunk", "content": {"text": exc.user_message, "done": False}}
+        yield {
+            "type": "error",
+            "content": {"message": "Pipeline deadline exceeded", "traceback": ""},
+        }
+        yield {"type": "chunk", "content": {"text": "", "done": True}}
         return
 
     except Exception as exc:
