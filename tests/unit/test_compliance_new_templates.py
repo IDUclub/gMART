@@ -407,3 +407,30 @@ async def test_inventory_draws_accessibility_areas_of_services():
     urban_normative = _provision_plan(accessibility=None)
     zone = await _builder().build(FakeMcp(), urban_normative, 772)
     assert zone.missing_requirements == ["accessibility:urban_api_normative"]
+
+
+async def test_service_provision_reports_how_population_was_chosen():
+    class PopulationEffects(FakeEffects):
+        async def calculate_normative_provision(self, **arguments):
+            raw = await super().calculate_normative_provision(**arguments)
+            raw["population"] = {
+                "scenario": {
+                    "source": "housing_stock",
+                    "population": 1013,
+                    "housing_capacity": 1013,
+                    "indicator": 204314,
+                }
+            }
+            return raw
+
+    effects = PopulationEffects()
+
+    async def factory(user_id):
+        return effects
+
+    execution = await ComplianceTemplateExecutor(
+        effects_client_factory=factory
+    ).execute(FakeMcpClient(), _provision_plan(), 772, user_id="user-1")
+    warnings = execution.result.warnings
+    assert "population:source=housing_stock" in warnings
+    assert any(item.startswith("population_indicator_ignored") for item in warnings)

@@ -103,6 +103,27 @@ class CheckPlanSource(StrictModel):
     extraction_text: str | None = Field(default=None, max_length=8000)
 
 
+# The plan applies the strictest value of a conditional clause to every object.
+STRICTEST_NORM_WARNING = "strictest_norm_applied"
+
+
+class CheckPlanApplicability(StrictModel):
+    """How NormGraph turned a clause with conditions or variants into one plan.
+
+    ``strictest_variant``: the strictest of the clause's values is applied to every
+    object; the clause's conditions must still be checked by a person.
+    """
+
+    mode: Literal["strictest_variant"]
+    conditions: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=20
+    )
+    variants: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=20
+    )
+    applied: str = Field(min_length=1, max_length=500)
+
+
 class CheckPlan(StrictModel):
     schema_version: Literal["1.0"]
     template: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
@@ -111,6 +132,7 @@ class CheckPlan(StrictModel):
     declared_requirements: DeclaredRequirements | None = None
     source: CheckPlanSource
     planner_status: Literal["auto", "reviewed", "unsupported"]
+    applicability: CheckPlanApplicability | None = None
 
 
 class DistanceFromSourceParams(StrictModel):

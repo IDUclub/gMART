@@ -55,8 +55,10 @@ from src.agents.services.compilance.compliance_report import (
     REPORT_MIME_TYPE,
     REPORT_SLOT,
     REPORT_TITLE,
+    STRICTEST_NORM_NOTICE,
     build_compliance_report,
     report_filename,
+    strictest_applicability,
 )
 from src.agents.services.compilance.compliance_result_harness import (
     ComplianceResultHarness,
@@ -1659,6 +1661,17 @@ class RestrictionParserService(BaseLlmService):
             parts.append(
                 f"С частичным покрытием: {summary['partial_norms']}; вывод относится только к проверенной части."
             )
+        strictest = [
+            result
+            for result in summary.get("results", [])
+            if result.get("compliance_status") in {"violated", "passed"}
+            and strictest_applicability(result)
+        ]
+        if strictest:
+            parts.append(
+                f"По самой строгой норме проверено: {len(strictest)}. "
+                f"{STRICTEST_NORM_NOTICE}"
+            )
         violations = []
         for result in summary.get("results", []):
             count = result.get("summary", {}).get("violated_objects", 0)
@@ -1673,6 +1686,16 @@ class RestrictionParserService(BaseLlmService):
             if result.get("verification_status") == "partial":
                 unchecked = result.get("coverage", {}).get("unchecked_objects", 0)
                 detail += f" Не проверено объектов: {unchecked}."
+            applicability = strictest_applicability(result)
+            if applicability:
+                conditions = "; ".join(applicability.get("conditions") or [])
+                if not detail.endswith("."):
+                    detail += "."
+                detail += (
+                    f" Применена самая строгая норма ({applicability['applied']}); "
+                    "проверьте дополнительные условия"
+                    + (f": {conditions}." if conditions else ".")
+                )
             violations.append(detail)
         overview = scope_line + " ".join(parts)
         if violations:

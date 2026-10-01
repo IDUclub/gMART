@@ -525,6 +525,130 @@
         },
         "planner_status": "auto"
       }
+    },
+    {
+      "name": "valid_strictest_variant_applicability",
+      "valid": true,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "distance_from_source",
+        "template_version": 1,
+        "params": {
+          "source_layer": "source",
+          "targets": [
+            "targets"
+          ],
+          "geometry_mode": "buffered",
+          "distance_m": 50,
+          "predicate": "intersects",
+          "violation_when": "matched",
+          "result_mode": "both"
+        },
+        "declared_requirements": {
+          "layers": [
+            {
+              "role": "source",
+              "entity": "Школа",
+              "entity_type": "service",
+              "geometry_types": [
+                "Point"
+              ],
+              "required": true
+            },
+            {
+              "role": "targets",
+              "entity": "Жилой дом",
+              "entity_type": "physical_object",
+              "geometry_types": [
+                "Point",
+                "Polygon"
+              ],
+              "required": true
+            }
+          ],
+          "attributes": []
+        },
+        "source": {
+          "restriction_id": "fixture-strictest",
+          "document_name": "СП fixture",
+          "clause_number": "1.1",
+          "extraction_text": "Не менее 50 м"
+        },
+        "planner_status": "auto",
+        "applicability": {
+          "mode": "strictest_variant",
+          "conditions": [
+            "для сельских поселений"
+          ],
+          "variants": [
+            "50 м",
+            "25 м — для сельских поселений"
+          ],
+          "applied": "50 м"
+        }
+      }
+    },
+    {
+      "name": "invalid_applicability_unknown_mode",
+      "valid": false,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "distance_from_source",
+        "template_version": 1,
+        "params": {
+          "source_layer": "source",
+          "targets": [
+            "targets"
+          ],
+          "geometry_mode": "buffered",
+          "distance_m": 50,
+          "predicate": "intersects",
+          "violation_when": "matched",
+          "result_mode": "both"
+        },
+        "declared_requirements": {
+          "layers": [
+            {
+              "role": "source",
+              "entity": "Школа",
+              "entity_type": "service",
+              "geometry_types": [
+                "Point"
+              ],
+              "required": true
+            },
+            {
+              "role": "targets",
+              "entity": "Жилой дом",
+              "entity_type": "physical_object",
+              "geometry_types": [
+                "Point",
+                "Polygon"
+              ],
+              "required": true
+            }
+          ],
+          "attributes": []
+        },
+        "source": {
+          "restriction_id": "fixture-strictest-bad",
+          "document_name": "СП fixture",
+          "clause_number": "1.1",
+          "extraction_text": "Не менее 50 м"
+        },
+        "planner_status": "auto",
+        "applicability": {
+          "mode": "any_variant",
+          "conditions": [
+            "для сельских поселений"
+          ],
+          "variants": [
+            "50 м",
+            "25 м — для сельских поселений"
+          ],
+          "applied": "50 м"
+        }
+      }
     }
   ]
 }

@@ -22,6 +22,7 @@ from src.agents.services.restriction.restriction_tool_executor import (
     RestrictionToolExecutor,
 )
 from src.agents.services.service_entities.compliance import (
+    STRICTEST_NORM_WARNING,
     CheckPlan,
     ComplianceResult,
     ComplianceSummary,
@@ -39,6 +40,26 @@ class ComplianceExecution:
     timings_ms: dict[str, float]
     # Calls made on the ObjectEffects MCP (replayed against that server, not idu_mcp).
     effects_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _population_warnings(population: dict[str, Any]) -> list[str]:
+    """How ObjectEffects chose the scenario population behind the provision verdict."""
+    info = population.get("scenario") or {}
+    if not info.get("source"):
+        return []
+    warnings = [
+        f"population:source={info['source']}",
+        f"population:residents={info.get('population')}",
+        f"population:housing_capacity={info.get('housing_capacity')}",
+    ]
+    indicator = info.get("indicator")
+    if info["source"] == "housing_stock" and indicator:
+        warnings.append(
+            "population_indicator_ignored: Urban API population "
+            f"{indicator} does not match the housing capacity "
+            f"{info.get('housing_capacity')} of the scenario buildings"
+        )
+    return warnings
 
 
 def _has_features(*layers: Any) -> bool:
@@ -86,6 +107,28 @@ class ComplianceTemplateExecutor:
         user_id: str | None = None,
     ) -> ComplianceExecution:
         """Run one plan; ``user_id`` is needed only by ObjectEffects-backed templates."""
+        execution = await self._execute(
+            mcp_client, raw_plan, scenario_id, user_id=user_id
+        )
+        plan = execution.plan
+        warnings = execution.result.warnings
+        if (
+            plan is not None
+            and plan.applicability is not None
+            and STRICTEST_NORM_WARNING not in warnings
+        ):
+            # The verdict holds for the strictest reading of a conditional clause.
+            warnings.append(STRICTEST_NORM_WARNING)
+        return execution
+
+    async def _execute(
+        self,
+        mcp_client,
+        raw_plan: dict[str, Any],
+        scenario_id: int,
+        *,
+        user_id: str | None,
+    ) -> ComplianceExecution:
         timings_ms: dict[str, float] = {}
         validation_started = perf_counter()
         restriction_id = str(
@@ -489,7 +532,8 @@ class ComplianceTemplateExecutor:
                 f"normative:{key}={value}"
                 for key, value in sorted(normative.items())
                 if value is not None
-            ],
+            ]
+            + _population_warnings(raw.get("population") or {}),
             source=self._result_source(plan),
             evidence=evidence,
             violated_features={

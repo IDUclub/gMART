@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from src.agents.services.compilance.compliance_report import strictest_applicability
 from src.agents.services.compilance.compliance_sources import (
     source_reference,
     source_references,
@@ -75,7 +76,13 @@ class ComplianceResultHarness:
 - unsupported — норма была пропущена, потому что для неё нет поддерживаемого
   исполняемого шаблона или план проверки не прошёл валидацию;
 - not_applicable — явное условие применимости нормы доказуемо не выполняется;
-- compliance_status=unknown никогда не называй успешным прохождением.
+- compliance_status=unknown никогда не называй успешным прохождением;
+- warnings содержит strictest_norm_applied — пункт задаёт условия применения или
+  разные значения для разных случаев, и ко всем объектам применена самая строгая
+  норма (applicability.applied). Всегда сообщай об этом при упоминании такой нормы
+  и напоминай, что её нужно проверить на дополнительные условия
+  (applicability.conditions): при их выполнении может действовать менее строгое
+  значение.
 
 Если пользователь спрашивает, что «не прошло», сначала раздели фактические
 нарушения и нормы, которые не удалось проверить. При перечислении указывай
@@ -172,6 +179,9 @@ missing_requirements, warnings и resolved_requirements.reason. Техничес
             )
         }
         compact["source_references"] = source_references(source)
+        applicability = strictest_applicability(result)
+        if applicability:
+            compact["applicability"] = applicability
         compact["source"] = {
             key: source.get(key)
             for key in (
@@ -260,6 +270,12 @@ missing_requirements, warnings и resolved_requirements.reason. Техничес
                 *[str(item) for item in result.get("missing_requirements") or []],
                 *[str(item) for item in result.get("warnings") or []],
             ]
+            applicability = strictest_applicability(result)
+            if applicability:
+                reasons.append(
+                    f"применена самая строгая норма ({applicability['applied']}), "
+                    "проверьте дополнительные условия"
+                )
             reason_text = "; ".join(dict.fromkeys(reasons)) or "причина не указана"
             lines.append(
                 f"- {name}: {result.get('verification_status', 'unknown')} — "
