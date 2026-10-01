@@ -444,6 +444,87 @@
         },
         "planner_status": "auto"
       }
+    },
+    {
+      "name": "valid_service_provision_objects_per_residents",
+      "valid": true,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "service_provision",
+        "template_version": 1,
+        "params": {
+          "services_layer": "services",
+          "accessibility": {
+            "kind": "distance",
+            "meters": 500
+          },
+          "min_provision": 1.0,
+          "result_mode": "both",
+          "residents_per_service": 10000
+        },
+        "declared_requirements": {
+          "layers": [
+            {
+              "role": "services",
+              "entity": "Школа",
+              "entity_type": "service",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            }
+          ],
+          "attributes": []
+        },
+        "source": {
+          "restriction_id": "fixture-prov-residents"
+        },
+        "planner_status": "auto"
+      }
+    },
+    {
+      "name": "invalid_service_provision_two_capacity_bases",
+      "valid": false,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "service_provision",
+        "template_version": 1,
+        "params": {
+          "services_layer": "services",
+          "capacity_per_1000": 124,
+          "accessibility": {
+            "kind": "distance",
+            "meters": 500
+          },
+          "min_provision": 1.0,
+          "result_mode": "both",
+          "residents_per_service": 10000
+        },
+        "declared_requirements": {
+          "layers": [
+            {
+              "role": "services",
+              "entity": "Школа",
+              "entity_type": "service",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            }
+          ],
+          "attributes": []
+        },
+        "source": {
+          "restriction_id": "fixture-prov-two-bases"
+        },
+        "planner_status": "auto"
+      }
     }
   ]
 }

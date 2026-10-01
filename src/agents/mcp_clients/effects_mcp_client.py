@@ -68,6 +68,7 @@ class EffectsMcpClient(BaseMcpClient):
         capacity_per_1000: float | None = None,
         accessibility_type: str | None = None,
         accessibility_value: float | None = None,
+        residents_per_service: float | None = None,
     ) -> dict:
         """
         Call CalculateNormativeProvision on the effects MCP server.
@@ -78,6 +79,8 @@ class EffectsMcpClient(BaseMcpClient):
                 norm; None keeps the Urban API normative.
             accessibility_type (str | None): "time" (minutes) or "dist" (metres).
             accessibility_value (float | None): Accessibility from the norm.
+            residents_per_service (float | None): Residents per one service object
+                for "1 object per N residents" norms; excludes capacity_per_1000.
         Returns:
             dict: {"normative": {...}, "summary": {...}, "buildings": FeatureCollection}.
         """
@@ -89,6 +92,7 @@ class EffectsMcpClient(BaseMcpClient):
             ("capacity_per_1000", capacity_per_1000),
             ("accessibility_type", accessibility_type),
             ("accessibility_value", accessibility_value),
+            ("residents_per_service", residents_per_service),
         ):
             if value is not None:
                 arguments[key] = value

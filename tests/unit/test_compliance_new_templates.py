@@ -1,5 +1,7 @@
 """object_attribute_threshold, accessibility_within and service_provision (CheckPlan v1)."""
 
+import pytest
+from pydantic import ValidationError
 from shapely.geometry import Point, Polygon, mapping
 
 from src.agents.services.compilance.compliance_executor import (
@@ -13,6 +15,7 @@ from src.agents.services.service_entities.compliance import (
     AccessibilityWithinParams,
     CheckPlan,
     DeclaredRequirements,
+    ServiceProvisionParams,
 )
 from src.idu_mcp.tools_services.compliance_geometry import ComplianceGeometryTools
 from tests.unit.test_compliance_executor import FakeMcpClient
@@ -321,6 +324,7 @@ async def test_service_provision_runs_on_object_effects_with_the_norm_values():
             "scenario_id": 772,
             "service_type_id": 1,
             "capacity_per_1000": 124,
+            "residents_per_service": None,
             "accessibility_type": "dist",
             "accessibility_value": 500,
         }
@@ -336,6 +340,27 @@ async def test_service_provision_runs_on_object_effects_with_the_norm_values():
         execution.effects_tool_calls[0]["function"]["name"]
         == "CalculateNormativeProvision"
     )
+
+
+async def test_objects_per_residents_norm_is_sent_as_residents_per_service():
+    effects = FakeEffects()
+
+    async def factory(user_id):
+        return effects
+
+    plan = _provision_plan(capacity_per_1000=None, residents_per_service=10_000)
+    await ComplianceTemplateExecutor(effects_client_factory=factory).execute(
+        FakeMcpClient(), plan, 772, user_id="user-1"
+    )
+    assert effects.calls[0]["residents_per_service"] == 10_000
+    assert effects.calls[0]["capacity_per_1000"] is None
+
+
+def test_provision_has_one_capacity_basis():
+    with pytest.raises(ValidationError):
+        ServiceProvisionParams.model_validate(
+            _provision_plan(residents_per_service=10_000)["params"]
+        )
 
 
 async def test_service_provision_without_user_or_effects_is_unverifiable():
@@ -374,6 +399,10 @@ async def test_inventory_draws_accessibility_areas_of_services():
         "capacity_per_1000": 124,
     }
     assert "124 мест на 1000 жителей" in describe_zone(zone.payload())
+
+    per_residents = _provision_plan(capacity_per_1000=None, residents_per_service=5000)
+    zone = await _builder().build(FakeMcp(), per_residents, 772)
+    assert "1 объект на 5000 жителей" in describe_zone(zone.payload())
 
     urban_normative = _provision_plan(accessibility=None)
     zone = await _builder().build(FakeMcp(), urban_normative, 772)

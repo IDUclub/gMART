@@ -288,20 +288,34 @@ class AccessibilityWithinParams(StrictModel):
 class ServiceProvisionParams(StrictModel):
     """Residents' demand for a service type must be met within its accessibility.
 
-    ``None`` keeps the Urban API normative of the service type. A building is
-    violated when the share of its demand served within accessibility is below
-    ``min_provision``.
+    ``None`` keeps the Urban API normative of the service type. A norm of the
+    "1 object per N residents" kind sets ``residents_per_service`` instead of
+    ``capacity_per_1000``: every resident is then demand and each object serves N.
+    A building is violated when the share of its demand served within accessibility
+    is below ``min_provision``.
     """
 
     services_layer: str = Field(
         min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
     )
     capacity_per_1000: float | None = Field(default=None, gt=0, le=100_000)
+    residents_per_service: float | None = Field(default=None, gt=0, le=10_000_000)
     accessibility: (
         Annotated[TimeLimit | DistanceLimit, Field(discriminator="kind")] | None
     ) = None
     min_provision: float = Field(default=1.0, gt=0, le=1)
     result_mode: Literal["violated", "passed", "both"] = "both"
+
+    @model_validator(mode="after")
+    def one_capacity_basis(self) -> ServiceProvisionParams:
+        if (
+            self.capacity_per_1000 is not None
+            and self.residents_per_service is not None
+        ):
+            raise ValueError(
+                "capacity_per_1000 and residents_per_service exclude each other"
+            )
+        return self
 
 
 class ResolvedRequirement(StrictModel):

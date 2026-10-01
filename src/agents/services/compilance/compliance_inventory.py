@@ -371,6 +371,11 @@ def _describe(plan: CheckPlan, params, entities: dict[str, str]) -> dict[str, An
             "around": entities.get(params.services_layer, params.services_layer),
             "distance_m": _accessibility_radius(plan, params),
             "capacity_per_1000": params.capacity_per_1000,
+            **(
+                {"residents_per_service": params.residents_per_service}
+                if params.residents_per_service
+                else {}
+            ),
         }
     zones = entities.get(params.zones_layer, params.zones_layer)
     description: dict[str, Any] = {
@@ -428,11 +433,16 @@ def describe_zone(payload: dict[str, Any]) -> str:
             area = f"территория объектов {around}"
         if "capacity_per_1000" in description:
             capacity = description.get("capacity_per_1000")
-            rule = (
-                f"зона доступности; норматив {_number(capacity)} мест на 1000 жителей"
-                if capacity
-                else "зона доступности по нормативу сервиса"
-            )
+            residents = description.get("residents_per_service")
+            if residents:
+                rule = (
+                    "зона доступности; норматив 1 объект на "
+                    f"{_number(residents)} жителей"
+                )
+            elif capacity:
+                rule = f"зона доступности; норматив {_number(capacity)} мест на 1000 жителей"
+            else:
+                rule = "зона доступности по нормативу сервиса"
             return f"{area}; {rule}"
         if description.get("threshold") is not None:
             sign = _OPERATOR_SIGNS.get(description.get("operator"), "")

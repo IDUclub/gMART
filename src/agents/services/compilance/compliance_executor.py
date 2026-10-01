@@ -352,7 +352,8 @@ class ComplianceTemplateExecutor:
     ) -> ComplianceExecution:
         """Provision of residents with a service type, computed by ObjectEffects.
 
-        The norm's own ``capacity_per_1000`` and accessibility replace the Urban API
+        The norm's own ``capacity_per_1000`` (or ``residents_per_service``) and
+        accessibility replace the Urban API
         normative; each scenario residential building with demand is checked on the
         share of its demand served within accessibility.
         """
@@ -392,6 +393,7 @@ class ComplianceTemplateExecutor:
             "scenario_id": scenario_id,
             "service_type_id": int(service_type_id),
             "capacity_per_1000": params.capacity_per_1000,
+            "residents_per_service": params.residents_per_service,
             "accessibility_type": (
                 None
                 if accessibility is None
