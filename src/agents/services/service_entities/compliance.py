@@ -22,6 +22,12 @@ RoleName = Annotated[
 ]
 
 
+# Registered deterministic attribute conversions (``ComplianceDataGate``).
+DeriveName = Literal[
+    "height_to_floors_v1", "floors_to_height_v1", "geometry_area_m2_v1"
+]
+
+
 class EntityType(StrEnum):
     SERVICE = "service"
     PHYSICAL_OBJECT = "physical_object"
@@ -52,7 +58,7 @@ class AttributeCandidate(StrictModel):
         pattern=r"^[A-Za-zА-Яа-яЁё0-9_.:-]+$",
     )
     unit: str = Field(min_length=1, max_length=32)
-    derive: Literal["height_to_floors_v1"] | None = None
+    derive: DeriveName | None = None
     quality: Literal["direct", "derived"]
 
     @model_validator(mode="after")
@@ -226,6 +232,78 @@ class ZonalRatioParams(StrictModel):
     result_mode: Literal["violated", "passed", "both"] = "both"
 
 
+class ObjectAttributeThresholdParams(StrictModel):
+    """Every object of a layer compares one numeric attribute with a constant."""
+
+    objects_layer: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    attribute_role: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    operator: Literal["<", "<=", ">", ">=", "=="]
+    threshold: float = Field(ge=-1_000_000_000, le=1_000_000_000)
+    unit: str = Field(min_length=1, max_length=32)
+    result_mode: Literal["violated", "passed", "both"] = "both"
+
+
+class TimeLimit(StrictModel):
+    kind: Literal["time"]
+    minutes: float = Field(gt=0, le=240)
+
+
+class DistanceLimit(StrictModel):
+    kind: Literal["distance"]
+    meters: float = Field(gt=0, le=100_000)
+
+
+class AccessibilityWithinParams(StrictModel):
+    """Every object must reach a neighbour within a walking time or route length.
+
+    ``buffer_v1`` approximates the route by a straight-line radius
+    ``(minutes * speed_m_per_min | meters) / detour_factor``.
+    """
+
+    objects_layer: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    required_neighbor_layers: list[RoleName] = Field(min_length=1, max_length=16)
+    limit: Annotated[TimeLimit | DistanceLimit, Field(discriminator="kind")]
+    speed_m_per_min: float = Field(default=80.0, gt=0, le=1000)
+    detour_factor: float = Field(default=1.3, ge=1, le=3)
+    measurement: Literal["buffer_v1"] = "buffer_v1"
+    minimum_neighbors: int = Field(default=1, ge=1, le=1000)
+    result_mode: Literal["violated", "passed", "both"] = "both"
+
+    def radius_m(self) -> float:
+        """Straight-line radius standing in for the route (``buffer_v1``)."""
+        route = (
+            self.limit.minutes * self.speed_m_per_min
+            if isinstance(self.limit, TimeLimit)
+            else self.limit.meters
+        )
+        return route / self.detour_factor
+
+
+class ServiceProvisionParams(StrictModel):
+    """Residents' demand for a service type must be met within its accessibility.
+
+    ``None`` keeps the Urban API normative of the service type. A building is
+    violated when the share of its demand served within accessibility is below
+    ``min_provision``.
+    """
+
+    services_layer: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    capacity_per_1000: float | None = Field(default=None, gt=0, le=100_000)
+    accessibility: (
+        Annotated[TimeLimit | DistanceLimit, Field(discriminator="kind")] | None
+    ) = None
+    min_provision: float = Field(default=1.0, gt=0, le=1)
+    result_mode: Literal["violated", "passed", "both"] = "both"
+
+
 class ResolvedRequirement(StrictModel):
     role: str
     requirement_type: Literal["layer", "attribute"]
@@ -234,7 +312,7 @@ class ResolvedRequirement(StrictModel):
     field: str | None = None
     unit: str | None = None
     quality: Literal["direct", "derived"] | None = None
-    derive: Literal["height_to_floors_v1"] | None = None
+    derive: DeriveName | None = None
     fill_rate: float | None = Field(default=None, ge=0, le=1)
     reason: str | None = None
 
@@ -282,6 +360,8 @@ class ComplianceEvidence(StrictModel):
     neighbor_layers: list[str] = Field(default_factory=list, max_length=16)
     numerator_area_m2: float | None = Field(default=None, ge=0)
     denominator_area_m2: float | None = Field(default=None, ge=0)
+    demand: float | None = Field(default=None, ge=0)
+    supplied_demand: float | None = Field(default=None, ge=0)
 
 
 class ComplianceResult(StrictModel):
@@ -330,4 +410,7 @@ TEMPLATE_PARAM_MODELS: dict[str, type[StrictModel]] = {
     "presence_within": PresenceWithinParams,
     "zonal_attribute_threshold": ZonalAttributeThresholdParams,
     "zonal_ratio": ZonalRatioParams,
+    "object_attribute_threshold": ObjectAttributeThresholdParams,
+    "accessibility_within": AccessibilityWithinParams,
+    "service_provision": ServiceProvisionParams,
 }

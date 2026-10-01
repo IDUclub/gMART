@@ -1024,13 +1024,15 @@ class RestrictionParserService(BaseLlmService):
         )
         for index, raw_plan in enumerate(plans, start=1):
             execution_calls: list[dict[str, Any]] = []
+            effects_calls: list[dict[str, Any]] = []
             timings_ms: dict[str, float] = {}
             try:
                 execution = await self.compliance_executor.execute(
-                    mcp_client, raw_plan, scenario_id
+                    mcp_client, raw_plan, scenario_id, user_id=owner
                 )
                 result = execution.result
                 execution_calls = execution.tool_calls
+                effects_calls = execution.effects_tool_calls
                 timings_ms = execution.timings_ms
             except Exception as exc:  # one norm must not erase the others
                 logger.bind(
@@ -1093,6 +1095,13 @@ class RestrictionParserService(BaseLlmService):
                     request_id,
                     self._tool_call(
                         "template_execution", execution_calls, "IDU_MCP_URL"
+                    ),
+                )
+            if effects_calls:
+                yield await self._buf(
+                    request_id,
+                    self._tool_call(
+                        "template_execution", effects_calls, "OBJECTS_EFFECTS_MCP_URL"
                     ),
                 )
             yield await self._buf(
