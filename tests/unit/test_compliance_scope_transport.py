@@ -211,9 +211,9 @@ async def test_executor_flags_a_transport_estimate():
     )
     assert execution.result.compliance_status in {"violated", "passed"}
     assert TRANSPORT_WARNING in execution.result.warnings
-    radius = next(args for name, args, _ in client.calls if name == "CheckAccessibilityWithin")[
-        "radius_m"
-    ]
+    radius = next(
+        args for name, args, _ in client.calls if name == "CheckAccessibilityWithin"
+    )["radius_m"]
     assert radius == pytest.approx(25_000 / 60 / 1.3)
 
     walking = await ComplianceTemplateExecutor().execute(
