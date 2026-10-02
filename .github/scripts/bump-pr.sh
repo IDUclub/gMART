@@ -7,8 +7,14 @@
 # commit to the branch and marks the "version" status of the new head as passed, which lets
 # auto-merge merge. Running it again after dev moved replaces the bump instead of stacking one.
 #
+# The passing "version" status is set with VERSION_STATUS_TOKEN, not GITHUB_TOKEN: GitHub starts
+# no workflow for events caused by GITHUB_TOKEN, and that includes the push of a merge that
+# auto-merge made because GITHUB_TOKEN passed the last required check - the dev release would
+# not run. Pending and failure statuses use GITHUB_TOKEN.
+#
 # Run it from a copy outside the work tree (it checks out the PR branch, which may predate it).
-# Env: GH_TOKEN (contents, statuses, pull requests), GITHUB_REPOSITORY, PR (number).
+# Env: GH_TOKEN (contents, statuses, pull requests), VERSION_STATUS_TOKEN (commit statuses),
+# GITHUB_REPOSITORY, PR (number).
 set -euo pipefail
 
 script="$(dirname "$0")/versioning.py"
@@ -25,6 +31,17 @@ branch="$(jq -r '.head.ref' <<<"$pr")"
 url="$(jq -r '.html_url' <<<"$pr")"
 labels="$(jq -r '[.labels[].name] | join(",")' <<<"$pr")"
 head="$(jq -r '.head.sha' <<<"$pr")"
+# A run that starts late (e.g. approved after the merge) must not bump a closed PR: the push
+# would recreate its deleted branch.
+if [ "$(jq -r '.state' <<<"$pr")" != "open" ]; then
+  echo "PR #${PR} is no longer open - nothing to bump"
+  exit 0
+fi
+if [ -z "${VERSION_STATUS_TOKEN:-}" ]; then
+  status "$head" failure "Нет секрета VERSION_STATUS_TOKEN: мердж не запустил бы выкатку на dev"
+  echo "::error::Repository secret VERSION_STATUS_TOKEN (commit statuses) is not set" >&2
+  exit 1
+fi
 status "$head" pending "Поднимается версия перед мерджем"
 
 increment="$(python3 "$script" kind --branch "$branch" --labels "$labels")"
@@ -65,7 +82,9 @@ for attempt in 1 2 3; do
   new="$(python3 "$script" next --kind "$increment" --ref origin/dev)"
   base="$(python3 "$script" current --ref origin/dev)"
   python3 "$script" apply --version "$new"
-  uv lock
+  if [ -f uv.lock ]; then
+    uv lock   # pip projects (requirements.txt) have no lock to refresh
+  fi
   gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/commits" \
     --jq '.[].commit.message | split("\n")[0]' \
     | grep -vE '^(bump: |style: auto-format|Merge (remote-tracking )?branch )' \
@@ -74,6 +93,10 @@ for attempt in 1 2 3; do
     --title "$title" --items-file "${RUNNER_TEMP}/items.txt"
   git add -A
   git diff --cached --quiet || git commit -q -m "bump: version ${base} -> ${new}"
+  if [ "$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.state')" != "open" ]; then
+    echo "PR #${PR} was closed meanwhile - not pushing"
+    exit 0
+  fi
   if git push -q origin "HEAD:${branch}"; then
     break
   fi
@@ -85,7 +108,11 @@ for attempt in 1 2 3; do
 done
 
 sha="$(git rev-parse HEAD)"
-status "$sha" success "v${new}"
+if ! GH_TOKEN="$VERSION_STATUS_TOKEN" status "$sha" success "v${new}"; then
+  status "$sha" failure "VERSION_STATUS_TOKEN не принят (истёк?): обновите секрет"
+  echo "::error::VERSION_STATUS_TOKEN could not set the commit status - renew the secret" >&2
+  exit 1
+fi
 gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --title "v${new} (${branch})" \
   || echo "::warning::could not rename PR #${PR} to v${new} (${branch})"
 echo "PR #${PR} ready to merge as v${new}"

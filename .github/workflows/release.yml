@@ -1,7 +1,7 @@
 # Release workflow - on every push to main (merging dev -> main) it tags the version that
 # came from dev and creates a draft pre-release whose notes are the CHANGELOG.md sections since the
 # previous release tag. The version is not bumped here: every merge into dev already bumped it
-# (see ci-dev.yml). The draft can later be promoted to a full release manually in the GitHub UI.
+# (see version-bump.yml). The draft can later be promoted to a full release manually in the GitHub UI.
 
 name: Release
 
