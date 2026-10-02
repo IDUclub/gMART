@@ -1,9 +1,10 @@
 # Auto-fill the title and body of pull requests.
 #   PRs into dev:
-#     * title = "vX.Y.Z (branch)": the version the dev release will bump to on merge
+#     * title = "vX.Y.Z (branch)": the version the PR will be merged with
 #       (.github/scripts/versioning.py: label "major" -> major, feat/* or feature/* -> minor,
-#       any other branch -> patch). After the merge the bump job writes the actual version back
-#       into the title, in case another PR was merged first;
+#       any other branch -> patch) - predicted from dev until auto-merge bumps it in the branch
+#       (version-bump.yml), the bumped one after. GitHub uses the PR title as the merge commit
+#       title;
 #     * body = the PR's commits.
 #   PRs into main (releases):
 #     * title = "vX.Y.Z": the version already on dev - a release does not bump it;
@@ -46,16 +47,21 @@ jobs:
         run: |
           script=.github/scripts/versioning.py
           commits="$(git log --reverse --format='- %s' "${BASE_SHA}..${HEAD_SHA}")"
-          # The checkout is the PR merge ref: its pyproject.toml carries the base version.
+          # The checkout is the PR merge ref: the version the merge would carry.
           version="$(python3 "$script" current)"
           if [ "$BASE_REF" = "main" ]; then
             title="v${version}"
             since="$(python3 "$script" latest-tag --below "$version")"
             body="$(python3 "$script" notes --version "$version" ${since:+--since "$since"})"
             [ -z "$body" ] && body="$commits"
+          elif python3 "$script" bumped --ref "origin/${BASE_REF}"; then
+            # Already bumped in the branch (version-bump.yml): show that version.
+            title="v${version} (${HEAD_REF})"
+            body="$commits"
           else
             increment="$(python3 "$script" kind --branch "$HEAD_REF" --labels "$LABELS")"
-            title="v$(python3 "$script" next --kind "$increment") (${HEAD_REF})"
+            next="$(python3 "$script" next --kind "$increment" --ref "origin/${BASE_REF}")"
+            title="v${next} (${HEAD_REF})"
             body="$commits"
           fi
           [ -z "$body" ] && body="- (no commits)"
