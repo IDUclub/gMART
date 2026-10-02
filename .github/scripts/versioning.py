@@ -85,7 +85,10 @@ def apply(new: str) -> None:
     pyproject = PYPROJECT.read_text(encoding="utf-8")
     # [project].version and, where commitizen keeps its own copy, [tool.commitizen].version.
     updated = re.sub(
-        rf'^(version\s*=\s*"){re.escape(old)}(")', rf"\g<1>{new}\g<2>", pyproject, flags=re.M
+        rf'^(version\s*=\s*"){re.escape(old)}(")',
+        rf"\g<1>{new}\g<2>",
+        pyproject,
+        flags=re.M,
     )
     if updated == pyproject:
         raise SystemExit(f"version {old} not found in {PYPROJECT}")
@@ -110,7 +113,9 @@ def changelog(new: str, date: str, title: str, items: list[str]) -> None:
     section = f"## v{new} ({date})\n\n{title}\n\n{entries}\n\n"
     current = CHANGELOG.read_text(encoding="utf-8") if CHANGELOG.exists() else ""
     first = SECTION.search(current)
-    head, rest = (current[: first.start()], current[first.start() :]) if first else (current, "")
+    head, rest = (
+        (current[: first.start()], current[first.start() :]) if first else (current, "")
+    )
     CHANGELOG.write_text(head + section + rest, encoding="utf-8")
 
 
