@@ -1,0 +1,107 @@
+# Version bump before merge. Every PR into dev is merged with a new version:
+#   * "Enable auto-merge" on the PR bumps the version inside its branch (label "major" -> major,
+#     feat/* or feature/* -> minor, any other branch -> patch; .github/scripts/versioning.py):
+#     pyproject.toml, the version files, uv.lock and a CHANGELOG.md section, in one "bump:"
+#     commit. The commit status "version" then passes and auto-merge merges the PR, so the merge
+#     into dev - and the image the dev release builds from it - carries the new version;
+#   * without auto-merge the "version" status stays pending. Rulesets require it on dev, so the
+#     plain Merge button waits for auto-merge;
+#   * when dev moves (another PR merged), every PR waiting in auto-merge is bumped again on top
+#     of the new dev, so no two merges share a version.
+# Pushes made with GITHUB_TOKEN start no workflow, so the bump commit does not re-trigger this.
+
+name: Version bump
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled, auto_merge_enabled, auto_merge_disabled]
+    branches: [dev]
+  push:
+    branches: [dev]
+
+permissions:
+  contents: write        # push the bump commit to the PR branch
+  statuses: write        # the required "version" status
+  pull-requests: write   # put the version into the PR title
+
+jobs:
+  pr:
+    name: Bump on auto-merge
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: version-bump-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Wait for auto-merge
+        if: ${{ !github.event.pull_request.auto_merge }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --silent "repos/${GITHUB_REPOSITORY}/statuses/${{ github.event.pull_request.head.sha }}" \
+            -f state=pending -f context=version \
+            -f description="Нажмите Enable auto-merge: версия поднимется перед мерджем"
+
+      # The merge ref holds the current scripts; bump-pr.sh checks out the branch itself.
+      - uses: actions/checkout@v4
+        if: ${{ github.event.pull_request.auto_merge }}
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        if: ${{ github.event.pull_request.auto_merge }}
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.10"
+
+      - name: Set up Python
+        if: ${{ github.event.pull_request.auto_merge }}
+        run: uv python install 3.11
+
+      - name: Bump version, uv.lock and changelog in the branch
+        if: ${{ github.event.pull_request.auto_merge }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          cp -r .github/scripts "${RUNNER_TEMP}/versioning"
+          bash "${RUNNER_TEMP}/versioning/bump-pr.sh"
+
+  dev-moved:
+    name: Re-bump PRs waiting in auto-merge
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: version-bump-dev
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.10"
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Bump every PR into dev with auto-merge enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prs="$(gh pr list --repo "$GITHUB_REPOSITORY" --base dev --state open \
+            --json number,autoMergeRequest,isCrossRepository \
+            --jq '.[] | select(.autoMergeRequest != null and (.isCrossRepository | not)) | .number')"
+          # The scripts of dev, not of each branch: dev holds the current policy.
+          cp -r .github/scripts "${RUNNER_TEMP}/versioning"
+          failed=0
+          for pr in $prs; do
+            echo "::group::PR #${pr}"
+            PR="$pr" bash "${RUNNER_TEMP}/versioning/bump-pr.sh" || failed=1
+            git merge --abort 2>/dev/null || true
+            git checkout -q -f --detach "$GITHUB_SHA"
+            echo "::endgroup::"
+          done
+          exit "$failed"
