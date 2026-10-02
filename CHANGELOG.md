@@ -1,3 +1,10 @@
+## v0.21.1 (2026-10-02)
+
+[chore/versioning-policy](https://github.com/IDUclub/gMART/pull/232) (#232)
+
+- ci: поднимать версию при каждом мердже в dev, релиз в main только ставит тег
+- ci: поднимать версию в ветке PR по включению auto-merge
+
 ## v0.21.0 (2026-09-25)
 
 ### Feat
