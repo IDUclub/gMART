@@ -12,7 +12,12 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from src.agents.services.compilance.compliance_report import strictest_applicability
+from src.agents.services.compilance.compliance_report import (
+    plan_scope,
+    scope_text,
+    strictest_applicability,
+    transport_accessibility,
+)
 from src.agents.services.compilance.compliance_sources import (
     source_reference,
     source_references,
@@ -82,7 +87,13 @@ class ComplianceResultHarness:
   норма (applicability.applied). Всегда сообщай об этом при упоминании такой нормы
   и напоминай, что её нужно проверить на дополнительные условия
   (applicability.conditions): при их выполнении может действовать менее строгое
-  значение.
+  значение;
+- warnings содержит scope_applied — значение пункта относится к определённому типу
+  застройки, и проверены только объекты этого типа (scope: этажность). Назови
+  условие; объекты без этажности не проверены (scope:without_value);
+- warnings содержит transport_accessibility_approximated — транспортная
+  доступность оценена приближённо, радиусом по прямой при средней скорости
+  транспорта. Упоминай это вместе с выводом по такой норме.
 
 Если пользователь спрашивает, что «не прошло», сначала раздели фактические
 нарушения и нормы, которые не удалось проверить. При перечислении указывай
@@ -182,6 +193,9 @@ missing_requirements, warnings и resolved_requirements.reason. Техничес
         applicability = strictest_applicability(result)
         if applicability:
             compact["applicability"] = applicability
+        scope = plan_scope(result)
+        if scope:
+            compact["scope"] = scope_text(scope)
         compact["source"] = {
             key: source.get(key)
             for key in (
@@ -276,6 +290,8 @@ missing_requirements, warnings и resolved_requirements.reason. Техничес
                     f"применена самая строгая норма ({applicability['applied']}), "
                     "проверьте дополнительные условия"
                 )
+            if transport_accessibility(result):
+                reasons.append("транспортная доступность оценена приближённо")
             reason_text = "; ".join(dict.fromkeys(reasons)) or "причина не указана"
             lines.append(
                 f"- {name}: {result.get('verification_status', 'unknown')} — "

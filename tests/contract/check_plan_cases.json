@@ -649,6 +649,356 @@
           "applied": "50 м"
         }
       }
+    },
+    {
+      "name": "valid_accessibility_within_transport",
+      "valid": true,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "accessibility_within",
+        "template_version": 1,
+        "params": {
+          "objects_layer": "objects",
+          "required_neighbor_layers": [
+            "neighbors"
+          ],
+          "limit": {
+            "kind": "time",
+            "minutes": 30
+          },
+          "speed_m_per_min": 416.7,
+          "detour_factor": 1.3,
+          "measurement": "buffer_v1",
+          "minimum_neighbors": 1,
+          "result_mode": "both",
+          "mode": "transport"
+        },
+        "declared_requirements": {
+          "layers": [
+            {
+              "role": "objects",
+              "entity": "Жилой дом",
+              "entity_type": "physical_object",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            },
+            {
+              "role": "neighbors",
+              "entity": "Школа",
+              "entity_type": "service",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            }
+          ],
+          "attributes": []
+        },
+        "source": {
+          "restriction_id": "fixture-acc-transport"
+        },
+        "planner_status": "auto"
+      }
+    },
+    {
+      "name": "invalid_accessibility_within_unknown_mode",
+      "valid": false,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "accessibility_within",
+        "template_version": 1,
+        "params": {
+          "objects_layer": "objects",
+          "required_neighbor_layers": [
+            "neighbors"
+          ],
+          "limit": {
+            "kind": "time",
+            "minutes": 30
+          },
+          "speed_m_per_min": 416.7,
+          "detour_factor": 1.3,
+          "measurement": "buffer_v1",
+          "minimum_neighbors": 1,
+          "result_mode": "both",
+          "mode": "bicycle"
+        },
+        "declared_requirements": {
+          "layers": [
+            {
+              "role": "objects",
+              "entity": "Жилой дом",
+              "entity_type": "physical_object",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            },
+            {
+              "role": "neighbors",
+              "entity": "Школа",
+              "entity_type": "service",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            }
+          ],
+          "attributes": []
+        },
+        "source": {
+          "restriction_id": "fixture-acc-transport"
+        },
+        "planner_status": "auto"
+      }
+    },
+    {
+      "name": "valid_scope_by_floors",
+      "valid": true,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "accessibility_within",
+        "template_version": 1,
+        "params": {
+          "objects_layer": "objects",
+          "required_neighbor_layers": [
+            "neighbors"
+          ],
+          "limit": {
+            "kind": "distance",
+            "meters": 500
+          },
+          "speed_m_per_min": 80,
+          "detour_factor": 1.3,
+          "measurement": "buffer_v1",
+          "minimum_neighbors": 1,
+          "result_mode": "both"
+        },
+        "declared_requirements": {
+          "layers": [
+            {
+              "role": "objects",
+              "entity": "Жилой дом",
+              "entity_type": "physical_object",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            },
+            {
+              "role": "neighbors",
+              "entity": "Школа",
+              "entity_type": "service",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            }
+          ],
+          "attributes": [
+            {
+              "role": "scope_floors",
+              "on": "objects",
+              "required": true,
+              "accepts": [
+                {
+                  "field": "building.floors",
+                  "unit": "floors",
+                  "quality": "direct"
+                }
+              ],
+              "min_fill_rate": 0
+            }
+          ]
+        },
+        "source": {
+          "restriction_id": "fixture-scope"
+        },
+        "planner_status": "auto",
+        "scope": {
+          "layer": "objects",
+          "attribute": "scope_floors",
+          "min": 5,
+          "max": null,
+          "condition": "многоэтажная, среднеэтажная жилая застройка"
+        }
+      }
+    },
+    {
+      "name": "invalid_scope_without_range",
+      "valid": false,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "accessibility_within",
+        "template_version": 1,
+        "params": {
+          "objects_layer": "objects",
+          "required_neighbor_layers": [
+            "neighbors"
+          ],
+          "limit": {
+            "kind": "distance",
+            "meters": 500
+          },
+          "speed_m_per_min": 80,
+          "detour_factor": 1.3,
+          "measurement": "buffer_v1",
+          "minimum_neighbors": 1,
+          "result_mode": "both"
+        },
+        "declared_requirements": {
+          "layers": [
+            {
+              "role": "objects",
+              "entity": "Жилой дом",
+              "entity_type": "physical_object",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            },
+            {
+              "role": "neighbors",
+              "entity": "Школа",
+              "entity_type": "service",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            }
+          ],
+          "attributes": [
+            {
+              "role": "scope_floors",
+              "on": "objects",
+              "required": true,
+              "accepts": [
+                {
+                  "field": "building.floors",
+                  "unit": "floors",
+                  "quality": "direct"
+                }
+              ],
+              "min_fill_rate": 0
+            }
+          ]
+        },
+        "source": {
+          "restriction_id": "fixture-scope"
+        },
+        "planner_status": "auto",
+        "scope": {
+          "layer": "objects",
+          "attribute": "scope_floors",
+          "min": null,
+          "max": null,
+          "condition": "многоэтажная, среднеэтажная жилая застройка"
+        }
+      }
+    },
+    {
+      "name": "invalid_scope_attribute_on_other_layer",
+      "valid": false,
+      "plan": {
+        "schema_version": "1.0",
+        "template": "accessibility_within",
+        "template_version": 1,
+        "params": {
+          "objects_layer": "objects",
+          "required_neighbor_layers": [
+            "neighbors"
+          ],
+          "limit": {
+            "kind": "distance",
+            "meters": 500
+          },
+          "speed_m_per_min": 80,
+          "detour_factor": 1.3,
+          "measurement": "buffer_v1",
+          "minimum_neighbors": 1,
+          "result_mode": "both"
+        },
+        "declared_requirements": {
+          "layers": [
+            {
+              "role": "objects",
+              "entity": "Жилой дом",
+              "entity_type": "physical_object",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            },
+            {
+              "role": "neighbors",
+              "entity": "Школа",
+              "entity_type": "service",
+              "geometry_types": [
+                "Point",
+                "MultiPoint",
+                "Polygon",
+                "MultiPolygon"
+              ],
+              "required": true
+            }
+          ],
+          "attributes": [
+            {
+              "role": "scope_floors",
+              "on": "neighbors",
+              "required": true,
+              "accepts": [
+                {
+                  "field": "building.floors",
+                  "unit": "floors",
+                  "quality": "direct"
+                }
+              ],
+              "min_fill_rate": 0
+            }
+          ]
+        },
+        "source": {
+          "restriction_id": "fixture-scope"
+        },
+        "planner_status": "auto",
+        "scope": {
+          "layer": "objects",
+          "attribute": "scope_floors",
+          "min": 5,
+          "max": null,
+          "condition": "многоэтажная, среднеэтажная жилая застройка"
+        }
+      }
     }
   ]
 }
