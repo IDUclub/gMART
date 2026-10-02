@@ -56,9 +56,13 @@ from src.agents.services.compilance.compliance_report import (
     REPORT_SLOT,
     REPORT_TITLE,
     STRICTEST_NORM_NOTICE,
+    TRANSPORT_NOTICE,
     build_compliance_report,
+    plan_scope,
     report_filename,
+    scope_text,
     strictest_applicability,
+    transport_accessibility,
 )
 from src.agents.services.compilance.compliance_result_harness import (
     ComplianceResultHarness,
@@ -1672,6 +1676,12 @@ class RestrictionParserService(BaseLlmService):
                 f"По самой строгой норме проверено: {len(strictest)}. "
                 f"{STRICTEST_NORM_NOTICE}"
             )
+        if any(
+            transport_accessibility(result)
+            and result.get("compliance_status") in {"violated", "passed"}
+            for result in summary.get("results", [])
+        ):
+            parts.append(TRANSPORT_NOTICE)
         violations = []
         for result in summary.get("results", []):
             count = result.get("summary", {}).get("violated_objects", 0)
@@ -1696,6 +1706,15 @@ class RestrictionParserService(BaseLlmService):
                     "проверьте дополнительные условия"
                     + (f": {conditions}." if conditions else ".")
                 )
+            scope = plan_scope(result)
+            if scope:
+                if not detail.endswith("."):
+                    detail += "."
+                detail += f" Проверены только {scope_text(scope)}."
+            if transport_accessibility(result):
+                if not detail.endswith("."):
+                    detail += "."
+                detail += " Транспортная доступность оценена приближённо."
             violations.append(detail)
         overview = scope_line + " ".join(parts)
         if violations:

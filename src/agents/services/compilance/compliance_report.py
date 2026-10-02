@@ -24,6 +24,11 @@ STRICTEST_NORM_NOTICE = (
     "случаев. Для них применена самая строгая норма ко всем объектам; эти нормы "
     "необходимо проверить на дополнительные условия."
 )
+TRANSPORT_NOTICE = (
+    "Транспортная доступность оценена приближённо: радиусом по прямой при средней "
+    "скорости транспорта, без дорожной сети и расписаний. Пограничные результаты "
+    "таких норм стоит проверить вручную."
+)
 REPORT_MIME_TYPE = "text/markdown"
 MAX_VIOLATORS_PER_NORM = 20
 
@@ -62,6 +67,8 @@ _PARAM_LABELS = {
     "residents_per_service": "Жителей на 1 объект",
     "accessibility": "Доступность",
     "min_provision": "Минимальная обеспеченность",
+    "mode": "Вид доступности",
+    "accessibility_mode": "Вид доступности",
 }
 _VALUE_LABELS = {
     "buffered": "буфер вокруг источника",
@@ -71,6 +78,8 @@ _VALUE_LABELS = {
     "contains": "содержит",
     "matched": "объект попадает в зону",
     "not_matched": "объект не попадает в зону",
+    "walk": "пешеходная",
+    "transport": "транспортная (приближённая оценка)",
 }
 _UNIT_LABELS = {"count": "шт."}
 _OPERATOR_LABELS = {
@@ -101,6 +110,8 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
     numbers = {id(item): index for index, item in enumerate(ordered, 1)}
     groups = [item for item in ordered if _equivalents(item)]
     strictest = [item for item in checked if strictest_applicability(item)]
+    transport = [item for item in checked if transport_accessibility(item)]
+    scoped = [item for item in checked if plan_scope(item)]
     equivalent_count = sum(len(_equivalents(item)) for item in groups)
     not_checked = len(results) - len(checked)
 
@@ -127,6 +138,14 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
         lines.append(
             f"| Проверены по самой строгой норме (проверьте условия) | {len(strictest)} |"
         )
+    if scoped:
+        lines.append(
+            f"| Проверены только на объектах, подходящих под условие пункта | {len(scoped)} |"
+        )
+    if transport:
+        lines.append(
+            f"| Транспортная доступность оценена приближённо | {len(transport)} |"
+        )
     lines += [
         "",
         "Счётчики объектов указаны для каждой нормы отдельно; их нельзя "
@@ -137,6 +156,8 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
             "",
             f"> {STRICTEST_NORM_NOTICE} Такие нормы отмечены в разделах ниже.",
         ]
+    if transport:
+        lines += ["", f"> {TRANSPORT_NOTICE}"]
 
     lines += ["", "## Не прошли проверку", ""]
     lines += _norm_sections(violated, numbers) or ["_Нет._"]
@@ -216,6 +237,8 @@ def _norm_section(result: dict[str, Any], number: int) -> list[str]:
     if requirement:
         lines.append(f"- **Требование:** {requirement}")
     lines += _strictest_lines(result)
+    lines += _scope_lines(result)
+    lines += _transport_lines(result)
     lines += _population_lines(result)
     if vacuous:
         lines.append("- **Объекты:** применимых — 0")
@@ -270,6 +293,79 @@ def _strictest_lines(result: dict[str, Any]) -> list[str]:
     if variants:
         lines.append(f"  - Варианты нормы: {'; '.join(variants)}")
     return lines
+
+
+def plan_scope(result: dict[str, Any]) -> dict[str, Any] | None:
+    """The plan's ``scope``: only objects meeting the clause's condition were checked."""
+
+    plan = (result.get("source") or {}).get("check_plan") or {}
+    return plan.get("scope") or None
+
+
+def transport_accessibility(result: dict[str, Any]) -> bool:
+    """Whether the plan estimated a transport accessibility by a radius."""
+
+    params = ((result.get("source") or {}).get("check_plan") or {}).get("params") or {}
+    return "transport" in {params.get("mode"), params.get("accessibility_mode")}
+
+
+def scope_text(scope: dict[str, Any]) -> str:
+    low, high = scope.get("min"), scope.get("max")
+    if low is not None and high is not None:
+        floors = f"этажностью от {_number(low)} до {_number(high)}"
+    elif low is not None:
+        floors = f"этажностью от {_number(low)} и выше"
+    else:
+        floors = f"этажностью до {_number(high)}"
+    return f"{_one_line(scope.get('condition'))} — объекты {floors}"
+
+
+def _scope_lines(result: dict[str, Any]) -> list[str]:
+    scope = plan_scope(result)
+    if scope is None:
+        return []
+    counts = {}
+    for warning in result.get("warnings") or []:
+        if warning.startswith("scope:") and "=" in warning:
+            key, value = warning[len("scope:") :].split("=", 1)
+            counts[key] = value
+    line = (
+        f"- **Проверены только объекты, к которым относится значение:** "
+        f"{scope_text(scope)}"
+    )
+    if counts:
+        line += (
+            f"; вне условия — {counts.get('outside_condition', 0)}, "
+            f"без этажности (не проверены) — {counts.get('without_value', 0)}"
+        )
+    return [line]
+
+
+def _transport_lines(result: dict[str, Any]) -> list[str]:
+    params = ((result.get("source") or {}).get("check_plan") or {}).get("params") or {}
+    if params.get("mode") == "transport":
+        limit = params.get("limit") or {}
+        speed = float(params.get("speed_m_per_min") or 0)
+        route = (
+            float(limit.get("minutes") or 0) * speed
+            if limit.get("kind") == "time"
+            else float(limit.get("meters") or 0)
+        )
+        radius = route / float(params.get("detour_factor") or 1)
+        return [
+            f"- **Транспортная доступность оценена приближённо:** радиус "
+            f"{radius:.0f} м по прямой при средней скорости транспорта "
+            f"{_number(round(speed * 0.06, 1))} км/ч; дорожная сеть и расписания не "
+            "учитываются."
+        ]
+    if params.get("accessibility_mode") == "transport":
+        access = params.get("accessibility") or {}
+        return [
+            "- **Транспортная доступность оценена приближённо:** "
+            f"{_number(access.get('meters'))} м по прямой при средней скорости "
+            "транспорта; дорожная сеть и расписания не учитываются."
+        ]
+    return []
 
 
 _POPULATION_SOURCES = {

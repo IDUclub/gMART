@@ -17,12 +17,18 @@ from src.agents.services.compilance.compliance_registry import (
     UnsupportedSchemaError,
     UnsupportedTemplateError,
 )
-from src.agents.services.compilance.compliance_requirements import ComplianceDataGate
+from src.agents.services.compilance.compliance_requirements import (
+    ComplianceDataGate,
+    RequirementsResolution,
+    _nested_get,
+)
 from src.agents.services.restriction.restriction_tool_executor import (
     RestrictionToolExecutor,
 )
 from src.agents.services.service_entities.compliance import (
+    SCOPE_WARNING,
     STRICTEST_NORM_WARNING,
+    TRANSPORT_WARNING,
     CheckPlan,
     ComplianceResult,
     ComplianceSummary,
@@ -60,6 +66,52 @@ def _population_warnings(population: dict[str, Any]) -> list[str]:
             f"{info.get('housing_capacity')} of the scenario buildings"
         )
     return warnings
+
+
+def _number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None  # NaN is no value
+
+
+def _apply_scope(plan: CheckPlan, resolution: RequirementsResolution) -> dict | None:
+    """Keep only the scope layer's objects meeting the clause's condition.
+
+    Returns the counts of objects kept, outside the condition and without a value;
+    ``None`` when the scope attribute was not resolved (the plan is then missing it).
+    """
+    scope = plan.scope
+    layer_name = resolution.role_layers.get(scope.layer)
+    field_name = resolution.selected_fields.get(scope.attribute)
+    if not layer_name or not field_name:
+        return None
+    collection = resolution.layers.get(layer_name) or {}
+    kept, outside, unknown = [], 0, 0
+    for feature in collection.get("features") or []:
+        value = _number(_nested_get(feature.get("properties") or {}, field_name))
+        if value is None:
+            unknown += 1
+        elif scope.contains(value):
+            kept.append(feature)
+        else:
+            outside += 1
+    resolution.layers[layer_name] = {**collection, "features": kept}
+    profile = resolution.profiles.get(scope.layer)
+    if profile is not None:
+        resolution.profiles[scope.layer] = {**profile, "object_count": len(kept)}
+    return {"kept": len(kept), "outside": outside, "unknown": unknown}
+
+
+def _scope_warnings(scope_counts: dict | None) -> list[str]:
+    if not scope_counts:
+        return []
+    return [
+        SCOPE_WARNING,
+        f"scope:outside_condition={scope_counts['outside']}",
+        f"scope:without_value={scope_counts['unknown']}",
+    ]
 
 
 def _has_features(*layers: Any) -> bool:
@@ -119,6 +171,15 @@ class ComplianceTemplateExecutor:
         ):
             # The verdict holds for the strictest reading of a conditional clause.
             warnings.append(STRICTEST_NORM_WARNING)
+        if (
+            plan is not None
+            and (
+                plan.params.get("mode") == "transport"
+                or plan.params.get("accessibility_mode") == "transport"
+            )
+            and TRANSPORT_WARNING not in warnings
+        ):
+            warnings.append(TRANSPORT_WARNING)
         return execution
 
     async def _execute(
@@ -254,6 +315,30 @@ class ComplianceTemplateExecutor:
         timings_ms["requirements_resolution"] = (
             perf_counter() - resolution_started
         ) * 1000
+        scope_counts = (
+            _apply_scope(plan, resolution)
+            if plan.scope is not None and resolution.executable
+            else None
+        )
+        if scope_counts and not scope_counts["kept"] and scope_counts["unknown"]:
+            # No object is known to meet the condition, some may: nothing to decide.
+            return ComplianceExecution(
+                plan=plan,
+                result=self._outcome(
+                    restriction_id=plan.source.restriction_id,
+                    template=plan.template,
+                    template_version=plan.template_version,
+                    verification_status="unverifiable",
+                    missing=[f"attribute:{plan.scope.attribute}:no_values"],
+                    warnings=_scope_warnings(scope_counts),
+                    effective_requirements=requirements,
+                    resolved_requirements=resolution.resolved,
+                    source=self._result_source(plan),
+                ),
+                tool_calls=retrieval_calls,
+                layers=layers,
+                timings_ms=timings_ms,
+            )
         if self._no_applicable_objects(plan, params, resolution):
             # This is a complete proof, not missing data: the canonical scenario
             # layers were returned in full and the quantified object set is empty.
@@ -287,7 +372,7 @@ class ComplianceTemplateExecutor:
                 effective_requirements=requirements,
                 resolved_requirements=resolved_requirements,
                 missing_requirements=[],
-                warnings=["no_applicable_objects"],
+                warnings=["no_applicable_objects", *_scope_warnings(scope_counts)],
                 source={
                     **plan.source.model_dump(mode="json"),
                     "planner_status": plan.planner_status,
@@ -329,6 +414,19 @@ class ComplianceTemplateExecutor:
         timings_ms["template_execution"] = (perf_counter() - execution_started) * 1000
         coverage = VerificationCoverage.model_validate(raw_result["coverage"])
         summary = ComplianceSummary.model_validate(raw_result["summary"])
+        if scope_counts and scope_counts["unknown"]:
+            # Objects without the scope attribute may fall under the condition.
+            unknown = scope_counts["unknown"]
+            applicable = coverage.applicable_objects + unknown
+            coverage = coverage.model_copy(
+                update={
+                    "applicable_objects": applicable,
+                    "unchecked_objects": coverage.unchecked_objects + unknown,
+                    "fill_rate": (
+                        coverage.checked_objects / applicable if applicable else 0
+                    ),
+                }
+            )
         if coverage.applicable_objects == 0:
             verification = "not_applicable"
             compliance = "unknown"
@@ -356,7 +454,8 @@ class ComplianceTemplateExecutor:
                 ["Проверена только часть применимых объектов"]
                 if verification == "partial"
                 else []
-            ),
+            )
+            + _scope_warnings(scope_counts),
             source={
                 **plan.source.model_dump(mode="json"),
                 "planner_status": plan.planner_status,
