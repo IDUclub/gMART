@@ -60,3 +60,45 @@ class EffectsMcpClient(BaseMcpClient):
             if _is_token_expired(exc):
                 raise TokenExpiredError(str(exc)) from exc
             raise
+
+    async def calculate_normative_provision(
+        self,
+        scenario_id: int,
+        service_type_id: int,
+        capacity_per_1000: float | None = None,
+        accessibility_type: str | None = None,
+        accessibility_value: float | None = None,
+        residents_per_service: float | None = None,
+    ) -> dict:
+        """
+        Call CalculateNormativeProvision on the effects MCP server.
+        Args:
+            scenario_id (int): Scenario ID passed as tool argument.
+            service_type_id (int): Service type identifier.
+            capacity_per_1000 (float | None): Places per 1000 residents from the
+                norm; None keeps the Urban API normative.
+            accessibility_type (str | None): "time" (minutes) or "dist" (metres).
+            accessibility_value (float | None): Accessibility from the norm.
+            residents_per_service (float | None): Residents per one service object
+                for "1 object per N residents" norms; excludes capacity_per_1000.
+        Returns:
+            dict: {"normative": {...}, "summary": {...}, "buildings": FeatureCollection}.
+        """
+        arguments: dict = {
+            "scenario_id": scenario_id,
+            "service_type_id": service_type_id,
+        }
+        for key, value in (
+            ("capacity_per_1000", capacity_per_1000),
+            ("accessibility_type", accessibility_type),
+            ("accessibility_value", accessibility_value),
+            ("residents_per_service", residents_per_service),
+        ):
+            if value is not None:
+                arguments[key] = value
+        try:
+            return await self.execute_tool("CalculateNormativeProvision", arguments)
+        except Exception as exc:
+            if _is_token_expired(exc):
+                raise TokenExpiredError(str(exc)) from exc
+            raise

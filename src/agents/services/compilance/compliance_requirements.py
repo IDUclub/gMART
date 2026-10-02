@@ -8,6 +8,9 @@ import math
 from copy import deepcopy
 from typing import Any
 
+import geopandas as gpd
+from shapely.geometry import shape
+
 from src.agents.services.restriction.restriction_catalog import normalize_name
 from src.agents.services.service_entities.compliance import (
     AttributeCandidate,
@@ -241,7 +244,7 @@ class ComplianceDataGate:
                 candidate = requirement.accepts[0]
                 selected_field = (
                     f"__derived__.{requirement.role}"
-                    if candidate.derive == "height_to_floors_v1"
+                    if candidate.derive
                     else candidate.field
                 )
                 selected_fields[requirement.role] = selected_field
@@ -261,9 +264,15 @@ class ComplianceDataGate:
                 )
                 continue
             fields = {item["name"]: item for item in profile["fields"]}
+            fields["geometry"] = self._geometry_area_profile(layers[layer_name])
             selection: tuple[AttributeCandidate, dict[str, Any]] | None = None
             for candidate in requirement.accepts:
                 field = fields.get(candidate.field)
+                # Only the registered area derivation reads the geometry itself.
+                if candidate.field == "geometry" and (
+                    candidate.derive != "geometry_area_m2_v1"
+                ):
+                    continue
                 if field and field["numeric_fill_rate"] > 0:
                     selection = (candidate, field)
                     break
@@ -282,9 +291,9 @@ class ComplianceDataGate:
                 continue
             candidate, field = selection
             selected_field = candidate.field
-            if candidate.derive == "height_to_floors_v1":
+            if candidate.derive:
                 selected_field = f"__derived__.{requirement.role}"
-                self._derive_height_to_floors(
+                self._DERIVATIONS[candidate.derive](
                     mutable_layers[layer_name], candidate.field, selected_field
                 )
             fill_rate = float(field["numeric_fill_rate"])
@@ -332,3 +341,75 @@ class ComplianceDataGate:
             except (TypeError, ValueError):
                 value = None
             properties[target_field] = value
+
+    @staticmethod
+    def _derive_floors_to_height(
+        feature_collection: dict[str, Any], source_field: str, target_field: str
+    ) -> None:
+        """Registered v1 conversion: 3 metres per floor (no floor heights in Urban API)."""
+
+        for feature in feature_collection.get("features") or []:
+            properties = feature.setdefault("properties", {})
+            raw = _nested_get(properties, source_field)
+            try:
+                floors = float(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                floors = None
+            properties[target_field] = (
+                floors * 3.0 if floors is not None and math.isfinite(floors) else None
+            )
+
+    @staticmethod
+    def _derive_geometry_area(
+        feature_collection: dict[str, Any], source_field: str, target_field: str
+    ) -> None:
+        """Registered v1 conversion: polygon area in square metres (local UTM CRS)."""
+
+        del source_field  # Always the feature geometry.
+        areas = _polygon_areas_m2(feature_collection)
+        for feature, area in zip(feature_collection.get("features") or [], areas):
+            feature.setdefault("properties", {})[target_field] = area
+
+    @staticmethod
+    def _geometry_area_profile(feature_collection: dict[str, Any]) -> dict[str, Any]:
+        """Field profile of the derivable polygon area (points/lines have none)."""
+
+        features = feature_collection.get("features") or []
+        areas = [area for area in _polygon_areas_m2(feature_collection) if area]
+        return {
+            "name": "geometry",
+            "type": "number",
+            "numeric_fill_rate": len(areas) / len(features) if features else 1.0,
+        }
+
+    _DERIVATIONS = {
+        "height_to_floors_v1": _derive_height_to_floors,
+        "floors_to_height_v1": _derive_floors_to_height,
+        "geometry_area_m2_v1": _derive_geometry_area,
+    }
+
+
+def _polygon_areas_m2(feature_collection: dict[str, Any]) -> list[float | None]:
+    """Area of each polygonal feature in m² (``None`` for other geometries)."""
+
+    features = feature_collection.get("features") or []
+    geometries = []
+    for feature in features:
+        try:
+            geometry = shape(feature["geometry"]) if feature.get("geometry") else None
+        except (KeyError, TypeError, ValueError, AttributeError):
+            geometry = None
+        geometries.append(
+            geometry
+            if geometry is not None
+            and geometry.geom_type in {"Polygon", "MultiPolygon"}
+            else None
+        )
+    present = [geometry for geometry in geometries if geometry is not None]
+    if not present:
+        return [None] * len(features)
+    series = gpd.GeoSeries(present, crs=4326)
+    areas = iter(series.to_crs(series.estimate_utm_crs()).area.tolist())
+    return [
+        float(next(areas)) if geometry is not None else None for geometry in geometries
+    ]

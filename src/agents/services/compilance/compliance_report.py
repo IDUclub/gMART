@@ -19,6 +19,11 @@ from src.agents.services.readable_refs import object_label
 
 REPORT_SLOT = "compliance_report"
 REPORT_TITLE = "Отчёт о проверке соответствия нормам"
+STRICTEST_NORM_NOTICE = (
+    "Часть норм содержит условия применения или разные значения для разных "
+    "случаев. Для них применена самая строгая норма ко всем объектам; эти нормы "
+    "необходимо проверить на дополнительные условия."
+)
 REPORT_MIME_TYPE = "text/markdown"
 MAX_VIOLATORS_PER_NORM = 20
 
@@ -28,6 +33,9 @@ _TEMPLATE_TITLES = {
     "presence_within": "наличие объектов в радиусе",
     "zonal_attribute_threshold": "порог атрибута в зоне",
     "zonal_ratio": "доля площади в зоне",
+    "object_attribute_threshold": "порог атрибута объекта",
+    "accessibility_within": "доступность (по буферу)",
+    "service_provision": "обеспеченность по нормативу",
 }
 _PARAM_LABELS = {
     "source_layer": "Источник",
@@ -47,6 +55,13 @@ _PARAM_LABELS = {
     "threshold_source": "Порог",
     "bands": "Диапазоны",
     "numerator": "Числитель",
+    "neighbors_layer": "Обязательные объекты рядом",
+    "services_layer": "Сервис",
+    "limit": "Доступность",
+    "capacity_per_1000": "Мест на 1000 жителей",
+    "residents_per_service": "Жителей на 1 объект",
+    "accessibility": "Доступность",
+    "min_provision": "Минимальная обеспеченность",
 }
 _VALUE_LABELS = {
     "buffered": "буфер вокруг источника",
@@ -85,6 +100,7 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
     ordered = violated + passed + vacuous
     numbers = {id(item): index for index, item in enumerate(ordered, 1)}
     groups = [item for item in ordered if _equivalents(item)]
+    strictest = [item for item in checked if strictest_applicability(item)]
     equivalent_count = sum(len(_equivalents(item)) for item in groups)
     not_checked = len(results) - len(checked)
 
@@ -107,11 +123,20 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
     skipped = int(summary.get("skipped_without_plan") or 0)
     if skipped:
         lines.append(f"| Пропущено без исполнимого плана | {skipped} |")
+    if strictest:
+        lines.append(
+            f"| Проверены по самой строгой норме (проверьте условия) | {len(strictest)} |"
+        )
     lines += [
         "",
         "Счётчики объектов указаны для каждой нормы отдельно; их нельзя "
         "складывать в число уникальных объектов.",
     ]
+    if strictest:
+        lines += [
+            "",
+            f"> {STRICTEST_NORM_NOTICE} Такие нормы отмечены в разделах ниже.",
+        ]
 
     lines += ["", "## Не прошли проверку", ""]
     lines += _norm_sections(violated, numbers) or ["_Нет._"]
@@ -190,6 +215,8 @@ def _norm_section(result: dict[str, Any], number: int) -> list[str]:
     requirement = _one_line(source.get("extraction_text"))
     if requirement:
         lines.append(f"- **Требование:** {requirement}")
+    lines += _strictest_lines(result)
+    lines += _population_lines(result)
     if vacuous:
         lines.append("- **Объекты:** применимых — 0")
     else:
@@ -213,6 +240,63 @@ def _norm_section(result: dict[str, Any], number: int) -> list[str]:
     lines += _violators(result)
     lines.append("")
     return lines
+
+
+def strictest_applicability(result: dict[str, Any]) -> dict[str, Any] | None:
+    """The plan's ``applicability`` when the strictest value of a clause was applied."""
+
+    plan = (result.get("source") or {}).get("check_plan") or {}
+    applicability = plan.get("applicability") or {}
+    if applicability.get("mode") == "strictest_variant":
+        return applicability
+    return None
+
+
+def _strictest_lines(result: dict[str, Any]) -> list[str]:
+    applicability = strictest_applicability(result)
+    if applicability is None:
+        return []
+    lines = [
+        f"- **Применена самая строгая норма:** {_one_line(applicability.get('applied'))}. "
+        "Пункт задаёт условия применения или разные значения для разных случаев; "
+        "проверка применила самое строгое значение ко всем объектам. Проверьте, "
+        "выполняются ли для объектов сценария дополнительные условия, — по ним "
+        "может действовать менее строгое значение."
+    ]
+    conditions = [_one_line(item) for item in applicability.get("conditions") or []]
+    if conditions:
+        lines.append(f"  - Условия пункта: {'; '.join(conditions)}")
+    variants = [_one_line(item) for item in applicability.get("variants") or []]
+    if variants:
+        lines.append(f"  - Варианты нормы: {'; '.join(variants)}")
+    return lines
+
+
+_POPULATION_SOURCES = {
+    "explicit": "задано при запуске проверки",
+    "indicator": "индикатор Urban API, согласованный с жилым фондом",
+    "housing_stock": "ёмкость жилого фонда (жилая площадь / норма на человека)",
+}
+
+
+def _population_lines(result: dict[str, Any]) -> list[str]:
+    values = {}
+    ignored = None
+    for warning in result.get("warnings") or []:
+        if warning.startswith("population:") and "=" in warning:
+            key, value = warning[len("population:") :].split("=", 1)
+            values[key] = value
+        elif warning.startswith("population_indicator_ignored"):
+            ignored = True
+    if "source" not in values:
+        return []
+    line = (
+        f"- **Население сценария:** {values.get('residents', '—')} чел. — "
+        f"{_POPULATION_SOURCES.get(values['source'], values['source'])}"
+    )
+    if ignored:
+        line += "; индикатор Urban API не совпадает с жилым фондом и не использован"
+    return [line]
 
 
 def _parameters(result: dict[str, Any]) -> list[str]:
@@ -257,6 +341,10 @@ def _param_value(key: str, value: Any, entities: dict[str, str]) -> str:
         if value.get("kind") == "constant":
             return f"{_number(value.get('value'))} {value.get('unit', '')}".strip()
         return f"значение атрибута зоны «{value.get('role')}»"
+    if key in {"limit", "accessibility"} and isinstance(value, dict):
+        if value.get("kind") == "time":
+            return f"{_number(value.get('minutes'))} мин"
+        return f"{_number(value.get('meters'))} м"
     if key == "numerator" and isinstance(value, dict):
         return f"площадь «{entities.get(value.get('layer'), value.get('layer'))}»"
     if key == "bands" and isinstance(value, list):

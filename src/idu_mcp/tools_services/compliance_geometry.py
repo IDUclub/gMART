@@ -514,6 +514,130 @@ class ComplianceGeometryTools:
         annotated["_violated"] = violation_values
         return self._result(annotated, evidence, result_mode)
 
+    def object_attribute_threshold(
+        self,
+        *,
+        objects_layer: str,
+        object_attribute: str,
+        operator: str,
+        threshold: float,
+        unit: str,
+        result_mode: str,
+        layers: dict[str, dict],
+        restriction_id: str,
+        template_version: int = 1,
+        provenance: dict[str, Any] | None = None,
+        input_revision: str | None = None,
+    ) -> dict[str, Any]:
+        """Compare one numeric attribute of every object with a constant.
+
+        Objects without a numeric value stay unchecked rather than passing.
+        """
+        objects = self._layer(objects_layer, layers)
+        if not objects.empty and object_attribute not in objects.columns:
+            raise ValueError(f"Object attribute {object_attribute!r} is missing")
+        compare = _OPERATORS[operator]
+        annotated = objects.copy()
+        values = (
+            pd.to_numeric(annotated[object_attribute], errors="coerce")
+            if object_attribute in annotated.columns
+            else pd.Series([], dtype=float)
+        )
+        violation_values: list[Any] = []
+        evidence_values: list[list[dict[str, Any]]] = []
+        evidence: list[dict[str, Any]] = []
+        for (_, row), value in zip(annotated.iterrows(), values):
+            if pd.isna(value):
+                violation_values.append(None)
+                evidence_values.append([])
+                continue
+            violated = not bool(compare(float(value), float(threshold)))
+            item = {
+                "restriction_id": restriction_id,
+                "template": "object_attribute_threshold",
+                "template_version": template_version,
+                "object_ref": row["object_ref"],
+                "operation": "attribute_compare",
+                "measured_value": float(value),
+                "unit": unit,
+                "threshold": float(threshold),
+                "operator": operator,
+                "violated": violated,
+                "used_fields": [{"field": object_attribute, "quality": "direct"}],
+                "provenance": provenance or {},
+                "warnings": [],
+                "input_revision": input_revision,
+            }
+            evidence.append(item)
+            evidence_values.append([item])
+            violation_values.append(violated)
+        annotated["verification_status"] = [
+            "complete" if value is not None else "unverifiable"
+            for value in violation_values
+        ]
+        annotated["compliance_status"] = [
+            "unknown" if value is None else "violated" if value else "passed"
+            for value in violation_values
+        ]
+        annotated["restriction_id"] = restriction_id
+        annotated["compliance_evidence"] = evidence_values
+        annotated["_violated"] = violation_values
+        return self._result(annotated, evidence, result_mode)
+
+    def accessibility_within(
+        self,
+        *,
+        objects_layer: str,
+        required_neighbor_layers: list[str],
+        radius_m: float,
+        limit: dict[str, Any],
+        minimum_neighbors: int,
+        result_mode: str,
+        layers: dict[str, dict],
+        restriction_id: str,
+        template_version: int = 1,
+        provenance: dict[str, Any] | None = None,
+        input_revision: str | None = None,
+    ) -> dict[str, Any]:
+        """Walking accessibility approximated by a straight-line buffer (``buffer_v1``).
+
+        TODO: measure the route on the street graph (e.g. ObjectNat isochrones) and
+        register it as a separate ``measurement``; ``radius_m`` is the stand-in.
+        """
+        result = self.presence_within(
+            objects_layer=objects_layer,
+            required_neighbor_layers=required_neighbor_layers,
+            distance_m=radius_m,
+            minimum_neighbors=minimum_neighbors,
+            result_mode=result_mode,
+            layers=layers,
+            restriction_id=restriction_id,
+            template_version=template_version,
+            provenance=provenance,
+            input_revision=input_revision,
+        )
+        bound = (
+            f"{limit['minutes']:g} мин"
+            if limit.get("kind") == "time"
+            else f"{limit['meters']:g} м пути"
+        )
+        warning = (
+            f"accessibility_approximated_by_buffer: {bound} ≈ {radius_m:.0f} м "
+            "по прямой"
+        )
+        for item in result["evidence"]:
+            item["template"] = "accessibility_within"
+            item["operation"] = "accessibility_buffer_v1"
+            item["warnings"] = [*item.get("warnings", []), warning]
+        for basket in ("violated_objects", "passed_objects", "unchecked_objects"):
+            for feature in result[basket].get("features") or []:
+                for item in (
+                    feature.get("properties", {}).get("compliance_evidence") or []
+                ):
+                    item["template"] = "accessibility_within"
+                    item["operation"] = "accessibility_buffer_v1"
+        return result
+
     def zonal_ratio(
         self,
         *,

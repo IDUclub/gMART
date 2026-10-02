@@ -68,6 +68,7 @@ async def test_pipeline_emits_and_checkpoints_structured_compliance_events():
                 tool_calls=[
                     {"function": {"name": "CheckDistanceFromSource", "arguments": {}}}
                 ],
+                effects_tool_calls=[],
                 timings_ms={"template_execution": 1.0},
             )
         )
@@ -305,7 +306,7 @@ async def test_compliance_large_corpus_never_reaches_llm_and_executes_individual
     )
     seen = []
 
-    async def execute(_client, plan, scenario_id):
+    async def execute(_client, plan, scenario_id, *, user_id=None):
         rid = plan["source"]["restriction_id"]
         if rid == "r2":
             assert "result:r1" in seen
@@ -324,7 +325,9 @@ async def test_compliance_large_corpus_never_reaches_llm_and_executes_individual
             ),
             summary=ComplianceSummary(violated_objects=0, passed_objects=1),
         )
-        return SimpleNamespace(result=result, tool_calls=[], timings_ms={})
+        return SimpleNamespace(
+            result=result, tool_calls=[], effects_tool_calls=[], timings_ms={}
+        )
 
     service.compliance_executor = SimpleNamespace(
         execute=AsyncMock(side_effect=execute)
@@ -451,7 +454,12 @@ async def test_one_norm_failure_does_not_prevent_the_next_plan():
         execute=AsyncMock(
             side_effect=[
                 RuntimeError("geometry unavailable"),
-                SimpleNamespace(result=success, tool_calls=[], timings_ms={}),
+                SimpleNamespace(
+                    result=success,
+                    tool_calls=[],
+                    effects_tool_calls=[],
+                    timings_ms={},
+                ),
             ]
         )
     )
@@ -533,7 +541,9 @@ async def test_compliance_ui_only_emits_nonempty_violation_layers(
     )
     service.compliance_executor = SimpleNamespace(
         execute=AsyncMock(
-            return_value=SimpleNamespace(result=result, tool_calls=[], timings_ms={})
+            return_value=SimpleNamespace(
+                result=result, tool_calls=[], effects_tool_calls=[], timings_ms={}
+            )
         )
     )
     events = [
@@ -641,7 +651,7 @@ async def test_source_metadata_reaches_layers_summary_and_checkpoint(
         ],
     }
 
-    async def execute(_client, plan, scenario_id):
+    async def execute(_client, plan, scenario_id, *, user_id=None):
         result = ComplianceResult(
             restriction_id=plan["source"]["restriction_id"],
             template=plan["template"],
@@ -658,7 +668,9 @@ async def test_source_metadata_reaches_layers_summary_and_checkpoint(
             source=plan["source"],
             violated_features=geometry,
         )
-        return SimpleNamespace(result=result, tool_calls=[], timings_ms={})
+        return SimpleNamespace(
+            result=result, tool_calls=[], effects_tool_calls=[], timings_ms={}
+        )
 
     service.compliance_executor = SimpleNamespace(
         execute=AsyncMock(side_effect=execute)
