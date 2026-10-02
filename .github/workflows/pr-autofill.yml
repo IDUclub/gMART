@@ -66,4 +66,11 @@ jobs:
           fi
           [ -z "$body" ] && body="- (no commits)"
 
+          # A late run (approved after the merge, or for an older push) must not overwrite the
+          # title the PR was merged with.
+          current="$(gh pr view "$PR" --json state,headRefOid --jq '.state + " " + .headRefOid')"
+          if [ "$current" != "OPEN ${HEAD_SHA}" ]; then
+            echo "PR is merged, closed or has a newer head (${current}) - leaving it as is"
+            exit 0
+          fi
           gh pr edit "$PR" --title "$title" --body "$body"

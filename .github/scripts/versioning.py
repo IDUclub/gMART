@@ -53,8 +53,22 @@ def write(path: Path, content: str) -> None:
 
 
 def project_version(ref: str | None = None) -> str:
-    """The version in pyproject.toml of the work tree, or of a git ref such as origin/dev."""
-    source = git("show", f"{ref}:{PYPROJECT.as_posix()}") if ref else read(PYPROJECT)
+    """The version in pyproject.toml of the work tree, or of a git ref such as origin/dev.
+
+    A ref without pyproject.toml (the PR that adds it is not merged yet) falls back to the
+    version files the work tree configures.
+    """
+    if ref is None:
+        return tomllib.loads(read(PYPROJECT))["project"]["version"]
+    try:
+        source = git("show", f"{ref}:{PYPROJECT.as_posix()}")
+    except subprocess.CalledProcessError:
+        for path, pattern in version_files():
+            for line in git("show", f"{ref}:{path.as_posix()}").splitlines():
+                found = re.search(r"\d+\.\d+\.\d+", line)
+                if found and (pattern is None or pattern.search(line)):
+                    return found.group(0)
+        raise
     return tomllib.loads(source)["project"]["version"]
 
 

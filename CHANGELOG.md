@@ -1,3 +1,9 @@
+## v0.21.2 (2026-10-02)
+
+[fix/version-status-token](https://github.com/IDUclub/gMART/pull/233) (#233)
+
+- ci: ставить итоговый статус version токеном VERSION_STATUS_TOKEN, чтобы мердж запускал выкатку на dev
+
 ## v0.21.1 (2026-10-02)
 
 [chore/versioning-policy](https://github.com/IDUclub/gMART/pull/232) (#232)
