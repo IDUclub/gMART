@@ -39,7 +39,7 @@ from src.agents.services.dvd.clarification import (
     ranked_choices,
     selected_choice,
 )
-from src.agents.services.dvd.context_reducer import DvdContextReducer
+from src.agents.services.dvd.context_reducer import DvdContextReducer, PreparedContext
 from src.agents.services.dvd.conversation_evidence import (
     ConversationEvidence,
     compact_hits,
@@ -64,6 +64,7 @@ from src.agents.services.dvd.dvd_reasoning import (
     RetrievalPlanner,
     critic_reasoning_effort,
 )
+from src.agents.services.dvd.evidence_set import cited_context, critic_context_policy
 from src.agents.services.dvd.fragment_continuation import complete_cut_fragments
 from src.agents.services.dvd.partial_answer import PartialAnswerEvidence
 from src.agents.services.dvd.query_terms import (
@@ -1218,9 +1219,10 @@ class DvdRagService(BaseLlmService):
                 ),
             )
             with metrics.stage("review_context_prepare"):
-                review_context = await self.context_reducer.prepare(
-                    model, intent_query + "\n" + draft, context
+                review_context = await self._review_context(
+                    model, intent_query + "\n" + draft, draft, context, metrics
                 )
+            metrics.add("critic_input_bytes", len(review_context.text.encode("utf-8")))
             if review_context.reduction_rounds:
                 metrics.add("context_reductions")
             if review_context.failed_parts:
@@ -1257,6 +1259,7 @@ class DvdRagService(BaseLlmService):
                         intent=plan.intent,
                         verified=verified,
                         risk=risk,
+                        literal_context=context,
                         **recheck,
                     )
             except Exception as exc:
@@ -1690,6 +1693,28 @@ class DvdRagService(BaseLlmService):
             }
         )
         return None if broadened.model_dump() == plan.model_dump() else broadened
+
+    async def _review_context(
+        self, model: str, review_query: str, draft: str, context: str, metrics
+    ) -> PreparedContext:
+        """The evidence the critic audits ``draft`` against (see :mod:`evidence_set`).
+
+        ``context`` is the prepared evidence the draft was written from. It goes to
+        the critic as it is when it fits; otherwise the sources the draft cites
+        replace a second LLM reduction of everything, unless a claim needs them all.
+        """
+        policy = critic_context_policy()
+        if policy == "full":
+            metrics.decide(critic_context="full")
+            return await self.context_reducer.prepare(model, review_query, context)
+        if policy == "auto" and await self.context_reducer.fits(
+            model, review_query, context
+        ):
+            metrics.decide(critic_context="full")
+            return PreparedContext(context)
+        cited = cited_context(context, draft)
+        metrics.decide(critic_context="cited" if cited else "full")
+        return await self.context_reducer.prepare(model, review_query, cited or context)
 
     def _source_documents(self, hits: list[dict]) -> dict[str, tuple]:
         """Document edition behind every source label of ``build_context(hits)``."""

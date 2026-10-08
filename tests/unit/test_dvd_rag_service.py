@@ -62,8 +62,13 @@ async def test_incomplete_sources_stop_before_drafting(service, fake_llm, fake_m
     assert len(fake_mcp.search_calls) == calls
 
 
-async def test_incomplete_review_is_controlled_failure(service, fake_llm, fake_mcp):
+async def test_incomplete_review_is_controlled_failure(
+    service, fake_llm, fake_mcp, monkeypatch
+):
     from src.agents.services.dvd.context_reducer import PreparedContext
+
+    # Reduce the review context as before (the default reuses fitting evidence).
+    monkeypatch.setenv("DVD_CRITIC_CONTEXT", "full")
 
     fake_llm.json_responses = [plan_json()]
     fake_llm.answer_texts = ["Unverified [1]"]

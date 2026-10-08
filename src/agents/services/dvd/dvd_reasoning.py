@@ -602,6 +602,7 @@ class AnswerCritic:
         previous: list[Correction] | None = None,
         removed: list[str] | None = None,
         risk: AnswerRisk | None = None,
+        literal_context: str | None = None,
     ) -> CriticVerdict:
         """Audit ``answer``; ``verified`` are claims supported by an earlier audit.
 
@@ -610,9 +611,12 @@ class AnswerCritic:
         ``previous`` are the corrections that revision applied and ``removed`` the
         lines it deleted: a re-review checks them and raises no new omissions.
         ``risk`` sizes the reasoning effort (:func:`critic_reasoning_effort`).
+        ``literal_context`` is the whole evidence the draft was written from when
+        ``context`` holds only part of it: literal checks of labels and table
+        numbers then see every source, as they did before.
         """
         recheck = previous is not None
-        if defects := self._literal_defects(context, answer):
+        if defects := self._literal_defects(literal_context or context, answer):
             return CriticVerdict(
                 satisfied=False,
                 critique="; ".join(defects),

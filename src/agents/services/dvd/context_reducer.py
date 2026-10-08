@@ -196,6 +196,30 @@ class DvdContextReducer:
         # documents made the live model merge quotes and assign them to wrong IDs.
         return parts
 
+    async def _evidence_budget(
+        self, model: str, user_query: str, history: list[dict] | None
+    ) -> int:
+        available = await remaining_output_tokens(
+            self.llm_client,
+            model,
+            [*(history or []), {"role": "user", "content": user_query}],
+            self.window,
+        )
+        # This reserve only controls evidence reduction; generation receives
+        # all actual space left after the final messages have been assembled.
+        return available - self.window // 4 - 2300
+
+    async def fits(
+        self,
+        model: str,
+        user_query: str,
+        context: str,
+        history: list[dict] | None = None,
+    ) -> bool:
+        """Whether :meth:`prepare` would return ``context`` unchanged (no LLM call)."""
+        budget = await self._evidence_budget(model, user_query, history)
+        return budget >= 512 and await self._tokens(model, context) <= budget
+
     async def prepare(
         self,
         model: str,
@@ -206,15 +230,7 @@ class DvdContextReducer:
         budget_limit: int | None = None,
     ) -> PreparedContext:
         if budget_limit is None:
-            available = await remaining_output_tokens(
-                self.llm_client,
-                model,
-                [*(history or []), {"role": "user", "content": user_query}],
-                self.window,
-            )
-            # This reserve only controls evidence reduction; generation receives
-            # all actual space left after the final messages have been assembled.
-            budget = available - self.window // 4 - 2300
+            budget = await self._evidence_budget(model, user_query, history)
         else:
             budget = budget_limit
         if budget < 512:
