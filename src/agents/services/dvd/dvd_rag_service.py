@@ -148,6 +148,27 @@ def _max_drafts_per_retrieval() -> int:
         return 2
 
 
+# Small-first retrieval (``DVD_SMALL_FIRST_RETRIEVAL``): fragments per query,
+# merged fragments over all phrasings, and neighbour context of the first pass.
+_FIRST_PASS_CONTEXT_HEIGHT = 1
+
+
+def _first_pass_limit() -> int:
+    try:
+        return max(1, int(os.getenv("DVD_FIRST_PASS_LIMIT") or "6"))
+    except ValueError:
+        logger.warning("Invalid DVD_FIRST_PASS_LIMIT; using 6")
+        return 6
+
+
+def _first_pass_max_hits() -> int:
+    try:
+        return max(1, int(os.getenv("DVD_FIRST_PASS_MAX_HITS") or "8"))
+    except ValueError:
+        logger.warning("Invalid DVD_FIRST_PASS_MAX_HITS; using 8")
+        return 8
+
+
 def _document_key(name: str) -> str:
     return re.sub(r"[\s«»\"']+", "", name or "").casefold()
 
@@ -571,6 +592,7 @@ class DvdRagService(BaseLlmService):
         )
         collected["intent"] = progress.get("intent") or "norm"
         collected["fast_path_failed"] = bool(progress.get("fast_path_failed"))
+        collected["planned_sizes"] = progress.get("planned_sizes")
         start_iteration = int(progress.get("completed_iterations", 0)) + 1
         final_iteration = start_iteration
         collected["selected_choice"] = progress.get(
@@ -698,6 +720,21 @@ class DvdRagService(BaseLlmService):
                 plan = validate_retrieval_plan(
                     {**plan.model_dump(), "search_query": refined_query}
                 )
+            planned = collected.get("planned_sizes")
+            first_pass = False
+            if planned and needs_evidence:
+                # The narrow first pass lacked evidence: widen to the sizes the
+                # planner chose. A later shortage widens further (``_broaden``).
+                plan = validate_retrieval_plan({**plan.model_dump(), **planned})
+                collected["planned_sizes"] = None
+                metrics.add("retrieval_widenings")
+            elif iteration == 1 and (narrowed := self._first_pass(plan)):
+                collected["planned_sizes"] = {
+                    "limit": plan.limit,
+                    "context_height": plan.context_height,
+                }
+                plan, first_pass = narrowed, True
+                metrics.decide(small_first=True)
             search_key = retrieval_key(
                 plan, scenario_id, collected.get("selected_candidate_ids")
             )
@@ -941,7 +978,10 @@ class DvdRagService(BaseLlmService):
                 )
                 with metrics.stage("retrieval"):
                     search_result, calls = await self._semantic_search(
-                        dvd_mcp_client, plan, scenario_id
+                        dvd_mcp_client,
+                        plan,
+                        scenario_id,
+                        max_hits=_first_pass_max_hits() if first_pass else None,
                     )
                 metrics.add("retrieval_rounds")
                 metrics.add("retrieval_queries", len(queries))
@@ -1563,8 +1603,12 @@ class DvdRagService(BaseLlmService):
         call = self._search_tool_call(client.tool_name_for_kind(plan.kind), search_args)
         return result, call
 
-    async def _semantic_search(self, client, plan, scenario_id):
-        """Search every topical phrasing concurrently and merge hits by rank."""
+    async def _semantic_search(self, client, plan, scenario_id, max_hits=None):
+        """Search every topical phrasing concurrently and merge hits by rank.
+
+        ``max_hits`` caps the merged list (a narrow first pass); otherwise the
+        planner's limit, but at least ``_MAX_MERGED_HITS``.
+        """
 
         async def one(query):
             result, call = await self._vector_search(
@@ -1587,7 +1631,8 @@ class DvdRagService(BaseLlmService):
         if len(results) == 1:
             return results[0], calls
         hits = self._merge_hits(
-            [r.get("hits") or [] for r in results], max(plan.limit, _MAX_MERGED_HITS)
+            [r.get("hits") or [] for r in results],
+            max_hits or max(plan.limit, _MAX_MERGED_HITS),
         )
         return {**results[0], "hits": hits, "count": len(hits)}, calls
 
@@ -1674,6 +1719,28 @@ class DvdRagService(BaseLlmService):
             if len(merged) >= limit:
                 break
         return merged
+
+    @staticmethod
+    def _first_pass(plan: "RetrievalPlan") -> "RetrievalPlan | None":
+        """A narrower first retrieval of a ranked plan, or ``None`` to keep ``plan``.
+
+        A smaller first context makes every later stage cheaper (reduction, draft,
+        audit) and carries fewer unrelated fragments. A shortage the critic reports
+        widens it again. Exact targets and document lists keep their sizes.
+        """
+        if not flags.enabled(flags.SMALL_FIRST_RETRIEVAL):
+            return None
+        if plan.retrieval_mode != "semantic" and not plan.rank_by_relevance:
+            return None
+        if plan.intent == "document_list":
+            return None
+        limit = min(plan.limit, _first_pass_limit())
+        height = min(plan.context_height, _FIRST_PASS_CONTEXT_HEIGHT)
+        if (limit, height) == (plan.limit, plan.context_height):
+            return None
+        return validate_retrieval_plan(
+            {**plan.model_dump(), "limit": limit, "context_height": height}
+        )
 
     @staticmethod
     def _broaden(plan: "RetrievalPlan") -> "RetrievalPlan | None":
@@ -2083,6 +2150,7 @@ class DvdRagService(BaseLlmService):
                 "mentioned_documents": collected.get("mentioned_documents", []),
                 "intent": collected.get("intent"),
                 "fast_path_failed": bool(collected.get("fast_path_failed")),
+                "planned_sizes": collected.get("planned_sizes"),
             },
         )
 

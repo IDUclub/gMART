@@ -241,8 +241,10 @@ class TestLoop:
         assert collected["final_answer"] == "Ответ [1]"
 
     async def test_planner_receives_context_height_from_llm(
-        self, service, fake_llm, fake_mcp
+        self, service, fake_llm, fake_mcp, monkeypatch
     ):
+        # Threads the planner's sizes unchanged (no narrow first pass).
+        monkeypatch.setenv("DVD_SMALL_FIRST_RETRIEVAL", "false")
         fake_llm.json_responses = [
             plan_json(kind="table", limit=3, context_height=4),
             verdict_json(satisfied=True),
