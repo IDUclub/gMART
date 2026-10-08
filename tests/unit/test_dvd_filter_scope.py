@@ -232,13 +232,16 @@ async def test_not_found_new_document_does_not_restore_previous_document(
     await service.state_store.set_document_scope(
         "chat-1", dict(doc_id="old", document_names=[NAME])
     )
+    # Each lookup runs twice: the literal reading (no LLM) finds nothing, then
+    # the planner's reading is tried once with the same filters.
+    empty = dict(hits=[], total=0, complete=True)
     fake_llm.json_responses = [plan_json()]
-    await run(
-        service, Pages([dict(hits=[], total=0, complete=True)]), "Пункт 3.3 СП 999"
-    )
+    client = Pages([dict(empty), dict(empty)])
+    await run(service, client, "Пункт 3.3 СП 999")
+    assert all(call[1]["document_names"] == ["СП 999"] for call in client.calls)
     scope = await service.state_store.get_document_scope("chat-1")
     assert scope["document_names"] == ["СП 999"] and not scope.get("doc_id")
     fake_llm.json_responses = [plan_json()]
-    client = Pages([dict(hits=[], total=0, complete=True)])
+    client = Pages([dict(empty), dict(empty)])
     await run(service, client, "Есть в нём пункт 4?")
-    assert client.calls[0][1]["document_names"] == ["СП 999"]
+    assert all(call[1]["document_names"] == ["СП 999"] for call in client.calls)

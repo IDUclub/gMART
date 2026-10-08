@@ -200,7 +200,7 @@ Authorization: Bearer <access_token>   # необязательно, см. «П�
 | `status` | прогресс; `content.status` ∈ `context_check`, `retrieval_planning`, `searching`, `answer_drafting`, `self_review`, `finalizing`. |
 | `chunk` | текст ответа; `content = { text, done, iteration }`. |
 | `tool_call` | вызов поиска в IDU_DVD (`content.mcp_source = "DVD_MCP_URL"`). |
-| `service_event` | создан чат (`chat_created` с `chat_id` / `chat_title`). |
+| `service_event` | создан чат (`chat_created` с `chat_id` / `chat_title`). Приходит до первого `chunk`. `chat_title` — временное название (начало вопроса): чат создаётся параллельно с ответом, а итоговое название генерируется после ответа и сохраняется в Chat Storage (`PATCH /api/v1/chat_history/{chat_id}`). Обновлённое название фронт получит при следующей загрузке списка чатов. |
 | `warning` | неблокирующее предупреждение (см. ниже). |
 | `error` | ошибка запроса. Завершите ожидание и не считайте ответ успешным. При исчерпании повторов генерации пайплайн получает `failed`, без успешного `done: true`. |
 

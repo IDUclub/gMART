@@ -83,6 +83,11 @@ class FakeSession:
         self.methods.append("post")
         return FakeReqCtx(self._outcomes.pop(0))
 
+    def patch(self, url=None, headers=None, params=None, json=None):
+        self.methods.append("patch")
+        self.json = json
+        return FakeReqCtx(self._outcomes.pop(0))
+
 
 def _handler(max_retries: int = 3) -> JsonApiHandler:
     # backoff_base=0 keeps the retry sleeps instantaneous.
@@ -248,3 +253,18 @@ async def test_post_retries_with_post_not_get():
     result = await _handler().post("/v1/x", data={"a": 1}, session=session)
     assert result == {"created": True}
     assert session.methods == ["post", "post"]
+
+
+async def test_patch_sends_patch_and_retries_with_patch():
+    session = FakeSession(
+        [
+            FakeResponse(500, json_body={"error": "reset by peer"}),
+            FakeResponse(200, json_body={"title": "Новое"}),
+        ]
+    )
+    result = await _handler().patch(
+        "/chats/1", data={"title": "Новое"}, session=session
+    )
+    assert result == {"title": "Новое"}
+    assert session.methods == ["patch", "patch"]
+    assert session.json == {"title": "Новое"}

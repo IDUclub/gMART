@@ -80,6 +80,9 @@ async def lifespan(app: FastAPI):
             purge_task.cancel()
             if synapse_service is not None:
                 await synapse_service.close()
+            for key in ("chat_storage_json_handler", "urban_api_json_handler"):
+                if (handler := app_deps.get(key)) is not None:
+                    await handler.close()
 
 
 app = FastAPI(

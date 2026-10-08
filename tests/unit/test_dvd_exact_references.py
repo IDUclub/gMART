@@ -56,10 +56,11 @@ def test_target_context_cannot_attribute_neighbour_to_clause():
 async def test_full_quote_retains_paginated_condition_even_if_explanation_omits_it(
     service, fake_llm
 ):
-    from tests.helpers import answer_text, plan_json, verdict_json
+    from tests.helpers import answer_text, verdict_json
     from tests.unit.test_dvd_structured_retrieval import Pages, run
 
-    fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+    # An explicit address with its document is planned without the LLM.
+    fake_llm.json_responses = [verdict_json(satisfied=True)]
     fake_llm.answer_texts = ["Пункт перечисляет меры экономии энергии [1]."]
     root = dict(
         id="root",
@@ -92,10 +93,9 @@ async def test_full_quote_retains_paginated_condition_even_if_explanation_omits_
 
 
 async def test_explicit_quote_does_not_allow_model_rewriting(service, fake_llm):
-    from tests.helpers import answer_text, plan_json
+    from tests.helpers import answer_text
     from tests.unit.test_dvd_structured_retrieval import Pages, run
 
-    fake_llm.json_responses = [plan_json()]
     text = "3.3 Требование действует только при условии А."
     events = await run(
         service,
@@ -103,7 +103,8 @@ async def test_explicit_quote_does_not_allow_model_rewriting(service, fake_llm):
         "Процитируй пункт 3.3 СП 55",
     )
     assert "> " + text in answer_text(events)
-    assert len(fake_llm.chat_calls) == 1
+    # Planned without the LLM, and the full source needs no rewriting.
+    assert len(fake_llm.chat_calls) == 0
 
 
 def test_quote_preserves_original_text_and_uses_article_label():

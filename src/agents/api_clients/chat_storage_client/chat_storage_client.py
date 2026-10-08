@@ -132,6 +132,34 @@ class ChatStorageApiClient:
             metadata=chat.get("metadata"),
         )
 
+    async def rename_chat(
+        self,
+        token: str | None,
+        chat_id: str,
+        title: str,
+        space: str = "main",
+        user_id: str | None = None,
+    ) -> str:
+        """
+        Function replaces the title of an existing chat.
+        Args:
+            token (str): Auth token from Urban API.
+            chat_id (str): String representation of chat uuid.
+            title (str): New chat title.
+        Returns:
+            str: The title stored by ChatStorage.
+        """
+
+        request_options = {"user_id": user_id} if user_id is not None else {}
+        chat = await self.json_handler.patch(
+            endpoint=f"/api/v1/chat_history/{chat_id}",
+            auth_token=token,
+            params={"space": space},
+            data={"title": title},
+            **request_options,
+        )
+        return (chat or {}).get("title") or title
+
     async def add_single_message(
         self,
         token: str | None,
