@@ -29,7 +29,7 @@ from src.agents.services.dvd.document_reference import (
     wants_full_quote,
 )
 from src.agents.services.dvd.retrieval_scope import apply_scope
-from src.agents.services.dvd.retry_policy import CriticResponseError
+from src.agents.services.dvd.retry_policy import CriticBudgetError, CriticResponseError
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.dvd_plan import (
     AuditedClaim,
@@ -142,6 +142,29 @@ def _clean_str_list(
     return cleaned or None
 
 
+class OutputCapped(ValueError):
+    """A structured reply reached its fixed output cap; it is not widened."""
+
+
+# An audit restates each answer line with a short quote (~200 tokens per line) after
+# its reasoning. Its size follows the answer, not the evidence: a cap derived from
+# the evidence let one F-01 audit (a whole section, 50 fragments) reason for 68k
+# tokens and 14 minutes without finishing.
+_CRITIC_REASONING_TOKENS = 3000
+_CRITIC_TOKENS_PER_LINE = 200
+_CRITIC_MIN_TOKENS = 4096
+
+
+def critic_output_cap(lines: int) -> int:
+    """Output tokens one audit of ``lines`` answer lines may use, reasoning included."""
+    try:
+        ceiling = int(os.getenv("DVD_CRITIC_MAX_OUTPUT_TOKENS") or "12000")
+    except ValueError:
+        ceiling = 12000
+    wanted = _CRITIC_REASONING_TOKENS + _CRITIC_TOKENS_PER_LINE * max(lines, 1)
+    return max(_CRITIC_MIN_TOKENS, min(wanted, ceiling))
+
+
 def critic_reasoning_effort(
     llm_client, model: str, risk: AnswerRisk | None = None
 ) -> str | None:
@@ -176,6 +199,7 @@ async def _request_json(
     schema_enums: dict[str, dict[str, list[str]]] | None = None,
     output: OutputShare = STRUCTURED_OUTPUT,
     empty_lists: tuple[str, ...] = (),
+    max_tokens: int | None = None,
 ) -> T:
     """
     Ask the LLM for a JSON object and parse it into ``model_cls``.
@@ -185,7 +209,8 @@ async def _request_json(
     ``schema_enums`` restricts string properties of schema definitions to closed
     sets, as ``{"Definition": {"property": [values]}}``; ``empty_lists`` names
     top-level list properties that must stay empty. ``output`` sets the output
-    tokens allowed per input token.
+    tokens allowed per input token. ``max_tokens`` is a fixed cap: a reply that
+    reaches it raises :class:`OutputCapped` instead of retrying with a wider limit.
     """
     adapter = TypeAdapter(model_cls)
     model_name = (
@@ -225,6 +250,7 @@ async def _request_json(
         )
         if budget.window_rest < 128:
             raise ValueError("structured request exceeds configured context window")
+        tokens = min(budget.tokens, max_tokens) if max_tokens else budget.tokens
         try:
             response = await llm_client.chat(
                 model=model,
@@ -232,7 +258,7 @@ async def _request_json(
                 format=schema,
                 options={
                     "temperature": 0,
-                    "num_predict": budget.tokens,
+                    "num_predict": tokens,
                     "num_ctx": current_context_window(),
                 },
                 messages=messages,
@@ -244,6 +270,8 @@ async def _request_json(
                 raise
             response = {"done_reason": "length"}
         if response.get("done_reason") in {"length", "max_tokens"}:
+            if max_tokens and tokens >= max_tokens:
+                raise OutputCapped(f"{model_name} reply reached its cap {tokens}")
             if not budget.limited or attempt >= retries:
                 raise ValueError("structured_output_exhausted_context_window")
             # A long but legitimate reply: retry with a wider proportional limit.
@@ -658,8 +686,11 @@ class AnswerCritic:
                 ),
             },
         ]
-        try:
-            audit = await _request_json(
+        effort = critic_reasoning_effort(self.llm_client, model, risk)
+        cap = critic_output_cap(len(pending))
+
+        async def audit_at(effort):
+            return await _request_json(
                 self.llm_client,
                 model,
                 messages,
@@ -672,12 +703,29 @@ class AnswerCritic:
                         **({"source_id": [*labels, ""]} if labels else {}),
                     }
                 },
-                reasoning_effort=critic_reasoning_effort(self.llm_client, model, risk),
+                reasoning_effort=effort,
                 output=AUDIT_OUTPUT,
                 # A re-review checks the requested edits; new omissions would undo
                 # deletions the critic asked for and never converge.
                 empty_lists=("missing_requirements",) if recheck else (),
+                max_tokens=cap,
             )
+
+        try:
+            try:
+                audit = await audit_at(effort)
+            except OutputCapped:
+                # Reasoning, not the verdict, fills the cap: one more audit with
+                # short reasoning, never a wider limit.
+                if effort in (None, "low"):
+                    raise
+                logger.warning(
+                    "DVD critic reached its output cap {} at effort {}; "
+                    "auditing again at low effort",
+                    cap,
+                    effort,
+                )
+                audit = await audit_at("low")
             claims = [
                 *(c for c in audit.claims if c.text not in kept),
                 *kept.values(),
@@ -724,6 +772,10 @@ class AnswerCritic:
                     )
                 ),
             )
+        except OutputCapped as exc:
+            raise CriticBudgetError(
+                f"Critic did not finish within {cap} output tokens"
+            ) from exc
         except ValueError as exc:
             # A malformed audit is a technical failure, not evidence that a new
             # retrieval could repair the answer. The caller logs request/round.
@@ -776,6 +828,7 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
                 ],
                 PartialSelection,
                 reasoning_effort=critic_reasoning_effort(self.llm_client, model),
+                max_tokens=critic_output_cap(len(evidence.candidates())),
             )
             # A valid JSON response is not sufficient: IDs must belong to the
             # verified closed set, and a claim can appear at most once.

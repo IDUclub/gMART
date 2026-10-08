@@ -26,6 +26,13 @@ import pytest
 from tests.helpers import FakeDvdMcpClient, FakeLlmClient, FakeUrbanApiClient
 
 
+@pytest.fixture(autouse=True)
+def _labelled_citations(monkeypatch):
+    # Most cases assert drafted text with its source labels [N]; the readable
+    # document/clause references are covered by test_dvd_source_citations.
+    monkeypatch.setenv("DVD_READABLE_CITATIONS", "false")
+
+
 @pytest.fixture
 def fake_llm() -> FakeLlmClient:
     return FakeLlmClient()

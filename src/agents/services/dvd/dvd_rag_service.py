@@ -26,7 +26,12 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.services.base_llm_service import BaseLlmService
-from src.agents.services.dvd import flags, knowledge_block
+from src.agents.services.dvd import (
+    flags,
+    knowledge_block,
+    literal_audit,
+    source_citations,
+)
 from src.agents.services.dvd.answer_generation import (
     AnswerGenerationError,
     DvdAnswerGenerator,
@@ -80,6 +85,7 @@ from src.agents.services.dvd.retrieval_scope import (
     resets_scope,
 )
 from src.agents.services.dvd.retry_policy import (
+    CriticBudgetError,
     normalized_query,
     retrieval_key,
 )
@@ -89,6 +95,7 @@ from src.agents.services.readable_refs import NO_SYSTEM_IDS_RULE
 from src.agents.services.service_entities.dvd_plan import (
     AuditedClaim,
     Correction,
+    CriticVerdict,
     SearchKind,
     validate_retrieval_plan,
 )
@@ -1132,6 +1139,8 @@ class DvdRagService(BaseLlmService):
                     },
                 )
 
+            # The user reads document and clause, not this retrieval's labels.
+            collected["citations"] = source_citations.citations(hits)
             quotation = None
             if plan.retrieval_mode == "structure" and wants_full_quote(intent_query):
                 quotation = self.context_builder.full_quote(hits)
@@ -1289,7 +1298,7 @@ class DvdRagService(BaseLlmService):
                 draft_body, knowledge = knowledge_block.split(draft_body)
             if revision and body is not None:
                 knowledge = list(revision.get("knowledge") or [])
-            draft_body = knowledge_block.strip_external_referrals(draft_body)
+            draft_body = knowledge_block.clean(draft_body)
             draft = draft_body
             if quotation:
                 draft += "\n\n" + quotation
@@ -1346,6 +1355,32 @@ class DvdRagService(BaseLlmService):
                         literal_context=context,
                         **recheck,
                     )
+            except CriticBudgetError as exc:
+                if not knowledge_block.enabled():
+                    logger.error(
+                        "DVD review failed request_id={} stage=self_review "
+                        "iteration={} reason={}",
+                        request_id,
+                        iteration,
+                        exc.reason,
+                    )
+                    raise
+                # No verdict within the limit: keep only lines whose figures and
+                # wording the cited fragments literally contain, sort the rest.
+                logger.warning(
+                    "DVD critic stopped at its output limit request_id={} "
+                    "iteration={}; auditing lines literally",
+                    request_id,
+                    iteration,
+                )
+                claims = literal_audit.audit(
+                    AnswerCritic._claim_texts(draft_body), context
+                )
+                verdict = CriticVerdict(
+                    satisfied=not claims, critique=str(exc), claims=claims
+                )
+                metrics.add("critic_fallbacks")
+                metrics.decide(critic_fallback="literal")
             except Exception as exc:
                 logger.opt(exception=exc).error(
                     "DVD review failed request_id={} stage=self_review iteration={} "
@@ -1380,7 +1415,10 @@ class DvdRagService(BaseLlmService):
                     draft_body, knowledge = grounded, [*moved, *knowledge]
                     verdict = verdict.model_copy(update={"satisfied": True})
             if verdict.satisfied:
-                draft = knowledge_block.render(draft_body, knowledge, quotation)
+                draft = source_citations.readable(
+                    knowledge_block.render(draft_body, knowledge, quotation),
+                    collected.get("citations"),
+                )
                 if collected.get("context_incomplete"):
                     draft += "\n\n" + _PARTIAL_CONTEXT_WARNING
                 yield await self._buf(
@@ -1554,8 +1592,9 @@ class DvdRagService(BaseLlmService):
                 "- Если данных во фрагментах недостаточно — прямо сообщи об этом.\n"
             )
             + knowledge_block.NO_EXTERNAL_RULE
-            + "- Ссылайся на источники: название документа, редакцию и номер пункта "
-            "(можно через номера [1], [2]… из фрагментов).\n"
+            + "- Ссылайся на источники только метками [1], [2]… сразу после "
+            "утверждения: приложение само заменит метку названием документа, редакцией "
+            "и номером пункта, поэтому не повторяй их рядом с меткой.\n"
             f"- {NO_SYSTEM_IDS_RULE}\n"
             "- Отвечай на русском языке, ясно и по существу.\n"
             "- Не оформляй ответ таблицей: перечни давай маркированным списком, "
@@ -2091,6 +2130,7 @@ class DvdRagService(BaseLlmService):
 
     async def _finish_retrieval(self, request_id, collected, answer, iteration):
         """Grounded not-found / clarification; no model invents an alternative answer."""
+        answer = source_citations.readable(answer, collected.get("citations"))
         if collected.get("context_incomplete"):
             answer += "\n\n" + _PARTIAL_CONTEXT_WARNING
         collected.update(final_answer=answer, newly_completed=True)
@@ -2332,10 +2372,13 @@ class DvdRagService(BaseLlmService):
                         await self.state_store.set_document_evidence(
                             collected["chat_id"], snapshot
                         )
+                        collected["citations"] = source_citations.citations(
+                            snapshot["hits"]
+                        )
                         async for event in self._finish_retrieval(
                             request_id,
                             collected,
-                            knowledge_block.strip_external_referrals(assessment.answer),
+                            knowledge_block.clean(assessment.answer),
                             1,
                         ):
                             yield event

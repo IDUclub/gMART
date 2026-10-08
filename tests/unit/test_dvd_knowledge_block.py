@@ -204,3 +204,37 @@ async def test_answer_prompt_forbids_external_sources(service, fake_llm):
     assert "Без опоры на загруженные документы" in system
     assert "Никогда не советуй обращаться к внешним источникам" in system
     assert "СТРОГО" not in system
+
+
+@pytest.mark.parametrize(
+    "line, expected",
+    [
+        (
+            "- По моим данным, проезды обычно делают сквозными.",
+            "- Проезды обычно делают сквозными.",
+        ),
+        ("Исходя из общих знаний, вероятно, нужен пандус.", "Вероятно, нужен пандус."),
+        (
+            "Вероятно, нужен пандус. Это следует из моих знаний.",
+            "Вероятно, нужен пандус.",
+        ),
+        (
+            "Как языковая модель, я не могу знать редакцию. Как правило, так.",
+            "Как правило, так.",
+        ),
+        # Ordinary wording about training or data stays.
+        (
+            "Обучение детей ведут в отдельных помещениях.",
+            "Обучение детей ведут в отдельных помещениях.",
+        ),
+    ],
+)
+def test_self_references_are_removed(line, expected):
+    assert knowledge_block.strip_self_references(line) == expected
+
+
+def test_block_is_titled_as_assumptions():
+    assert render(ACCESS, ["- Вероятно, нужен пандус."]) == (
+        f"{ACCESS}\n\n**Без опоры на загруженные документы** (предположительно):\n"
+        "- Вероятно, нужен пандус."
+    )
