@@ -34,8 +34,11 @@ planner's JSON valid.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import time
+from collections import OrderedDict
 from typing import Any, AsyncIterator
 
 from loguru import logger
@@ -59,6 +62,11 @@ THINK_EFFORT_ENV = "OPENAI_THINK_EFFORT"
 THINK_EFFORT_DEFAULT = "none"
 
 _warned: set[str] = set()
+# /v1/models is asked once per document run; the served models rarely change.
+MODELS_TTL_SECONDS = 300
+# Token counts of identical prompts (e.g. the same evidence measured by the
+# reducer and again by the output budget) are reused within a process.
+TOKEN_CACHE_SIZE = 512
 
 
 def _warn_once(key: str, message: str) -> None:
@@ -110,24 +118,49 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         self.client = AsyncOpenAI(
             base_url=base_url, api_key=api_key or "not-needed", timeout=timeout
         )
+        self._windows: dict[str, tuple[float, int | None]] = {}
+        self._token_counts: OrderedDict[str, int] = OrderedDict()
 
     # ------------------------------------------------------------------ #
     # translation helpers
     # ------------------------------------------------------------------ #
     async def model_context_window(self, model: str) -> int | None:
+        cached = self._windows.get(model)
+        if cached and time.monotonic() - cached[0] < MODELS_TTL_SECONDS:
+            return cached[1]
         try:
             models = await self.client.models.list(timeout=5)
         except OpenAIError as exc:
             logger.warning("Model context metadata unavailable: {}", type(exc).__name__)
-            return None
+            return None  # Not cached: the next run asks again.
+        found = None
         for item in models.data:
             if item.id == model:
                 window = getattr(item, "max_model_len", None)
                 if type(window) is int and window >= 4096:
-                    return window
-        return None
+                    found = window
+                break
+        self._windows[model] = (time.monotonic(), found)
+        return found
 
     async def model_input_tokens(self, model, messages, *, reasoning_effort=None):
+        key = hashlib.sha256(
+            json.dumps(
+                [model, reasoning_effort, messages], ensure_ascii=False, default=str
+            ).encode("utf-8")
+        ).hexdigest()
+        if (count := self._token_counts.get(key)) is not None:
+            self._token_counts.move_to_end(key)
+            llm_usage.record_tokenize(cached=True)
+            return count
+        count = await self._count_tokens(model, messages, reasoning_effort)
+        if count is not None:
+            self._token_counts[key] = count
+            if len(self._token_counts) > TOKEN_CACHE_SIZE:
+                self._token_counts.popitem(last=False)
+        return count
+
+    async def _count_tokens(self, model, messages, reasoning_effort):
         llm_usage.record_tokenize()
         # vLLM exposes /tokenize beside /v1. Keep a reverse-proxy path prefix.
         endpoint = self.base_url.rstrip("/").removesuffix("/v1") + "/tokenize"

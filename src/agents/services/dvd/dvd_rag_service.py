@@ -6,6 +6,7 @@ import os
 import re
 import time
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
@@ -490,7 +491,10 @@ class DvdRagService(BaseLlmService):
                 else:
                     await self.state_store.set_document_question(original_chat_id, None)
 
-        async with self.context_reducer.model_window(model):
+        async with (
+            self.context_reducer.model_window(model),
+            self._mcp_session(dvd_mcp_client, metrics),
+        ):
             async for event in self._run_qa_loop(
                 dvd_mcp_client,
                 model,
@@ -515,6 +519,38 @@ class DvdRagService(BaseLlmService):
             self._schedule_persist_answer(token, chat_id, collected, scenario_id)
         if chat_id and collected.get("provisional_title"):
             self._schedule_chat_title(token, chat_id, model, user_query)
+
+    @staticmethod
+    @asynccontextmanager
+    async def _mcp_session(dvd_mcp_client: "DvdMcpClient", metrics):
+        """Keep one IDU_DVD MCP session open for the whole run.
+
+        Every tool call enters the FastMCP client, which opens a session (HTTP
+        connection and MCP ``initialize``) unless one is already open; holding an
+        outer entry makes the run's searches, tags and node lookups reuse it.
+        Without it (``DVD_PERSISTENT_MCP_SESSION=false``, a client without a
+        transport, or a failed connect) each call connects as before.
+        """
+        client = getattr(dvd_mcp_client, "mcp_client", None)
+        if not flags.enabled(flags.PERSISTENT_MCP_SESSION) or not hasattr(
+            client, "__aenter__"
+        ):
+            yield
+            return
+        try:
+            with metrics.stage("mcp_connect"):
+                await client.__aenter__()
+        except Exception as exc:
+            logger.warning("DVD MCP session not kept open: {}", exc)
+            yield
+            return
+        try:
+            yield
+        finally:
+            try:
+                await client.__aexit__(None, None, None)
+            except Exception as exc:
+                logger.warning("DVD MCP session close failed: {}", exc)
 
     # ------------------------------------------------------------------
     # Inner iterative loop (retrieve -> draft -> critique -> refine)

@@ -52,6 +52,23 @@ class JsonApiHandler:
         self.max_retries = max_retries
         self.backoff_base = backoff_base
         self.service_auth = service_auth
+        # Connections are reused across calls (no TCP/TLS setup per request).
+        self._pooled: aiohttp.ClientSession | None = None
+        self._pooled_loop: asyncio.AbstractEventLoop | None = None
+
+    def _session(self) -> aiohttp.ClientSession:
+        """The handler's pooled session for the running event loop."""
+        loop = asyncio.get_running_loop()
+        if self._pooled is None or self._pooled.closed or self._pooled_loop is not loop:
+            self._pooled = aiohttp.ClientSession()
+            self._pooled_loop = loop
+        return self._pooled
+
+    async def close(self) -> None:
+        """Close the pooled session (application shutdown)."""
+        if self._pooled is not None and not self._pooled.closed:
+            await self._pooled.close()
+        self._pooled = None
 
     async def _check_response_status(
         self,
@@ -261,10 +278,9 @@ class JsonApiHandler:
         """
 
         headers = await self._with_auth(headers, auth_token, user_id)
-        if not session:
-            async with aiohttp.ClientSession() as session:
-                return await self._request("get", endpoint, headers, params, session)
-        return await self._request("get", endpoint, headers, params, session)
+        return await self._request(
+            "get", endpoint, headers, params, session or self._session()
+        )
 
     async def post(
         self,
@@ -289,13 +305,8 @@ class JsonApiHandler:
         """
 
         headers = await self._with_auth(headers, auth_token, user_id)
-        if not session:
-            async with aiohttp.ClientSession() as session:
-                return await self._request(
-                    "post", endpoint, headers, params, session, data=data
-                )
         return await self._request(
-            "post", endpoint, headers, params, session, data=data
+            "post", endpoint, headers, params, session or self._session(), data=data
         )
 
     async def patch(
@@ -311,11 +322,6 @@ class JsonApiHandler:
         """Function to partially update data in api; arguments as in :meth:`post`."""
 
         headers = await self._with_auth(headers, auth_token, user_id)
-        if not session:
-            async with aiohttp.ClientSession() as session:
-                return await self._request(
-                    "patch", endpoint, headers, params, session, data=data
-                )
         return await self._request(
-            "patch", endpoint, headers, params, session, data=data
+            "patch", endpoint, headers, params, session or self._session(), data=data
         )
