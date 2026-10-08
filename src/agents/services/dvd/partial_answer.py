@@ -2,6 +2,7 @@
 
 import re
 
+from . import flags
 from .dvd_context import source_records
 
 EMPTY_ANSWER = (
@@ -80,8 +81,13 @@ class PartialAnswerEvidence:
         # The live critic can approve an overgeneralized paraphrase despite a
         # correct supporting quotation. After three rejected drafts, return only
         # literal evidence, never those draft claims or their generated metadata.
+        # Each excerpt is headed by its document and clause, not by a label.
         references = [
-            f"[{label}] {header}\n> {quote}"
+            (
+                f"{header}\n> {quote}"
+                if flags.enabled(flags.READABLE_CITATIONS)
+                else f"[{label}] {header}\n> {quote}"
+            )
             for (header, quote), label in sources.items()
         ]
         return (

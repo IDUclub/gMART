@@ -111,7 +111,7 @@ async def test_larger_evidence_gets_a_larger_answer_budget():
     await long._generate_answer(
         "gpt-oss-20b",
         "Какое расстояние?",
-        "[1] Источник\n" + "Не менее 15 м. " * 800,
+        "[1] Источник\n" + "Не менее 15 м. " * 600,
         0,
         [],
         1,
