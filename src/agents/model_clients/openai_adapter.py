@@ -41,6 +41,7 @@ from typing import Any, AsyncIterator
 from loguru import logger
 from openai import APIStatusError, AsyncOpenAI, OpenAIError
 
+from src.agents.model_clients import llm_usage
 from src.agents.model_clients.llm_base import (
     BaseLlmAdapter,
     LlmChatResponse,
@@ -127,6 +128,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         return None
 
     async def model_input_tokens(self, model, messages, *, reasoning_effort=None):
+        llm_usage.record_tokenize()
         # vLLM exposes /tokenize beside /v1. Keep a reverse-proxy path prefix.
         endpoint = self.base_url.rstrip("/").removesuffix("/v1") + "/tokenize"
         call = self._build(

@@ -71,6 +71,7 @@ from src.agents.services.dvd.retry_policy import (
     normalized_query,
     retrieval_key,
 )
+from src.agents.services.dvd.run_metrics import DvdRunMetrics, run_metrics
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
 from src.agents.services.readable_refs import NO_SYSTEM_IDS_RULE
 from src.agents.services.service_entities.dvd_plan import (
@@ -181,6 +182,9 @@ class DvdRagService(BaseLlmService):
         self.context_reducer = DvdContextReducer(self.llm_client)
         self.state_store = state_store
         self._tags_cache: tuple[float, list[str] | None] | None = None
+        # ``collected`` of the runs in progress, by request_id: the event journal
+        # (``_buf``) reads their metrics without threading them through every call.
+        self._active: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # Public entry point (reconnect handling + chat storage + history)
@@ -239,6 +243,46 @@ class DvdRagService(BaseLlmService):
         else:
             request_id = request_id or self.state_store.new_request_id()
 
+        metrics = DvdRunMetrics(request_id, model)
+        metrics.decide(reconnect=is_reconnect, turn="followup" if chat_id else "first")
+        collected["metrics"] = metrics
+        self._active[request_id] = collected
+        try:
+            async for event in self._serve_request(
+                dvd_mcp_client,
+                token,
+                model,
+                temperature,
+                user_query,
+                scenario_id,
+                chat_id,
+                request_id,
+                persist_history,
+                context_note,
+                collected,
+                is_reconnect,
+            ):
+                yield event
+        finally:
+            self._active.pop(request_id, None)
+            metrics.finish()
+
+    async def _serve_request(
+        self,
+        dvd_mcp_client: "DvdMcpClient",
+        token: str | None,
+        model: str,
+        temperature: float,
+        user_query: str,
+        scenario_id: int | None,
+        chat_id: str | None,
+        request_id: str,
+        persist_history: bool,
+        context_note: str | None,
+        collected: dict[str, Any],
+        is_reconnect: bool,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        metrics = run_metrics(collected)
         original_chat_id = chat_id
 
         if not is_reconnect:
@@ -254,11 +298,12 @@ class DvdRagService(BaseLlmService):
                 project_id: int | None = None
                 if scenario_id is not None:
                     try:
-                        project_id = (
-                            await self.urban_api_client.get_project_by_scenario(
-                                token, scenario_id
+                        with metrics.stage("chat_setup"):
+                            project_id = (
+                                await self.urban_api_client.get_project_by_scenario(
+                                    token, scenario_id
+                                )
                             )
-                        )
                     except Exception as exc:
                         logger.warning(
                             f"DVD QA: failed to resolve project_id for "
@@ -269,19 +314,20 @@ class DvdRagService(BaseLlmService):
                             self._project_lookup_failed_event(scenario_id),
                         )
                 try:
-                    chat_id, title = await self.create_chat(
-                        token,
-                        model,
-                        user_query,
-                        additional_instructions=(
-                            "Запрос направлен агенту вопросов по нормативной "
-                            "документации (RAG по базе IDU_DVD)."
-                        ),
-                        scenario_id=scenario_id,
-                        project_id=project_id,
-                        resolve_project_id=False,
-                        agent_id="documents",
-                    )
+                    with metrics.stage("chat_setup"):
+                        chat_id, title = await self.create_chat(
+                            token,
+                            model,
+                            user_query,
+                            additional_instructions=(
+                                "Запрос направлен агенту вопросов по нормативной "
+                                "документации (RAG по базе IDU_DVD)."
+                            ),
+                            scenario_id=scenario_id,
+                            project_id=project_id,
+                            resolve_project_id=False,
+                            agent_id="documents",
+                        )
                     yield await self._buf(
                         request_id, self._chat_created_event(chat_id, title)
                     )
@@ -298,11 +344,12 @@ class DvdRagService(BaseLlmService):
                 temperature=temperature,
             )
 
-        history = (
-            await self._load_dialogue_context(token, chat_id, user_query, collected)
-            if chat_id
-            else []
-        )
+        with metrics.stage("chat_context"):
+            history = (
+                await self._load_dialogue_context(token, chat_id, user_query, collected)
+                if chat_id
+                else []
+            )
         if context_note:
             # Results of earlier orchestrator steps are data for resolving the
             # question. Kept out of the query so their document names never
@@ -322,13 +369,14 @@ class DvdRagService(BaseLlmService):
         # must not break the stream.
         if persist_history and not is_reconnect and original_chat_id:
             try:
-                await self.add_single_message(
-                    token,
-                    original_chat_id,
-                    RoleEnum.USER,
-                    user_query,
-                    scenario_id=scenario_id,
-                )
+                with metrics.stage("persistence"):
+                    await self.add_single_message(
+                        token,
+                        original_chat_id,
+                        RoleEnum.USER,
+                        user_query,
+                        scenario_id=scenario_id,
+                    )
             except Exception as exc:
                 logger.warning(f"DVD QA: failed to persist user question: {exc}")
 
@@ -433,6 +481,7 @@ class DvdRagService(BaseLlmService):
         request_id: str,
         scenario_id: int | None,
     ) -> AsyncGenerator[dict[str, Any], None]:
+        metrics = run_metrics(collected)
         checkpoint = await self.state_store.get_checkpoint(request_id)
         progress = checkpoint.get(_QA_PROGRESS) or {}
         collected["tool_calls"] = list(progress.get("tool_calls", []))
@@ -542,14 +591,16 @@ class DvdRagService(BaseLlmService):
                 # retrieval instead, without another planner round trip.
                 plan = validate_retrieval_plan(last_plan)
             else:
-                plan = await self.planner.build_plan(
-                    model,
-                    user_query,
-                    history,
-                    prev_critique,
-                    prev_query,
-                    available_tags=await self._corpus_tags(dvd_mcp_client),
-                )
+                with metrics.stage("planner"):
+                    plan = await self.planner.build_plan(
+                        model,
+                        user_query,
+                        history,
+                        prev_critique,
+                        prev_query,
+                        available_tags=await self._corpus_tags(dvd_mcp_client),
+                    )
+                metrics.add("planner_calls")
             plan = apply_scope(
                 plan, user_query, collected.get("document_scope"), history
             )
@@ -637,6 +688,20 @@ class DvdRagService(BaseLlmService):
                 )
                 plan, search_key = broadened, broadened_key
             collected["intent"] = plan.intent
+            metrics.decide(
+                rag_iterations=iteration,
+                retrieval_mode=plan.retrieval_mode,
+                query_type=(
+                    "document_list"
+                    if plan.intent == "document_list"
+                    else (
+                        "exact_reference"
+                        if plan.retrieval_mode != "semantic"
+                        and not plan.rank_by_relevance
+                        else plan.retrieval_mode
+                    )
+                ),
+            )
             repairing = bool(
                 pending_revision and pending_revision.get("search_key") == search_key
             )
@@ -709,9 +774,12 @@ class DvdRagService(BaseLlmService):
                         + "…",
                     ),
                 )
-                search_result = await self._retrieve_fragments(
-                    dvd_mcp_client, plan, scenario_id, collected
-                )
+                with metrics.stage("retrieval"):
+                    search_result = await self._retrieve_fragments(
+                        dvd_mcp_client, plan, scenario_id, collected
+                    )
+                metrics.add("retrieval_rounds")
+                metrics.add("mcp_calls", len(search_result["recorded_calls"]))
                 for call in search_result.pop("recorded_calls"):
                     yield await self._buf(
                         request_id,
@@ -797,9 +865,12 @@ class DvdRagService(BaseLlmService):
                         f"{self._filter_note(plan)})…",
                     ),
                 )
-                search_result, calls = await self._semantic_search(
-                    dvd_mcp_client, plan, scenario_id
-                )
+                with metrics.stage("retrieval"):
+                    search_result, calls = await self._semantic_search(
+                        dvd_mcp_client, plan, scenario_id
+                    )
+                metrics.add("retrieval_rounds")
+                metrics.add("retrieval_queries", len(queries))
                 if plan.intent == "document_list" and search_result.get("hits"):
                     yield await self._buf(
                         request_id,
@@ -808,11 +879,13 @@ class DvdRagService(BaseLlmService):
                             "Уточняю найденные и упомянутые документы…",
                         ),
                     )
-                    search_result, document_calls = await self._document_search(
-                        dvd_mcp_client, plan, scenario_id, search_result
-                    )
+                    with metrics.stage("retrieval"):
+                        search_result, document_calls = await self._document_search(
+                            dvd_mcp_client, plan, scenario_id, search_result
+                        )
                     calls += document_calls
                 hits = search_result.get("hits") or []
+                metrics.add("mcp_calls", len(calls))
                 collected["tool_calls"].extend(calls)
                 for call in calls:
                     yield await self._buf(
@@ -823,7 +896,9 @@ class DvdRagService(BaseLlmService):
                     )
 
             if search_key not in retrieved:
-                hits = await complete_cut_fragments(dvd_mcp_client, hits)
+                with metrics.stage("fragment_completion"):
+                    hits = await complete_cut_fragments(dvd_mcp_client, hits)
+                metrics.add("retrieved_hits", len(hits))
                 search_result["hits"] = hits
                 completed = sum(1 for hit in hits if hit.get("continued_by"))
                 if completed:
@@ -927,9 +1002,14 @@ class DvdRagService(BaseLlmService):
             )
             prepared = prepared_contexts.get(search_key)
             if prepared is None:
-                prepared = await self.context_reducer.prepare(
-                    model, intent_query, context, history
-                )
+                metrics.decide(context_size_bytes=len(context.encode("utf-8")))
+                with metrics.stage("context_prepare"):
+                    prepared = await self.context_reducer.prepare(
+                        model, intent_query, context, history
+                    )
+                if prepared.reduction_rounds:
+                    metrics.add("context_reductions")
+                    metrics.decide(context_reduction_used=True)
                 if not prepared.failed_parts or (
                     prepared.processed_parts and prepared.text.strip()
                 ):
@@ -972,9 +1052,11 @@ class DvdRagService(BaseLlmService):
                         f"Исправляю отмеченные места ответа (попытка {iteration})…",
                     ),
                 )
-                body = await self._revise_answer(
-                    model, intent_query, context, revision, request_id, iteration
-                )
+                with metrics.stage("revision"):
+                    body = await self._revise_answer(
+                        model, intent_query, context, revision, request_id, iteration
+                    )
+                metrics.decide(revision_used=True)
                 verified = [AuditedClaim(**c) for c in revision.get("verified") or []]
                 if body is not None:
                     kept = set(AnswerCritic._claim_texts(body))
@@ -1018,22 +1100,24 @@ class DvdRagService(BaseLlmService):
                         "answer_drafting", f"Формирую ответ (попытка {iteration})…"
                     ),
                 )
+                metrics.add("drafts")
                 try:
-                    async for chunk_event in self._generate_answer(
-                        model,
-                        intent_query,
-                        context,
-                        # A grounded draft needs low variance; the request default
-                        # (1.0) suits free chat, not quoting norms.
-                        min(temperature, _answer_temperature()),
-                        history,
-                        iteration,
-                        revision_note,
-                        context_failures=generation_failures,
-                        intent=plan.intent,
-                    ):
-                        if text := chunk_event["content"]["text"]:
-                            draft_parts.append(text)
+                    with metrics.stage("answer_generation"):
+                        async for chunk_event in self._generate_answer(
+                            model,
+                            intent_query,
+                            context,
+                            # A grounded draft needs low variance; the request default
+                            # (1.0) suits free chat, not quoting norms.
+                            min(temperature, _answer_temperature()),
+                            history,
+                            iteration,
+                            revision_note,
+                            context_failures=generation_failures,
+                            intent=plan.intent,
+                        ):
+                            if text := chunk_event["content"]["text"]:
+                                draft_parts.append(text)
                 except AnswerGenerationError as exc:
                     yield await self._fail_context(
                         request_id, "answer_generation", [str(exc)]
@@ -1060,9 +1144,12 @@ class DvdRagService(BaseLlmService):
                     "Проверяю ответ на полноту и соответствие источникам…",
                 ),
             )
-            review_context = await self.context_reducer.prepare(
-                model, intent_query + "\n" + draft, context
-            )
+            with metrics.stage("review_context_prepare"):
+                review_context = await self.context_reducer.prepare(
+                    model, intent_query + "\n" + draft, context
+                )
+            if review_context.reduction_rounds:
+                metrics.add("context_reductions")
             if review_context.failed_parts:
                 if (
                     not review_context.processed_parts
@@ -1079,16 +1166,18 @@ class DvdRagService(BaseLlmService):
                     review_context.failed_parts,
                 )
                 collected["context_processing"]["complete"] = False
+            metrics.add("critic_calls")
             try:
-                verdict = await self.critic.review(
-                    model,
-                    intent_query,
-                    review_context.text,
-                    draft,
-                    intent=plan.intent,
-                    verified=verified,
-                    **recheck,
-                )
+                with metrics.stage("critic"):
+                    verdict = await self.critic.review(
+                        model,
+                        intent_query,
+                        review_context.text,
+                        draft,
+                        intent=plan.intent,
+                        verified=verified,
+                        **recheck,
+                    )
             except Exception as exc:
                 logger.opt(exception=exc).error(
                     "DVD review failed request_id={} stage=self_review iteration={} "
@@ -1103,6 +1192,8 @@ class DvdRagService(BaseLlmService):
             partial_evidence.add(
                 verdict.claims, draft, raw_context, self.critic._literal_defects
             )
+            if metrics.counters.get("critic_calls") == 1:
+                metrics.decide(first_draft_accepted=verdict.satisfied)
             if verdict.satisfied:
                 if collected.get("context_incomplete"):
                     draft += "\n\n" + _PARTIAL_CONTEXT_WARNING
@@ -1762,7 +1853,9 @@ class DvdRagService(BaseLlmService):
             ),
         )
         try:
-            approved = await self.critic.select_partial(model, query, evidence)
+            with run_metrics(collected).stage("critic"):
+                approved = await self.critic.select_partial(model, query, evidence)
+            run_metrics(collected).decide(partial_answer=True)
             answer = evidence.render(approved)
             listing = self._source_listing(collected)
             if listing and not approved:
@@ -1814,6 +1907,8 @@ class DvdRagService(BaseLlmService):
     async def _buf(self, request_id: str, event: dict) -> dict:
         """Persist the event for reconnect replay before returning it."""
         await self.state_store.buffer_event(request_id, event)
+        if event.get("type") == "chunk" and (event.get("content") or {}).get("text"):
+            run_metrics(self._active.get(request_id)).first_answer()
         return event
 
     async def _save_progress(
@@ -1889,9 +1984,10 @@ class DvdRagService(BaseLlmService):
         try:
             correction = None
             for _ in range(2):
-                assessment = await self.conversation_evidence.assess(
-                    model, query, history, snapshot, correction=correction
-                )
+                with run_metrics(collected).stage("context_check"):
+                    assessment = await self.conversation_evidence.assess(
+                        model, query, history, snapshot, correction=correction
+                    )
                 numbers = set(assessment.source_numbers)
                 valid = numbers and all(
                     1 <= n <= len(snapshot["hits"]) for n in numbers
@@ -1929,9 +2025,15 @@ class DvdRagService(BaseLlmService):
                             "Проверяю ответ по сохранённым исходным текстам…",
                         ),
                     )
-                    verdict = await self.critic.review(
-                        model, query, context, assessment.answer, require_answer=True
-                    )
+                    with run_metrics(collected).stage("critic"):
+                        verdict = await self.critic.review(
+                            model,
+                            query,
+                            context,
+                            assessment.answer,
+                            require_answer=True,
+                        )
+                    run_metrics(collected).add("critic_calls")
                     if verdict.satisfied:
                         reference = parse_reference(query)
                         snapshot = {**snapshot, "question": query}
