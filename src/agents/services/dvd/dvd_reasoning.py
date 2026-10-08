@@ -36,6 +36,8 @@ from src.agents.services.service_entities.dvd_plan import (
     validate_retrieval_plan,
 )
 
+from . import flags
+from .answer_risk import AnswerRisk
 from .clarification import parse_choice, selected_choice
 from .context_reducer import current_context_window
 from .dvd_context import source_records
@@ -127,16 +129,26 @@ def _clean_str_list(
     return cleaned or None
 
 
-def critic_reasoning_effort(llm_client, model: str) -> str | None:
-    """Reasoning effort for gpt-oss audits (``DVD_CRITIC_REASONING_EFFORT``).
+def critic_reasoning_effort(
+    llm_client, model: str, risk: AnswerRisk | None = None
+) -> str | None:
+    """Reasoning effort for gpt-oss audits.
 
-    Audits dominate document-QA latency. Other models keep their own default.
+    Audits dominate document-QA latency. A low-risk answer (see
+    :mod:`answer_risk`) gets ``DVD_CRITIC_LOW_RISK_EFFORT`` (``low``) while
+    ``DVD_ADAPTIVE_CRITIC`` is on; every other audit, and an unclassified one,
+    gets ``DVD_CRITIC_REASONING_EFFORT`` (``medium``). Other models keep their
+    own default.
     """
 
     if not (isinstance(llm_client, OpenAiCompatAdapter) and "gpt-oss" in model.lower()):
         return None
     effort = (os.getenv("DVD_CRITIC_REASONING_EFFORT") or "medium").strip().lower()
-    return effort if effort in _VALID_EFFORTS else "medium"
+    effort = effort if effort in _VALID_EFFORTS else "medium"
+    if risk is not None and risk.low and flags.enabled(flags.ADAPTIVE_CRITIC):
+        low = (os.getenv("DVD_CRITIC_LOW_RISK_EFFORT") or "low").strip().lower()
+        return low if low in _VALID_EFFORTS else "low"
+    return effort
 
 
 async def _request_json(
@@ -523,6 +535,7 @@ class AnswerCritic:
         verified: list[AuditedClaim] | None = None,
         previous: list[Correction] | None = None,
         removed: list[str] | None = None,
+        risk: AnswerRisk | None = None,
     ) -> CriticVerdict:
         """Audit ``answer``; ``verified`` are claims supported by an earlier audit.
 
@@ -530,6 +543,7 @@ class AnswerCritic:
         audited again, so a targeted revision is judged on what it changed.
         ``previous`` are the corrections that revision applied and ``removed`` the
         lines it deleted: a re-review checks them and raises no new omissions.
+        ``risk`` sizes the reasoning effort (:func:`critic_reasoning_effort`).
         """
         recheck = previous is not None
         if defects := self._literal_defects(context, answer):
@@ -588,7 +602,7 @@ class AnswerCritic:
                         **({"source_id": [*labels, ""]} if labels else {}),
                     }
                 },
-                reasoning_effort=critic_reasoning_effort(self.llm_client, model),
+                reasoning_effort=critic_reasoning_effort(self.llm_client, model, risk),
                 output=AUDIT_OUTPUT,
                 # A re-review checks the requested edits; new omissions would undo
                 # deletions the critic asked for and never converge.

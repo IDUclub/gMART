@@ -31,6 +31,7 @@ from src.agents.services.dvd.answer_generation import (
     tables_to_lists,
 )
 from src.agents.services.dvd.answer_revision import AnswerReviser
+from src.agents.services.dvd.answer_risk import AnswerRisk, assess_risk
 from src.agents.services.dvd.clarification import (
     CLARIFICATION,
     matching_choices,
@@ -57,7 +58,11 @@ from src.agents.services.dvd.document_reference import (
     wants_full_quote,
 )
 from src.agents.services.dvd.dvd_context import DvdContextBuilder
-from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
+from src.agents.services.dvd.dvd_reasoning import (
+    AnswerCritic,
+    RetrievalPlanner,
+    critic_reasoning_effort,
+)
 from src.agents.services.dvd.fragment_continuation import complete_cut_fragments
 from src.agents.services.dvd.partial_answer import PartialAnswerEvidence
 from src.agents.services.dvd.query_terms import TASK_LABEL, mentioned_documents
@@ -1166,7 +1171,14 @@ class DvdRagService(BaseLlmService):
                     review_context.failed_parts,
                 )
                 collected["context_processing"]["complete"] = False
-            metrics.add("critic_calls")
+            risk = assess_risk(
+                draft,
+                self._source_documents(hits),
+                intent=plan.intent,
+                rejected_before=iteration > 1 or revision is not None,
+                context_incomplete=bool(collected.get("context_incomplete")),
+            )
+            self._record_critic_effort(metrics, model, risk)
             try:
                 with metrics.stage("critic"):
                     verdict = await self.critic.review(
@@ -1176,6 +1188,7 @@ class DvdRagService(BaseLlmService):
                         draft,
                         intent=plan.intent,
                         verified=verified,
+                        risk=risk,
                         **recheck,
                     )
             except Exception as exc:
@@ -1610,6 +1623,23 @@ class DvdRagService(BaseLlmService):
         )
         return None if broadened.model_dump() == plan.model_dump() else broadened
 
+    def _source_documents(self, hits: list[dict]) -> dict[str, tuple]:
+        """Document edition behind every source label of ``build_context(hits)``."""
+        return {
+            f"[{index}]": (hit.get("doc_id"), hit.get("name"), hit.get("version"))
+            for index, hit in enumerate(self.context_builder.ordered_hits(hits), 1)
+        }
+
+    def _record_critic_effort(self, metrics, model: str, risk: AnswerRisk) -> None:
+        effort = critic_reasoning_effort(self.llm_client, model, risk) or "default"
+        metrics.add("critic_calls")
+        metrics.add(f"critic_effort_{effort}")
+        metrics.decide(
+            critic_reasoning_effort=effort,
+            answer_risk=risk.level,
+            answer_risk_reasons=list(risk.reasons),
+        )
+
     @staticmethod
     def _remember_sources(collected: dict[str, Any], hits: list[dict]) -> None:
         """Keep document/clause metadata of every retrieval for a truthful fallback."""
@@ -2025,6 +2055,12 @@ class DvdRagService(BaseLlmService):
                             "Проверяю ответ по сохранённым исходным текстам…",
                         ),
                     )
+                    risk = assess_risk(
+                        assessment.answer,
+                        self._source_documents(snapshot["hits"]),
+                        rejected_before=correction is not None,
+                    )
+                    self._record_critic_effort(run_metrics(collected), model, risk)
                     with run_metrics(collected).stage("critic"):
                         verdict = await self.critic.review(
                             model,
@@ -2032,8 +2068,8 @@ class DvdRagService(BaseLlmService):
                             context,
                             assessment.answer,
                             require_answer=True,
+                            risk=risk,
                         )
-                    run_metrics(collected).add("critic_calls")
                     if verdict.satisfied:
                         reference = parse_reference(query)
                         snapshot = {**snapshot, "question": query}
