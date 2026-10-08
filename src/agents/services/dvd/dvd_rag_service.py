@@ -2133,9 +2133,14 @@ class DvdRagService(BaseLlmService):
     async def _buf(self, request_id: str, event: dict) -> dict:
         """Persist the event for reconnect replay before returning it."""
         collected = self._active.get(request_id)
-        if event.get("type") == "chunk" and collected and collected.get("chat_setup"):
-            # The client learns its chat before the answer: journal the chat
-            # events first; the request's generator yields them before this one.
+        if (
+            event.get("type") in {"chunk", "error"}
+            and collected
+            and collected.get("chat_setup")
+        ):
+            # The client learns its chat before the answer (or a terminal error):
+            # journal the chat events first; the request's generator yields them
+            # before this one.
             collected.setdefault("joined_events", []).extend(
                 await self._join_chat_setup(request_id, collected)
             )

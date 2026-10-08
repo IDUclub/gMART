@@ -139,3 +139,18 @@ async def test_follow_up_question_is_stored_before_the_answer(service):
     release.set()
     await answer
     assert stored == ["question", "answer"]
+
+
+async def test_chat_is_announced_before_a_terminal_error(service, fake_llm, fake_mcp):
+    from src.agents.services.dvd.context_reducer import PreparedContext
+
+    fake_llm.json_responses = [plan_json()]
+    service.context_reducer.prepare = AsyncMock(
+        return_value=PreparedContext("", failed_parts=["round-1/part-1: [1] (x)"])
+    )
+    service.rename_chat_with_generated_title = AsyncMock(return_value="Нормы")
+    events = await _run(service, fake_mcp)
+    order = types_of(events)
+    assert order.index("service_event") < order.index("error")
+    request_id = events[0]["content"]["request_id"]
+    assert await service.state_store.get_buffered_events(request_id) == events
