@@ -23,7 +23,11 @@ from src.agents.model_clients.context_budget import (
 )
 from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
-from src.agents.services.dvd.document_reference import parse_reference, wants_full_quote
+from src.agents.services.dvd.document_reference import (
+    DESIGNATION,
+    parse_reference,
+    wants_full_quote,
+)
 from src.agents.services.dvd.retrieval_scope import apply_scope
 from src.agents.services.dvd.retry_policy import CriticResponseError
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
@@ -113,6 +117,15 @@ and do not ask to restore removed_lines: missing_requirements must be []. Reject
 only a changed or added line that is still wrong, with a correction for it."""
 # The planner prompt lists the corpus tags only while the list stays readable.
 _MAX_PROMPT_TAGS = 150
+# Literal cues the deterministic route cannot resolve: an edition or year (outside
+# the document designation), amendments, tables/figures, comparisons and
+# selections among several targets. The LLM planner handles these.
+_NEEDS_PLANNER = re.compile(
+    r"\bред(?:акци\w*)?\b|\b(?:19|20)\d{2}\b|изменени|поправк|таблиц|рисун"
+    r"|сравн|отлич|разниц|\bили\b|\bи\s+(?:пункт|стать|раздел|глав|част)"
+    r"|мо[её]м\s+документ|загруженн",
+    re.I,
+)
 
 
 def _clean_str_list(
@@ -311,6 +324,59 @@ class RetrievalPlanner:
         plan = self._clamp(plan, user_query, available_tags)
         plan = apply_scope(plan, user_query, history=history)
         logger.info(f"DVD retrieval plan: {plan.model_dump_json(ensure_ascii=False)}")
+        return plan
+
+    def fast_plan(
+        self,
+        user_query: str,
+        history: list[dict] | None = None,
+        scope: dict | None = None,
+    ) -> RetrievalPlan | None:
+        """An exact structural plan read from the literal reference, without the LLM.
+
+        Covers «что сказано в пункте 5.3 СП 55», «процитируй статью 51 ГрК РФ» and
+        an address continuing the document already selected in the conversation.
+        Returns ``None`` whenever the request needs the planner's judgement: no
+        address or no document, a section/chapter topic search, several documents,
+        an edition/amendment, a table or figure, a document list, or the
+        orchestrator's task wording. The same deterministic clamp and scope rules
+        as for an LLM plan apply, so both routes produce the same exact plan.
+        """
+        question, task = split_task(user_query)
+        reference = parse_reference(user_query)
+        if task or not reference.pattern or len(reference.document_names) > 1:
+            return None
+        leaf = reference.pattern.rsplit("/", 1)[-1].strip()
+        if leaf.startswith(("раздел ", "глава ", "приложение ")) and not (
+            wants_full_quote(user_query)
+        ):
+            return None
+        literal = DESIGNATION.sub(" ", user_query)
+        if _NEEDS_PLANNER.search(literal) or is_document_list_question(question):
+            return None
+        plan = self._clamp(
+            validate_retrieval_plan(
+                {
+                    "retrieval_mode": "structure",
+                    "pattern": reference.pattern,
+                    "search_query": question,
+                    "context_height": 0,
+                }
+            ),
+            user_query,
+        )
+        # The document comes from the request, the selected scope or the last
+        # user message naming one; without any, the planner must search.
+        plan = apply_scope(plan, user_query, scope, history)
+        if (
+            plan.retrieval_mode != "structure"
+            or plan.rank_by_relevance
+            or not (plan.document_names or plan.doc_id)
+        ):
+            return None
+        logger.info(
+            f"DVD retrieval plan (fast path): {plan.model_dump_json(ensure_ascii=False)}"
+        )
         return plan
 
     @staticmethod

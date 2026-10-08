@@ -112,7 +112,6 @@ async def test_full_pasted_selection_keeps_original_question_and_quote(
     service, fake_llm
 ):
     question = "Что написано в СП 55 пункт 3?"
-    fake_llm.json_responses = [plan_json()]
     first = await run(
         service, Pages([dict(ambiguous=True, candidates=sp_candidates())]), question
     )
@@ -148,7 +147,9 @@ async def test_full_pasted_selection_keeps_original_question_and_quote(
     assert client.calls[0][1]["pattern"] == "раздел 3"
     assert client.calls[0][1]["doc_id"] == "sp55"
     assert "Полная цитата" in answer_text(events)
-    assert len(fake_llm.chat_calls) == 1  # The full source needs no LLM rewriting.
+    # The address is planned without the LLM in both turns, and the full source
+    # needs no rewriting: the whole exchange makes no model call.
+    assert len(fake_llm.chat_calls) == 0
 
 
 async def test_previous_quote_keeps_document_but_is_retrieved_again(service):
@@ -165,7 +166,11 @@ async def test_previous_quote_keeps_document_but_is_retrieved_again(service):
     assert "Длинный исходный текст" not in history[0]["content"]
 
 
-async def test_summary_restores_filter_when_planner_omits_it(service, fake_llm):
+async def test_summary_restores_filter_when_planner_omits_it(
+    service, fake_llm, monkeypatch
+):
+    # About the planner's own view of the summary: route this address through it.
+    monkeypatch.setenv("DVD_PLANNER_FAST_PATH", "false")
     service.get_chat_messages.side_effect = RuntimeError("unavailable")
     service.chat_storage_client.get_context.return_value = {
         "content": {

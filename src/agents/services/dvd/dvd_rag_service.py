@@ -25,6 +25,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.dvd import flags
 from src.agents.services.dvd.answer_generation import (
     AnswerGenerationError,
     DvdAnswerGenerator,
@@ -546,6 +547,7 @@ class DvdRagService(BaseLlmService):
             progress.get("mentioned_documents") or []
         )
         collected["intent"] = progress.get("intent") or "norm"
+        collected["fast_path_failed"] = bool(progress.get("fast_path_failed"))
         start_iteration = int(progress.get("completed_iterations", 0)) + 1
         final_iteration = start_iteration
         collected["selected_choice"] = progress.get(
@@ -595,7 +597,20 @@ class DvdRagService(BaseLlmService):
                 # The critic's query and deterministic broadening change the
                 # retrieval instead, without another planner round trip.
                 plan = validate_retrieval_plan(last_plan)
+            elif fast_plan := (
+                flags.enabled(flags.PLANNER_FAST_PATH)
+                and not prev_critique
+                and not collected.get("fast_path_failed")
+                and self.planner.fast_plan(
+                    user_query, history, collected.get("document_scope")
+                )
+            ):
+                # An exact address with its document needs no LLM to plan.
+                plan = fast_plan
+                collected["fast_path"] = True
+                metrics.decide(planner_bypassed=True)
             else:
+                collected["fast_path"] = False
                 with metrics.stage("planner"):
                     plan = await self.planner.build_plan(
                         model,
@@ -606,6 +621,7 @@ class DvdRagService(BaseLlmService):
                         available_tags=await self._corpus_tags(dvd_mcp_client),
                     )
                 metrics.add("planner_calls")
+                metrics.decide(planner_bypassed=False)
             plan = apply_scope(
                 plan, user_query, collected.get("document_scope"), history
             )
@@ -823,6 +839,33 @@ class DvdRagService(BaseLlmService):
                     ):
                         yield event
                     return
+                if not search_result.get("hits") and collected.get("fast_path"):
+                    # The literal reading of the reference found nothing. The planner
+                    # reads the request instead (another title, edition or address).
+                    logger.info(
+                        "DVD fast path found nothing request_id={} iteration={}; "
+                        "falling back to the planner",
+                        request_id,
+                        iteration,
+                    )
+                    metrics.decide(fast_path_fallback=True)
+                    collected.update(
+                        fast_path=False,
+                        fast_path_failed=True,
+                        retrieval_constraints=None,
+                        last_plan=None,
+                    )
+                    progress = {**progress, "retrieval_constraints": None}
+                    last_plan, replan = None, True
+                    if not is_last:
+                        await self._save_progress(
+                            request_id,
+                            collected,
+                            completed_iterations=iteration,
+                            accepted=False,
+                            replan=True,
+                        )
+                        continue
                 if not search_result.get("hits"):
                     answer = "По заданным документу, редакции, структуре и наименованию совпадений не найдено. Уточните обозначение или структурную ссылку. Ограничения поиска сохранены."
                     async for event in self._finish_retrieval(
@@ -1982,6 +2025,7 @@ class DvdRagService(BaseLlmService):
                 "found_sources": collected.get("found_sources", []),
                 "mentioned_documents": collected.get("mentioned_documents", []),
                 "intent": collected.get("intent"),
+                "fast_path_failed": bool(collected.get("fast_path_failed")),
             },
         )
 
