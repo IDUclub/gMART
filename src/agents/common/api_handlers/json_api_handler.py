@@ -189,12 +189,12 @@ class JsonApiHandler:
         Retries only transient failures (network errors and "reset by peer" 500s);
         terminal statuses raise immediately via :meth:`_check_response_status`.
         Args:
-            method (str): "get" or "post".
+            method (str): "get", "post" or "patch".
             endpoint (str): Endpoint url.
             headers (dict | None): Request headers.
             params (dict | None): Query parameters.
             session (aiohttp.ClientSession): Session to use.
-            data (dict | None): JSON body for POST requests.
+            data (dict | None): JSON body for POST/PATCH requests.
         Returns:
             dict | list | None: Parsed response data.
         Raises:
@@ -210,7 +210,8 @@ class JsonApiHandler:
                 if method == "get":
                     request_cm = session.get(url=url, headers=headers, params=params)
                 else:
-                    request_cm = session.post(
+                    send = session.patch if method == "patch" else session.post
+                    request_cm = send(
                         url=url, headers=headers, params=params, json=data
                     )
                 async with request_cm as response:
@@ -295,4 +296,26 @@ class JsonApiHandler:
                 )
         return await self._request(
             "post", endpoint, headers, params, session, data=data
+        )
+
+    async def patch(
+        self,
+        endpoint: str,
+        auth_token: str | None = None,
+        headers: dict | None = None,
+        params: dict | None = None,
+        data: dict | None = None,
+        session: aiohttp.ClientSession | None = None,
+        user_id: str | None = None,
+    ) -> dict | list | None:
+        """Function to partially update data in api; arguments as in :meth:`post`."""
+
+        headers = await self._with_auth(headers, auth_token, user_id)
+        if not session:
+            async with aiohttp.ClientSession() as session:
+                return await self._request(
+                    "patch", endpoint, headers, params, session, data=data
+                )
+        return await self._request(
+            "patch", endpoint, headers, params, session, data=data
         )

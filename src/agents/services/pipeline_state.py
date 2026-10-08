@@ -275,6 +275,20 @@ class PipelineStateStore:
             keepttl=True,
         )
 
+    async def set_chat_id(self, request_id: str, chat_id: str | None) -> None:
+        """Record the chat of a run whose chat was created after the run started."""
+        raw = await self._retry(self._redis.get, self._key(request_id, "state"))
+        if not raw:
+            return
+        state = json.loads(raw)
+        state["chat_id"] = chat_id
+        await self._retry(
+            self._redis.set,
+            self._key(request_id, "state"),
+            json.dumps(state, ensure_ascii=False),
+            keepttl=True,
+        )
+
     async def save_checkpoint(self, request_id: str, step: str, data: Any) -> None:
         raw = await self._retry(self._redis.get, self._key(request_id, "checkpoint"))
         checkpoint: dict = json.loads(raw) if raw else {}

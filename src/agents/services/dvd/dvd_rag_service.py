@@ -66,7 +66,11 @@ from src.agents.services.dvd.dvd_reasoning import (
 )
 from src.agents.services.dvd.fragment_continuation import complete_cut_fragments
 from src.agents.services.dvd.partial_answer import PartialAnswerEvidence
-from src.agents.services.dvd.query_terms import TASK_LABEL, mentioned_documents
+from src.agents.services.dvd.query_terms import (
+    TASK_LABEL,
+    mentioned_documents,
+    split_task,
+)
 from src.agents.services.dvd.retrieval_scope import (
     apply_scope,
     continues_document,
@@ -300,7 +304,19 @@ class DvdRagService(BaseLlmService):
             # A2A runs and anonymous public runs pass persist_history=False: no chat
             # is created and nothing is written to ChatStorage (an anonymous run has
             # no user JWT, and ChatStorage accepts none of its calls without one).
-            if not chat_id and persist_history:
+            if (
+                not chat_id
+                and persist_history
+                and flags.enabled(flags.DEFERRED_CHAT_SETUP)
+            ):
+                # The answer does not need the chat: create it beside the pipeline
+                # under a provisional title, and generate the real title after the
+                # answer. Its events reach the journal before the first answer text.
+                collected["chat_setup"] = asyncio.create_task(
+                    self._create_provisional_chat(token, user_query, scenario_id)
+                )
+                metrics.decide(deferred_chat_setup=True)
+            elif not chat_id and persist_history:
                 project_id: int | None = None
                 if scenario_id is not None:
                     try:
@@ -374,17 +390,15 @@ class DvdRagService(BaseLlmService):
         # on reconnect (the original run already stored it). Chat storage failures
         # must not break the stream.
         if persist_history and not is_reconnect and original_chat_id:
-            try:
+            store_question = self._persist_question(
+                token, original_chat_id, user_query, scenario_id
+            )
+            if flags.enabled(flags.DEFERRED_CHAT_SETUP):
+                # Stored beside the pipeline; the answer is stored after it.
+                collected["question_persisted"] = asyncio.create_task(store_question)
+            else:
                 with metrics.stage("persistence"):
-                    await self.add_single_message(
-                        token,
-                        original_chat_id,
-                        RoleEnum.USER,
-                        user_query,
-                        scenario_id=scenario_id,
-                    )
-            except Exception as exc:
-                logger.warning(f"DVD QA: failed to persist user question: {exc}")
+                    await store_question
 
         collected["chat_id"] = chat_id
         # A document the user selected persists. One merely named in the chat
@@ -465,12 +479,20 @@ class DvdRagService(BaseLlmService):
                 request_id,
                 scenario_id,
             ):
+                # Chat events the journal recorded just before this event.
+                for joined in collected.pop("joined_events", []):
+                    yield joined
                 yield event
+        for event in await self._join_chat_setup(request_id, collected):
+            yield event
+        chat_id = collected.get("chat_id")
 
         # Persist only when this run actually produced the answer — never on a reconnect
         # that merely replayed an already-completed pipeline (avoids duplicate messages).
         if persist_history and collected.get("newly_completed"):
             self._schedule_persist_answer(token, chat_id, collected, scenario_id)
+        if chat_id and collected.get("provisional_title"):
+            self._schedule_chat_title(token, chat_id, model, user_query)
 
     # ------------------------------------------------------------------
     # Inner iterative loop (retrieve -> draft -> critique -> refine)
@@ -622,6 +644,9 @@ class DvdRagService(BaseLlmService):
                     )
                 metrics.add("planner_calls")
                 metrics.decide(planner_bypassed=False)
+            # The chat is needed from here on (document scope, clarifications).
+            for event in await self._join_chat_setup(request_id, collected):
+                yield event
             plan = apply_scope(
                 plan, user_query, collected.get("document_scope"), history
             )
@@ -1979,6 +2004,13 @@ class DvdRagService(BaseLlmService):
 
     async def _buf(self, request_id: str, event: dict) -> dict:
         """Persist the event for reconnect replay before returning it."""
+        collected = self._active.get(request_id)
+        if event.get("type") == "chunk" and collected and collected.get("chat_setup"):
+            # The client learns its chat before the answer: journal the chat
+            # events first; the request's generator yields them before this one.
+            collected.setdefault("joined_events", []).extend(
+                await self._join_chat_setup(request_id, collected)
+            )
         await self.state_store.buffer_event(request_id, event)
         if event.get("type") == "chunk" and (event.get("content") or {}).get("text"):
             run_metrics(self._active.get(request_id)).first_answer()
@@ -2272,6 +2304,111 @@ class DvdRagService(BaseLlmService):
     # Chat storage persistence (final answer only — drafts are not saved)
     # ------------------------------------------------------------------
 
+    _CHAT_INSTRUCTIONS = (
+        "Запрос направлен агенту вопросов по нормативной "
+        "документации (RAG по базе IDU_DVD)."
+    )
+    _PROVISIONAL_TITLE_CHARS = 60
+
+    @classmethod
+    def _provisional_title(cls, user_query: str) -> str:
+        """The question's beginning, cut at a word: the chat's name until renamed."""
+        question = " ".join(split_task(user_query)[0].split())
+        if len(question) <= cls._PROVISIONAL_TITLE_CHARS:
+            return question or "Вопрос по нормативной документации"
+        cut = question[: cls._PROVISIONAL_TITLE_CHARS].rsplit(" ", 1)[0]
+        return cut.rstrip(" ,.;:") + "…"
+
+    async def _create_provisional_chat(
+        self, token: str | None, user_query: str, scenario_id: int | None
+    ) -> dict[str, Any]:
+        """Create the chat with the first question under a provisional title.
+
+        Never raises: a chat storage outage must not break the answer.
+        """
+        result: dict[str, Any] = {"chat_id": None, "title": None, "events": []}
+        project_id: int | None = None
+        if scenario_id is not None:
+            try:
+                project_id = await self.urban_api_client.get_project_by_scenario(
+                    token, scenario_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"DVD QA: failed to resolve project_id for "
+                    f"scenario_id={scenario_id}: {exc}"
+                )
+                result["events"].append(self._project_lookup_failed_event(scenario_id))
+        try:
+            chat_id, title = await self.create_chat(
+                token,
+                "",
+                user_query,
+                additional_instructions=self._CHAT_INSTRUCTIONS,
+                scenario_id=scenario_id,
+                project_id=project_id,
+                resolve_project_id=False,
+                title=self._provisional_title(user_query),
+                agent_id="documents",
+            )
+        except Exception as exc:  # chat storage must not break the stream
+            logger.warning(f"DVD QA: failed to create chat: {exc}")
+            return result
+        result.update(chat_id=chat_id, title=title)
+        result["events"].append(self._chat_created_event(chat_id, title))
+        return result
+
+    async def _join_chat_setup(
+        self, request_id: str, collected: dict[str, Any]
+    ) -> list[dict]:
+        """Wait for a deferred chat setup; journal and return its events once."""
+        task = collected.pop("chat_setup", None)
+        if task is None:
+            return []
+        with run_metrics(collected).stage("chat_setup"):
+            setup = await task
+        if setup["chat_id"]:
+            collected["chat_id"] = setup["chat_id"]
+            collected["provisional_title"] = setup["title"]
+            await self.state_store.set_chat_id(request_id, setup["chat_id"])
+        return [await self._buf(request_id, event) for event in setup["events"]]
+
+    async def _persist_question(
+        self, token: str, chat_id: str, user_query: str, scenario_id: int | None
+    ) -> None:
+        try:
+            await self.add_single_message(
+                token, chat_id, RoleEnum.USER, user_query, scenario_id=scenario_id
+            )
+        except Exception as exc:
+            logger.warning(f"DVD QA: failed to persist user question: {exc}")
+
+    def _schedule_chat_title(
+        self, token: str, chat_id: str, model: str, user_query: str
+    ) -> None:
+        """Replace the provisional title by a generated one, off the answer's path."""
+
+        async def rename() -> None:
+            title = await self.rename_chat_with_generated_title(
+                token,
+                chat_id,
+                model,
+                split_task(user_query)[0],
+                self._CHAT_INSTRUCTIONS,
+            )
+            logger.info(f"DVD QA: chat {chat_id} titled {title!r}")
+
+        task = asyncio.create_task(rename())
+        task.add_done_callback(self._log_title_result)
+
+    @staticmethod
+    def _log_title_result(task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except Exception as exc:
+            # The chat keeps its provisional title (e.g. ChatStorage without rename).
+            logger.warning(f"DVD QA: chat title not updated: {exc}")
+
     def _schedule_persist_answer(
         self,
         token: str,
@@ -2293,6 +2430,9 @@ class DvdRagService(BaseLlmService):
         collected: dict[str, Any],
         scenario_id: int | None,
     ) -> None:
+        if question := collected.get("question_persisted"):
+            # The question was stored beside the pipeline; keep it first in the chat.
+            await question
         parts: list[TextPartRequest | ToolCallPartRequest] = []
         if collected.get("tool_calls"):
             calls = [
