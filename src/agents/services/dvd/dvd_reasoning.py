@@ -165,6 +165,28 @@ def critic_output_cap(lines: int) -> int:
     return max(_CRITIC_MIN_TOKENS, min(wanted, ceiling))
 
 
+def planner_reasoning_effort(llm_client, model: str) -> str | None:
+    """Reasoning effort of the gpt-oss retrieval planner (``DVD_PLANNER_REASONING_EFFORT``).
+
+    A plan is a short JSON object, but on a deployment whose default effort is
+    ``medium`` the planner reasoned for up to 20k tokens before it. ``low`` by
+    default; an empty value leaves the server default. Other models keep theirs.
+    """
+
+    if not (isinstance(llm_client, OpenAiCompatAdapter) and "gpt-oss" in model.lower()):
+        return None
+    effort = os.getenv("DVD_PLANNER_REASONING_EFFORT", "low").strip().lower()
+    return effort if effort in _VALID_EFFORTS else None
+
+
+def planner_output_cap() -> int:
+    """Output tokens one plan may use, reasoning included (``DVD_PLANNER_MAX_OUTPUT_TOKENS``)."""
+    try:
+        return max(1024, int(os.getenv("DVD_PLANNER_MAX_OUTPUT_TOKENS") or "4096"))
+    except ValueError:
+        return 4096
+
+
 def critic_reasoning_effort(
     llm_client, model: str, risk: AnswerRisk | None = None
 ) -> str | None:
@@ -343,12 +365,22 @@ class RetrievalPlanner:
             *(history or []),
             {"role": "user", "content": user_query},
         ]
-        plan = await _request_json(
-            self.llm_client,
-            model,
-            messages,
-            RetrievalPlan,
-        )
+        try:
+            plan = await _request_json(
+                self.llm_client,
+                model,
+                messages,
+                RetrievalPlan,
+                reasoning_effort=planner_reasoning_effort(self.llm_client, model),
+                max_tokens=planner_output_cap(),
+            )
+        except OutputCapped as exc:
+            # A plan that does not fit its cap is not worth waiting for: the
+            # question itself is a usable semantic query.
+            logger.warning(f"DVD planner fell back to the question: {exc}")
+            plan = validate_retrieval_plan(
+                {"retrieval_mode": "semantic", "search_query": user_query}
+            )
         plan = self._clamp(plan, user_query, available_tags)
         plan = apply_scope(plan, user_query, history=history)
         logger.info(f"DVD retrieval plan: {plan.model_dump_json(ensure_ascii=False)}")
