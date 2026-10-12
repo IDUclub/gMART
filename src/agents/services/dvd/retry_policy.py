@@ -7,6 +7,12 @@ class CriticResponseError(ValueError):
     reason = "critic_invalid_response"
 
 
+class CriticBudgetError(CriticResponseError):
+    """The audit did not finish within its output limit, even at low effort."""
+
+    reason = "critic_output_limit"
+
+
 class ReviewExhaustedError(ValueError):
     reason = "review_exhausted"
 

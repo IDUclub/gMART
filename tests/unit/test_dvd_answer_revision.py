@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from src.agents.services.dvd.answer_revision import (
     AnswerRevision,
     LineAddition,
@@ -12,6 +14,14 @@ from src.agents.services.dvd.dvd_reasoning import AnswerCritic
 from src.agents.services.service_entities.dvd_plan import AuditedClaim, ClaimEvidence
 from tests.helpers import FakeDvdMcpClient, answer_text, plan_json
 from tests.unit.test_dvd_rag_service import _run
+
+
+@pytest.fixture(autouse=True)
+def _strict_answers(monkeypatch):
+    # These cases cover the strict mode: a rejected line is rewritten, and a
+    # final partial answer keeps only verified claims.
+    monkeypatch.setenv("DVD_KNOWLEDGE_FALLBACK", "false")
+
 
 SOURCE = (
     "6.1.11 Кровлю гостиниц проектируют с учетом СП 17.13330. "
