@@ -104,6 +104,11 @@ def score_case(case: dict, record: dict) -> dict:
         "class": case["class"],
         "error": bool(record.get("error")) or not answer.strip(),
         "total_ms": record.get("total_ms"),
+        # Generated tokens do not depend on how busy the shared LLM server is.
+        "llm_tokens": ((record.get("server") or {}).get("llm") or {}).get(
+            "output_tokens"
+        ),
+        "llm_calls": ((record.get("server") or {}).get("llm") or {}).get("calls"),
         "knowledge": KNOWLEDGE in answer,
     }
     if not case.get("answerable", True):
@@ -149,6 +154,8 @@ def percentile(values, share):
 def summary(scores: list[dict]) -> dict:
     times = [s["total_ms"] / 1000 for s in scores if s["total_ms"]]
     answerable = [s for s in scores if "facts" in s]
+    tokens = [s["llm_tokens"] for s in scores if s.get("llm_tokens") is not None]
+    calls = [s["llm_calls"] for s in scores if s.get("llm_calls") is not None]
     return {
         "n": len(scores),
         "ok": sum(s["ok"] for s in scores),
@@ -160,6 +167,9 @@ def summary(scores: list[dict]) -> dict:
         "p50": percentile(times, 0.5),
         "p95": percentile(times, 0.95),
         "mean": statistics.mean(times) if times else None,
+        "tokens": statistics.mean(tokens) if tokens else None,
+        "tokens_p95": percentile(tokens, 0.95),
+        "calls": statistics.mean(calls) if calls else None,
     }
 
 
@@ -186,14 +196,16 @@ def main():
         runs.append((path.stem, {s["id"]: s for s in scores}))
 
     print(
-        "| Прогон | n | Верно | Факты | Источник | Ошибки | p50, с | p95, с | Среднее, с |"
+        "| Прогон | n | Верно | Факты | Источник | Ошибки | p50, с | p95, с | Среднее, с "
+        "| Токены LLM, среднее | Токены LLM, p95 | Вызовы LLM |"
     )
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for name, scores in runs:
         s = summary(list(scores.values()))
         print(
             f"| {name} | {s['n']} | {s['ok']} | {fmt(s['facts'] and s['facts'] * 100)} % "
-            f"| {s['cited']} | {s['errors']} | {fmt(s['p50'])} | {fmt(s['p95'])} | {fmt(s['mean'])} |"
+            f"| {s['cited']} | {s['errors']} | {fmt(s['p50'])} | {fmt(s['p95'])} | {fmt(s['mean'])} "
+            f"| {fmt(s['tokens'], 0)} | {fmt(s['tokens_p95'], 0)} | {fmt(s['calls'])} |"
         )
     classes = sorted({case["class"] for case in cases})
     print(
