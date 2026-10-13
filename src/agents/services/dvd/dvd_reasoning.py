@@ -777,6 +777,29 @@ class AnswerCritic:
                     effort,
                 )
                 audit = await audit_at("low")
+            full = critic_reasoning_effort(self.llm_client, model)
+            if (
+                pending
+                and effort != full
+                and not any(c.status == "supported" for c in audit.claims)
+            ):
+                # A short audit that confirms nothing would replace the whole
+                # answer with a refusal; it sometimes audits one line and skips
+                # the rest. Such a verdict is confirmed by the full audit.
+                logger.info(
+                    "DVD critic confirmed nothing at effort {}; auditing again at {}",
+                    effort,
+                    full,
+                )
+                try:
+                    audit = await audit_at(full)
+                except OutputCapped:
+                    logger.warning(
+                        "DVD critic reached its output cap {} at effort {}; "
+                        "keeping the short audit",
+                        cap,
+                        full,
+                    )
             claims = [
                 *(c for c in audit.claims if c.text not in kept),
                 *kept.values(),

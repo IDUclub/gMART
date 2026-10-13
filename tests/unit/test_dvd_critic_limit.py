@@ -3,6 +3,7 @@
 import pytest
 
 from src.agents.services.dvd import dvd_reasoning, literal_audit
+from src.agents.services.dvd.answer_risk import AnswerRisk
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, critic_output_cap
 from src.agents.services.dvd.retry_policy import CriticBudgetError
 from tests.helpers import FakeDvdMcpClient, FakeLlmClient, answer_text, plan_json
@@ -73,6 +74,51 @@ async def test_audit_that_never_finishes_is_a_budget_error(medium):
     with pytest.raises(CriticBudgetError):
         await AnswerCritic(llm).review("m", "вопрос", f"[1] СП 257\n{SOURCE}", ACCESS)
     assert llm.efforts == ["medium", "low"]
+
+
+@pytest.fixture
+def short_audit(monkeypatch):
+    """A classified answer gets the short audit; the full one is ``medium``."""
+    monkeypatch.setattr(
+        dvd_reasoning,
+        "critic_reasoning_effort",
+        lambda llm, model, risk=None: "medium" if risk is None else "low",
+    )
+
+
+RISK = AnswerRisk("high", ("numbers",))
+
+
+async def test_short_audit_that_confirms_nothing_is_repeated_in_full(short_audit):
+    llm = CappedLlm()
+    llm.json_responses = [
+        audit([(ACCESS, "insufficient", "")]),
+        audit([(ACCESS, "supported", SOURCE[-50:])], satisfied=True),
+    ]
+    verdict = await AnswerCritic(llm).review(
+        "m", "вопрос", f"[1] СП 257\n{SOURCE}", ACCESS, risk=RISK
+    )
+    assert verdict.satisfied
+    assert llm.efforts == ["low", "medium"]
+
+
+async def test_short_audit_that_confirms_a_line_is_final(short_audit):
+    llm = CappedLlm()
+    llm.json_responses = [audit([(ACCESS, "supported", SOURCE[-50:])], satisfied=True)]
+    await AnswerCritic(llm).review(
+        "m", "вопрос", f"[1] СП 257\n{SOURCE}", ACCESS, risk=RISK
+    )
+    assert llm.efforts == ["low"]
+
+
+async def test_capped_full_audit_keeps_the_short_verdict(short_audit):
+    llm = CappedLlm()
+    llm.json_responses = [audit([(ACCESS, "insufficient", "")]), LENGTH]
+    verdict = await AnswerCritic(llm).review(
+        "m", "вопрос", f"[1] СП 257\n{SOURCE}", ACCESS, risk=RISK
+    )
+    assert not verdict.satisfied
+    assert llm.efforts == ["low", "medium"]
 
 
 @pytest.mark.parametrize(
