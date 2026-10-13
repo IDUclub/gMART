@@ -1,12 +1,11 @@
 """How much an answer's audit can go wrong, to size the critic's reasoning effort.
 
 On gpt-oss-20b an audit takes ~3.5 s with ``reasoning_effort=low`` and ~12.4 s with
-``medium``. ``low`` misses more semantic defects, so it is used only for answers
-where little can be wrong: a short statement from one or two sources of one
-document edition, with no quantity, obligation or condition. Anything that the
-rules below do not recognise as low-risk stays high-risk: when the classifier is
-unsure, the audit keeps its full effort. If quality drops, widen these rules
-rather than send every answer back to ``medium``.
+``medium``. Low risk is a short statement from one or two sources of one document
+edition, with no quantity, obligation or condition. Anything the rules below do
+not recognise as low-risk stays high-risk, and the reasons say why;
+:func:`~.dvd_reasoning.critic_reasoning_effort` decides which reasons need the
+full audit.
 """
 
 from __future__ import annotations

@@ -75,17 +75,31 @@ def gpt_oss():
     return OpenAiCompatAdapter("http://llm:8000/v1")
 
 
-def test_low_risk_audit_uses_low_effort(gpt_oss, monkeypatch):
+def test_only_absence_claims_get_the_full_audit(gpt_oss, monkeypatch):
     monkeypatch.delenv("DVD_ADAPTIVE_CRITIC", raising=False)
     monkeypatch.delenv("DVD_CRITIC_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("DVD_CRITIC_FULL_AUDIT_REASONS", raising=False)
     low = assess_risk("Термин определён в своде правил [1].", ONE_DOCUMENT)
-    high = assess_risk("Не менее 6 м² [1].", ONE_DOCUMENT)
+    figures = assess_risk("Не менее 6 м² [1].", ONE_DOCUMENT)
+    absence = assess_risk("В фрагментах нет сведений о ширине катка.", ONE_DOCUMENT)
     assert critic_reasoning_effort(gpt_oss, "openai/gpt-oss-20b", low) == "low"
-    assert critic_reasoning_effort(gpt_oss, "openai/gpt-oss-20b", high) == "medium"
+    assert critic_reasoning_effort(gpt_oss, "openai/gpt-oss-20b", figures) == "low"
+    assert critic_reasoning_effort(gpt_oss, "openai/gpt-oss-20b", absence) == "medium"
     # An unclassified audit (e.g. partial-answer selection) keeps the full effort.
     assert critic_reasoning_effort(gpt_oss, "openai/gpt-oss-20b") == "medium"
     # Other models keep their own default.
     assert critic_reasoning_effort(gpt_oss, "qwen3", low) is None
+
+
+def test_full_audit_reasons_are_configurable(gpt_oss, monkeypatch):
+    figures = assess_risk("Не менее 6 м² [1].", ONE_DOCUMENT)
+    monkeypatch.setenv("DVD_CRITIC_FULL_AUDIT_REASONS", "numbers")
+    assert critic_reasoning_effort(gpt_oss, "openai/gpt-oss-20b", figures) == "medium"
+    # «any» restores the full audit for every answer that is not low-risk.
+    monkeypatch.setenv("DVD_CRITIC_FULL_AUDIT_REASONS", "any")
+    assert critic_reasoning_effort(gpt_oss, "openai/gpt-oss-20b", figures) == "medium"
+    low = assess_risk("Термин определён в своде правил [1].", ONE_DOCUMENT)
+    assert critic_reasoning_effort(gpt_oss, "openai/gpt-oss-20b", low) == "low"
 
 
 def test_adaptive_critic_switch_restores_fixed_effort(gpt_oss, monkeypatch):

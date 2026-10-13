@@ -192,21 +192,40 @@ def critic_reasoning_effort(
 ) -> str | None:
     """Reasoning effort for gpt-oss audits.
 
-    Audits dominate document-QA latency. A low-risk answer (see
-    :mod:`answer_risk`) gets ``DVD_CRITIC_LOW_RISK_EFFORT`` (``low``) while
-    ``DVD_ADAPTIVE_CRITIC`` is on; every other audit, and an unclassified one,
-    gets ``DVD_CRITIC_REASONING_EFFORT`` (``medium``). Other models keep their
-    own default.
+    Audits dominate document-QA latency. While ``DVD_ADAPTIVE_CRITIC`` is on,
+    an answer gets the short audit ``DVD_CRITIC_LOW_RISK_EFFORT`` (``low``)
+    unless its risk (see :mod:`answer_risk`) has a reason listed in
+    ``DVD_CRITIC_FULL_AUDIT_REASONS`` (``absence_claim``; ``any`` for every
+    reason). Those, an unclassified audit and every audit with the switch off
+    get the full ``DVD_CRITIC_REASONING_EFFORT`` (``medium``). On the quality
+    benchmark a short audit kept figures and obligations as right as the full
+    one with a fifth of the tokens, but moved «the fragments do not say» lines
+    out of the grounded answer. Other models keep their own default.
     """
 
     if not (isinstance(llm_client, OpenAiCompatAdapter) and "gpt-oss" in model.lower()):
         return None
     effort = (os.getenv("DVD_CRITIC_REASONING_EFFORT") or "medium").strip().lower()
     effort = effort if effort in _VALID_EFFORTS else "medium"
-    if risk is not None and risk.low and flags.enabled(flags.ADAPTIVE_CRITIC):
-        low = (os.getenv("DVD_CRITIC_LOW_RISK_EFFORT") or "low").strip().lower()
-        return low if low in _VALID_EFFORTS else "low"
-    return effort
+    if risk is None or not flags.enabled(flags.ADAPTIVE_CRITIC):
+        return effort
+    if _needs_full_audit(risk.reasons):
+        return effort
+    low = (os.getenv("DVD_CRITIC_LOW_RISK_EFFORT") or "low").strip().lower()
+    return low if low in _VALID_EFFORTS else "low"
+
+
+def _needs_full_audit(reasons: tuple[str, ...]) -> bool:
+    raw = os.getenv("DVD_CRITIC_FULL_AUDIT_REASONS")
+    listed = {
+        r.strip().lower()
+        for r in (raw if raw is not None and raw.strip() else "absence_claim").split(
+            ","
+        )
+        if r.strip()
+    }
+    listed.add("unclassified")
+    return bool(reasons) and ("any" in listed or bool(listed & set(reasons)))
 
 
 async def _request_json(
