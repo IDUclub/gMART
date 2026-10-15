@@ -631,10 +631,13 @@ async def test_unavailable_tokenizer_uses_conservative_fallback():
         await adapter.client.close()
 
 
-async def test_planner_output_is_proportional_to_its_input():
+async def test_planner_output_is_proportional_up_to_its_cap():
     from unittest.mock import AsyncMock
 
-    from src.agents.services.dvd.dvd_reasoning import RetrievalPlanner
+    from src.agents.services.dvd.dvd_reasoning import (
+        RetrievalPlanner,
+        planner_output_cap,
+    )
     from tests.helpers import plan_json
 
     adapter, calls = _adapter_with(
@@ -646,8 +649,10 @@ async def test_planner_output_is_proportional_to_its_input():
             "gpt-oss-20b", "Что написано в СП 55 пункт 3?"
         )
         assert plan.pattern == "3"
-        # Room for reasoning plus half the input, far below the 28k window rest.
-        assert calls.calls[0]["max_tokens"] == 4096 + 3000 // 2
+        # Room for reasoning plus half the input, held at the planner's cap.
+        assert calls.calls[0]["max_tokens"] == min(
+            4096 + 3000 // 2, planner_output_cap()
+        )
         assert calls.calls[0]["reasoning_effort"] == "low"
     finally:
         await adapter.client.close()

@@ -165,26 +165,67 @@ def critic_output_cap(lines: int) -> int:
     return max(_CRITIC_MIN_TOKENS, min(wanted, ceiling))
 
 
+def planner_reasoning_effort(llm_client, model: str) -> str | None:
+    """Reasoning effort of the gpt-oss retrieval planner (``DVD_PLANNER_REASONING_EFFORT``).
+
+    A plan is a short JSON object, but on a deployment whose default effort is
+    ``medium`` the planner reasoned for up to 20k tokens before it. ``low`` by
+    default; an empty value leaves the server default. Other models keep theirs.
+    """
+
+    if not (isinstance(llm_client, OpenAiCompatAdapter) and "gpt-oss" in model.lower()):
+        return None
+    effort = os.getenv("DVD_PLANNER_REASONING_EFFORT", "low").strip().lower()
+    return effort if effort in _VALID_EFFORTS else None
+
+
+def planner_output_cap() -> int:
+    """Output tokens one plan may use, reasoning included (``DVD_PLANNER_MAX_OUTPUT_TOKENS``)."""
+    try:
+        return max(1024, int(os.getenv("DVD_PLANNER_MAX_OUTPUT_TOKENS") or "4096"))
+    except ValueError:
+        return 4096
+
+
 def critic_reasoning_effort(
     llm_client, model: str, risk: AnswerRisk | None = None
 ) -> str | None:
     """Reasoning effort for gpt-oss audits.
 
-    Audits dominate document-QA latency. A low-risk answer (see
-    :mod:`answer_risk`) gets ``DVD_CRITIC_LOW_RISK_EFFORT`` (``low``) while
-    ``DVD_ADAPTIVE_CRITIC`` is on; every other audit, and an unclassified one,
-    gets ``DVD_CRITIC_REASONING_EFFORT`` (``medium``). Other models keep their
-    own default.
+    Audits dominate document-QA latency. While ``DVD_ADAPTIVE_CRITIC`` is on,
+    an answer gets the short audit ``DVD_CRITIC_LOW_RISK_EFFORT`` (``low``)
+    unless its risk (see :mod:`answer_risk`) has a reason listed in
+    ``DVD_CRITIC_FULL_AUDIT_REASONS`` (``absence_claim``; ``any`` for every
+    reason). Those, an unclassified audit and every audit with the switch off
+    get the full ``DVD_CRITIC_REASONING_EFFORT`` (``medium``). On the quality
+    benchmark a short audit kept figures and obligations as right as the full
+    one with a fifth of the tokens, but moved «the fragments do not say» lines
+    out of the grounded answer. Other models keep their own default.
     """
 
     if not (isinstance(llm_client, OpenAiCompatAdapter) and "gpt-oss" in model.lower()):
         return None
     effort = (os.getenv("DVD_CRITIC_REASONING_EFFORT") or "medium").strip().lower()
     effort = effort if effort in _VALID_EFFORTS else "medium"
-    if risk is not None and risk.low and flags.enabled(flags.ADAPTIVE_CRITIC):
-        low = (os.getenv("DVD_CRITIC_LOW_RISK_EFFORT") or "low").strip().lower()
-        return low if low in _VALID_EFFORTS else "low"
-    return effort
+    if risk is None or not flags.enabled(flags.ADAPTIVE_CRITIC):
+        return effort
+    if _needs_full_audit(risk.reasons):
+        return effort
+    low = (os.getenv("DVD_CRITIC_LOW_RISK_EFFORT") or "low").strip().lower()
+    return low if low in _VALID_EFFORTS else "low"
+
+
+def _needs_full_audit(reasons: tuple[str, ...]) -> bool:
+    raw = os.getenv("DVD_CRITIC_FULL_AUDIT_REASONS")
+    listed = {
+        r.strip().lower()
+        for r in (raw if raw is not None and raw.strip() else "absence_claim").split(
+            ","
+        )
+        if r.strip()
+    }
+    listed.add("unclassified")
+    return bool(reasons) and ("any" in listed or bool(listed & set(reasons)))
 
 
 async def _request_json(
@@ -343,12 +384,22 @@ class RetrievalPlanner:
             *(history or []),
             {"role": "user", "content": user_query},
         ]
-        plan = await _request_json(
-            self.llm_client,
-            model,
-            messages,
-            RetrievalPlan,
-        )
+        try:
+            plan = await _request_json(
+                self.llm_client,
+                model,
+                messages,
+                RetrievalPlan,
+                reasoning_effort=planner_reasoning_effort(self.llm_client, model),
+                max_tokens=planner_output_cap(),
+            )
+        except OutputCapped as exc:
+            # A plan that does not fit its cap is not worth waiting for: the
+            # question itself is a usable semantic query.
+            logger.warning(f"DVD planner fell back to the question: {exc}")
+            plan = validate_retrieval_plan(
+                {"retrieval_mode": "semantic", "search_query": user_query}
+            )
         plan = self._clamp(plan, user_query, available_tags)
         plan = apply_scope(plan, user_query, history=history)
         logger.info(f"DVD retrieval plan: {plan.model_dump_json(ensure_ascii=False)}")
@@ -726,6 +777,29 @@ class AnswerCritic:
                     effort,
                 )
                 audit = await audit_at("low")
+            full = critic_reasoning_effort(self.llm_client, model)
+            if (
+                pending
+                and effort != full
+                and not any(c.status == "supported" for c in audit.claims)
+            ):
+                # A short audit that confirms nothing would replace the whole
+                # answer with a refusal; it sometimes audits one line and skips
+                # the rest. Such a verdict is confirmed by the full audit.
+                logger.info(
+                    "DVD critic confirmed nothing at effort {}; auditing again at {}",
+                    effort,
+                    full,
+                )
+                try:
+                    audit = await audit_at(full)
+                except OutputCapped:
+                    logger.warning(
+                        "DVD critic reached its output cap {} at effort {}; "
+                        "keeping the short audit",
+                        cap,
+                        full,
+                    )
             claims = [
                 *(c for c in audit.claims if c.text not in kept),
                 *kept.values(),

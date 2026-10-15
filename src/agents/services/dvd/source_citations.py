@@ -26,6 +26,21 @@ _RUN = re.compile(r"[ \t]*\[\d+\](?:\s*(?:,|;|и)?\s*\[\d+\])*")
 _LABEL = re.compile(r"\[(\d+)\]")
 _QUOTE_HEADER = re.compile(r"^\[\d+\]\s+")
 _QUOTATION = "Полная цитата:"
+# A section title is often the first words of the fragment itself: a clause
+# number with its text, a table row, the tail of an amendment note.
+_NUMBER = r"(?:[А-ЯA-Z]\.)?\d+(?:\.\d+)*"
+_KIND_TITLE = re.compile(
+    rf"^(?:{_NUMBER}\.?\s+)?(Приложение|Таблица|Глава|Статья|Раздел)\s+"
+    r"([А-ЯA-Z]|\d+(?:\.\d+)*)\b",
+    re.I,
+)
+_CONTINUED_TABLE = re.compile(
+    r"^(?:Окончание|Продолжение)\s+таблицы\s+(\S+?)\.?$", re.I
+)
+_NUMBERED_TITLE = re.compile(rf"^({_NUMBER})\.?(?=\s|$)")
+_DATE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}")
+_NOT_SECTIONS = {"содержание", "изменения к документу"}
+_MAX_TITLE = 60
 
 
 def enabled() -> bool:
@@ -40,15 +55,35 @@ def _document(hit: dict[str, Any]) -> str:
     return name
 
 
+def _title_address(title: str) -> str:
+    """A short address for a section title, or ``""`` if it names no section."""
+    title = " ".join(str(title).split())
+    if not title or _DATE.match(title):
+        return ""
+    if match := _KIND_TITLE.match(title):
+        return f"{match.group(1).lower()} {match.group(2)}"
+    if match := _CONTINUED_TABLE.match(title):
+        return f"таблица {match.group(1)}"
+    if match := _NUMBERED_TITLE.match(title):
+        return f"п. {match.group(1)}"
+    if (
+        len(title) > _MAX_TITLE
+        or not title[0].isupper()
+        or title.lower() in _NOT_SECTIONS
+    ):
+        return ""
+    return f"раздел «{title}»"
+
+
 def _address(hit: dict[str, Any]) -> str:
     if number := str(hit.get("numbering") or "").strip():
         return f"{_KIND.get(hit.get('type'), 'п.')} {number}"
     path = [p for p in hit.get("structure_path") or [] if str(p).strip()]
     if not path:
         path = [p for p in (hit.get("breadcrumb") or "").split(" / ") if p.strip()]
-    title = hit.get("fragment_name") or (path[-1] if path else "")
-    title = " ".join(str(title).split())
-    return f"раздел «{title}»" if title else ""
+    titles = [hit.get("fragment_name"), *reversed(path)]
+    # The deepest title that names a section; a fragment's own words do not.
+    return next(filter(None, map(_title_address, filter(None, titles))), "")
 
 
 def citations(hits: list[dict[str, Any]]) -> dict[str, list[str]]:
