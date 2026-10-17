@@ -22,6 +22,7 @@ from src.agents.services.a2a_service import A2AService
 from src.agents.services.compilance.compliance_a2a_service import (
     ComplianceA2AService,
 )
+from src.agents.services.compilance.compliance_uploads import ComplianceUploadService
 from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.mcp_diagnostics_service import McpDiagnosticsService
@@ -217,6 +218,11 @@ def get_pipeline_state_store() -> PipelineStateStore:
     if not isinstance(store, PipelineStateStore):
         raise TypeError(f"Expected PipelineStateStore, got {type(store)}")
     return store
+
+
+def get_compliance_upload_service() -> ComplianceUploadService:
+    """Uploads of user files for compliance checks, kept in the pipeline store."""
+    return ComplianceUploadService(get_pipeline_state_store())
 
 
 def get_synapse_run_store() -> SynapseRunStore:

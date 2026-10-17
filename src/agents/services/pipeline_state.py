@@ -24,6 +24,9 @@ TOKEN_REFRESH_TIMEOUT: float = 60.0
 PIPELINE_TTL: int = 15 * 60  # absolute reconnect/token-refresh window
 # A document choice waits for the user's next message, which can come much later.
 COMPLIANCE_CHOICE_TTL: int = 24 * 60 * 60
+# Files uploaded for a compliance check stay for a day; the check is not replayable
+# after that.
+COMPLIANCE_UPLOAD_TTL: int = 24 * 60 * 60
 
 
 class PipelineStatus(StrEnum):
@@ -38,6 +41,7 @@ class PipelineStatus(StrEnum):
 class PipelineStep(StrEnum):
     COMPLIANCE_TERRITORY = "compliance_territory"
     COMPLIANCE_SCOPE = "compliance_scope"
+    COMPLIANCE_MAPPING = "compliance_mapping"
     RESTRICTION_INVENTORY = "restriction_inventory"
     NORMGRAPH = "normgraph"
     CHECK_PLAN_VALIDATION = "check_plan_validation"
@@ -260,6 +264,53 @@ class PipelineStateStore:
                 key,
                 COMPLIANCE_CHOICE_TTL,
                 json.dumps(choice, ensure_ascii=False),
+            )
+
+    async def save_compliance_upload(self, upload_id: str, record: dict) -> None:
+        await self._retry(
+            self._redis.setex,
+            self._key(upload_id, "compliance_upload"),
+            COMPLIANCE_UPLOAD_TTL,
+            json.dumps(record, ensure_ascii=False),
+        )
+
+    async def update_compliance_upload(self, upload_id: str, record: dict) -> None:
+        # The upload keeps the expiry it was created with.
+        await self._retry(
+            self._redis.set,
+            self._key(upload_id, "compliance_upload"),
+            json.dumps(record, ensure_ascii=False),
+            keepttl=True,
+        )
+
+    async def get_compliance_upload(self, upload_id: str) -> dict | None:
+        raw = await self._retry(
+            self._redis.get, self._key(upload_id, "compliance_upload")
+        )
+        return json.loads(raw) if raw else None
+
+    async def delete_compliance_upload(self, upload_id: str) -> None:
+        await self._retry(self._redis.delete, self._key(upload_id, "compliance_upload"))
+
+    async def get_compliance_mapping(self, conversation_key: str) -> dict | None:
+        raw = await self._retry(
+            self._redis.get, self._key(conversation_key, "compliance_mapping")
+        )
+        return json.loads(raw) if raw else None
+
+    async def set_compliance_mapping(
+        self, conversation_key: str, pending: dict | None
+    ) -> None:
+        """The entity mapping a compliance check of user files waits to confirm."""
+        key = self._key(conversation_key, "compliance_mapping")
+        if pending is None:
+            await self._retry(self._redis.delete, key)
+        else:
+            await self._retry(
+                self._redis.setex,
+                key,
+                COMPLIANCE_UPLOAD_TTL,
+                json.dumps(pending, ensure_ascii=False),
             )
 
     async def set_status(self, request_id: str, status: PipelineStatus) -> None:

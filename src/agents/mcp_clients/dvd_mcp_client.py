@@ -116,17 +116,23 @@ class DvdMcpClient(BaseMcpClient):
         return result
 
     async def list_documents(
-        self, scenario_id: str | int | None = None
+        self,
+        scenario_id: str | int | None = None,
+        territory_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
         """Shared documents per ``(name, version)``; ``scenario_id`` keeps those in force there.
 
         In force means under the scenario's project boundary, inside and above it
         (federal, regional and municipal documents of those territories).
+        ``territory_ids`` say where instead: the documents of those Urban API
+        territories and of every territory above them.
         """
 
         arguments: dict[str, Any] = {}
         if scenario_id is not None:
             arguments["scenario_id"] = str(scenario_id)
+        if territory_ids:
+            arguments["territory_ids"] = [int(item) for item in territory_ids]
         result = self._to_dict(await self.execute_tool("list_documents", arguments))
         documents = result.get("documents") if isinstance(result, dict) else None
         return [self._to_dict(item) for item in documents or []]

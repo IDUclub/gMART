@@ -194,6 +194,32 @@ async def get_project_territory(
 
 
 @urban_api_mcp.tool(
+    name="GetTerritoriesByGeometry",
+    title="Найти территории по геометрии",
+    description=(
+        "Найти самые глубокие территории Urban API (муниципальные образования, "
+        "населённые пункты, округа), в которых лежит геометрия GeoJSON в WGS84 "
+        "(EPSG:4326) — например, граница проекта из загруженного пользователем файла. "
+        "Обход идёт от страны вниз по уровням, пока у территории есть дочерние, "
+        "пересекающие геометрию. Ответ: {'territories': [{territory_id, name, level, "
+        "territory_type, parent_id, parent_name}], 'complete': bool}; complete = false, "
+        "если обход остановлен лимитом запросов и часть территорий крупнее возможного."
+    ),
+    tags=tools_tags,
+    annotations={"title": "Territories by geometry", "readOnlyHint": True},
+    meta={"author": "ICII"},
+)
+async def get_territories_by_geometry(
+    geometry: Annotated[
+        dict, "Геометрия GeoJSON (Polygon, MultiPolygon, Point …) в EPSG:4326"
+    ],
+    user_id: str = Depends(extract_user_id),
+    urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
+) -> dict:
+    return await urban_api_tools.get_territories_by_geometry(geometry, user_id)
+
+
+@urban_api_mcp.tool(
     name="GetFunctionalZones",
     title="Получить функциональные зоны",
     description=(

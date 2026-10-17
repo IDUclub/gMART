@@ -38,7 +38,8 @@ class ComplianceA2AAgent(A2AServer):
                 "check can be narrowed to topics (schools, housing) and to normative "
                 "documents; when a document cannot be identified unambiguously the task "
                 "enters input-required with a numbered choice, answered by the next "
-                "message in the same context."
+                "message in the same context. It can also check the user's own files "
+                "(GeoJSON layers of a design) instead of the scenario's objects."
             ),
             url=url,
             version=APP_VERSION,
@@ -73,6 +74,24 @@ class ComplianceA2AAgent(A2AServer):
                     ],
                     input_modes=["text/plain", "application/json"],
                     output_modes=["text/plain", "application/json"],
-                )
+                ),
+                AgentSkill(
+                    id="check-user-files-compliance",
+                    name="Check the user's design files against normative restrictions",
+                    description=(
+                        "Checks the layers of a design uploaded by the user — "
+                        "upload_ids from POST /compliance/uploads, or GeoJSON "
+                        "FeatureCollections inline as files: [{name, role, geojson}] "
+                        "in a DataPart. Objects are mapped to norm entities by their "
+                        "tags; a doubtful mapping ends the task in input-required "
+                        "with numbered proposals. With scenario_id the files overlay "
+                        "the scenario, without it the documents in force are found "
+                        "from the design's boundary."
+                    ),
+                    tags=["compliance", "user-files", "geojson", "normgraph"],
+                    examples=["Проверь мой проект застройки на соответствие нормам"],
+                    input_modes=["text/plain", "application/json"],
+                    output_modes=["text/plain", "application/json"],
+                ),
             ],
         )

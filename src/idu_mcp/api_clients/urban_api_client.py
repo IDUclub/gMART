@@ -190,6 +190,27 @@ class UrbanApiClient:
             f"v1/projects/{project_id}/territory", auth_token=token
         )
 
+    async def get_root_territories(self, token: str) -> list[dict]:
+        """Top-level territories (the country) without geometry."""
+
+        data = await self.json_handler.get(
+            "v1/territories_without_geometry",
+            params={"page_size": 100},
+            auth_token=token,
+        )
+        return (data.get("results") or []) if isinstance(data, dict) else data
+
+    async def get_intersecting_territories(
+        self, parent_id: int, geometry: dict, token: str
+    ) -> list[dict]:
+        """Children of ``parent_id`` (one level down) intersecting ``geometry``."""
+
+        return await self.json_handler.post(
+            f"v1/territory/{int(parent_id)}/intersecting_territories",
+            geometry,
+            auth_token=token,
+        )
+
     async def get_functional_zone_sources(
         self, scenario_id: int, token: str
     ) -> list[dict]:
