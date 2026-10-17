@@ -64,6 +64,7 @@ class ComplianceAgentExecutor:
         token: str,
     ) -> A2AData:
         execution = self._prepare_execution(params)
+        await self._require_scenario_or_pending(execution)
         task = self.task_store.create_task(
             execution["task_id"],
             execution["context_id"],
@@ -81,6 +82,7 @@ class ComplianceAgentExecutor:
         token: str,
     ) -> AsyncGenerator[A2AEventData, None]:
         execution = self._prepare_execution(params)
+        await self._require_scenario_or_pending(execution)
         task = self.task_store.create_task(
             execution["task_id"],
             execution["context_id"],
@@ -245,6 +247,17 @@ class ComplianceAgentExecutor:
         # the summary artifact carries every per-norm result.
         return None
 
+    async def _require_scenario_or_pending(self, execution: A2AData) -> None:
+        """A message without scenario and files must answer a pending mapping."""
+        error = execution.get("missing_scenario")
+        if error is None:
+            return
+        pending = await self.restriction_service.state_store.get_compliance_mapping(
+            f"a2a-compliance:{execution['context_id']}"
+        )
+        if not pending:
+            raise error
+
     async def _store_inline_files(self, files: list[A2AData], token: str) -> list[str]:
         """Store GeoJSON layers passed in the message as uploads of the caller."""
         try:
@@ -302,13 +315,16 @@ class ComplianceAgentExecutor:
         # Same scenario-context contract as the restriction agent: structured
         # fields first, then an inline ``scenario_id=...`` that is hidden from the LLM.
         # Files of the user's design need no scenario.
+        missing_scenario: A2AInvalidParamsError | None = None
         try:
             scenario_id = RestrictionAgentExecutor._resolve_scenario_id(
                 request_data, raw_text
             )
-        except A2AInvalidParamsError:
+        except A2AInvalidParamsError as exc:
             if not (upload_ids or inline_files):
-                raise
+                # Still valid as an answer to a pending mapping of this context;
+                # checked before the task starts.
+                missing_scenario = exc
             scenario_id = None
         user_query = RestrictionAgentExecutor._hide_inline_ids(raw_text)
         if not user_query:
@@ -340,6 +356,7 @@ class ComplianceAgentExecutor:
             "user_query": user_query,
             "upload_ids": upload_ids,
             "inline_files": inline_files,
+            "missing_scenario": missing_scenario,
         }
 
     @staticmethod

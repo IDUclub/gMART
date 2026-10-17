@@ -449,6 +449,8 @@ class UserFiles:
     upload_ids: tuple[str, ...]
     layers: list[UploadedLayer]
     confirmed_mapping: dict[str, dict[str, Any] | None] = field(default_factory=dict)
+    # LLM classifications of earlier runs: a rerun maps the same groups the same way.
+    classified: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def by_role(self, role: LayerRole) -> list[UploadedLayer]:
         return [layer for layer in self.layers if layer.role == role]
@@ -498,6 +500,7 @@ class ComplianceUploadService:
             "files": [filename for filename, _ in files],
             "layers": [layer.to_dict() for layer in layers],
             "confirmed_mapping": {},
+            "classified": {},
         }
         await self.state_store.save_compliance_upload(record["upload_id"], record)
         logger.info(
@@ -542,15 +545,32 @@ class ComplianceUploadService:
     async def load(self, upload_ids: list[str] | tuple[str, ...], owner: str):
         layers: list[UploadedLayer] = []
         confirmed: dict[str, dict[str, Any] | None] = {}
+        classified: dict[str, dict[str, Any]] = {}
         for upload_id in dict.fromkeys(upload_ids):
             record = await self.get(upload_id, owner)
             layers.extend(UploadedLayer.from_dict(item) for item in record["layers"])
             confirmed.update(record.get("confirmed_mapping") or {})
+            classified.update(record.get("classified") or {})
         return UserFiles(
             upload_ids=tuple(dict.fromkeys(upload_ids)),
             layers=layers,
             confirmed_mapping=confirmed,
+            classified=classified,
         )
+
+    async def cache_classifications(
+        self,
+        upload_ids: list[str] | tuple[str, ...],
+        owner: str,
+        classified: dict[str, dict[str, Any]],
+    ) -> None:
+        """Keep the LLM's answers so a rerun asks neither it nor the user again."""
+        if not classified:
+            return
+        for upload_id in dict.fromkeys(upload_ids):
+            record = await self.get(upload_id, owner)
+            record["classified"] = {**(record.get("classified") or {}), **classified}
+            await self.state_store.update_compliance_upload(upload_id, record)
 
     async def confirm_mapping(
         self,
