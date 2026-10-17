@@ -35,6 +35,7 @@ import { createPortal } from "react-dom";
 import remarkGfm from "remark-gfm";
 import MapPanel from "./MapPanel";
 import McpConsole from "./McpConsole";
+import ComplianceFiles from "./ComplianceFiles";
 import DocumentLibrary from "./DocumentLibrary";
 import { reusableChatId } from "./agentSession";
 import { appendLatestVisibleLayer } from "./layerState";
@@ -74,6 +75,7 @@ import type {
   Chat,
   ChatSummary,
   ComplianceProgress,
+  ComplianceUpload,
   ComplianceResult,
   ComplianceSummary,
   FileDescriptor,
@@ -269,6 +271,9 @@ export default function App() {
       useState<ComplianceSummary | null>(null),
     [complianceProgress, setComplianceProgress] =
       useState<ComplianceProgress | null>(null),
+    [complianceUploads, setComplianceUploads] = useState<ComplianceUpload[]>(
+      [],
+    ),
     [events, setEvents] = useState<Array<{ time: string; event: StreamEvent }>>(
       [],
     ),
@@ -1090,6 +1095,16 @@ export default function App() {
         event.content?.status === "completed" ? "done" : "warning",
       );
     }
+    if (event.type === "user_files") {
+      const groups = Array.isArray(event.content?.mapping)
+        ? event.content.mapping
+        : [];
+      const mapped = groups.filter((item: { entity?: string }) => item.entity);
+      updateStatus(
+        `Файлы: слоёв ${event.content?.layers?.length ?? 0}, групп объектов ` +
+          `${groups.length}, сопоставлено с нормами ${mapped.length}`,
+      );
+    }
     if (event.type === "clarification") {
       updateSseAnswer((current) => current + (event.content?.question || ""));
       updateStatus("Нужно уточнение", "warning");
@@ -1437,6 +1452,16 @@ export default function App() {
     if (settings.model) url.searchParams.set("model", settings.model);
     url.searchParams.set("temperature", String(settings.temperature));
     if (scenario) url.searchParams.set("scenario_id", scenario);
+    // Uploaded design files are checked instead of (or over) the scenario.
+    const uploadParam =
+      agentId === "compliance"
+        ? "upload_ids"
+        : agentId === "orchestrator"
+          ? "compliance_upload_ids"
+          : null;
+    if (uploadParam)
+      for (const item of complianceUploads)
+        url.searchParams.append(uploadParam, item.upload_id);
     const currentChatId = reusableChatId(chat, agentId);
     if (currentChatId) url.searchParams.set("chat_id", currentChatId);
     abort.current = new AbortController();
@@ -1780,6 +1805,14 @@ export default function App() {
                     </>
                   )}
                 </div>
+                {(agentId === "compliance" || agentId === "orchestrator") && (
+                  <ComplianceFiles
+                    settings={settings}
+                    getToken={freshToken}
+                    uploads={complianceUploads}
+                    onChange={setComplianceUploads}
+                  />
+                )}
                 {agentId === "documents" && (
                   <DocumentLibrary
                     settings={settings}

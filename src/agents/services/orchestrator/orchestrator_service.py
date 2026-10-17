@@ -22,6 +22,8 @@ from src.agents.common.config.app_config import AgentsAppConfig
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.dto.pzz_request_dto import PzzInputs
 from src.agents.services.base_llm_service import BaseLlmService
+from src.agents.services.compilance.compliance_entity_mapping import EntityMapping
+from src.agents.services.compilance.compliance_user_files import pending_candidates
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.layer_attributes import compact_layer_event
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
@@ -171,6 +173,7 @@ class OrchestratorService(BaseLlmService):
         urban_mcp_client: "UrbanMcpClient | None" = None,
         pzz_mcp_client: "PzzMcpClient | None" = None,
         pzz_inputs: PzzInputs | dict | None = None,
+        compliance_upload_ids: list[str] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
@@ -252,9 +255,23 @@ class OrchestratorService(BaseLlmService):
             request_id,
             self._status("planning", "Определяю, какие агенты нужны для запроса…"),
         )
-        agents = available_agents(self.app_config, scenario_id)
+        # A pending mapping of uploaded files keeps compliance available for the
+        # answer even when the answer itself carries no files.
+        pending_mapping = (
+            await self.state_store.get_compliance_mapping(chat_id) if chat_id else None
+        )
+        agents = available_agents(
+            self.app_config,
+            scenario_id,
+            user_files=bool(compliance_upload_ids or pending_mapping),
+        )
         plan = await self._compliance_choice_plan(
-            model, user_query, chat_id, agents, normgraph_mcp_client
+            model,
+            user_query,
+            chat_id,
+            agents,
+            normgraph_mcp_client,
+            pending_mapping=pending_mapping,
         ) or await self.plan_builder.build_plan(
             model,
             user_query,
@@ -262,7 +279,15 @@ class OrchestratorService(BaseLlmService):
             history,
             scenario_id=scenario_id,
             pzz_inputs=pzz_inputs,
+            compliance_uploads=len(compliance_upload_ids or []),
         )
+        # An answer to a pending mapping continues on the files it was asked about.
+        if (
+            pending_mapping
+            and not compliance_upload_ids
+            and await self.state_store.get_compliance_mapping(chat_id)
+        ):
+            compliance_upload_ids = list(pending_mapping.get("upload_ids") or [])
 
         if plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION:
             question = plan.clarification_question or ""
@@ -294,6 +319,7 @@ class OrchestratorService(BaseLlmService):
             pzz_inputs=pzz_inputs,
             original_query=user_query,
             conversation_key=chat_id,
+            compliance_upload_ids=compliance_upload_ids,
         )
         # Read-only QA steps that do not need each other's results start together;
         # their events are still streamed step by step, in plan order.
@@ -352,11 +378,13 @@ class OrchestratorService(BaseLlmService):
         chat_id: str | None,
         agents: list[AgentCatalogEntry],
         normgraph_mcp_client: "NormGraphMcpClient | None",
+        pending_mapping: dict[str, Any] | None = None,
     ) -> OrchestratorPlan | None:
-        """Route a reply to a pending compliance document choice straight back to it.
+        """Route a reply to a pending compliance choice straight back to it.
 
         The planner would read «2» or «СП 42» as a new request; the compliance
-        step owns the choice and resolves the reply against it.
+        step owns the choice and resolves the reply against it. A pending mapping
+        of uploaded files is answered the same way («да», «2 — школа»).
         """
         if (
             not chat_id
@@ -364,6 +392,20 @@ class OrchestratorService(BaseLlmService):
             or not any(entry.key == OrchestratorAgent.COMPLIANCE for entry in agents)
         ):
             return None
+        compliance_plan = OrchestratorPlan(
+            mode=OrchestratorPlanMode.EXECUTE,
+            steps=[
+                OrchestratorStep(agent=OrchestratorAgent.COMPLIANCE, task=user_query)
+            ],
+        )
+        if pending_mapping:
+            mapping = EntityMapping.from_dict(pending_mapping["mapping"])
+            answer = await self.restriction_service.entity_mapper.resolve_reply(
+                model, user_query, mapping.pending, pending_candidates(pending_mapping)
+            )
+            if answer.kind != "new_request":
+                return compliance_plan
+            await self.state_store.set_compliance_mapping(chat_id, None)
         pending = await self.state_store.get_compliance_choice(chat_id)
         if not pending:
             return None
@@ -373,12 +415,7 @@ class OrchestratorService(BaseLlmService):
         if reply.kind == "not_choice":
             await self.state_store.set_compliance_choice(chat_id, None)
             return None
-        return OrchestratorPlan(
-            mode=OrchestratorPlanMode.EXECUTE,
-            steps=[
-                OrchestratorStep(agent=OrchestratorAgent.COMPLIANCE, task=user_query)
-            ],
-        )
+        return compliance_plan
 
     @staticmethod
     def _runs_independently(plan: OrchestratorPlan) -> bool:
@@ -527,6 +564,7 @@ class OrchestratorService(BaseLlmService):
         original_query: str | None = None,
         context_note: str | None = None,
         conversation_key: str | None = None,
+        compliance_upload_ids: list[str] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         if step.agent == OrchestratorAgent.PZZ:
             if pzz_mcp_client is None or self.pzz_service is None:
@@ -544,7 +582,8 @@ class OrchestratorService(BaseLlmService):
                 inputs=pzz_inputs,
             )
         if step.agent == OrchestratorAgent.COMPLIANCE:
-            if scenario_id is None:
+            # Without a scenario the step checks uploaded files.
+            if scenario_id is None and not compliance_upload_ids:
                 raise ValueError("compliance step requires scenario_id")
             return self.restriction_service.run_compliance_pipeline(
                 mcp_client=idu_mcp_client,
@@ -560,6 +599,7 @@ class OrchestratorService(BaseLlmService):
                 # A document choice asked in this step is answered in the next
                 # message of the orchestrator's chat.
                 conversation_key=conversation_key,
+                upload_ids=compliance_upload_ids,
             )
         if step.agent == OrchestratorAgent.RESTRICTION:
             if scenario_id is None:

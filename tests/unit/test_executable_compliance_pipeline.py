@@ -306,7 +306,7 @@ async def test_compliance_large_corpus_never_reaches_llm_and_executes_individual
     )
     seen = []
 
-    async def execute(_client, plan, scenario_id, *, user_id=None):
+    async def execute(_client, plan, scenario_id, *, user_id=None, layer_source=None):
         rid = plan["source"]["restriction_id"]
         if rid == "r2":
             assert "result:r1" in seen
@@ -651,7 +651,7 @@ async def test_source_metadata_reaches_layers_summary_and_checkpoint(
         ],
     }
 
-    async def execute(_client, plan, scenario_id, *, user_id=None):
+    async def execute(_client, plan, scenario_id, *, user_id=None, layer_source=None):
         result = ComplianceResult(
             restriction_id=plan["source"]["restriction_id"],
             template=plan["template"],

@@ -3341,3 +3341,63 @@ select:focus {
     gap: 4px;
   }
 }
+
+/* Design files for the compliance agent */
+.compliance-files .document-panel-toggle {
+  grid-template-columns: auto minmax(150px, 1fr) minmax(180px, auto) auto;
+}
+.compliance-files-add {
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 11px;
+  cursor: pointer;
+}
+.compliance-files-add:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.compliance-files-list {
+  padding: 0 11px 11px;
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+}
+.compliance-upload {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+.compliance-upload header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+.compliance-upload header button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.compliance-layer {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+}
+.compliance-layer small {
+  display: block;
+  color: var(--muted);
+  font-size: 9px;
+}
+.compliance-layer select {
+  max-width: 220px;
+  font-size: 11px;
+}

@@ -176,6 +176,8 @@ AGENT_CATALOG: dict[OrchestratorAgent, AgentCatalogEntry] = {
 def available_agents(
     app_config: "AgentsAppConfig",
     scenario_id: int | None,
+    *,
+    user_files: bool = False,
 ) -> list[AgentCatalogEntry]:
     """
     Function filters the catalogue down to the agents that can actually run.
@@ -184,13 +186,19 @@ def available_agents(
             the documents/norms agents).
         scenario_id (int | None): Scenario ID from the request; agents requiring
             a scenario are excluded when it is absent.
+        user_files (bool): The request carries uploaded design files; compliance
+            checks them without a scenario.
     Returns:
         list[AgentCatalogEntry]: Agents available for the current request.
     """
 
     agents: list[AgentCatalogEntry] = []
     for entry in AGENT_CATALOG.values():
-        if entry.requires_scenario_id and scenario_id is None:
+        if (
+            entry.requires_scenario_id
+            and scenario_id is None
+            and not (user_files and entry.key == OrchestratorAgent.COMPLIANCE)
+        ):
             continue
         if entry.key == OrchestratorAgent.DOCUMENTS and not app_config.DVD_MCP_URL:
             continue

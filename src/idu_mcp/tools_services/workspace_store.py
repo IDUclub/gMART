@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import hashlib
 import json
 import os
@@ -17,6 +16,35 @@ import geopandas as gpd
 import pandas as pd
 from fastmcp.exceptions import ToolError
 from shapely.geometry import shape
+
+try:
+    import fcntl
+except ImportError:  # Windows development machines; the service runs on Linux.
+    fcntl = None
+    import msvcrt
+
+
+def _try_lock(descriptor: int) -> None:
+    """Take an exclusive non-blocking lock; ``BlockingIOError`` when it is held."""
+    if fcntl is not None:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    try:
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+    except OSError as exc:
+        raise BlockingIOError(str(exc)) from exc
+
+
+def _unlock(descriptor: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    try:
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass  # not held: the lock was never taken
 
 
 class WorkspaceStore:
@@ -116,7 +144,7 @@ class WorkspaceStore:
         try:
             while True:
                 try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    _try_lock(descriptor)
                     break
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
@@ -127,7 +155,7 @@ class WorkspaceStore:
             yield
         finally:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                _unlock(descriptor)
             finally:
                 os.close(descriptor)
 

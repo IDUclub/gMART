@@ -1,6 +1,7 @@
 import type {
   Chat,
   ChatSummary,
+  ComplianceUpload,
   Settings,
   StreamEvent,
   SynapseConfigurationOptions,
@@ -280,6 +281,59 @@ export const reviewCheckPlan = (
       body: JSON.stringify({ action, plan, reason: reason || undefined }),
     },
   );
+
+/** Upload design files for the compliance agent; returns the parsed layers. */
+export async function uploadComplianceFiles(
+  settings: Settings,
+  token: string,
+  files: File[],
+): Promise<ComplianceUpload> {
+  const form = new FormData();
+  for (const file of files) form.append("files", file);
+  const response = await fetch(
+    new URL("compliance/uploads", settings.agentsUrl.replace(/\/+$/, "") + "/"),
+    { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form },
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(
+      body?.detail?.message ??
+        body?.message ??
+        (typeof body?.detail === "string" ? body.detail : null) ??
+        `Ошибка загрузки: ${response.status}`,
+    );
+  }
+  return response.json();
+}
+
+export const setComplianceUploadRoles = (
+  settings: Settings,
+  token: string,
+  uploadId: string,
+  roles: Record<string, string>,
+) =>
+  request<ComplianceUpload>(
+    settings.agentsUrl,
+    `/compliance/uploads/${encodeURIComponent(uploadId)}`,
+    token,
+    { method: "PATCH", body: JSON.stringify({ roles }) },
+  );
+
+export async function deleteComplianceUpload(
+  settings: Settings,
+  token: string,
+  uploadId: string,
+) {
+  const response = await fetch(
+    new URL(
+      `compliance/uploads/${encodeURIComponent(uploadId)}`,
+      settings.agentsUrl.replace(/\/+$/, "") + "/",
+    ),
+    { method: "DELETE", headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!response.ok && response.status !== 404)
+    throw new Error(`Не удалось удалить загрузку: ${response.status}`);
+}
 
 export async function authAvailable(settings: Settings): Promise<boolean> {
   try {

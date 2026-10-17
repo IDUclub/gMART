@@ -48,6 +48,7 @@ class OrchestratorPlanBuilder:
         history: list[dict] | None = None,
         scenario_id: int | None = None,
         pzz_inputs: PzzInputs | dict | None = None,
+        compliance_uploads: int = 0,
     ) -> OrchestratorPlan:
         plan = await self._request_plan(
             model,
@@ -56,6 +57,7 @@ class OrchestratorPlanBuilder:
             history,
             scenario_id=scenario_id,
             pzz_inputs=pzz_inputs,
+            compliance_uploads=compliance_uploads,
         )
         plan = self._canonicalize_plan(plan, agents)
         plan = self._complement_regulation_steps(plan, agents, user_query)
@@ -142,11 +144,14 @@ class OrchestratorPlanBuilder:
         _retries: int = 2,
         scenario_id: int | None = None,
         pzz_inputs: PzzInputs | dict | None = None,
+        compliance_uploads: int = 0,
     ) -> OrchestratorPlan:
         messages: list[dict] = [
             {
                 "role": "system",
-                "content": self._build_prompt(agents, scenario_id, pzz_inputs),
+                "content": self._build_prompt(
+                    agents, scenario_id, pzz_inputs, compliance_uploads
+                ),
             },
             {
                 "role": "user",
@@ -202,6 +207,7 @@ class OrchestratorPlanBuilder:
         agents: list[AgentCatalogEntry],
         scenario_id: int | None = None,
         pzz_inputs: PzzInputs | dict | None = None,
+        compliance_uploads: int = 0,
     ) -> str:
         inputs = PzzInputs.model_validate(pzz_inputs or {})
         pzz_context = {
@@ -256,6 +262,12 @@ class OrchestratorPlanBuilder:
 из запроса: агент проверит комплектность и вернёт точный вопрос о недостающих
 входах. Не подменяй этот вопрос требованием года/источника для файлов.
 Год и источник обязательны только для режима scenario, берущего данные из Urban API.
+Загрузки файлов проекта для проверки на соответствие нормам, реально переданные
+в API: {compliance_uploads}. Если загрузки есть и пользователь просит проверить
+проект, файлы, застройку или варианты на соответствие нормам, — это один шаг
+compliance: агент сам сопоставит объекты файлов с нормами (поверх сценария, если он
+выбран, иначе без сценария). Без загрузок упоминание файла в тексте не означает,
+что он передан.
 
 Верни только валидный JSON без markdown и пояснений:
 {json.dumps(response_structure, ensure_ascii=False)}

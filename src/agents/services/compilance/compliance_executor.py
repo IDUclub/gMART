@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -35,6 +35,11 @@ from src.agents.services.service_entities.compliance import (
     DeclaredRequirements,
     VerificationCoverage,
 )
+
+if TYPE_CHECKING:
+    from src.agents.services.compilance.compliance_user_layers import (
+        UserLayerSource,
+    )
 
 
 @dataclass
@@ -154,13 +159,22 @@ class ComplianceTemplateExecutor:
         self,
         mcp_client,
         raw_plan: dict[str, Any],
-        scenario_id: int,
+        scenario_id: int | None,
         *,
         user_id: str | None = None,
+        layer_source: "UserLayerSource | None" = None,
     ) -> ComplianceExecution:
-        """Run one plan; ``user_id`` is needed only by ObjectEffects-backed templates."""
+        """Run one plan; ``user_id`` is needed only by ObjectEffects-backed templates.
+
+        ``layer_source`` supplies the layers from the user's files instead of the
+        scenario; ``scenario_id`` may then be ``None``.
+        """
         execution = await self._execute(
-            mcp_client, raw_plan, scenario_id, user_id=user_id
+            mcp_client,
+            raw_plan,
+            scenario_id,
+            user_id=user_id,
+            layer_source=layer_source,
         )
         plan = execution.plan
         warnings = execution.result.warnings
@@ -186,9 +200,10 @@ class ComplianceTemplateExecutor:
         self,
         mcp_client,
         raw_plan: dict[str, Any],
-        scenario_id: int,
+        scenario_id: int | None,
         *,
         user_id: str | None,
+        layer_source: "UserLayerSource | None" = None,
     ) -> ComplianceExecution:
         timings_ms: dict[str, float] = {}
         validation_started = perf_counter()
@@ -275,6 +290,31 @@ class ComplianceTemplateExecutor:
             mcp_client, scenario_id, requirements
         )
         requirements = catalog_resolution.requirements
+        user_missing = (
+            layer_source.missing(plan, params, requirements)
+            if layer_source is not None and catalog_resolution.executable
+            else []
+        )
+        if user_missing:
+            # Normally filtered out before execution; kept as a guard.
+            timings_ms["requirements_resolution"] = (
+                perf_counter() - resolution_started
+            ) * 1000
+            return ComplianceExecution(
+                plan=plan,
+                result=self._outcome(
+                    restriction_id=plan.source.restriction_id,
+                    template=plan.template,
+                    template_version=plan.template_version,
+                    verification_status="unverifiable",
+                    missing=user_missing,
+                    effective_requirements=requirements,
+                    source=self._result_source(plan),
+                ),
+                tool_calls=[],
+                layers={},
+                timings_ms=timings_ms,
+            )
         if plan.template == "service_provision" and catalog_resolution.executable:
             return await self._execute_service_provision(
                 mcp_client,
@@ -308,9 +348,14 @@ class ComplianceTemplateExecutor:
                 timings_ms=timings_ms,
             )
 
-        layers, retrieval_calls = await self._retrieve_layers(
-            mcp_client, requirements, scenario_id
-        )
+        if layer_source is not None:
+            layers, retrieval_calls = await layer_source.retrieve(
+                plan, params, requirements
+            )
+        else:
+            layers, retrieval_calls = await self._retrieve_layers(
+                mcp_client, requirements, scenario_id
+            )
         resolution = self.data_gate.resolve(plan, layers, requirements)
         timings_ms["requirements_resolution"] = (
             perf_counter() - resolution_started
@@ -479,6 +524,33 @@ class ComplianceTemplateExecutor:
             layers=layers,
             timings_ms=timings_ms,
         )
+
+    async def canonical_requirements(
+        self, mcp_client, raw_plan: dict[str, Any]
+    ) -> tuple[CheckPlan, Any, DeclaredRequirements] | None:
+        """A valid plan with catalogue entity names, or ``None`` when it is not.
+
+        Lets a caller see which entities a norm needs before running it.
+        """
+        try:
+            plan, params = self.registry.validate_plan(raw_plan)
+            effective = self.registry.effective_requirements(plan)
+        except (
+            UnsupportedSchemaError,
+            UnsupportedTemplateError,
+            ValidationError,
+            ValueError,
+        ):
+            return None
+        if effective["missing_registry_roles"]:
+            return None
+        requirements = DeclaredRequirements(
+            layers=effective["layers"], attributes=effective["attributes"]
+        )
+        resolution = await self.catalog_resolver.resolve(mcp_client, None, requirements)
+        if not resolution.executable:
+            return None
+        return plan, params, resolution.requirements
 
     async def _execute_service_provision(
         self,

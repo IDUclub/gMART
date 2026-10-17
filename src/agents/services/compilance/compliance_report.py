@@ -15,6 +15,7 @@ from src.agents.services.compilance.compliance_sources import (
     merged_sources,
     source_reference,
 )
+from src.agents.services.compilance.compliance_user_files import user_files_report
 from src.agents.services.readable_refs import object_label
 
 REPORT_SLOT = "compliance_report"
@@ -97,7 +98,10 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
         for item in results
         if item.get("compliance_status") in {"violated", "passed"}
     ]
-    if not checked:
+    user_files = summary.get("user_files")
+    # A check of user files reports which norms the files could not serve even
+    # when none could be run.
+    if not checked and not (user_files or {}).get("not_checked"):
         return None
     violated = [item for item in checked if item["compliance_status"] == "violated"]
     passed = [
@@ -175,6 +179,7 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
             "",
         ]
         lines += _norm_sections(vacuous, numbers)
+    lines += user_files_report(user_files)
     lines += ["", "## Проверены как эквивалентные", ""]
     if groups:
         lines += [

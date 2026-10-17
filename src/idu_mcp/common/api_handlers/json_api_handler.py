@@ -122,17 +122,42 @@ class JsonApiHandler:
                 exhausted on a transient failure.
         """
 
-        if self.service_auth is not None:
-            outgoing = dict(headers or {})
-            outgoing.update(await service_headers(self.service_auth, auth_token))
-            headers = outgoing
-        elif auth_token:
-            headers = dict(headers or {})
-            headers["Authorization"] = f"Bearer {auth_token}"
+        headers = await self._auth_headers(auth_token, headers)
         if not session:
             async with aiohttp.ClientSession() as session:
                 return await self._request(endpoint, headers, params, session)
         return await self._request(endpoint, headers, params, session)
+
+    async def post(
+        self,
+        endpoint: str,
+        body: dict | list,
+        auth_token: str | None = None,
+        headers: dict | None = None,
+        params: dict | None = None,
+    ) -> dict | list:
+        """POST a JSON body with the same auth, retries and error mapping as ``get``.
+
+        Only read-only Urban API queries that take a body (geometry lookups) use it.
+        """
+
+        headers = await self._auth_headers(auth_token, headers)
+        async with aiohttp.ClientSession() as session:
+            return await self._request(
+                endpoint, headers, params, session, method="POST", json_body=body
+            )
+
+    async def _auth_headers(
+        self, auth_token: str | None, headers: dict | None
+    ) -> dict | None:
+        if self.service_auth is not None:
+            outgoing = dict(headers or {})
+            outgoing.update(await service_headers(self.service_auth, auth_token))
+            return outgoing
+        if auth_token:
+            headers = dict(headers or {})
+            headers["Authorization"] = f"Bearer {auth_token}"
+        return headers
 
     async def _request(
         self,
@@ -140,9 +165,11 @@ class JsonApiHandler:
         headers: dict | None,
         params: dict | None,
         session: aiohttp.ClientSession,
+        method: str = "GET",
+        json_body: dict | list | None = None,
     ) -> dict | list:
         """
-        Perform a GET request with bounded retries and exponential backoff.
+        Perform a request with bounded retries and exponential backoff.
 
         Retries only transient failures (network errors and "reset by peer" 500s);
         terminal statuses raise a ToolError immediately.
@@ -162,9 +189,14 @@ class JsonApiHandler:
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                async with session.get(
-                    url=url, headers=headers, params=params
-                ) as response:
+                call = (
+                    session.get(url=url, headers=headers, params=params)
+                    if method == "GET"
+                    else session.post(
+                        url=url, headers=headers, params=params, json=json_body
+                    )
+                )
+                async with call as response:
                     result = await self._check_response_status(response)
                 if result is not _RETRY:
                     return result
