@@ -1,3 +1,9 @@
+## v0.23.1 (2026-10-17)
+
+[fix/ICII-208-user-file-compilance](https://github.com/IDUclub/gMART/pull/238) (#238)
+
+- fix(agents): не задавать лишних вопросов при проверке файлов и не принимать объекты за функциональные зоны
+
 ## v0.23.0 (2026-10-17)
 
 [feat/ICII-208-user-file-compilance](https://github.com/IDUclub/gMART/pull/237) (#237)
