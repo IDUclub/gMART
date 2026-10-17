@@ -1,3 +1,10 @@
+## v0.23.0 (2026-10-17)
+
+[feat/ICII-208-user-file-compilance](https://github.com/IDUclub/gMART/pull/237) (#237)
+
+- fix: запускать тесты и локальные сервисы на Windows
+- feat(agents): проверять файлы пользователя на соответствие нормам
+
 ## v0.22.1 (2026-10-15)
 
 [perf/documents-quality](https://github.com/IDUclub/gMART/pull/236) (#236)
