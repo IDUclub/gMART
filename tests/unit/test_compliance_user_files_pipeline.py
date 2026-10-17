@@ -473,3 +473,50 @@ def test_report_explains_norms_the_files_could_not_serve():
     )
     assert "## Не проверено: нет данных в файлах" in report
     assert "**СП 42.13330.2016, п. 7.1**" in report
+
+
+async def test_chat_message_without_scenario_files_or_question_checks_nothing(store):
+    service = pipeline_service(store)
+
+    events = await run_pipeline(service, "да", None)
+
+    assert "не выбран сценарий и не переданы файлы" in events[-1]["content"]["text"]
+    assert service.executed_with is None
+    service.compliance_territory.resolve.assert_not_awaited()
+
+
+async def test_llm_answers_are_kept_so_a_rerun_asks_nothing_new(store):
+    calm_rest = feature({"type": "calm_rest"}, square(37.4801, 55.6701), "calm")
+    llm = FakeLlm(
+        [{"items": [{"id": 1, "entity": "Детская площадка", "confidence": 0.95}]}]
+    )
+    service = service_for(store, llm)
+    upload = await service.compliance_uploads.create("alice", design_files([calm_rest]))
+    files = await service.compliance_uploads.load([upload["upload_id"]], "alice")
+
+    await run_check(
+        service, files, [distance_plan("r3", "Детская площадка", "service")]
+    )
+
+    reloaded = await service.compliance_uploads.load([upload["upload_id"]], "alice")
+    (cached,) = reloaded.classified.values()
+    assert cached["entity"] == "Детская площадка" and cached["confidence"] == 0.95
+    # The second run must not call the LLM: FakeLlm has no answer left.
+    rerun = [
+        event
+        async for event in service._run_executable_compliance(
+            mcp_client=InProcessMcp(),
+            request_id="req2",
+            scenario_id=None,
+            restrictions=[distance_plan("r3", "Детская площадка", "service")],
+            checkpoint={},
+            owner="alice",
+            user_files=reloaded,
+            model="m",
+            scope_key="chat-1",
+            user_query="Проверь мой проект",
+        )
+    ]
+    mapping = next(e for e in rerun if e["type"] == "user_files")["content"]["mapping"]
+    calm = next(item for item in mapping if item["signature"] == "type=calm_rest")
+    assert calm["source"] == "llm" and calm["entity"] == "Детская площадка"

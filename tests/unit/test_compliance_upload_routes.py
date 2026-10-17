@@ -174,8 +174,8 @@ def test_a2a_accepts_files_without_a_scenario():
     )
     assert inline["inline_files"][0]["name"] == "map"
     assert "files" not in inline["metadata"]
-    with pytest.raises(A2AInvalidParamsError, match="scenario_id"):
-        executor._prepare_execution(a2a_params({}))
+    # Without scenario and files the message may still answer a pending mapping.
+    assert executor._prepare_execution(a2a_params({}))["missing_scenario"] is not None
     with pytest.raises(A2AInvalidParamsError, match="role"):
         executor._prepare_execution(
             a2a_params({"files": [{"role": "design", "geojson": {}}]})
@@ -242,3 +242,29 @@ async def test_orchestrator_routes_a_mapping_answer_back_to_compliance():
         is None
     )
     service.state_store.set_compliance_mapping.assert_awaited_once_with("chat-1", None)
+
+
+async def test_a2a_answer_without_files_needs_a_pending_mapping():
+    from unittest.mock import AsyncMock
+
+    store = SimpleNamespace(get_compliance_mapping=AsyncMock(return_value=None))
+    executor = ComplianceAgentExecutor(
+        SimpleNamespace(state_store=store), A2ATaskStore()
+    )
+    params = {**a2a_params({}), "contextId": "ctx-1"}
+    with pytest.raises(A2AInvalidParamsError, match="scenario_id"):
+        await executor._require_scenario_or_pending(executor._prepare_execution(params))
+    store.get_compliance_mapping.return_value = {"upload_ids": ["u1"]}
+    await executor._require_scenario_or_pending(executor._prepare_execution(params))
+    store.get_compliance_mapping.assert_awaited_with("a2a-compliance:ctx-1")
+
+
+def test_answer_in_a_chat_needs_no_files(client):
+    http, service, _ = client
+    response = http.post(
+        "/compliance/check/stream",
+        json={"request": "да", "chat_id": "2ee112cd-296c-45de-95e5-68da87170e74"},
+    )
+    assert response.status_code == 200
+    assert service.calls[-1]["upload_ids"] is None
+    assert service.calls[-1]["chat_id"] == "2ee112cd-296c-45de-95e5-68da87170e74"

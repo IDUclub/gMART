@@ -305,3 +305,99 @@ def test_entity_layers_split_design_and_context():
     assert list(layers.context) == [EntityTarget("Школа", "service")]
     assert layers.border is not None
     assert layers.counts()["Жилой дом"] == {"project": 1, "context": 0}
+
+
+async def test_llm_never_maps_an_object_to_a_functional_zone():
+    zone = EntityTarget("special", "functional_zone")
+    llm = FakeLlm(
+        [
+            {
+                "items": [
+                    {"id": 1, "entity": "special", "confidence": 0.9},
+                    {"id": 2, "entity": None, "confidence": 0.9},
+                ]
+            }
+        ]
+    )
+    mapping = await EntityMapper(llm).propose("m", files(), [HOUSE, zone])
+    payload = json.loads(llm.requests[0]["messages"][1]["content"])
+    assert all(
+        item["entity_type"] != "functional_zone" for item in payload["candidates"]
+    )
+    calm = next(
+        item
+        for item in mapping.proposals
+        if item.signature == "type=calm_rest|amenity=playground"
+    )
+    assert calm.target is None and calm.source == "none"
+    # Zones of the generator's blocks still come from the table.
+    assert table_proposal({"type": "block", "blockType": "special"})[0] == EntityTarget(
+        "special", "functional_zone"
+    )
+
+
+def context_files():
+    return UserFiles(
+        upload_ids=("u1",),
+        layers=[
+            layer(
+                "map_objects",
+                "project",
+                [feature({"type": "buildings", "building": "residential"})],
+            ),
+            layer(
+                "osm_surroundings",
+                "context",
+                [feature({"type": "buildings", "building": "yes"})],
+            ),
+        ],
+    )
+
+
+async def test_doubt_about_surroundings_is_asked_only_for_a_source_entity():
+    answer = {"items": [{"id": 1, "entity": "Жилой дом", "confidence": 0.5}]}
+
+    # Houses are only checked targets: the surroundings' houses serve no norm.
+    as_target = await EntityMapper(FakeLlm([answer])).propose(
+        "m", context_files(), [HOUSE], sources=[]
+    )
+    assert as_target.pending == []
+
+    # A norm measuring from houses reads the surroundings: the doubt matters.
+    as_source = await EntityMapper(FakeLlm([answer])).propose(
+        "m", context_files(), [HOUSE], sources=[HOUSE]
+    )
+    assert [item.signature for item in as_source.pending] == [
+        "type=buildings|building=yes"
+    ]
+
+
+async def test_cached_llm_answer_is_used_for_the_same_candidates_only():
+    from src.agents.services.compilance.compliance_entity_mapping import (
+        TABLE_TARGETS,
+        classification_key,
+    )
+
+    first = await EntityMapper(
+        FakeLlm([{"items": [{"id": 1, "entity": "Жилой дом", "confidence": 0.9}]}])
+    ).propose("m", context_files(), [HOUSE])
+    assert list(first.classified.values())[0]["entity"] == "Жилой дом"
+
+    cached = context_files()
+    cached.classified = first.classified
+    again = await EntityMapper(FakeLlm([])).propose("m", cached, [HOUSE])
+    yes = next(
+        i for i in again.proposals if i.signature == "type=buildings|building=yes"
+    )
+    assert yes.target == HOUSE and yes.source == "llm" and again.classified == {}
+
+    # Other norms bring other candidates: the cached answer does not apply.
+    key = classification_key("type=buildings|building=yes", [HOUSE, *TABLE_TARGETS])
+    assert key in first.classified
+    other = await EntityMapper(
+        FakeLlm([{"items": [{"id": 1, "entity": None, "confidence": 0.9}]}])
+    ).propose("m", cached, [HOUSE, STATION])
+    assert other.classified
+
+
+STATION = EntityTarget("Железнодорожная станция", "physical_object")

@@ -7,9 +7,13 @@ tags form a group, and a group is mapped as a whole:
 
 1. A table of tag rules maps the groups whose meaning is settled.
 2. The LLM classifies the rest, choosing only among Urban API types — the entities
-   the selected norms need and the table's own — and says how sure it is.
-3. A proposal below the confidence threshold for an entity some norm needs is put
-   to the user; the answer is kept with the upload.
+   the selected norms need and the table's own, never functional zones — and says
+   how sure it is. Its answers are kept with the upload, so a rerun (after the
+   user's answer) maps the same groups the same way.
+3. A proposal below the confidence threshold is put to the user only when the
+   group's objects would serve a norm: design objects of an entity some norm needs,
+   surroundings of an entity some norm reads as a source or neighbour. The answer
+   is kept with the upload.
 
 The mapped objects are normalised into Urban-API-like layers: ``building.floors``,
 ``building.height`` and the other attributes norms read are filled from the
@@ -18,6 +22,7 @@ generator's fields (``levels``, ``levelHeights``, ``livingSpace`` …).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -206,6 +211,8 @@ class EntityMapping:
 
     proposals: list[MappingProposal]
     pending: list[MappingProposal] = field(default_factory=list)
+    # LLM answers of this run, keyed by ``classification_key``, to keep with the upload.
+    classified: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def assignment(self) -> dict[str, EntityTarget]:
         pending = {item.signature for item in self.pending}
@@ -466,10 +473,26 @@ class EntityMapper:
         model: str,
         files: UserFiles,
         needed: Iterable[EntityTarget],
+        sources: Iterable[EntityTarget] | None = None,
     ) -> EntityMapping:
-        """``needed`` are the entities of the selected norms (canonical names)."""
+        """Map every tag group of the files to an entity.
+
+        ``needed`` are the entities of the selected norms (canonical names);
+        ``sources`` the ones a norm reads as a source, neighbour or zone — the only
+        entities the files' surroundings can serve. ``None`` takes every needed
+        entity as one.
+        """
+        needed = list(needed)
         needed_keys = {target.key() for target in needed}
+        source_keys = (
+            needed_keys if sources is None else {target.key() for target in sources}
+        )
         candidates = _unique_targets([*needed, *TABLE_TARGETS])
+        # Zones come only from the generator's blocks (the table): any other object
+        # taken for a zone would turn a site into an area-wide restriction.
+        llm_candidates = [
+            target for target in candidates if target.entity_type != "functional_zone"
+        ]
         proposals: list[MappingProposal] = []
         unknown: list[TagGroup] = []
         for group in tag_groups(files):
@@ -482,23 +505,42 @@ class EntityMapper:
                 proposals.append(proposal)
                 continue
             ruled = table_proposal(group.tags)
-            if ruled is None:
-                unknown.append(group)
+            if ruled is not None:
+                proposal.target, proposal.confidence = ruled
+                proposal.source = "table"
                 proposals.append(proposal)
                 continue
-            proposal.target, proposal.confidence = ruled
-            proposal.source = "table"
+            cached = files.classified.get(
+                classification_key(group.signature, llm_candidates)
+            )
+            if cached is not None:
+                self._apply_llm(
+                    proposal,
+                    EntityTarget.from_dict(cached),
+                    float(cached.get("confidence") or 0),
+                    cached.get("reason"),
+                )
+            else:
+                unknown.append(group)
             proposals.append(proposal)
 
+        new_answers: dict[str, dict[str, Any]] = {}
         if unknown:
-            classified = await self._classify(model, unknown, candidates)
+            classified = await self._classify(model, unknown, llm_candidates)
             for proposal in proposals:
-                if proposal.signature in classified:
-                    target, confidence, reason = classified[proposal.signature]
-                    proposal.target = target
-                    proposal.confidence = confidence
-                    proposal.reason = reason
-                    proposal.source = "llm" if target is not None else "none"
+                if proposal.signature not in classified:
+                    continue
+                target, confidence, reason = classified[proposal.signature]
+                self._apply_llm(proposal, target, confidence, reason)
+                new_answers[classification_key(proposal.signature, llm_candidates)] = {
+                    **(
+                        target.to_dict()
+                        if target
+                        else {"entity": None, "entity_type": None}
+                    ),
+                    "confidence": confidence,
+                    "reason": reason,
+                }
 
         # Only a doubt that changes some norm's data is worth the user's time.
         pending = [
@@ -506,7 +548,7 @@ class EntityMapper:
             for item in proposals
             if item.target is not None
             and not item.confident
-            and item.target.key() in needed_keys
+            and self._serves_a_norm(item, needed_keys, source_keys)
         ]
         logger.info(
             "Compliance entity mapping: groups={} table={} llm={} pending={}",
@@ -515,7 +557,32 @@ class EntityMapper:
             sum(item.source == "llm" for item in proposals),
             len(pending),
         )
-        return EntityMapping(proposals=proposals, pending=pending)
+        return EntityMapping(
+            proposals=proposals, pending=pending, classified=new_answers
+        )
+
+    @staticmethod
+    def _apply_llm(
+        proposal: MappingProposal,
+        target: EntityTarget | None,
+        confidence: float,
+        reason: str | None,
+    ) -> None:
+        proposal.target = target
+        proposal.confidence = confidence if target is not None else 0.0
+        proposal.reason = reason
+        proposal.source = "llm" if target is not None else "none"
+
+    @staticmethod
+    def _serves_a_norm(
+        item: MappingProposal, needed_keys: set[str], source_keys: set[str]
+    ) -> bool:
+        """Design objects serve any needed entity; surroundings only sources."""
+        key = item.target.key()
+        return bool(
+            (item.roles.get("project") and key in needed_keys)
+            or (item.roles.get("context") and key in source_keys)
+        )
 
     @staticmethod
     def _base(group: TagGroup) -> MappingProposal:
@@ -677,6 +744,13 @@ def _parse_edits(
 
 def _unique_targets(targets: Iterable[EntityTarget]) -> list[EntityTarget]:
     return list(dict.fromkeys(targets))
+
+
+def classification_key(signature: str, candidates: Iterable[EntityTarget]) -> str:
+    """A cached LLM answer holds only for the candidate list it was chosen from."""
+    names = "\n".join(sorted({target.key() for target in candidates}))
+    digest = hashlib.sha1(names.encode("utf-8")).hexdigest()[:12]
+    return f"{signature}#{digest}"
 
 
 def apply_reply(mapping: EntityMapping, reply: MappingReply) -> dict[str, Any]:

@@ -17,10 +17,16 @@ from src.agents.services.compilance.compliance_a2a_service import (
 CLIENTS = ComplianceMcpClients(idu=object(), normgraph=object())
 
 
+class FakeStateStore:
+    async def get_compliance_mapping(self, conversation_key: str) -> dict | None:
+        return None
+
+
 class FakeRestrictionService:
     def __init__(self, events: list[dict]) -> None:
         self.events = events
         self.calls: list[dict] = []
+        self.state_store = FakeStateStore()
 
     async def run_compliance_pipeline(self, **kwargs):
         self.calls.append(kwargs)
@@ -64,13 +70,19 @@ def test_inline_scenario_id_is_accepted_and_hidden_from_the_query():
     assert execution["user_query"] == "проверь нормы"
 
 
-def test_scenario_id_is_required():
-    executor = ComplianceAgentExecutor(FakeRestrictionService([]), A2ATaskStore())
+async def test_scenario_id_is_required():
+    service = FakeRestrictionService([])
+    executor = ComplianceAgentExecutor(service, A2ATaskStore())
 
+    # Without scenario, files or a pending mapping of the context there is nothing
+    # to check; the task is not started.
     with pytest.raises(A2AInvalidParamsError):
-        executor._prepare_execution(
-            {"message": {"role": "user", "parts": [{"type": "text", "text": "x"}]}}
+        await executor.execute(
+            {"message": {"role": "user", "parts": [{"type": "text", "text": "x"}]}},
+            CLIENTS,
+            "token",
         )
+    assert service.calls == []
 
 
 async def test_document_choice_ends_the_task_in_input_required():

@@ -12,16 +12,18 @@ class ComplianceRequestDTO(RestrictionRequestDTO):
         scenario_id (int | None): Scenario ID from Urban API. With ``upload_ids`` the
             files overlay the scenario; without it the files are checked on their own.
         upload_ids (list[str]): Uploads from ``POST /compliance/uploads`` to check
-            instead of the scenario's objects.
+            instead of the scenario's objects. An answer to a pending question about
+            them needs only ``chat_id``.
     """
 
     scenario_id: int | None = Field(
         default=None,
         examples=[772],
         description=(
-            "Scenario ID from Urban API. Required unless upload_ids are given; with "
-            "upload_ids the uploaded objects replace the scenario's objects of the same "
-            "kind inside the design's boundary."
+            "Scenario ID from Urban API. Required unless upload_ids are given or the "
+            "message answers a question of the chat (chat_id); with upload_ids the "
+            "uploaded objects replace the scenario's objects of the same kind inside "
+            "the design's boundary."
         ),
     )
     upload_ids: list[str] = Field(
@@ -32,8 +34,10 @@ class ComplianceRequestDTO(RestrictionRequestDTO):
 
     @model_validator(mode="after")
     def scenario_or_files(self) -> "ComplianceRequestDTO":
-        if self.scenario_id is None and not self.upload_ids:
-            raise ValueError("scenario_id or upload_ids is required")
+        # A reply in a chat («да», «2 — школа») continues the files it was asked
+        # about; the pipeline says so when nothing in the chat waits for it.
+        if self.scenario_id is None and not self.upload_ids and not self.chat_id:
+            raise ValueError("scenario_id, upload_ids or chat_id is required")
         return self
 
 

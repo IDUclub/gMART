@@ -151,6 +151,13 @@ if TYPE_CHECKING:
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
 
 
+_NOTHING_TO_CHECK = (
+    "Проверка соответствия не выполнена: не выбран сценарий и не переданы файлы "
+    "проекта, а в этом чате нет вопроса, на который отвечает сообщение. Выберите "
+    "сценарий или загрузите файлы (upload_ids)."
+)
+
+
 def _ablation_no_catalog() -> bool:
     """Whether the domain-catalog grounding ablation is enabled (evaluation only).
 
@@ -581,6 +588,16 @@ class RestrictionParserService(BaseLlmService):
                     yield await self._buf(request_id, chunk)
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
+
+        # A chat message without a scenario is accepted for an answer to a pending
+        # mapping; anything else has nothing to check.
+        if history_agent == "compliance" and scenario_id is None and not upload_ids:
+            yield await self._buf(
+                request_id,
+                self._chunk(_NOTHING_TO_CHECK, done=True),
+            )
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
 
         checkpoint = await self.state_store.get_checkpoint(request_id)
 
@@ -1191,6 +1208,7 @@ class RestrictionParserService(BaseLlmService):
                 scope=scope,
                 scenario_id=scenario_id,
                 checkpoint=checkpoint,
+                owner=owner,
                 out=prepared,
             ):
                 yield event
@@ -1629,6 +1647,7 @@ class RestrictionParserService(BaseLlmService):
         scenario_id: int | None,
         checkpoint: dict[str, Any],
         out: list[Any],
+        owner: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Map the files' objects to norm entities and select the checkable norms.
 
@@ -1659,10 +1678,19 @@ class RestrictionParserService(BaseLlmService):
         if stored.get("mapping"):
             mapping = EntityMapping.from_dict(stored["mapping"])
         else:
-            needed = needed_targets(
-                [item[2] for item in canonical.values() if item is not None]
+            needed, sources = needed_targets(
+                [item for item in canonical.values() if item is not None]
             )
-            mapping = await self.entity_mapper.propose(model or "", user_files, needed)
+            mapping = await self.entity_mapper.propose(
+                model or "", user_files, needed, sources
+            )
+            if mapping.classified and owner:
+                try:
+                    await self.compliance_uploads.cache_classifications(
+                        user_files.upload_ids, owner, mapping.classified
+                    )
+                except AgentsBaseException as exc:  # the run goes on without it
+                    logger.warning(f"Entity classification not cached: {exc}")
             if mapping.pending:
                 candidates = list(dict.fromkeys([*needed, *TABLE_TARGETS]))
                 if scope_key:

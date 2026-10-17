@@ -21,8 +21,14 @@ from src.agents.services.compilance.compliance_entity_mapping import (
 )
 from src.agents.services.compilance.compliance_sources import source_reference
 from src.agents.services.compilance.compliance_uploads import UserFiles
-from src.agents.services.compilance.compliance_user_layers import ALL_ZONES
-from src.agents.services.service_entities.compliance import DeclaredRequirements
+from src.agents.services.compilance.compliance_user_layers import (
+    ALL_ZONES,
+    target_roles,
+)
+from src.agents.services.service_entities.compliance import (
+    CheckPlan,
+    DeclaredRequirements,
+)
 
 USER_FILES_STATUS = "user_files"
 _ZONE_TARGETS = tuple(
@@ -53,19 +59,30 @@ def boundary_geometry(files: UserFiles) -> dict[str, Any] | None:
     return None
 
 
-def needed_targets(requirements: list[DeclaredRequirements]) -> list[EntityTarget]:
-    """The entities of the selected norms, as mapping candidates."""
-    targets: list[EntityTarget] = []
-    for item in requirements:
-        for layer in item.layers:
+def needed_targets(
+    plans: list[tuple[CheckPlan, Any, DeclaredRequirements]],
+) -> tuple[list[EntityTarget], list[EntityTarget]]:
+    """The entities of the selected norms: all of them, and the non-checked ones.
+
+    The first list is the mapping's candidates; the second — entities some norm
+    reads as a source, neighbour or zone — tells which surroundings matter.
+    """
+    needed: list[EntityTarget] = []
+    sources: list[EntityTarget] = []
+    for plan, params, requirements in plans:
+        targets = set(target_roles(plan, params))
+        for layer in requirements.layers:
             if (
                 layer.entity_type.value == "functional_zone"
                 and layer.entity == ALL_ZONES
             ):
-                targets.extend(_ZONE_TARGETS)
+                entities = list(_ZONE_TARGETS)
             else:
-                targets.append(EntityTarget(layer.entity, layer.entity_type.value))
-    return list(dict.fromkeys(targets))
+                entities = [EntityTarget(layer.entity, layer.entity_type.value)]
+            needed.extend(entities)
+            if layer.role not in targets:
+                sources.extend(entities)
+    return list(dict.fromkeys(needed)), list(dict.fromkeys(sources))
 
 
 def describe_missing(code: str) -> str:
