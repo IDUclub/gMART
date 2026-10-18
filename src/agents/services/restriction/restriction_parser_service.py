@@ -611,6 +611,9 @@ class RestrictionParserService(BaseLlmService):
                         "в токене нет идентификатора пользователя"
                     )
                 user_files = await self.compliance_uploads.load(upload_ids, owner)
+                if scope_key:
+                    # A project created later in this chat offers these files.
+                    await self.state_store.add_chat_uploads(scope_key, upload_ids)
             except AgentsBaseException as exc:
                 yield await self._buf(
                     request_id,

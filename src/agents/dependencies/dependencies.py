@@ -30,6 +30,12 @@ from src.agents.services.normgraph.normgraph_a2a_service import NormGraphA2AServ
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 from src.agents.services.orchestrator.orchestrator_service import OrchestratorService
 from src.agents.services.pipeline_state import PipelineStateStore
+from src.agents.services.project_files.project_a2a_service import (
+    ProjectA2AService,
+)
+from src.agents.services.project_files.project_files_service import (
+    ProjectFilesService,
+)
 from src.agents.services.provision.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provision.provsion_service import ProvisionService
 from src.agents.services.pzz.pzz_a2a_service import PzzA2AService
@@ -619,6 +625,14 @@ async def get_optional_pzz_mcp_client(
 
 def get_pzz_service() -> PzzService:
     return app_deps["pzz_service"]
+
+
+def get_project_files_service() -> ProjectFilesService:
+    return app_deps["project_files_service"]
+
+
+async def get_project_a2a_service() -> ProjectA2AService:
+    return app_deps["project_a2a_service"]
 
 
 async def get_pzz_a2a_service() -> PzzA2AService:

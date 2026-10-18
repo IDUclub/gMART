@@ -65,6 +65,15 @@ async def upload_compliance_files(
             "names and contents."
         ),
     ),
+    chat_id: str | None = Form(
+        default=None,
+        min_length=36,
+        max_length=36,
+        description=(
+            "Chat the files belong to: a project created later in this chat offers "
+            "to reuse them."
+        ),
+    ),
     token: str = Depends(verify_bearer_token),
     uploads: ComplianceUploadService = Depends(get_compliance_upload_service),
 ) -> dict:
@@ -72,7 +81,8 @@ async def upload_compliance_files(
 
     Returns ``upload_id`` (kept for 24 hours, readable only by its author) and the
     parsed layers with their roles. Pass the id in ``upload_ids`` of
-    ``/compliance/check/stream`` or of the orchestrator.
+    ``/compliance/check/stream``, ``/projects/from-files/stream`` or of the
+    orchestrator.
     """
     owner = _owner(token)
     contents: list[tuple[str, bytes]] = []
@@ -86,7 +96,10 @@ async def upload_compliance_files(
                 detail=f"Upload exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MiB",
             )
         contents.append((item.filename or "layer.geojson", content))
-    return await uploads.create(owner, contents, role=role)
+    summary = await uploads.create(owner, contents, role=role)
+    if chat_id:
+        await uploads.state_store.add_chat_uploads(chat_id, [summary["upload_id"]])
+    return summary
 
 
 @compliance_router.get("/uploads/{upload_id}")

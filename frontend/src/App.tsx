@@ -136,6 +136,17 @@ const AGENTS: Agent[] = [
     ],
   },
   {
+    id: "project_files",
+    label: "Проект из файлов",
+    caption: "Создание в Urban API",
+    path: "/projects/from-files/stream",
+    needsScenario: false,
+    examples: [
+      "Создай проект из загруженных файлов",
+      "Создай проект «Город-сад» со сценарием по этим слоям",
+    ],
+  },
+  {
     id: "provision",
     label: "Обеспеченность",
     caption: "Сервисы и эффекты",
@@ -1102,7 +1113,23 @@ export default function App() {
       const mapped = groups.filter((item: { entity?: string }) => item.entity);
       updateStatus(
         `Файлы: слоёв ${event.content?.layers?.length ?? 0}, групп объектов ` +
-          `${groups.length}, сопоставлено с нормами ${mapped.length}`,
+          `${groups.length}, сопоставлено ${
+            agentId === "project_files" ? "с типами Urban API" : "с нормами"
+          } ${mapped.length}`,
+      );
+    }
+    if (event.type === "project_created") {
+      updateStatus(`Проект ${event.content?.project_id} создан в Urban API`);
+    }
+    if (event.type === "scenario_created") {
+      updateStatus(`Сценарий ${event.content?.scenario_id} создан`);
+    }
+    if (event.type === "project_summary") {
+      const objects = event.content?.objects || {};
+      updateStatus(
+        `Проект ${event.content?.project_id}, сценарий ${event.content?.scenario_id}: ` +
+          `сохранено объектов ${objects.saved ?? 0} из ${objects.total ?? 0}`,
+        event.content?.failed_total ? "warning" : "done",
       );
     }
     if (event.type === "clarification") {
@@ -1454,7 +1481,7 @@ export default function App() {
     if (scenario) url.searchParams.set("scenario_id", scenario);
     // Uploaded design files are checked instead of (or over) the scenario.
     const uploadParam =
-      agentId === "compliance"
+      agentId === "compliance" || agentId === "project_files"
         ? "upload_ids"
         : agentId === "orchestrator"
           ? "compliance_upload_ids"
@@ -1805,7 +1832,9 @@ export default function App() {
                     </>
                   )}
                 </div>
-                {(agentId === "compliance" || agentId === "orchestrator") && (
+                {(agentId === "compliance" ||
+                  agentId === "orchestrator" ||
+                  agentId === "project_files") && (
                   <ComplianceFiles
                     settings={settings}
                     getToken={freshToken}

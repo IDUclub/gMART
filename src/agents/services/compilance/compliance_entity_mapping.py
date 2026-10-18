@@ -439,7 +439,9 @@ _ACCEPT = re.compile(
     r"^(?:да|ок|ok|окей|хорошо|верно|все верно|всё верно|подтверждаю|согласен|"
     r"согласна|принимаю|да, верно|да верно|продолжай|запускай|все так|всё так)$"
 )
-_REJECT = re.compile(r"^(?:нет|не верно|неверно|отклоняю|ни одного|не проверяй)$")
+_REJECT = re.compile(
+    r"^(?:нет|не верно|неверно|отклоняю|ни одного|не проверяй|не загружай|не создавай)$"
+)
 # «2 — школа; 3 нет, 4: детская площадка» → one item per part.
 _EDIT_SPLIT = re.compile(r"[;\n]|,(?=\s*\d)")
 _EDIT_ITEM = re.compile(r"^\s*(?P<number>\d+)\s*(?:[-–—:.)=→]|это)?\s*(?P<value>.*)$")
@@ -449,6 +451,8 @@ _SKIP_VALUES = {
     "пропусти",
     "не проверять",
     "не проверяй",
+    "не загружать",
+    "не создавать",
     "ничего",
     "никакой",
     "null",
@@ -465,8 +469,9 @@ class MappingReply:
 class EntityMapper:
     """Map tag groups to entities: table first, the LLM for the rest."""
 
-    def __init__(self, llm_client) -> None:
+    def __init__(self, llm_client, classify_prompt: str = _CLASSIFY_PROMPT) -> None:
         self.llm_client = llm_client
+        self.classify_prompt = classify_prompt
 
     async def propose(
         self,
@@ -474,13 +479,14 @@ class EntityMapper:
         files: UserFiles,
         needed: Iterable[EntityTarget],
         sources: Iterable[EntityTarget] | None = None,
+        llm_types: Iterable[EntityType] = ("service", "physical_object"),
     ) -> EntityMapping:
         """Map every tag group of the files to an entity.
 
         ``needed`` are the entities of the selected norms (canonical names);
         ``sources`` the ones a norm reads as a source, neighbour or zone — the only
         entities the files' surroundings can serve. ``None`` takes every needed
-        entity as one.
+        entity as one. ``llm_types`` are the entity types the LLM may choose.
         """
         needed = list(needed)
         needed_keys = {target.key() for target in needed}
@@ -490,8 +496,9 @@ class EntityMapper:
         candidates = _unique_targets([*needed, *TABLE_TARGETS])
         # Zones come only from the generator's blocks (the table): any other object
         # taken for a zone would turn a site into an area-wide restriction.
+        allowed = set(llm_types) - {"functional_zone"}
         llm_candidates = [
-            target for target in candidates if target.entity_type != "functional_zone"
+            target for target in candidates if target.entity_type in allowed
         ]
         proposals: list[MappingProposal] = []
         unknown: list[TagGroup] = []
@@ -628,7 +635,7 @@ class EntityMapper:
                     self.llm_client,
                     model,
                     [
-                        {"role": "system", "content": _CLASSIFY_PROMPT},
+                        {"role": "system", "content": self.classify_prompt},
                         {
                             "role": "user",
                             "content": json.dumps(payload, ensure_ascii=False),
