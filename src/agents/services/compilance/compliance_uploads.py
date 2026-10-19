@@ -11,7 +11,8 @@ gets a role:
 - ``border`` — the boundary of the design; it tells where the design is.
 
 A layer without a CRS is WGS84 unless its coordinates fall outside lon/lat; then it
-is placed in the МСК-47 zone its name or coordinates tell (see ``local_crs``).
+is placed in МСК-47 or Web Mercator when its name or coordinates tell so (see
+``crs_guess``), and is sent back to be uploaded with its CRS otherwise.
 
 The role is guessed from the layer name and content and can be set explicitly.
 An upload lives for a day under an ``upload_id`` owned by the user who uploaded it:
@@ -41,7 +42,7 @@ from src.agents.common.exceptions.base_exceptions import (
     AgentsNotFound,
 )
 from src.agents.common.files.layer_cache import LayerCache, LayerMissing
-from src.agents.services.compilance.local_crs import guess_zone, zone_by_name
+from src.agents.services.compilance.crs_guess import guess_crs, zone_by_name
 
 if TYPE_CHECKING:
     from src.agents.services.pipeline_state import PipelineStateStore
@@ -227,7 +228,9 @@ def _geojson_layer(name: str, content: bytes) -> UploadedLayer:
         project, warnings = _local_reprojection(
             (name, data.get("name")), _raw_bounds(raw_features)
         )
-    features, feature_warnings = _normalized_features(name, raw_features, project)
+    features, feature_warnings = _normalized_features(
+        name, raw_features, project, declared=data.get("crs") is not None
+    )
     return _layer(name, features, warnings + feature_warnings)
 
 
@@ -265,15 +268,15 @@ def _local_reprojection(
     """A transform from the local CRS coordinates without a CRS are drawn in.
 
     Coordinates within the lon/lat range are taken for WGS84 as before; beyond it
-    they are placed in a МСК-47 zone named by the layer or told by the coordinates.
+    they are placed in the system the layer name or the coordinates tell.
     """
     if bounds is None or _within_wgs84(bounds):
         return None, []
-    zone = guess_zone(names, bounds)
-    if zone is None:
+    guessed = guess_crs(names, bounds)
+    if guessed is None:
         return None, []
-    logger.info("Upload layer {} has no CRS; {} is assumed", names[0], zone.title)
-    return _to_wgs84(zone.crs()), [f"crs_missing_assumed:{zone.key}"]
+    logger.info("Upload layer {} has no CRS; {} is assumed", names[0], guessed.title)
+    return _to_wgs84(guessed.crs()), [f"crs_missing_assumed:{guessed.key}"]
 
 
 def _raw_bounds(
@@ -311,7 +314,7 @@ def _raw_bounds(
 
 
 def _normalized_features(
-    name: str, raw_features: list[Any], project=None
+    name: str, raw_features: list[Any], project=None, *, declared: bool = False
 ) -> tuple[list[dict[str, Any]], list[str]]:
     features: list[dict[str, Any]] = []
     without_geometry = invalid = repaired = 0
@@ -331,8 +334,9 @@ def _normalized_features(
             geometry = transform(project, geometry)
         if not _within_wgs84(geometry.bounds):
             raise AgentsInputException(
-                f"«{name}»: координаты вне диапазона широты и долготы. Укажите "
-                "систему координат (crs) или пересохраните файл в EPSG:4326"
+                _WRONG_CRS.format(name=name)
+                if declared
+                else _UNKNOWN_CRS.format(name=name)
             )
         if not geometry.is_valid and geometry.geom_type in {
             "Polygon",
@@ -380,6 +384,18 @@ def _planar(geometry: dict[str, Any]) -> dict[str, Any]:
             ],
         }
     return {**geometry, "coordinates": positions(geometry.get("coordinates"))}
+
+
+_UNKNOWN_CRS = (
+    "«{name}»: в файле не указана система координат, а координаты не похожи ни на "
+    "широту и долготу (EPSG:4326), ни на МСК-47, ни на EPSG:3857. Загрузите файл "
+    "заново с указанной системой координат — GeoJSON с полем crs, Shapefile в ZIP "
+    "вместе с файлом .prj или GeoPackage — либо пересохраните его в EPSG:4326"
+)
+_WRONG_CRS = (
+    "«{name}»: координаты не соответствуют указанной в файле системе координат. "
+    "Проверьте её и загрузите файл заново или пересохраните его в EPSG:4326"
+)
 
 
 def _within_wgs84(bounds: tuple[float, float, float, float]) -> bool:
@@ -502,15 +518,18 @@ def _vector_layers(
     if frame.empty or frame.geometry is None:
         return []
     local_warnings: list[str] = []
-    if frame.crs is None:
+    declared = frame.crs is not None
+    if not declared:
         bounds = tuple(float(value) for value in frame.total_bounds)
-        zone = None if _within_wgs84(bounds) else guess_zone((name,), bounds)
-        if zone is None:
+        guessed = None if _within_wgs84(bounds) else guess_crs((name,), bounds)
+        if guessed is None:
             logger.warning("Uploaded layer {} has no CRS; WGS84 is assumed", name)
         else:
-            logger.info("Uploaded layer {} has no CRS; {} is assumed", name, zone.title)
-            frame = frame.set_crs(zone.crs()).to_crs("EPSG:4326")
-            local_warnings.append(f"crs_missing_assumed:{zone.key}")
+            logger.info(
+                "Uploaded layer {} has no CRS; {} is assumed", name, guessed.title
+            )
+            frame = frame.set_crs(guessed.crs()).to_crs("EPSG:4326")
+            local_warnings.append(f"crs_missing_assumed:{guessed.key}")
     elif not frame.crs.equals("EPSG:4326"):
         frame = frame.to_crs("EPSG:4326")
     columns = [column for column in frame.columns if column != frame.geometry.name]
@@ -524,7 +543,7 @@ def _vector_layers(
                 "properties": {column: row[column] for column in columns},
             }
         )
-    features, warnings = _normalized_features(name, raw_features)
+    features, warnings = _normalized_features(name, raw_features, declared=declared)
     if frame.crs is None:
         warnings.append("crs_missing_assumed_wgs84")
     return [_layer(name, features, local_warnings + warnings)]

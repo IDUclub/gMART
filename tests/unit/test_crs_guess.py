@@ -1,11 +1,12 @@
-"""Recognising МСК-47 zones of user files that carry no usable CRS."""
+"""Coordinate systems assumed for user files that declare none."""
 
 import pytest
 from pyproj import Transformer
 
-from src.agents.services.compilance.local_crs import (
+from src.agents.services.compilance.crs_guess import (
     MSK47_ZONES,
-    guess_zone,
+    WEB_MERCATOR,
+    guess_crs,
     zone_by_coordinates,
     zone_by_name,
 )
@@ -49,9 +50,32 @@ def test_zone_by_coordinates(bounds, zone):
 
 
 def test_named_zone_must_fit_the_coordinates():
-    assert guess_zone(["МСК 47 зона 2"], ZONE2_BOUNDS) is MSK47_ZONES[2]
-    assert guess_zone(["МСК 47 зона 1"], ZONE2_BOUNDS) is None
-    assert guess_zone(["houses"], ZONE2_BOUNDS) is MSK47_ZONES[2]
+    assert guess_crs(["МСК 47 зона 2"], ZONE2_BOUNDS) is MSK47_ZONES[2]
+    assert guess_crs(["МСК 47 зона 1"], ZONE2_BOUNDS) is None
+    assert guess_crs(["houses"], ZONE2_BOUNDS) is MSK47_ZONES[2]
+
+
+MOSCOW_3857 = (4170000.0, 7490000.0, 4180000.0, 7500000.0)
+
+
+@pytest.mark.parametrize(
+    ("names", "bounds", "expected"),
+    [
+        (["houses"], MOSCOW_3857, WEB_MERCATOR),
+        (["houses_3857"], MOSCOW_3857, WEB_MERCATOR),
+        (["EPSG:3857 — WGS 84 / Pseudo-Mercator"], MOSCOW_3857, WEB_MERCATOR),
+        (["web-mercator"], MOSCOW_3857, WEB_MERCATOR),
+        # Web Mercator off Russia: Paris.
+        (["houses"], (261000.0, 6250000.0, 262000.0, 6251000.0), None),
+        # UTM 36N, Saint Petersburg: eastings under 1 Mm are west of 9° E.
+        (["houses"], (349000.0, 6647000.0, 350000.0, 6648000.0), None),
+        # A name for Web Mercator does not save coordinates it cannot hold.
+        (["houses_3857"], ZONE2_BOUNDS, None),
+        (["houses_38570"], ZONE2_BOUNDS, MSK47_ZONES[2]),
+    ],
+)
+def test_web_mercator_is_assumed_by_name_or_within_russia(names, bounds, expected):
+    assert guess_crs(names, bounds) is expected
 
 
 def test_zone2_origin_at_point_one_degree_matches_the_other_zones_convention():

@@ -85,14 +85,34 @@ def test_projected_crs_is_reprojected_to_wgs84():
     assert 37 < lon < 38 and 55 < lat < 56
 
 
-def test_coordinates_out_of_lon_lat_range_without_crs_are_rejected():
-    feature = {
+def point(x, y):
+    return {
         "type": "Feature",
-        "geometry": {"type": "Point", "coordinates": [4174000.0, 7495000.0]},
+        "geometry": {"type": "Point", "coordinates": [x, y]},
         "properties": {},
     }
-    with pytest.raises(AgentsInputException, match="crs"):
-        parse_upload("points.geojson", as_bytes(collection([feature], crs=None)))
+
+
+def test_web_mercator_without_crs_is_recognised():
+    layer = parse_upload(
+        "points.geojson", as_bytes(collection([point(4174000.0, 7495000.0)], crs=None))
+    )[0]
+    lon, lat = layer.features[0]["geometry"]["coordinates"]
+    assert 37 < lon < 38 and 55 < lat < 56
+    assert layer.warnings == ["crs_missing_assumed:epsg3857"]
+
+
+def test_other_projected_coordinates_without_crs_ask_for_a_file_with_one():
+    # Saint Petersburg in UTM 36N: neither МСК-47 nor Web Mercator within Russia.
+    data = collection([point(349155.0, 6647806.0)], crs=None)
+    with pytest.raises(AgentsInputException, match="Загрузите файл заново"):
+        parse_upload("points.geojson", as_bytes(data))
+
+
+def test_coordinates_contradicting_the_declared_crs_are_rejected():
+    data = collection([point(349155.0, 6647806.0)], crs="EPSG:4326")
+    with pytest.raises(AgentsInputException, match="не соответствуют указанной"):
+        parse_upload("points.geojson", as_bytes(data))
 
 
 # A design in МСК-47 zone 2 as QGIS exports it: no ``crs``, the zone only in ``name``.

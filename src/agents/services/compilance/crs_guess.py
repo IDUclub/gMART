@@ -1,11 +1,17 @@
-"""Local coordinate systems of user files that carry no usable CRS.
+"""Coordinate systems assumed for user files that declare none.
 
-Designs of the Leningrad oblast are drawn in МСК-47: Transverse Mercator on the
-Pulkovo 1942 datum in three zones, none of them in the EPSG registry. Such files
-reach us without a CRS PROJ understands — a GeoJSON names the zone only in prose
-(``"МСК 47 зона 2"``), or names nothing at all. A zone is recognised by that name or,
-failing it, by the coordinates themselves: the millions digit of the easting is the
-zone number and the northing is counted from about 56° N.
+A file whose coordinates are not lon/lat and that names no CRS PROJ understands
+is placed only in a system recognised with confidence; any other file is sent back
+to be uploaded with its CRS. Two systems are recognised:
+
+- МСК-47 — designs of the Leningrad oblast: Transverse Mercator on the Pulkovo 1942
+  datum in three zones, none of them in the EPSG registry. A GeoJSON often names the
+  zone only in prose (``"МСК 47 зона 2"``); without the name the coordinates tell it:
+  the millions digit of the easting is the zone number and the northing is counted
+  from about 56° N.
+- Web Mercator (EPSG:3857) — exports of web maps. Recognised by its name or by
+  coordinates that land within Russia. Gauss–Krüger zones of СК-42 / ГСК-2011
+  share that range, so such a file without a CRS is read as Web Mercator too.
 """
 
 from __future__ import annotations
@@ -19,10 +25,19 @@ _MSK47_NAME = re.compile(
     r"(?:мск|msk)[\s_-]*47\D{0,12}?(?:зона|zone|z)?[\s_-]*([123])(?!\d)",
     re.IGNORECASE,
 )
+_WEB_MERCATOR_NAME = re.compile(
+    r"(?<!\d)(?:3857|900913|3785)(?!\d)|pseudo[\s_-]*mercator|web[\s_-]*mercator",
+    re.IGNORECASE,
+)
 # Farther than this from the central meridian a zone is not used.
 _MAX_EASTING_OFFSET = 400_000
 # The oblast lies within 58.4–61.3° N: northings 0.25–0.6 Mm, with a margin.
 _NORTHING_RANGE = (150_000, 800_000)
+# Russia, Kaliningrad to Chukotka west of the antimeridian; lon/lat degrees.
+_RUSSIA = (19.0, 41.0, 180.0, 82.0)
+_WEB_MERCATOR_LIMIT = 20_037_508.342789244
+
+Bounds = tuple[float, float, float, float]
 
 
 @dataclass(frozen=True)
@@ -63,7 +78,7 @@ class LocalZone:
     def crs(self):
         return _crs(self.wkt())
 
-    def holds(self, bounds: tuple[float, float, float, float]) -> bool:
+    def holds(self, bounds: Bounds) -> bool:
         """Whether coordinates in ``bounds`` (easting, northing) fit this zone."""
         min_x, min_y, max_x, max_y = bounds
         low, high = _NORTHING_RANGE
@@ -74,6 +89,31 @@ class LocalZone:
         )
 
 
+@dataclass(frozen=True)
+class WebMercator:
+    """EPSG:3857, recognised only where it puts the coordinates within Russia."""
+
+    key: str = "epsg3857"
+    title: str = "WGS 84 / Pseudo-Mercator (EPSG:3857)"
+
+    def crs(self):
+        return _crs("EPSG:3857")
+
+    def holds(self, bounds: Bounds) -> bool:
+        if any(abs(value) > _WEB_MERCATOR_LIMIT for value in bounds):
+            return False
+        from pyproj import Transformer
+
+        to_lon_lat = Transformer.from_crs(self.crs(), "EPSG:4326", always_xy=True)
+        # Longitude grows with x and latitude with y: the corners bound the layer.
+        min_lon, min_lat = to_lon_lat.transform(bounds[0], bounds[1])
+        max_lon, max_lat = to_lon_lat.transform(bounds[2], bounds[3])
+        west, south, east, north = _RUSSIA
+        return (
+            west <= min_lon <= max_lon <= east and south <= min_lat <= max_lat <= north
+        )
+
+
 # Zone 2 is published with its origin at 0.1° N; 0.1° of the Krassowsky meridian is
 # the 11 057.628 m the other zones add to the false northing, so all three agree.
 MSK47_ZONES: dict[int, LocalZone] = {
@@ -81,13 +121,16 @@ MSK47_ZONES: dict[int, LocalZone] = {
     2: LocalZone("msk47_zone2", "MSK47 zone 2", 0.1, 30.95, 2_250_000, -6_200_000),
     3: LocalZone("msk47_zone3", "MSK47 zone 3", 0, 33.95, 3_250_000, -6_211_057.628),
 }
+WEB_MERCATOR = WebMercator()
+
+GuessedCrs = LocalZone | WebMercator
 
 
 @cache
-def _crs(wkt: str):
+def _crs(definition: str):
     from pyproj import CRS
 
-    return CRS.from_wkt(wkt)
+    return CRS.from_user_input(definition)
 
 
 def zone_by_name(*names: str | None) -> LocalZone | None:
@@ -99,23 +142,31 @@ def zone_by_name(*names: str | None) -> LocalZone | None:
     return None
 
 
-def zone_by_coordinates(
-    bounds: tuple[float, float, float, float],
-) -> LocalZone | None:
+def zone_by_coordinates(bounds: Bounds) -> LocalZone | None:
     """The only zone whose range holds ``bounds``; zones' ranges do not overlap."""
     return next((zone for zone in MSK47_ZONES.values() if zone.holds(bounds)), None)
 
 
-def guess_zone(
-    names: Iterable[str | None], bounds: tuple[float, float, float, float]
-) -> LocalZone | None:
-    """A zone for coordinates without a CRS: by name, else by the coordinates.
+def _named(names: list[str | None]) -> GuessedCrs | None:
+    zone = zone_by_name(*names)
+    if zone is not None:
+        return zone
+    if any(_WEB_MERCATOR_NAME.search(str(name or "")) for name in names):
+        return WEB_MERCATOR
+    return None
 
-    A named zone is trusted only when the coordinates fit it — a layer called
+
+def guess_crs(names: Iterable[str | None], bounds: Bounds) -> GuessedCrs | None:
+    """A CRS for coordinates without one: by name, else by the coordinates.
+
+    A named system is trusted only when the coordinates fit it — a layer called
     «МСК-47 зона 1» holding zone-2 eastings is a mistake to report, not to place
-    some 200 km off.
+    some 200 km off. МСК-47 northings (under 1 Mm) and Web Mercator ones within
+    Russia (over 5 Mm) never meet, so the coordinates name at most one system.
     """
-    named = zone_by_name(*names)
+    named = _named(list(names))
     if named is not None:
         return named if named.holds(bounds) else None
-    return zone_by_coordinates(bounds)
+    return zone_by_coordinates(bounds) or (
+        WEB_MERCATOR if WEB_MERCATOR.holds(bounds) else None
+    )
