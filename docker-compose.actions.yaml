@@ -60,6 +60,10 @@ services:
       SERVICE_AUTH_CLIENT_ID: ${SERVICE_AUTH_CLIENT_ID:?SERVICE_AUTH_CLIENT_ID is required}
       SERVICE_AUTH_CLIENT_SECRET: ${SERVICE_AUTH_CLIENT_SECRET:?SERVICE_AUTH_CLIENT_SECRET is required}
       SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED: ${SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED:-true}
+      # Layers of user uploads; the volume keeps them across deploys (records live in Redis).
+      GMART_CACHE_DIR: /var/cache/gmart
+    volumes:
+      - gmart_cache:/var/cache/gmart
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -97,3 +101,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+volumes:
+  gmart_cache:

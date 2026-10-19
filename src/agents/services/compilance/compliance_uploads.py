@@ -10,9 +10,14 @@ gets a role:
   neighbours of distance rules, never checked themselves;
 - ``border`` — the boundary of the design; it tells where the design is.
 
+A layer without a CRS is WGS84 unless its coordinates fall outside lon/lat; then it
+is placed in МСК-47 or Web Mercator when its name or coordinates tell so (see
+``crs_guess``), and is sent back to be uploaded with its CRS otherwise.
+
 The role is guessed from the layer name and content and can be set explicitly.
-Parsed layers live in Redis for a day under an ``upload_id`` owned by the user who
-uploaded them.
+An upload lives for a day under an ``upload_id`` owned by the user who uploaded it:
+its record (roles, mapping answers, a summary of every layer) in Redis, the parsed
+layers themselves as files in the application's ``LayerCache``.
 """
 
 from __future__ import annotations
@@ -36,6 +41,8 @@ from src.agents.common.exceptions.base_exceptions import (
     AgentsInputException,
     AgentsNotFound,
 )
+from src.agents.common.files.layer_cache import LayerCache, LayerMissing
+from src.agents.services.compilance.crs_guess import guess_crs, zone_by_name
 
 if TYPE_CHECKING:
     from src.agents.services.pipeline_state import PipelineStateStore
@@ -113,24 +120,27 @@ class UploadedLayer:
             "warnings": list(self.warnings),
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "role": self.role,
-            "role_source": self.role_source,
-            "warnings": list(self.warnings),
-            "feature_collection": self.feature_collection,
-        }
+    def to_record(self, file: str) -> dict[str, Any]:
+        """What the upload record keeps of the layer: its summary and its file."""
+        return {**self.summary(), "file": file}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "UploadedLayer":
+    def from_record(
+        cls, item: dict[str, Any], feature_collection: dict[str, Any]
+    ) -> "UploadedLayer":
         return cls(
-            name=data["name"],
-            role=data["role"],
-            role_source=data.get("role_source") or "auto",
-            warnings=list(data.get("warnings") or []),
-            feature_collection=data["feature_collection"],
+            name=item["name"],
+            role=item["role"],
+            role_source=item.get("role_source") or "auto",
+            warnings=list(item.get("warnings") or []),
+            feature_collection=feature_collection,
         )
+
+
+def _record_summary(item: dict[str, Any]) -> dict[str, Any]:
+    if "file" not in item:  # a record written before layers moved to the cache
+        return UploadedLayer.from_record(item, item["feature_collection"]).summary()
+    return {key: value for key, value in item.items() if key != "file"}
 
 
 def detect_role(name: str, features: list[dict[str, Any]]) -> LayerRole:
@@ -213,8 +223,15 @@ def _geojson_layer(name: str, content: bytes) -> UploadedLayer:
     else:
         raise AgentsInputException(f"«{name}» — не корректный GeoJSON")
     project = _reprojection(name, data.get("crs"))
-    features, warnings = _normalized_features(name, raw_features, project)
-    return _layer(name, features, warnings)
+    warnings: list[str] = []
+    if project is None and data.get("crs") is None:
+        project, warnings = _local_reprojection(
+            (name, data.get("name")), _raw_bounds(raw_features)
+        )
+    features, feature_warnings = _normalized_features(
+        name, raw_features, project, declared=data.get("crs") is not None
+    )
+    return _layer(name, features, warnings + feature_warnings)
 
 
 def _reprojection(name: str, crs: Any):
@@ -222,23 +239,82 @@ def _reprojection(name: str, crs: Any):
     crs_name = ((crs or {}).get("properties") or {}).get("name") if crs else None
     if not crs_name or str(crs_name).casefold() in _WGS84_NAMES:
         return None
-    from pyproj import CRS, Transformer
+    from pyproj import CRS
     from pyproj.exceptions import CRSError
 
     try:
         source = CRS.from_user_input(crs_name)
     except CRSError as exc:
-        raise AgentsInputException(
-            f"«{name}»: неизвестная система координат {crs_name}"
-        ) from exc
+        zone = zone_by_name(str(crs_name))
+        if zone is None:
+            raise AgentsInputException(
+                f"«{name}»: неизвестная система координат {crs_name}"
+            ) from exc
+        source = zone.crs()
     if source == CRS.from_epsg(4326):
         return None
-    transformer = Transformer.from_crs(source, "EPSG:4326", always_xy=True)
-    return transformer.transform
+    return _to_wgs84(source)
+
+
+def _to_wgs84(source: Any):
+    from pyproj import Transformer
+
+    return Transformer.from_crs(source, "EPSG:4326", always_xy=True).transform
+
+
+def _local_reprojection(
+    names: tuple[str | None, ...], bounds: tuple[float, float, float, float] | None
+):
+    """A transform from the local CRS coordinates without a CRS are drawn in.
+
+    Coordinates within the lon/lat range are taken for WGS84 as before; beyond it
+    they are placed in the system the layer name or the coordinates tell.
+    """
+    if bounds is None or _within_wgs84(bounds):
+        return None, []
+    guessed = guess_crs(names, bounds)
+    if guessed is None:
+        return None, []
+    logger.info("Upload layer {} has no CRS; {} is assumed", names[0], guessed.title)
+    return _to_wgs84(guessed.crs()), [f"crs_missing_assumed:{guessed.key}"]
+
+
+def _raw_bounds(
+    raw_features: list[Any],
+) -> tuple[float, float, float, float] | None:
+    """Bounds of every position in raw GeoJSON features, or ``None`` without any."""
+    xs: list[float] = []
+    ys: list[float] = []
+
+    def walk(value: Any) -> None:
+        if (
+            isinstance(value, list)
+            and len(value) >= 2
+            and all(isinstance(item, (int, float)) for item in value[:2])
+        ):
+            xs.append(float(value[0]))
+            ys.append(float(value[1]))
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    def geometry(value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        walk(value.get("coordinates"))
+        for item in value.get("geometries") or []:
+            geometry(item)
+
+    for raw in raw_features:
+        if isinstance(raw, dict):
+            geometry(raw.get("geometry"))
+    if not xs:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def _normalized_features(
-    name: str, raw_features: list[Any], project=None
+    name: str, raw_features: list[Any], project=None, *, declared: bool = False
 ) -> tuple[list[dict[str, Any]], list[str]]:
     features: list[dict[str, Any]] = []
     without_geometry = invalid = repaired = 0
@@ -258,8 +334,9 @@ def _normalized_features(
             geometry = transform(project, geometry)
         if not _within_wgs84(geometry.bounds):
             raise AgentsInputException(
-                f"«{name}»: координаты вне диапазона широты и долготы. Укажите "
-                "систему координат (crs) или пересохраните файл в EPSG:4326"
+                _WRONG_CRS.format(name=name)
+                if declared
+                else _UNKNOWN_CRS.format(name=name)
             )
         if not geometry.is_valid and geometry.geom_type in {
             "Polygon",
@@ -307,6 +384,18 @@ def _planar(geometry: dict[str, Any]) -> dict[str, Any]:
             ],
         }
     return {**geometry, "coordinates": positions(geometry.get("coordinates"))}
+
+
+_UNKNOWN_CRS = (
+    "«{name}»: в файле не указана система координат, а координаты не похожи ни на "
+    "широту и долготу (EPSG:4326), ни на МСК-47, ни на EPSG:3857. Загрузите файл "
+    "заново с указанной системой координат — GeoJSON с полем crs, Shapefile в ZIP "
+    "вместе с файлом .prj или GeoPackage — либо пересохраните его в EPSG:4326"
+)
+_WRONG_CRS = (
+    "«{name}»: координаты не соответствуют указанной в файле системе координат. "
+    "Проверьте её и загрузите файл заново или пересохраните его в EPSG:4326"
+)
 
 
 def _within_wgs84(bounds: tuple[float, float, float, float]) -> bool:
@@ -428,8 +517,19 @@ def _vector_layers(
         ) from exc
     if frame.empty or frame.geometry is None:
         return []
-    if frame.crs is None:
-        logger.warning("Uploaded layer {} has no CRS; WGS84 is assumed", name)
+    local_warnings: list[str] = []
+    declared = frame.crs is not None
+    if not declared:
+        bounds = tuple(float(value) for value in frame.total_bounds)
+        guessed = None if _within_wgs84(bounds) else guess_crs((name,), bounds)
+        if guessed is None:
+            logger.warning("Uploaded layer {} has no CRS; WGS84 is assumed", name)
+        else:
+            logger.info(
+                "Uploaded layer {} has no CRS; {} is assumed", name, guessed.title
+            )
+            frame = frame.set_crs(guessed.crs()).to_crs("EPSG:4326")
+            local_warnings.append(f"crs_missing_assumed:{guessed.key}")
     elif not frame.crs.equals("EPSG:4326"):
         frame = frame.to_crs("EPSG:4326")
     columns = [column for column in frame.columns if column != frame.geometry.name]
@@ -443,10 +543,10 @@ def _vector_layers(
                 "properties": {column: row[column] for column in columns},
             }
         )
-    features, warnings = _normalized_features(name, raw_features)
+    features, warnings = _normalized_features(name, raw_features, declared=declared)
     if frame.crs is None:
         warnings.append("crs_missing_assumed_wgs84")
-    return [_layer(name, features, warnings)]
+    return [_layer(name, features, local_warnings + warnings)]
 
 
 @dataclass
@@ -473,8 +573,13 @@ class UserFiles:
 class ComplianceUploadService:
     """Create, read and update uploads; every access checks the owner."""
 
-    def __init__(self, state_store: "PipelineStateStore") -> None:
+    def __init__(
+        self,
+        state_store: "PipelineStateStore",
+        layer_cache: LayerCache | None = None,
+    ) -> None:
         self.state_store = state_store
+        self.layer_cache = layer_cache or LayerCache(ttl_seconds=UPLOAD_TTL_SECONDS)
 
     async def create(
         self,
@@ -496,20 +601,34 @@ class ComplianceUploadService:
             if role is not None:
                 layer.role = role
                 layer.role_source = "user"
-        created_at = datetime.now(timezone.utc)
-        record = {
-            "upload_id": str(uuid.uuid4()),
-            "owner": owner,
-            "created_at": created_at.isoformat(),
-            "expires_at": (
-                created_at + timedelta(seconds=UPLOAD_TTL_SECONDS)
-            ).isoformat(),
-            "files": [filename for filename, _ in files],
-            "layers": [layer.to_dict() for layer in layers],
-            "confirmed_mapping": {},
-            "classified": {},
-        }
-        await self.state_store.save_compliance_upload(record["upload_id"], record)
+        upload_id = str(uuid.uuid4())
+        self.layer_cache.purge_expired()
+        try:
+            stored = [
+                layer.to_record(
+                    await self.layer_cache.write(
+                        upload_id, index, layer.feature_collection
+                    )
+                )
+                for index, layer in enumerate(layers)
+            ]
+            created_at = datetime.now(timezone.utc)
+            record = {
+                "upload_id": upload_id,
+                "owner": owner,
+                "created_at": created_at.isoformat(),
+                "expires_at": (
+                    created_at + timedelta(seconds=UPLOAD_TTL_SECONDS)
+                ).isoformat(),
+                "files": [filename for filename, _ in files],
+                "layers": stored,
+                "confirmed_mapping": {},
+                "classified": {},
+            }
+            await self.state_store.save_compliance_upload(upload_id, record)
+        except BaseException:
+            self.layer_cache.delete(upload_id)
+            raise
         logger.info(
             "Compliance upload {} stored: files={} layers={} features={}",
             record["upload_id"],
@@ -523,9 +642,15 @@ class ComplianceUploadService:
         record = await self.state_store.get_compliance_upload(upload_id)
         # Someone else's upload is reported exactly like a missing one.
         if not record or record.get("owner") != owner:
-            raise AgentsNotFound(
-                "Загрузка не найдена или срок её хранения истёк", upload_id
-            )
+            raise _expired(upload_id)
+        if not all(
+            self.layer_cache.exists(item["file"])
+            for item in record["layers"]
+            if "file" in item
+        ):
+            # The cache lost the layers (a recreated container): the record is moot.
+            await self.state_store.delete_compliance_upload(upload_id)
+            raise _expired(upload_id)
         return record
 
     async def set_roles(
@@ -548,6 +673,7 @@ class ComplianceUploadService:
     async def delete(self, upload_id: str, owner: str) -> None:
         await self.get(upload_id, owner)
         await self.state_store.delete_compliance_upload(upload_id)
+        self.layer_cache.delete(upload_id)
 
     async def load(
         self,
@@ -561,7 +687,8 @@ class ComplianceUploadService:
         classified: dict[str, dict[str, Any]] = {}
         for upload_id in dict.fromkeys(upload_ids):
             record = await self.get(upload_id, owner)
-            layers.extend(UploadedLayer.from_dict(item) for item in record["layers"])
+            for item in record["layers"]:
+                layers.append(await self._layer(upload_id, item))
             confirmed.update(record.get(confirmed_field) or {})
             classified.update(record.get(classified_field) or {})
         return UserFiles(
@@ -601,6 +728,16 @@ class ComplianceUploadService:
             record[field_name] = {**(record.get(field_name) or {}), **mapping_update}
             await self.state_store.update_compliance_upload(upload_id, record)
 
+    async def _layer(self, upload_id: str, item: dict[str, Any]) -> UploadedLayer:
+        if "file" not in item:  # a record written before layers moved to the cache
+            return UploadedLayer.from_record(item, item["feature_collection"])
+        try:
+            feature_collection = await self.layer_cache.read(item["file"])
+        except LayerMissing:
+            await self.state_store.delete_compliance_upload(upload_id)
+            raise _expired(upload_id) from None
+        return UploadedLayer.from_record(item, feature_collection)
+
     @staticmethod
     def summary(record: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -608,7 +745,9 @@ class ComplianceUploadService:
             "created_at": record.get("created_at"),
             "expires_at": record.get("expires_at"),
             "files": record.get("files") or [],
-            "layers": [
-                UploadedLayer.from_dict(item).summary() for item in record["layers"]
-            ],
+            "layers": [_record_summary(item) for item in record["layers"]],
         }
+
+
+def _expired(upload_id: str) -> AgentsNotFound:
+    return AgentsNotFound("Загрузка не найдена или срок её хранения истёк", upload_id)
