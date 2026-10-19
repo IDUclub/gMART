@@ -14,8 +14,9 @@ A layer without a CRS is WGS84 unless its coordinates fall outside lon/lat; then
 is placed in the МСК-47 zone its name or coordinates tell (see ``local_crs``).
 
 The role is guessed from the layer name and content and can be set explicitly.
-Parsed layers live in Redis for a day under an ``upload_id`` owned by the user who
-uploaded them.
+An upload lives for a day under an ``upload_id`` owned by the user who uploaded it:
+its record (roles, mapping answers, a summary of every layer) in Redis, the parsed
+layers themselves as files in the application's ``LayerCache``.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from src.agents.common.exceptions.base_exceptions import (
     AgentsInputException,
     AgentsNotFound,
 )
+from src.agents.common.files.layer_cache import LayerCache, LayerMissing
 from src.agents.services.compilance.local_crs import guess_zone, zone_by_name
 
 if TYPE_CHECKING:
@@ -117,24 +119,27 @@ class UploadedLayer:
             "warnings": list(self.warnings),
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "role": self.role,
-            "role_source": self.role_source,
-            "warnings": list(self.warnings),
-            "feature_collection": self.feature_collection,
-        }
+    def to_record(self, file: str) -> dict[str, Any]:
+        """What the upload record keeps of the layer: its summary and its file."""
+        return {**self.summary(), "file": file}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "UploadedLayer":
+    def from_record(
+        cls, item: dict[str, Any], feature_collection: dict[str, Any]
+    ) -> "UploadedLayer":
         return cls(
-            name=data["name"],
-            role=data["role"],
-            role_source=data.get("role_source") or "auto",
-            warnings=list(data.get("warnings") or []),
-            feature_collection=data["feature_collection"],
+            name=item["name"],
+            role=item["role"],
+            role_source=item.get("role_source") or "auto",
+            warnings=list(item.get("warnings") or []),
+            feature_collection=feature_collection,
         )
+
+
+def _record_summary(item: dict[str, Any]) -> dict[str, Any]:
+    if "file" not in item:  # a record written before layers moved to the cache
+        return UploadedLayer.from_record(item, item["feature_collection"]).summary()
+    return {key: value for key, value in item.items() if key != "file"}
 
 
 def detect_role(name: str, features: list[dict[str, Any]]) -> LayerRole:
@@ -549,8 +554,13 @@ class UserFiles:
 class ComplianceUploadService:
     """Create, read and update uploads; every access checks the owner."""
 
-    def __init__(self, state_store: "PipelineStateStore") -> None:
+    def __init__(
+        self,
+        state_store: "PipelineStateStore",
+        layer_cache: LayerCache | None = None,
+    ) -> None:
         self.state_store = state_store
+        self.layer_cache = layer_cache or LayerCache(ttl_seconds=UPLOAD_TTL_SECONDS)
 
     async def create(
         self,
@@ -572,20 +582,34 @@ class ComplianceUploadService:
             if role is not None:
                 layer.role = role
                 layer.role_source = "user"
-        created_at = datetime.now(timezone.utc)
-        record = {
-            "upload_id": str(uuid.uuid4()),
-            "owner": owner,
-            "created_at": created_at.isoformat(),
-            "expires_at": (
-                created_at + timedelta(seconds=UPLOAD_TTL_SECONDS)
-            ).isoformat(),
-            "files": [filename for filename, _ in files],
-            "layers": [layer.to_dict() for layer in layers],
-            "confirmed_mapping": {},
-            "classified": {},
-        }
-        await self.state_store.save_compliance_upload(record["upload_id"], record)
+        upload_id = str(uuid.uuid4())
+        self.layer_cache.purge_expired()
+        try:
+            stored = [
+                layer.to_record(
+                    await self.layer_cache.write(
+                        upload_id, index, layer.feature_collection
+                    )
+                )
+                for index, layer in enumerate(layers)
+            ]
+            created_at = datetime.now(timezone.utc)
+            record = {
+                "upload_id": upload_id,
+                "owner": owner,
+                "created_at": created_at.isoformat(),
+                "expires_at": (
+                    created_at + timedelta(seconds=UPLOAD_TTL_SECONDS)
+                ).isoformat(),
+                "files": [filename for filename, _ in files],
+                "layers": stored,
+                "confirmed_mapping": {},
+                "classified": {},
+            }
+            await self.state_store.save_compliance_upload(upload_id, record)
+        except BaseException:
+            self.layer_cache.delete(upload_id)
+            raise
         logger.info(
             "Compliance upload {} stored: files={} layers={} features={}",
             record["upload_id"],
@@ -599,9 +623,15 @@ class ComplianceUploadService:
         record = await self.state_store.get_compliance_upload(upload_id)
         # Someone else's upload is reported exactly like a missing one.
         if not record or record.get("owner") != owner:
-            raise AgentsNotFound(
-                "Загрузка не найдена или срок её хранения истёк", upload_id
-            )
+            raise _expired(upload_id)
+        if not all(
+            self.layer_cache.exists(item["file"])
+            for item in record["layers"]
+            if "file" in item
+        ):
+            # The cache lost the layers (a recreated container): the record is moot.
+            await self.state_store.delete_compliance_upload(upload_id)
+            raise _expired(upload_id)
         return record
 
     async def set_roles(
@@ -624,6 +654,7 @@ class ComplianceUploadService:
     async def delete(self, upload_id: str, owner: str) -> None:
         await self.get(upload_id, owner)
         await self.state_store.delete_compliance_upload(upload_id)
+        self.layer_cache.delete(upload_id)
 
     async def load(
         self,
@@ -637,7 +668,8 @@ class ComplianceUploadService:
         classified: dict[str, dict[str, Any]] = {}
         for upload_id in dict.fromkeys(upload_ids):
             record = await self.get(upload_id, owner)
-            layers.extend(UploadedLayer.from_dict(item) for item in record["layers"])
+            for item in record["layers"]:
+                layers.append(await self._layer(upload_id, item))
             confirmed.update(record.get(confirmed_field) or {})
             classified.update(record.get(classified_field) or {})
         return UserFiles(
@@ -677,6 +709,16 @@ class ComplianceUploadService:
             record[field_name] = {**(record.get(field_name) or {}), **mapping_update}
             await self.state_store.update_compliance_upload(upload_id, record)
 
+    async def _layer(self, upload_id: str, item: dict[str, Any]) -> UploadedLayer:
+        if "file" not in item:  # a record written before layers moved to the cache
+            return UploadedLayer.from_record(item, item["feature_collection"])
+        try:
+            feature_collection = await self.layer_cache.read(item["file"])
+        except LayerMissing:
+            await self.state_store.delete_compliance_upload(upload_id)
+            raise _expired(upload_id) from None
+        return UploadedLayer.from_record(item, feature_collection)
+
     @staticmethod
     def summary(record: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -684,7 +726,9 @@ class ComplianceUploadService:
             "created_at": record.get("created_at"),
             "expires_at": record.get("expires_at"),
             "files": record.get("files") or [],
-            "layers": [
-                UploadedLayer.from_dict(item).summary() for item in record["layers"]
-            ],
+            "layers": [_record_summary(item) for item in record["layers"]],
         }
+
+
+def _expired(upload_id: str) -> AgentsNotFound:
+    return AgentsNotFound("Загрузка не найдена или срок её хранения истёк", upload_id)

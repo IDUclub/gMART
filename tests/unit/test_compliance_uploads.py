@@ -14,6 +14,7 @@ from src.agents.common.exceptions.base_exceptions import (
     AgentsInputException,
     AgentsNotFound,
 )
+from src.agents.common.files.layer_cache import LayerCache, LayerMissing
 from src.agents.services.compilance.compliance_uploads import (
     ComplianceUploadService,
     UploadTooLarge,
@@ -239,9 +240,9 @@ def test_file_without_geometry_is_rejected():
 
 
 @pytest.fixture
-async def uploads():
+async def uploads(tmp_path: Path):
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    yield ComplianceUploadService(PipelineStateStore(redis))
+    yield ComplianceUploadService(PipelineStateStore(redis), LayerCache(tmp_path))
     await redis.aclose()
 
 
@@ -259,6 +260,95 @@ async def test_upload_is_stored_for_its_owner_only(uploads):
     assert record["files"] == ["map_objects.geojson", "border.geojson"]
     with pytest.raises(AgentsNotFound):
         await uploads.get(summary["upload_id"], "bob")
+
+
+async def test_redis_keeps_layer_summaries_and_the_cache_keeps_geometry(uploads):
+    summary = await uploads.create("alice", files())
+    stored = await uploads.state_store.get_compliance_upload(summary["upload_id"])
+    assert "coordinates" not in json.dumps(stored)
+    assert stored["layers"][0] == {
+        "name": "map_objects",
+        "role": "project",
+        "role_source": "auto",
+        "feature_count": 1,
+        "geometry_types": ["Polygon"],
+        "warnings": [],
+        "file": f"{summary['upload_id']}/0.geojson",
+    }
+    assert summary["layers"][0] == {
+        key: value for key, value in stored["layers"][0].items() if key != "file"
+    }
+    loaded = await uploads.load([summary["upload_id"]], "alice")
+    assert loaded.layers[0].features[0]["geometry"]["coordinates"] == [SQUARE]
+
+
+async def test_upload_whose_cached_layers_are_gone_reads_as_expired(uploads):
+    summary = await uploads.create("alice", files())
+    uploads.layer_cache.delete(summary["upload_id"])
+    with pytest.raises(AgentsNotFound, match="срок"):
+        await uploads.get(summary["upload_id"], "alice")
+    assert await uploads.state_store.get_compliance_upload(summary["upload_id"]) is None
+
+
+async def test_deleting_an_upload_removes_its_layers(uploads):
+    summary = await uploads.create("alice", files())
+    await uploads.delete(summary["upload_id"], "alice")
+    assert not (uploads.layer_cache.root / summary["upload_id"]).exists()
+
+
+async def test_failed_record_save_leaves_no_layer_files(uploads, monkeypatch):
+    async def failing(*_):
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(uploads.state_store, "save_compliance_upload", failing)
+    with pytest.raises(ConnectionError):
+        await uploads.create("alice", files())
+    assert list(uploads.layer_cache.root.iterdir()) == []
+
+
+async def test_record_with_inline_layers_from_before_the_cache_still_loads(uploads):
+    record = {
+        "upload_id": "legacy",
+        "owner": "alice",
+        "files": ["map_objects.geojson"],
+        "layers": [
+            {
+                "name": "map_objects",
+                "role": "project",
+                "role_source": "auto",
+                "warnings": [],
+                "feature_collection": collection([polygon({"type": "buildings"})]),
+            }
+        ],
+    }
+    await uploads.state_store.save_compliance_upload("legacy", record)
+    assert (
+        uploads.summary(await uploads.get("legacy", "alice"))["layers"][0][
+            "feature_count"
+        ]
+        == 1
+    )
+    loaded = await uploads.load(["legacy"], "alice")
+    assert loaded.has_project
+
+
+def test_layer_cache_expires_old_uploads_and_resolves_only_its_own_names(
+    tmp_path: Path, monkeypatch
+):
+    cache = LayerCache(tmp_path, ttl_seconds=10)
+    old = cache.root / "00000000-0000-0000-0000-000000000000"
+    old.mkdir()
+    (old / "0.geojson").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "src.agents.common.files.layer_cache.time.time",
+        lambda: old.stat().st_mtime + 11,
+    )
+    assert cache.purge_expired() == 1
+    assert not old.exists()
+    for name in ["../secret.geojson", "00000000-0000-0000-0000-000000000000/../x"]:
+        assert not cache.exists(name)
+        with pytest.raises(LayerMissing):
+            cache._path(name)
 
 
 async def test_role_override_at_upload_and_by_layer(uploads):
