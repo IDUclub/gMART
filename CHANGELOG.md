@@ -1,3 +1,9 @@
+## v0.24.1 (2026-10-19)
+
+[fix/ICII-209-project-from-user-file](https://github.com/IDUclub/gMART/pull/240) (#240)
+
+- fix(agents): создавать проект из файлов от имени пользователя
+
 ## v0.24.0 (2026-10-19)
 
 [feat/ICII-209-project-from-user-file](https://github.com/IDUclub/gMART/pull/239) (#239)
