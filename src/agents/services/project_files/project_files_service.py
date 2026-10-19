@@ -62,7 +62,10 @@ from src.agents.services.project_files.project_types import (
     creation_specs,
     render_type_question,
 )
-from src.common.service_auth import user_id_from_jwt
+from src.common.service_auth import (
+    is_internal_user_context_jwt,
+    user_id_from_jwt,
+)
 
 AGENT_ID = "project_files"
 _POLYGONS = {"Polygon", "MultiPolygon"}
@@ -78,12 +81,17 @@ class ProjectFilesService(BaseLlmService):
         urban_api_client,
         state_store: PipelineStateStore,
         uploads: ComplianceUploadService,
+        user_urban_api_client=None,
     ) -> None:
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.state_store = state_store
         self.uploads = uploads
+        # Urban API makes the token's user the owner of a project and refuses a
+        # service account another owner, so the project is created — like in the
+        # frontend — with the user's own token.
+        self.urban = user_urban_api_client or urban_api_client
         self.entity_mapper = EntityMapper(self.llm_client, PROJECT_CLASSIFY_PROMPT)
-        self.creator = ProjectCreator(urban_api_client)
+        self.creator = ProjectCreator(self.urban)
 
     # ------------------------------------------------------------------
     # Entry point
@@ -244,6 +252,14 @@ class ProjectFilesService(BaseLlmService):
         inputs: ProjectInputs,
         history: list[dict],
     ) -> AsyncGenerator[dict[str, Any], None]:
+        if is_internal_user_context_jwt(token):
+            yield self._text(
+                "Создать проект при вызове через Synapse нельзя: Urban API создаёт "
+                "проект только от имени пользователя по его токену, а у такого "
+                "вызова токена пользователя нет. Вызовите агента с токеном "
+                "пользователя (REST или A2A)."
+            )
+            return
         owner = user_id_from_jwt(token)
         pending = await self.state_store.get_project_dialogue(key) if key else None
         context: dict[str, Any] | None = None
@@ -624,7 +640,7 @@ class ProjectFilesService(BaseLlmService):
                 )
 
         await save()
-        async for event in self.creator.create(token, owner, run, zones, objects, save):
+        async for event in self.creator.create(token, run, zones, objects, save):
             yield event
         summary = creation_summary(run, zones, objects)
         summary["not_created"] = self._not_created(mapping, specs, problems, rejected)
@@ -652,9 +668,9 @@ class ProjectFilesService(BaseLlmService):
 
     async def _types(self, token: str) -> UrbanTypes:
         return UrbanTypes.from_dictionaries(
-            await self.urban_api_client.get_physical_object_types(token),
-            await self.urban_api_client.get_service_types(token),
-            await self.urban_api_client.get_functional_zone_types(token),
+            await self.urban.get_physical_object_types(token),
+            await self.urban.get_service_types(token),
+            await self.urban.get_functional_zone_types(token),
         )
 
     async def _alive_uploads(self, key: str, owner: str) -> list[str]:
@@ -679,7 +695,7 @@ class ProjectFilesService(BaseLlmService):
     ) -> dict[str, Any] | tuple[str, list[dict[str, Any]]]:
         if inputs.territory_id:
             return {"territory_id": inputs.territory_id, "name": None}
-        regions = await regions_for(self.urban_api_client, token, boundary)
+        regions = await regions_for(self.urban, token, boundary)
         if len(regions) == 1:
             return regions[0]
         if regions:
@@ -692,7 +708,7 @@ class ProjectFilesService(BaseLlmService):
             options = [
                 {"value": item["territory_id"], "label": item["name"]}
                 for item in sorted(
-                    await all_regions(self.urban_api_client, token),
+                    await all_regions(self.urban, token),
                     key=lambda item: item["name"],
                 )
             ]
@@ -737,9 +753,7 @@ class ProjectFilesService(BaseLlmService):
         border = shape(boundary)
         counts: Counter[str] = Counter()
         try:
-            objects = await self.urban_api_client.get_physical_objects_around(
-                token, boundary
-            )
+            objects = await self.urban.get_physical_objects_around(token, boundary)
         except Exception as exc:
             logger.warning(f"Objects inside the project boundary are unknown: {exc!r}")
             return Counter({"": 1})

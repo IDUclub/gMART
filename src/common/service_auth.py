@@ -113,6 +113,19 @@ def internal_user_context_jwt(user_id: str) -> str:
     return f"{header}.{payload}."
 
 
+def is_internal_user_context_jwt(token: str) -> bool:
+    """Whether ``token`` is the non-authorizing value of ``internal_user_context_jwt``."""
+
+    header = token.split(".", 1)[0]
+    try:
+        decoded = json.loads(
+            base64.urlsafe_b64decode(header + "=" * (-len(header) % 4))
+        )
+    except (ValueError, TypeError):
+        return False
+    return isinstance(decoded, dict) and decoded.get("alg") == "none"
+
+
 async def service_headers(
     auth: KeycloakTokenClient, user_id: str | None = None
 ) -> dict[str, str]:

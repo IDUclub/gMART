@@ -247,9 +247,7 @@ async def collect(creator, run, zones, objects):
     async def save():
         saves.append(dict(run))
 
-    events = [
-        event async for event in creator.create("t", "alice", run, zones, objects, save)
-    ]
+    events = [event async for event in creator.create("t", run, zones, objects, save)]
     return events, saves
 
 
@@ -267,7 +265,8 @@ async def test_full_creation_replaces_same_types_inside_the_border():
     )
 
     names = [call[0] for call in urban.calls]
-    assert urban.calls[0] == ("create_project", "Сад", "alice")
+    # The owner is the user of the token: Urban API refuses an explicit one.
+    assert urban.calls[0] == ("create_project", "Сад", None)
     assert ("copy_scenario", 11, 13) in urban.calls
     # Only the house of the same type inside the border, once; the locked one is
     # kept and counted.

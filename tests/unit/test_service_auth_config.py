@@ -41,3 +41,11 @@ def test_partial_optional_service_auth_is_rejected(monkeypatch):
 
     with pytest.raises(ValueError, match="IDU_MCP_SERVICE_AUTH_SERVER_URL"):
         service_auth.build_optional_service_auth("IDU_MCP_")
+
+
+def test_internal_user_context_token_is_recognised():
+    token = service_auth.internal_user_context_jwt("alice")
+
+    assert service_auth.is_internal_user_context_jwt(token)
+    assert not service_auth.is_internal_user_context_jwt("e30.eyJzdWIiOiJhbGljZSJ9.sig")
+    assert not service_auth.is_internal_user_context_jwt("not-a-jwt")
