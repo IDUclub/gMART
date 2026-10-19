@@ -155,6 +155,7 @@ def init_dependencies() -> dict[str, object]:
         urban_api_client,
         pipeline_state_store,
         ComplianceUploadService(pipeline_state_store),
+        user_urban_api_client=UrbanApiClient(JsonApiHandler(app_config.URBAN_API_URL)),
     )
     orchestrator_service = OrchestratorService(
         app_config.OLLAMA_URL,

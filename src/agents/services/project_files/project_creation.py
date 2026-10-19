@@ -187,7 +187,6 @@ class ProjectCreator:
     async def create(
         self,
         token: str,
-        owner: str | None,
         run: dict[str, Any],
         zones: list[CreationItem],
         objects: list[CreationItem],
@@ -212,7 +211,6 @@ class ProjectCreator:
                         "properties": {},
                     },
                 },
-                user_id=owner,
             )
             run["project_id"] = int(project["project_id"])
             base = project.get("base_scenario") or {}

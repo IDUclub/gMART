@@ -13,6 +13,7 @@ from src.agents.services.project_files.project_files_service import (
     ProjectFilesService,
 )
 from src.agents.services.project_files.project_types import PROJECT_CLASSIFY_PROMPT
+from src.common.service_auth import internal_user_context_jwt
 from tests.unit.test_project_creation import BORDER, FakeUrban, square
 from tests.unit.test_project_types import PHYSICAL, SERVICES, ZONES
 
@@ -111,7 +112,7 @@ def env():
         service.entity_mapper = EntityMapper(
             service.llm_client, PROJECT_CLASSIFY_PROMPT
         )
-        service.creator = ProjectCreator(service.urban_api_client)
+        service.creator = ProjectCreator(service.urban)
         return service
 
     return store, uploads, build
@@ -370,3 +371,39 @@ async def test_context_layers_are_not_created(env):
     events = await run(service, "Создай проект", upload_ids=[upload_id])
 
     assert of_type(events, "project_summary")[0]["objects"]["total"] == 2
+
+
+async def test_project_is_created_with_the_users_own_client(env):
+    store, uploads, _ = env
+    service_client, user_client = Urban(), Urban()
+
+    service = ProjectFilesService(
+        "http://ollama", None, service_client, store, uploads, user_client
+    )
+
+    assert service.urban is user_client and service.creator.urban_api is user_client
+
+
+async def test_synapse_call_without_a_user_token_is_refused(env):
+    _, uploads, build = env
+    upload_id = await upload(
+        uploads, ("design.geojson", DESIGN), ("border.geojson", BOUNDARY)
+    )
+    urban = Urban()
+    service = build(urban)
+
+    events = [
+        event
+        async for event in service.run_project_pipeline(
+            token=internal_user_context_jwt("alice"),
+            model="m",
+            temperature=0,
+            user_query="Создай проект",
+            persist_history=False,
+            conversation_key=CHAT,
+            upload_ids=[upload_id],
+        )
+    ]
+
+    assert "через Synapse нельзя" in of_type(events, "chunk")[0]["text"]
+    assert not urban.calls
