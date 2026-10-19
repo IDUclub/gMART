@@ -313,6 +313,51 @@ class PipelineStateStore:
                 json.dumps(pending, ensure_ascii=False),
             )
 
+    async def get_chat_uploads(self, conversation_key: str) -> list[str]:
+        """Uploads used in a dialogue, oldest first."""
+        raw = await self._retry(
+            self._redis.get, self._key(conversation_key, "chat_uploads")
+        )
+        return json.loads(raw) if raw else []
+
+    async def add_chat_uploads(
+        self, conversation_key: str, upload_ids: list[str]
+    ) -> None:
+        """Remember the uploads of a dialogue for as long as uploads live."""
+        if not upload_ids:
+            return
+        known = await self.get_chat_uploads(conversation_key)
+        merged = list(dict.fromkeys([*known, *upload_ids]))
+        if merged == known:
+            return
+        await self._retry(
+            self._redis.setex,
+            self._key(conversation_key, "chat_uploads"),
+            COMPLIANCE_UPLOAD_TTL,
+            json.dumps(merged),
+        )
+
+    async def get_project_dialogue(self, conversation_key: str) -> dict | None:
+        raw = await self._retry(
+            self._redis.get, self._key(conversation_key, "project_dialogue")
+        )
+        return json.loads(raw) if raw else None
+
+    async def set_project_dialogue(
+        self, conversation_key: str, dialogue: dict | None
+    ) -> None:
+        """The question a project creation from files waits to have answered."""
+        key = self._key(conversation_key, "project_dialogue")
+        if dialogue is None:
+            await self._retry(self._redis.delete, key)
+        else:
+            await self._retry(
+                self._redis.setex,
+                key,
+                COMPLIANCE_UPLOAD_TTL,
+                json.dumps(dialogue, ensure_ascii=False),
+            )
+
     async def set_status(self, request_id: str, status: PipelineStatus) -> None:
         raw = await self._retry(self._redis.get, self._key(request_id, "state"))
         if not raw:

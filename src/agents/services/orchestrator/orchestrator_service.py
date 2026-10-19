@@ -56,6 +56,9 @@ if TYPE_CHECKING:
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
     from src.agents.mcp_clients.pzz_mcp_client import PzzMcpClient
     from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient
+    from src.agents.services.project_files.project_files_service import (
+        ProjectFilesService,
+    )
 
 # Inner sub-agent event types that are never forwarded to the client: the outer
 # stream announces the step itself (step_started) and owns the chat lifecycle.
@@ -140,6 +143,7 @@ class OrchestratorService(BaseLlmService):
         app_config: AgentsAppConfig,
         scenario_data_service: ScenarioDataService | None = None,
         pzz_service: PzzService | None = None,
+        project_files_service: "ProjectFilesService | None" = None,
     ) -> None:
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.state_store = state_store
@@ -147,6 +151,7 @@ class OrchestratorService(BaseLlmService):
         self.provision_service = provision_service
         self.scenario_data_service = scenario_data_service
         self.pzz_service = pzz_service
+        self.project_files_service = project_files_service
         self.dvd_service = dvd_service
         self.normgraph_service = normgraph_service
         self.app_config = app_config
@@ -265,21 +270,25 @@ class OrchestratorService(BaseLlmService):
             scenario_id,
             user_files=bool(compliance_upload_ids or pending_mapping),
         )
-        plan = await self._compliance_choice_plan(
-            model,
-            user_query,
-            chat_id,
-            agents,
-            normgraph_mcp_client,
-            pending_mapping=pending_mapping,
-        ) or await self.plan_builder.build_plan(
-            model,
-            user_query,
-            agents,
-            history,
-            scenario_id=scenario_id,
-            pzz_inputs=pzz_inputs,
-            compliance_uploads=len(compliance_upload_ids or []),
+        plan = (
+            await self._project_dialogue_plan(model, user_query, chat_id)
+            or await self._compliance_choice_plan(
+                model,
+                user_query,
+                chat_id,
+                agents,
+                normgraph_mcp_client,
+                pending_mapping=pending_mapping,
+            )
+            or await self.plan_builder.build_plan(
+                model,
+                user_query,
+                agents,
+                history,
+                scenario_id=scenario_id,
+                pzz_inputs=pzz_inputs,
+                compliance_uploads=len(compliance_upload_ids or []),
+            )
         )
         # An answer to a pending mapping continues on the files it was asked about.
         if (
@@ -370,6 +379,23 @@ class OrchestratorService(BaseLlmService):
                     for item in file_events
                 ],
             )
+
+    async def _project_dialogue_plan(
+        self, model: str, user_query: str, chat_id: str | None
+    ) -> OrchestratorPlan | None:
+        """Route an answer to a pending project-from-files question back to it."""
+        if not chat_id or self.project_files_service is None:
+            return None
+        if not await self.project_files_service.answers_dialogue(
+            model, chat_id, user_query
+        ):
+            return None
+        return OrchestratorPlan(
+            mode=OrchestratorPlanMode.EXECUTE,
+            steps=[
+                OrchestratorStep(agent=OrchestratorAgent.PROJECT_FILES, task=user_query)
+            ],
+        )
 
     async def _compliance_choice_plan(
         self,
@@ -580,6 +606,21 @@ class OrchestratorService(BaseLlmService):
                 request_id=step_request_id,
                 persist_history=False,
                 inputs=pzz_inputs,
+            )
+        if step.agent == OrchestratorAgent.PROJECT_FILES:
+            if self.project_files_service is None:
+                raise ValueError("project_files step is not configured")
+            # The user's own words carry the names and choices; a question asked
+            # in this step is answered in the next message of the orchestrator's chat.
+            return self.project_files_service.run_project_pipeline(
+                token=token,
+                model=model,
+                temperature=temperature,
+                user_query=original_query or user_query,
+                request_id=step_request_id,
+                persist_history=False,
+                conversation_key=conversation_key,
+                upload_ids=compliance_upload_ids,
             )
         if step.agent == OrchestratorAgent.COMPLIANCE:
             # Without a scenario the step checks uploaded files.

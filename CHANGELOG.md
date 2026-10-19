@@ -1,3 +1,9 @@
+## v0.24.0 (2026-10-19)
+
+[feat/ICII-209-project-from-user-file](https://github.com/IDUclub/gMART/pull/239) (#239)
+
+- feat(agents): создавать проект и сценарий в Urban API из файлов пользователя
+
 ## v0.23.1 (2026-10-17)
 
 [fix/ICII-208-user-file-compilance](https://github.com/IDUclub/gMART/pull/238) (#238)

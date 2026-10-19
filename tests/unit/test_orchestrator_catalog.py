@@ -33,6 +33,7 @@ def test_all_agents_available_with_scenario_and_urls():
         OrchestratorAgent.SCENARIO_DATA,
         OrchestratorAgent.DOCUMENTS,
         OrchestratorAgent.NORMS,
+        OrchestratorAgent.PROJECT_FILES,
     }
 
 
@@ -41,6 +42,7 @@ def test_scenario_bound_agents_excluded_without_scenario():
         OrchestratorAgent.SCENARIO_DATA,
         OrchestratorAgent.DOCUMENTS,
         OrchestratorAgent.NORMS,
+        OrchestratorAgent.PROJECT_FILES,
     }
 
 
@@ -71,11 +73,19 @@ def test_scenario_data_finds_the_project_base_scenario_itself():
     assert "Сравни показатели сценария с базовым сценарием" in entry.examples
 
 
-def test_no_agents_without_scenario_and_urls():
-    assert (
+def test_only_project_files_without_scenario_and_urls():
+    # Creating a project needs only Urban API, which is always configured.
+    assert keys(
         available_agents(config(dvd=None, norms=None, urban=None), scenario_id=None)
-        == []
-    )
+    ) == {OrchestratorAgent.PROJECT_FILES}
+
+
+def test_project_files_is_not_a_compliance_check():
+    entry = AGENT_CATALOG[OrchestratorAgent.PROJECT_FILES]
+
+    assert entry.requires_scenario_id is False
+    assert "Не проверяет нормы" in entry.description
+    assert "Создай проект из загруженных файлов" in entry.examples
 
 
 def test_pzz_optional_and_available_for_file_flow_without_scenario():

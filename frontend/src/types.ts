@@ -3,6 +3,7 @@ export type AgentId =
   | "synapse"
   | "restrictions"
   | "compliance"
+  | "project_files"
   | "provision"
   | "scenario_data"
   | "documents"

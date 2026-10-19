@@ -42,6 +42,13 @@ if TYPE_CHECKING:
 
 LayerRole = Literal["project", "context", "border"]
 LAYER_ROLES: tuple[str, ...] = ("project", "context", "border")
+# Whose mapping answers an upload keeps: «не проверять» in a compliance check is not
+# «не создавать» in a project created from the same files.
+MappingNamespace = Literal["compliance", "project"]
+_MAPPING_FIELDS: dict[str, tuple[str, str]] = {
+    "compliance": ("confirmed_mapping", "classified"),
+    "project": ("project_confirmed_mapping", "project_classified"),
+}
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 # A ZIP may hold far more than it weighs; unpacking stops past this many bytes.
@@ -542,15 +549,21 @@ class ComplianceUploadService:
         await self.get(upload_id, owner)
         await self.state_store.delete_compliance_upload(upload_id)
 
-    async def load(self, upload_ids: list[str] | tuple[str, ...], owner: str):
+    async def load(
+        self,
+        upload_ids: list[str] | tuple[str, ...],
+        owner: str,
+        namespace: MappingNamespace = "compliance",
+    ):
+        confirmed_field, classified_field = _MAPPING_FIELDS[namespace]
         layers: list[UploadedLayer] = []
         confirmed: dict[str, dict[str, Any] | None] = {}
         classified: dict[str, dict[str, Any]] = {}
         for upload_id in dict.fromkeys(upload_ids):
             record = await self.get(upload_id, owner)
             layers.extend(UploadedLayer.from_dict(item) for item in record["layers"])
-            confirmed.update(record.get("confirmed_mapping") or {})
-            classified.update(record.get("classified") or {})
+            confirmed.update(record.get(confirmed_field) or {})
+            classified.update(record.get(classified_field) or {})
         return UserFiles(
             upload_ids=tuple(dict.fromkeys(upload_ids)),
             layers=layers,
@@ -563,13 +576,15 @@ class ComplianceUploadService:
         upload_ids: list[str] | tuple[str, ...],
         owner: str,
         classified: dict[str, dict[str, Any]],
+        namespace: MappingNamespace = "compliance",
     ) -> None:
         """Keep the LLM's answers so a rerun asks neither it nor the user again."""
         if not classified:
             return
+        field_name = _MAPPING_FIELDS[namespace][1]
         for upload_id in dict.fromkeys(upload_ids):
             record = await self.get(upload_id, owner)
-            record["classified"] = {**(record.get("classified") or {}), **classified}
+            record[field_name] = {**(record.get(field_name) or {}), **classified}
             await self.state_store.update_compliance_upload(upload_id, record)
 
     async def confirm_mapping(
@@ -577,14 +592,13 @@ class ComplianceUploadService:
         upload_ids: list[str] | tuple[str, ...],
         owner: str,
         mapping_update: dict[str, dict[str, Any] | None],
+        namespace: MappingNamespace = "compliance",
     ) -> None:
         """Keep the user's answer with the uploads so a rerun does not ask again."""
+        field_name = _MAPPING_FIELDS[namespace][0]
         for upload_id in dict.fromkeys(upload_ids):
             record = await self.get(upload_id, owner)
-            record["confirmed_mapping"] = {
-                **(record.get("confirmed_mapping") or {}),
-                **mapping_update,
-            }
+            record[field_name] = {**(record.get(field_name) or {}), **mapping_update}
             await self.state_store.update_compliance_upload(upload_id, record)
 
     @staticmethod

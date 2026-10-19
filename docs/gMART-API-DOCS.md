@@ -28,9 +28,11 @@ agent can stop in `input-required` to let the caller choose a document; the next
 with the same `contextId` answers it (see "Область проверки" there). It also checks the
 user's own files: `upload_ids` (from `POST /compliance/uploads`) or inline GeoJSON
 `files: [{name, role, geojson}]` in a DataPart; `scenario_id` is then optional (see
-"Проверка файлов пользователя" there).
+"Проверка файлов пользователя" there). The project-from-files agent creates an Urban
+API project and scenario from the same uploads and also stops in `input-required` for
+its questions (see [`project-from-files.md`](project-from-files.md)).
 
-The agents app exposes **six A2A agents**, each as a JSON-RPC 2.0 endpoint with an
+The agents app exposes **seven A2A agents**, each as a JSON-RPC 2.0 endpoint with an
 A2A AgentCard for discovery:
 
 | Agent | Card `name` | JSON-RPC endpoint | Needs `scenario_id` |
@@ -41,6 +43,7 @@ A2A AgentCard for discovery:
 | NormGraph QA | `norms-qa-agent` | `POST /norms/a2a` | optional |
 | Scenario data | `scenario-data-agent` | `POST /scenario-data/a2a` | optional |
 | Normative compliance | `compliance-agent` | `POST /compliance/a2a` | **required** (optional with user files) |
+| Project from files | `project-files-agent` | `POST /projects/a2a` | not used |
 
 Protocol: **A2A 0.3.0**, transport **JSONRPC**. The agents also accept the 1.0 method
 binding names (`SendMessage`, `GetTask`, …) as aliases, but responses are serialized in the
@@ -309,9 +312,11 @@ gMART состоит из двух разворачиваемых приложе
 сообщение с тем же `contextId` (раздел «Область проверки» там же). Агент проверяет и
 файлы пользователя: `upload_ids` (из `POST /compliance/uploads`) или GeoJSON в DataPart
 `files: [{name, role, geojson}]`; `scenario_id` тогда необязателен (раздел «Проверка
-файлов пользователя» там же).
+файлов пользователя» там же). Агент создания проекта из файлов создаёт по тем же
+загрузкам проект и сценарий в Urban API и тоже переходит в `input-required` для своих
+вопросов (см. [`project-from-files.md`](project-from-files.md)).
 
-Приложение agents предоставляет **шесть A2A-агентов**, каждый — это эндпоинт JSON-RPC 2.0 с
+Приложение agents предоставляет **семь A2A-агентов**, каждый — это эндпоинт JSON-RPC 2.0 с
 карточкой агента (AgentCard) для обнаружения:
 
 | Агент | `name` карточки | Эндпоинт JSON-RPC | Нужен `scenario_id` |
@@ -322,6 +327,7 @@ gMART состоит из двух разворачиваемых приложе
 | QA по NormGraph | `norms-qa-agent` | `POST /norms/a2a` | опционален |
 | Городские данные | `scenario-data-agent` | `POST /scenario-data/a2a` | опционален |
 | Нормативное соответствие | `compliance-agent` | `POST /compliance/a2a` | **обязателен** (для файлов — опционален) |
+| Проект из файлов | `project-files-agent` | `POST /projects/a2a` | не используется |
 
 Протокол: **A2A 0.3.0**, транспорт **JSONRPC**. Агенты также принимают имена методов из
 биндинга 1.0 (`SendMessage`, `GetTask`, …) как алиасы, но ответы сериализуются в формате 0.3.

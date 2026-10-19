@@ -286,6 +286,21 @@ GeoJSON, ZIP с GeoJSON/Shapefile, GeoPackage; до 50 МиБ; хранятся 
 проверки» для агентов «Соответствие» и «Оркестратор». Подробнее —
 [`compliance-agent.md`](compliance-agent.md#проверка-файлов-пользователя).
 
+Загрузку можно привязать к чату полем формы `chat_id`: агент создания проекта в этом
+чате предложит её использовать.
+
+#### Создание проекта из файлов
+
+Те же загрузки создают проект и сценарий в Urban API:
+`POST /projects/from-files/stream` (`{"request", "chat_id", "upload_ids", "inputs"}`) или
+`GET` с параметрами `request`, `upload_ids` (повторяющийся), `project_name`,
+`scenario_name`, `territory_id`, `functional_zone_type_id`, `existing_objects`.
+Вопросы приходят событием `clarification` с `content.kind` (`reuse_files`,
+`entity_mapping`, `region`, `profile`, `existing_objects`, `retry`) и `options`; ответ —
+следующий запрос в тот же `chat_id`. Идентификаторы созданного — в событиях
+`project_created`, `scenario_created` и `project_summary`. Во встроенном UI — агент
+«Проект из файлов». Подробнее — [`project-from-files.md`](project-from-files.md).
+
 Если проверена хотя бы одна норма, поток закрывается событием `file` со ссылкой на
 Markdown-отчёт (см. [`file`](#file)). Та же ссылка сохраняется в историю чата как
 часть `kind: "file"`. Через `/orchestrator` событие приходит так же, на верхнем
