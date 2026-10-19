@@ -18,6 +18,11 @@ os.environ.setdefault("URBAN_MCP_SERVER", "https://urban-mcp.testing.idulab.ru")
 os.environ.setdefault("CHAT_STORAGE", "http://localhost:8010")
 os.environ.setdefault("URBAN_API_URL", "http://localhost/api")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
+# Mandatory for both apps' dependency modules; the values of the CI workflows.
+os.environ.setdefault("SERVICE_AUTH_SERVER_URL", "http://localhost:9999")
+os.environ.setdefault("SERVICE_AUTH_REALM", "test")
+os.environ.setdefault("SERVICE_AUTH_CLIENT_ID", "test-client")
+os.environ.setdefault("SERVICE_AUTH_CLIENT_SECRET", "test-secret")
 # Upload layers go to a cache of the test session, not to the shared temp directory.
 os.environ.setdefault("GMART_CACHE_DIR", tempfile.mkdtemp(prefix="gmart-tests-"))
 

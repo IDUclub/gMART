@@ -542,10 +542,7 @@ NormGraph сохраняет неизменяемую ревизию с авто
 ## Проверка и эксплуатация
 
 ```bash
-env SERVICE_AUTH_SERVER_URL=http://localhost \
-  SERVICE_AUTH_REALM=test SERVICE_AUTH_CLIENT_ID=test \
-  SERVICE_AUTH_CLIENT_SECRET=test \
-  uv run pytest tests/unit
+uv run pytest tests/unit
 
 cd frontend && npm run build
 ```
