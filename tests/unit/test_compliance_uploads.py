@@ -8,7 +8,7 @@ from pathlib import Path
 import fakeredis.aioredis
 import geopandas as gpd
 import pytest
-from shapely.geometry import Point, box
+from shapely.geometry import Point, Polygon, box
 
 from src.agents.common.exceptions.base_exceptions import (
     AgentsInputException,
@@ -92,6 +92,63 @@ def test_coordinates_out_of_lon_lat_range_without_crs_are_rejected():
     }
     with pytest.raises(AgentsInputException, match="crs"):
         parse_upload("points.geojson", as_bytes(collection([feature], crs=None)))
+
+
+# A design in МСК-47 zone 2 as QGIS exports it: no ``crs``, the zone only in ``name``.
+MSK47_ZONE2_RING = [
+    [2077804.261528644, 380959.278000550],
+    [2043570.267109855, 409112.136377234],
+    [2090985.428587351, 444348.328422423],
+    [2151737.998923301, 417014.775082117],
+    [2093431.008906657, 373937.079470594],
+    [2077804.261528644, 380959.278000550],
+]
+
+
+def msk47_bytes(name="МСК 47 зона 2", crs=None):
+    data = collection([polygon({}, MSK47_ZONE2_RING)], crs=crs)
+    if name:
+        data["name"] = name
+    return as_bytes(data)
+
+
+def first_vertex(layer):
+    return layer.features[0]["geometry"]["coordinates"][0][0]
+
+
+@pytest.mark.parametrize("name", ["МСК 47 зона 2", None])
+def test_msk47_without_crs_is_placed_by_name_or_coordinates(name):
+    layer = parse_upload("участок.geojson", msk47_bytes(name))[0]
+    lon, lat = first_vertex(layer)
+    assert lon == pytest.approx(27.915296, abs=1e-5)
+    assert lat == pytest.approx(59.406646, abs=1e-5)
+    assert "crs_missing_assumed:msk47_zone2" in layer.warnings
+
+
+def test_msk47_zone_named_in_crs_is_reprojected_without_warning():
+    layer = parse_upload("участок.geojson", msk47_bytes(None, crs="MSK47 zone 2"))[0]
+    assert first_vertex(layer)[0] == pytest.approx(27.915296, abs=1e-5)
+    assert layer.warnings == []
+
+
+def test_msk47_zone_name_contradicting_coordinates_is_rejected():
+    with pytest.raises(AgentsInputException, match="crs"):
+        parse_upload("участок.geojson", msk47_bytes("МСК-47 зона 1"))
+
+
+@pytest.mark.filterwarnings("ignore:.crs. was not provided")
+def test_shapefile_in_msk47_without_prj(tmp_path: Path):
+    gpd.GeoDataFrame(
+        {"levels": [5]}, geometry=[Polygon(MSK47_ZONE2_RING)], crs=None
+    ).to_file(tmp_path / "houses.shp")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for path in tmp_path.iterdir():
+            if path.suffix != ".prj":
+                archive.write(path, path.name)
+    layer = parse_upload("houses.zip", buffer.getvalue())[0]
+    assert first_vertex(layer)[1] == pytest.approx(59.406646, abs=1e-5)
+    assert layer.warnings == ["crs_missing_assumed:msk47_zone2"]
 
 
 @pytest.mark.parametrize(
