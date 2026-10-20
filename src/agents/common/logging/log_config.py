@@ -4,6 +4,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from src.agents.common.logging.log_rotation import start_daily_log_rotation
+
 
 def _get_project_root() -> Path:
     current_path = Path(__file__).resolve()
@@ -59,6 +61,8 @@ def config_logger(log_file_name: str = ".log", level: str = "INFO") -> Path:
     """
     Configure application logging to a file in the project root.
 
+    The file is rotated by size once a day (see ``log_rotation``).
+
     Returns:
         Path: Absolute path to the log file.
     """
@@ -74,9 +78,6 @@ def config_logger(log_file_name: str = ".log", level: str = "INFO") -> Path:
     logger.add(
         log_path,
         level=level,
-        rotation="100 MB",
-        retention="31 days",
-        compression="zip",
         encoding="utf-8",
         enqueue=True,
         backtrace=True,
@@ -84,5 +85,6 @@ def config_logger(log_file_name: str = ".log", level: str = "INFO") -> Path:
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {name}:{function}:{line} - {message}",
     )
     _intercept_stdlib_logging(level)
+    start_daily_log_rotation(log_path)
     logger.info("Configured logger")
     return log_path

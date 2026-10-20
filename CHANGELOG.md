@@ -1,3 +1,10 @@
+## v0.25.1 (2026-10-20)
+
+[fix/ICII-190-docker-log-rotation](https://github.com/IDUclub/gMART/pull/242) (#242)
+
+- fix(deploy): ограничить docker-логи контейнеров 100 МБ
+- fix(logging): раз в день ротировать файловые логи по размеру, не больше 100 МБ
+
 ## v0.25.0 (2026-10-19)
 
 [feat/ICII-189-user-files-crs](https://github.com/IDUclub/gMART/pull/241) (#241)

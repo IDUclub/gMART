@@ -1,5 +1,13 @@
+# Docker keeps at most 5 files of 20 MB (100 MB) of stdout/stderr per container.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   idu_agents:
+    logging: *default-logging
     image: ${AGENTS_IMAGE}
     container_name: ${AGENTS_CONTAINER_NAME}
     restart: always
@@ -74,6 +82,7 @@ services:
       start_period: 20s
 
   context_worker:
+    logging: *default-logging
     image: ${AGENTS_IMAGE}
     restart: always
     command: ["python", "-m", "src.agents.workers.context_worker"]
@@ -84,6 +93,7 @@ services:
     # Avoid disable: true, which breaks --wait on older Compose versions.
 
   idu_mcp:
+    logging: *default-logging
     image: ${MCP_IMAGE}
     container_name: ${MCP_CONTAINER_NAME}
     restart: always
