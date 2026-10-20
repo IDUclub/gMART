@@ -3,6 +3,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from src.idu_mcp.common.logging.log_rotation import start_daily_log_rotation
+
 _LOG_FORMAT = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {name}:{function}:{line} - {message}"
 )
@@ -18,7 +20,9 @@ def _get_project_root() -> Path:
 
 def config_logger(log_file_name: str = "idu_mcp.log", level: str = "INFO") -> Path:
     """
-    Configure idu_mcp logging to stderr and a rotating file in the project root.
+    Configure idu_mcp logging to stderr and a file in the project root.
+
+    The file is rotated by size once a day (see ``log_rotation``).
 
     Args:
         log_file_name (str): Name of the log file created in the project root.
@@ -38,14 +42,12 @@ def config_logger(log_file_name: str = "idu_mcp.log", level: str = "INFO") -> Pa
     logger.add(
         log_path,
         level=level,
-        rotation="100 MB",
-        retention="31 days",
-        compression="zip",
         encoding="utf-8",
         enqueue=True,
         backtrace=True,
         diagnose=False,
         format=_LOG_FORMAT,
     )
+    start_daily_log_rotation(log_path)
     logger.info(f"Configured logger, writing logs to {log_path}")
     return log_path
