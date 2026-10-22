@@ -37,6 +37,7 @@ def config_logger(log_file_name: str = "idu_mcp.log", level: str = "INFO") -> Pa
     logger.add(
         sys.stderr,
         level=level,
+        diagnose=False,
         format=_LOG_FORMAT,
     )
     logger.add(
