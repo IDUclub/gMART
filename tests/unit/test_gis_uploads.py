@@ -467,9 +467,7 @@ def test_msk76_siblings_resolve_missing_shapefile_and_gml_crs(tmp_path):
             files.pop("source.prj", None)
         else:
             files["source.prj"] = MSK76_ESRI.encode()
-        members.update(
-            {name + p[len("source") :]: data for p, data in files.items()}
-        )
+        members.update({name + p[len("source") :]: data for p, data in files.items()})
     gml_folder = tmp_path / "gml"
     gml_folder.mkdir()
     gml = dataset(gml_folder, ".gml", crs=None, xy=xy)["source.gml"]
