@@ -1,17 +1,21 @@
-"""Coordinate systems assumed for user files that declare none.
+"""Registered coordinate systems and conservative guesses for user files.
 
-A file whose coordinates are not lon/lat and that names no CRS PROJ understands
-is placed only in a system recognised with confidence; any other file is sent back
-to be uploaded with its CRS. Two systems are recognised:
+The registry contains МСК-47 zones 1–3 (Leningrad oblast, Transverse Mercator
+on Pulkovo 1942), МСК-76 zone 1 with its TOWGS84 datum transformation, and
+Web Mercator (EPSG:3857).
 
-- МСК-47 — designs of the Leningrad oblast: Transverse Mercator on the Pulkovo 1942
-  datum in three zones, none of them in the EPSG registry. A GeoJSON often names the
-  zone only in prose (``"МСК 47 зона 2"``); without the name the coordinates tell it:
-  the millions digit of the easting is the zone number and the northing is counted
-  from about 56° N.
-- Web Mercator (EPSG:3857) — exports of web maps. Recognised by its name or by
-  coordinates that land within Russia. Gauss–Krüger zones of СК-42 / ГСК-2011
-  share that range, so such a file without a CRS is read as Web Mercator too.
+Local zones are recognised by name, including registry keys. A coordinate-only
+local-zone guess is made only when exactly one registered zone fits the bounds.
+МСК-47 zone 1 and МСК-76 zone 1 have identical accepted coordinate ranges;
+ambiguous coordinates are reported to the user, not placed in either oblast.
+The upload pipeline can resolve them through a CRS name in the layer, an explicit
+``crs`` upload parameter, or inheritance from siblings with a declared CRS.
+МСК-76 is used through those routes or ESRI datum completion, which restores
+its registered TOWGS84 transformation when projection and ellipsoid match.
+
+Web Mercator is recognised by name or coordinates that land within Russia.
+Gauss–Krüger zones of СК-42 / ГСК-2011 share that range, so a file with such
+coordinates and no CRS is read as Web Mercator too.
 """
 
 from __future__ import annotations
@@ -50,8 +54,12 @@ class LocalZone:
     central_meridian: float
     false_easting: float
     false_northing: float
+    scale: float = 1
+    towgs84: tuple[float, ...] | None = None
 
     def wkt(self) -> str:
+        if self.towgs84 is not None:
+            return self.crs().to_wkt()
         return (
             f'PROJCRS["Pulkovo 1942 / {self.title}",'
             'BASEGEOGCRS["Pulkovo 1942",DATUM["Pulkovo 1942",'
@@ -64,7 +72,7 @@ class LocalZone:
             'ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8801]],'
             f'PARAMETER["Longitude of natural origin",{self.central_meridian},'
             'ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8802]],'
-            'PARAMETER["Scale factor at natural origin",1,'
+            f'PARAMETER["Scale factor at natural origin",{self.scale},'
             'SCALEUNIT["unity",1],ID["EPSG",8805]],'
             f'PARAMETER["False easting",{self.false_easting},'
             'LENGTHUNIT["metre",1],ID["EPSG",8806]],'
@@ -76,6 +84,15 @@ class LocalZone:
         )
 
     def crs(self):
+        if self.towgs84 is not None:
+            return _crs(
+                f"+proj=tmerc +lat_0={self.latitude_of_origin} "
+                f"+lon_0={self.central_meridian} +k={self.scale} "
+                f"+x_0={self.false_easting} +y_0={self.false_northing} "
+                "+ellps=krass +towgs84="
+                + ",".join(str(value) for value in self.towgs84)
+                + " +units=m +type=crs"
+            )
         return _crs(self.wkt())
 
     def holds(self, bounds: Bounds) -> bool:
@@ -122,6 +139,17 @@ MSK47_ZONES: dict[int, LocalZone] = {
     3: LocalZone("msk47_zone3", "MSK47 zone 3", 0, 33.95, 3_250_000, -6_211_057.628),
 }
 WEB_MERCATOR = WebMercator()
+MSK76_ZONE1 = LocalZone(
+    "msk76_zone1",
+    "MSK76 zone 1",
+    0,
+    38.55,
+    1_250_000,
+    -6_014_743.504,
+    towgs84=(23.57, -140.95, -79.8, 0, 0.35, 0.79, -0.22),
+)
+LOCAL_ZONES = {zone.key: zone for zone in (*MSK47_ZONES.values(), MSK76_ZONE1)}
+CRS_REGISTRY = {**LOCAL_ZONES, WEB_MERCATOR.key: WEB_MERCATOR}
 
 GuessedCrs = LocalZone | WebMercator
 
@@ -136,6 +164,14 @@ def _crs(definition: str):
 def zone_by_name(*names: str | None) -> LocalZone | None:
     """The zone the first of ``names`` mentioning one names, e.g. «МСК-47 зона 2»."""
     for name in names:
+        if str(name or "").casefold() in LOCAL_ZONES:
+            return LOCAL_ZONES[str(name).casefold()]
+        if re.search(
+            r"(?:мск|msk)[\s_-]*76\D{0,12}?(?:зона|zone|z)?[\s_-]*1(?!\d)",
+            str(name or ""),
+            re.IGNORECASE,
+        ):
+            return MSK76_ZONE1
         match = _MSK47_NAME.search(str(name or ""))
         if match:
             return MSK47_ZONES[int(match.group(1))]
@@ -143,8 +179,9 @@ def zone_by_name(*names: str | None) -> LocalZone | None:
 
 
 def zone_by_coordinates(bounds: Bounds) -> LocalZone | None:
-    """The only zone whose range holds ``bounds``; zones' ranges do not overlap."""
-    return next((zone for zone in MSK47_ZONES.values() if zone.holds(bounds)), None)
+    """Return the only matching local zone; no match or ambiguity returns None."""
+    matches = [zone for zone in LOCAL_ZONES.values() if zone.holds(bounds)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _named(names: list[str | None]) -> GuessedCrs | None:
@@ -161,8 +198,8 @@ def guess_crs(names: Iterable[str | None], bounds: Bounds) -> GuessedCrs | None:
 
     A named system is trusted only when the coordinates fit it — a layer called
     «МСК-47 зона 1» holding zone-2 eastings is a mistake to report, not to place
-    some 200 km off. МСК-47 northings (under 1 Mm) and Web Mercator ones within
-    Russia (over 5 Mm) never meet, so the coordinates name at most one system.
+    some 200 km off. Local zones can share coordinate ranges across oblasts,
+    so exactly one registered local zone must fit before guessing by coordinates.
     """
     named = _named(list(names))
     if named is not None:

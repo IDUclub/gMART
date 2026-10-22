@@ -1,8 +1,8 @@
 """User files for a compliance check: parsing, layer roles and storage.
 
-A user checks their own design against the norms by uploading its layers: GeoJSON,
-a ZIP of GeoJSON files or Shapefiles, or a GeoPackage. Each file (each archive
-member, each GeoPackage layer) becomes one layer in WGS84 with 2D geometry, and
+A user checks their own design against the norms by uploading vector layers,
+including MapInfo, GML and KML, directly or in ZIP/7z archives. Each dataset
+(each GeoPackage layer) becomes one layer in WGS84 with 2D geometry, and
 gets a role:
 
 - ``project`` — the designed objects; only they are checked;
@@ -10,9 +10,9 @@ gets a role:
   neighbours of distance rules, never checked themselves;
 - ``border`` — the boundary of the design; it tells where the design is.
 
-A layer without a CRS is WGS84 unless its coordinates fall outside lon/lat; then it
-is placed in МСК-47 or Web Mercator when its name or coordinates tell so (see
-``crs_guess``), and is sent back to be uploaded with its CRS otherwise.
+A layer without a CRS is WGS84 unless its coordinates fall outside lon/lat. Then
+an explicit request or a unique nearby declared sibling CRS takes precedence over
+name/coordinate guesses (see ``crs_guess``); ambiguity requires the user's CRS.
 
 The role is guessed from the layer name and content and can be set explicitly.
 An upload lives for a day under an ``upload_id`` owned by the user who uploaded it:
@@ -25,9 +25,11 @@ from __future__ import annotations
 import io
 import json
 import math
+import re
 import tempfile
 import uuid
 import zipfile
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
@@ -37,12 +39,25 @@ from loguru import logger
 from shapely.geometry import mapping, shape
 from shapely.ops import transform
 
+from src.agents.common.config.app_config import ComplianceUploadLimits
 from src.agents.common.exceptions.base_exceptions import (
     AgentsInputException,
     AgentsNotFound,
 )
+from src.agents.common.files.gis_classifier import class_id
 from src.agents.common.files.layer_cache import LayerCache, LayerMissing
-from src.agents.services.compilance.crs_guess import guess_crs, zone_by_name
+from src.agents.common.files.vector_reader import (
+    UNKNOWN_CRS,
+    complete_datum,
+    read_vector,
+    reproject_vector,
+    resolve_crs,
+)
+from src.agents.services.compilance.crs_guess import (
+    CRS_REGISTRY,
+    guess_crs,
+    zone_by_name,
+)
 
 if TYPE_CHECKING:
     from src.agents.services.pipeline_state import PipelineStateStore
@@ -57,10 +72,12 @@ _MAPPING_FIELDS: dict[str, tuple[str, str]] = {
     "project": ("project_confirmed_mapping", "project_classified"),
 }
 
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-# A ZIP may hold far more than it weighs; unpacking stops past this many bytes.
-MAX_UNPACKED_BYTES = 200 * 1024 * 1024
-MAX_ARCHIVE_MEMBERS = 200
+_LIMITS = ComplianceUploadLimits.from_env()
+MAX_UPLOAD_BYTES = _LIMITS.max_upload_mb * 1024 * 1024
+# Archives may hold far more than they weigh; only vector members spend limits.
+MAX_UNPACKED_BYTES = _LIMITS.max_unpacked_mb * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = _LIMITS.max_archive_members
+MAX_LAYERS = _LIMITS.max_layers
 MAX_FEATURES = 200_000
 UPLOAD_TTL_SECONDS = 24 * 60 * 60
 
@@ -150,15 +167,43 @@ def detect_role(name: str, features: list[dict[str, Any]]) -> LayerRole:
         for feature in features
     }
     lowered = name.casefold()
+    codes = [class_id(feature.get("properties") or {}) for feature in features]
+    basename = PurePosixPath(name.replace("\\", "/")).name.casefold()
+    if basename.startswith("gr_dpt") or (
+        codes and all(code.startswith("6010") for code in codes)
+    ):
+        return "border"
     if (types == {"border"}) or any(hint in lowered for hint in _BORDER_HINTS):
         return "border"
+    if codes and all(
+        code.startswith(("701", "702", "603", "604", "606", "609", "704", "706"))
+        for code in codes
+    ):
+        return "context"
     if any(hint in lowered for hint in _CONTEXT_HINTS):
         return "context"
     return "project"
 
 
-def parse_upload(filename: str, content: bytes) -> list[UploadedLayer]:
+def parse_upload(
+    filename: str, content: bytes, *, crs: str | None = None
+) -> list[UploadedLayer]:
     """Every layer of one uploaded file; raises ``AgentsInputException`` on bad input."""
+    try:
+        return _parse_upload(filename, content, crs=crs)
+    except AgentsInputException:
+        raise
+    except Exception as exc:
+        raise AgentsInputException(
+            f"Не удалось прочитать файл «{filename}»: {exc}"
+        ) from exc
+
+
+def _parse_upload(
+    filename: str, content: bytes, *, crs: str | None = None
+) -> list[UploadedLayer]:
+    if crs is not None:
+        resolve_crs(crs)
     if len(content) > MAX_UPLOAD_BYTES:
         raise UploadTooLarge(
             f"Файл «{filename}» больше {MAX_UPLOAD_BYTES // (1024 * 1024)} МиБ"
@@ -166,14 +211,34 @@ def parse_upload(filename: str, content: bytes) -> list[UploadedLayer]:
     name = PurePosixPath(filename.replace("\\", "/")).name or "layer.geojson"
     suffix = PurePosixPath(name).suffix.casefold()
     if suffix in _GEOJSON_SUFFIXES:
-        layers = [_geojson_layer(_stem(name), content)]
-    elif suffix == ".zip":
-        layers = _zip_layers(name, content)
+        layers = [_geojson_layer(_stem(name), content, crs=crs)]
+    elif suffix in {".zip", ".7z"}:
+        layers = _archive_layers(name, content, crs=crs)
     elif suffix == ".gpkg":
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "upload.gpkg"
             path.write_bytes(content)
-            layers = _gpkg_layers(_stem(name), path)
+            layers = _gpkg_layers(_stem(name), path, crs=crs)
+    elif suffix in {".gml", ".kml", ".mif"}:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ("upload" + suffix)
+            path.write_bytes(content)
+            try:
+                layers = _vector_layers(_stem(name), path, crs=crs)
+            except AgentsInputException as exc:
+                if suffix == ".mif":
+                    raise AgentsInputException(
+                        f"MIF «{name}» загрузите ZIP-архивом вместе с файлом .mid: {exc}"
+                    ) from exc
+                raise
+    elif suffix == ".tab":
+        raise AgentsInputException(
+            f"MapInfo TAB «{name}» загрузите ZIP-архивом вместе с файлами .dat, .map, .id"
+        )
+    elif suffix == ".rar":
+        raise AgentsInputException(
+            "RAR не поддерживается. Перепакуйте архив в ZIP или 7z"
+        )
     elif suffix == ".shp":
         raise AgentsInputException(
             f"Shapefile «{name}» загрузите ZIP-архивом вместе с файлами .shx, .dbf "
@@ -182,8 +247,10 @@ def parse_upload(filename: str, content: bytes) -> list[UploadedLayer]:
     else:
         raise AgentsInputException(
             f"Формат файла «{name}» не поддерживается. Загрузите GeoJSON, ZIP "
-            "(GeoJSON или Shapefile) или GeoPackage"
+            "или 7z (GeoJSON, Shapefile, TAB, MIF/MID, GML, KML, GeoPackage), GML, KML или MIF"
         )
+    if len(layers) > MAX_LAYERS:
+        raise UploadTooLarge(f"В файле «{name}» больше {MAX_LAYERS} слоёв")
     layers = [layer for layer in layers if layer.features]
     if not layers:
         raise AgentsInputException(f"В файле «{name}» нет объектов с геометрией")
@@ -206,7 +273,54 @@ def _layer(name: str, features: list[dict[str, Any]], warnings: list[str]):
     )
 
 
-def _geojson_layer(name: str, content: bytes) -> UploadedLayer:
+@dataclass
+class _ReadBatch:
+    """Keep native bounds and defer missing CRSs across nested archive members."""
+
+    declared: list = field(default_factory=list)
+    pending: list = field(default_factory=list)
+
+    def add(self, source, bounds):
+        if source is not None and source.is_projected and bounds is not None:
+            self.declared.append((source, bounds))
+
+    def sibling(self, bounds):
+        if bounds is None or _within_wgs84(bounds) or not self.declared:
+            return None
+        source = self.declared[0][0]
+        if any(not source.equals(other) for other, _ in self.declared):
+            return None
+        # Native projected units need not be metres (e.g. a custom foot CRS).
+        unit = source.axis_info[0].unit_conversion_factor
+        margin = 50_000 / unit
+        union = (
+            min(box[0] for _, box in self.declared),
+            min(box[1] for _, box in self.declared),
+            max(box[2] for _, box in self.declared),
+            max(box[3] for _, box in self.declared),
+        )
+        if not (
+            union[0] - margin <= bounds[0] <= bounds[2] <= union[2] + margin
+            and union[1] - margin <= bounds[1] <= bounds[3] <= union[3] + margin
+        ):
+            return None
+        key = next(
+            (key for key, zone in CRS_REGISTRY.items() if source.equals(zone.crs())),
+            "custom",
+        )
+        return source, key
+
+    def finish(self):
+        for placeholder, bounds, resolve in self.pending:
+            result = resolve(self.sibling(bounds))
+            result.name = placeholder.name
+            placeholder.__dict__.update(result.__dict__)
+        self.pending.clear()
+
+
+def _geojson_layer(
+    name: str, content: bytes, *, crs: str | None = None, _batch=None, _sibling=None
+) -> UploadedLayer:
     try:
         data = json.loads(content.decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -222,26 +336,72 @@ def _geojson_layer(name: str, content: bytes) -> UploadedLayer:
         raw_features = [{"type": "Feature", "geometry": data, "properties": {}}]
     else:
         raise AgentsInputException(f"«{name}» — не корректный GeoJSON")
-    project = _reprojection(name, data.get("crs"))
+    source = _geojson_source(name, data.get("crs"))
+    declared = source is not None
     warnings: list[str] = []
-    if project is None and data.get("crs") is None:
+    if source is not None:
+        source, warnings = complete_datum(source)
+    project = _to_wgs84(source) if source is not None else None
+    bounds = _raw_bounds(raw_features)
+    engineering = source is None and bool(
+        ((data.get("crs") or {}).get("properties") or {}).get("name")
+    )
+    if _batch is not None and not declared and not engineering:
+        placeholder = _layer(name, [], [])
+        _batch.pending.append(
+            (
+                placeholder,
+                bounds,
+                lambda sibling: _geojson_layer(
+                    name, content, crs=crs, _sibling=sibling
+                ),
+            )
+        )
+        return placeholder
+    if engineering and crs is None:
+        raise AgentsInputException(UNKNOWN_CRS.format(name=name))
+    if (
+        not declared
+        and crs is not None
+        and (engineering or (bounds is not None and not _within_wgs84(bounds)))
+    ):
+        source, key = resolve_crs(crs)
+        project = _to_wgs84(source)
+        warnings.append(f"crs_from_request:{key}")
+    elif not declared and not engineering and _sibling is not None:
+        source, key = _sibling
+        project = _to_wgs84(source)
+        warnings.append(f"crs_from_sibling:{key}")
+    elif not declared and data.get("crs") is None:
         project, warnings = _local_reprojection(
             (name, data.get("name")), _raw_bounds(raw_features)
         )
     features, feature_warnings = _normalized_features(
-        name, raw_features, project, declared=data.get("crs") is not None
+        name, raw_features, project, declared=declared or crs is not None
     )
+    if _batch is not None and features and declared:
+        _batch.add(source, bounds)
     return _layer(name, features, warnings + feature_warnings)
 
 
 def _reprojection(name: str, crs: Any):
     """A coordinate transform to WGS84 lon/lat, or ``None`` when already WGS84."""
+    source = _geojson_source(name, crs)
+    if source is None or source.equals("EPSG:4326"):
+        return None
+    return _to_wgs84(complete_datum(source)[0])
+
+
+def _geojson_source(name: str, crs: Any):
+    """Keep engineering metadata from masquerading as a transformable CRS."""
     crs_name = ((crs or {}).get("properties") or {}).get("name") if crs else None
-    if not crs_name or str(crs_name).casefold() in _WGS84_NAMES:
+    if not crs_name:
         return None
     from pyproj import CRS
     from pyproj.exceptions import CRSError
 
+    if str(crs_name).casefold() in _WGS84_NAMES:
+        return CRS.from_epsg(4326)
     try:
         source = CRS.from_user_input(crs_name)
     except CRSError as exc:
@@ -251,9 +411,9 @@ def _reprojection(name: str, crs: Any):
                 f"«{name}»: неизвестная система координат {crs_name}"
             ) from exc
         source = zone.crs()
-    if source == CRS.from_epsg(4326):
+    if source.is_engineering:
         return None
-    return _to_wgs84(source)
+    return source
 
 
 def _to_wgs84(source: Any):
@@ -368,9 +528,13 @@ def _planar(geometry: dict[str, Any]) -> dict[str, Any]:
     """Drop Z/M from every position; generators mix 2D and 3D in one ring."""
 
     def positions(value: Any) -> Any:
-        if isinstance(value, list) and value and isinstance(value[0], (int, float)):
+        if (
+            isinstance(value, (list, tuple))
+            and value
+            and isinstance(value[0], (int, float))
+        ):
             return value[:2]
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return [positions(item) for item in value]
         return value
 
@@ -386,12 +550,7 @@ def _planar(geometry: dict[str, Any]) -> dict[str, Any]:
     return {**geometry, "coordinates": positions(geometry.get("coordinates"))}
 
 
-_UNKNOWN_CRS = (
-    "«{name}»: в файле не указана система координат, а координаты не похожи ни на "
-    "широту и долготу (EPSG:4326), ни на МСК-47, ни на EPSG:3857. Загрузите файл "
-    "заново с указанной системой координат — GeoJSON с полем crs, Shapefile в ZIP "
-    "вместе с файлом .prj или GeoPackage — либо пересохраните его в EPSG:4326"
-)
+_UNKNOWN_CRS = UNKNOWN_CRS
 _WRONG_CRS = (
     "«{name}»: координаты не соответствуют указанной в файле системе координат. "
     "Проверьте её и загрузите файл заново или пересохраните его в EPSG:4326"
@@ -420,118 +579,446 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-def _zip_layers(name: str, content: bytes) -> list[UploadedLayer]:
-    try:
-        archive = zipfile.ZipFile(io.BytesIO(content))
-    except zipfile.BadZipFile as exc:
-        raise AgentsInputException(f"«{name}» — повреждённый ZIP-архив") from exc
-    members = [
-        info
-        for info in archive.infolist()
-        if not info.is_dir()
-        and not any(
-            part.startswith(("__MACOSX", "."))
-            for part in PurePosixPath(info.filename).parts
-        )
-    ]
-    if len(members) > MAX_ARCHIVE_MEMBERS:
-        raise UploadTooLarge(f"В архиве «{name}» больше {MAX_ARCHIVE_MEMBERS} файлов")
-    if sum(info.file_size for info in members) > MAX_UNPACKED_BYTES:
-        raise UploadTooLarge(
-            f"Архив «{name}» распаковывается в больше "
-            f"{MAX_UNPACKED_BYTES // (1024 * 1024)} МиБ"
-        )
-    by_suffix: dict[str, list[zipfile.ZipInfo]] = {}
-    for info in members:
-        by_suffix.setdefault(PurePosixPath(info.filename).suffix.casefold(), []).append(
-            info
-        )
+_VECTOR_SUFFIXES = {
+    ".geojson",
+    ".json",
+    ".shp",
+    ".shx",
+    ".dbf",
+    ".prj",
+    ".cpg",
+    ".sbn",
+    ".sbx",
+    ".qix",
+    ".tab",
+    ".dat",
+    ".map",
+    ".id",
+    ".ind",
+    ".mif",
+    ".mid",
+    ".gml",
+    ".gfs",
+    ".xsd",
+    ".gpkg",
+    ".kml",
+    ".zip",
+    ".7z",
+}
+_DATASET_SUFFIXES = _GEOJSON_SUFFIXES | {
+    ".dbf",
+    ".shp",
+    ".tab",
+    ".mif",
+    ".gml",
+    ".gpkg",
+    ".kml",
+}
 
-    layers: list[UploadedLayer] = []
-    for info in by_suffix.get(".geojson", []) + by_suffix.get(".json", []):
-        layers.append(_geojson_layer(_stem(info.filename), archive.read(info)))
 
-    shapefiles = by_suffix.get(".shp", [])
-    packages = by_suffix.get(".gpkg", [])
-    if shapefiles or packages:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for index, info in enumerate(packages):
-                # Members are written under names of our own: no path from the
-                # archive reaches the file system.
-                path = root / f"package_{index}.gpkg"
-                path.write_bytes(archive.read(info))
-                layers.extend(_gpkg_layers(_stem(info.filename), path))
-            for index, info in enumerate(shapefiles):
-                stem = str(PurePosixPath(info.filename).with_suffix(""))
-                siblings = {
-                    PurePosixPath(other.filename).suffix.casefold(): other
-                    for other in members
-                    if str(PurePosixPath(other.filename).with_suffix("")) == stem
-                }
-                missing = [s for s in _SHAPEFILE_SIDECARS if s not in siblings]
-                if missing:
+@dataclass
+class _ArchiveBudget:
+    """Nested archives spend the same budget, including their container bytes."""
+
+    members: int = 0
+    unpacked: int = 0
+    layers: int = 0
+    skipped: Counter = field(default_factory=Counter)
+    warnings: list[str] = field(default_factory=list)
+    batch: _ReadBatch = field(default_factory=_ReadBatch)
+    incomplete: list[AgentsInputException] = field(default_factory=list)
+
+    def reserve(self, size: int) -> None:
+        self.members += 1
+        self.unpacked += size
+        if self.members > MAX_ARCHIVE_MEMBERS:
+            raise UploadTooLarge(
+                f"В архиве больше {MAX_ARCHIVE_MEMBERS} векторных файлов"
+            )
+        if size < 0 or self.unpacked > MAX_UNPACKED_BYTES:
+            raise UploadTooLarge(
+                f"Архив распаковывается в больше {MAX_UNPACKED_BYTES // (1024 * 1024)} МиБ"
+            )
+
+    def add_layers(self, count: int) -> None:
+        self.layers += count
+        if self.layers > MAX_LAYERS:
+            raise UploadTooLarge(f"В архиве больше {MAX_LAYERS} слоёв")
+
+
+def _zip_member_name(info: zipfile.ZipInfo) -> str:
+    if not info.flag_bits & 0x800:
+        try:
+            return info.filename.encode("cp437").decode("cp866")
+        except UnicodeError:
+            pass
+    return info.filename
+
+
+def _archive_members(content: bytes, suffix: str, budget: _ArchiveBudget):
+    """Filter metadata before opening streams; never extract archive paths to disk."""
+
+    def select(name, size, is_dir):
+        path = PurePosixPath(name.replace("\\", "/"))
+        if is_dir or any(part.startswith(("__MACOSX", ".")) for part in path.parts):
+            return None
+        ext = path.suffix.casefold()
+        if ext not in _VECTOR_SUFFIXES:
+            budget.skipped[ext.lstrip(".") or "none"] += 1
+            return None
+        budget.reserve(size)
+        return str(path)
+
+    if suffix == ".zip":
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            selected = []
+            all_names = {
+                _zip_member_name(info).replace("\\", "/").casefold()
+                for info in archive.infolist()
+            }
+            for info in archive.infolist():
+                name = select(_zip_member_name(info), info.file_size, info.is_dir())
+                if name is not None:
+                    selected.append((name, info))
+            for name, info in selected:
+                with archive.open(info) as stream:
+                    data = stream.read(info.file_size + 1)
+                if len(data) != info.file_size:
                     raise AgentsInputException(
-                        f"В архиве «{name}» у Shapefile «{PurePosixPath(stem).name}» "
-                        f"нет файлов {', '.join(missing)}"
+                        "Размер файла в архиве не соответствует заголовку"
                     )
-                for suffix, other in siblings.items():
-                    (root / f"shape_{index}{suffix}").write_bytes(archive.read(other))
-                layers.extend(
-                    _vector_layers(
-                        PurePosixPath(stem).name, root / f"shape_{index}.shp"
+                yield name, data, all_names
+    else:
+        try:
+            import py7zr
+        except ImportError as exc:
+            raise AgentsInputException(
+                "Для чтения 7z нужен модуль py7zr. Перепакуйте архив в ZIP"
+            ) from exc
+        from py7zr.io import Py7zIO, WriterFactory
+
+        with py7zr.SevenZipFile(io.BytesIO(content), "r") as archive:
+            infos = archive.list()
+            all_names = {info.filename.replace("\\", "/").casefold() for info in infos}
+            selected = {}
+            for info in infos:
+                name = select(info.filename, info.uncompressed, info.is_directory)
+                if name is not None:
+                    if info.filename in selected:
+                        raise AgentsInputException(
+                            "Повторяющееся имя файла в 7z-архиве"
+                        )
+                    selected[info.filename] = (name, info.uncompressed)
+
+            class LimitedIO(Py7zIO):
+                def __init__(self, limit):
+                    self.buffer = io.BytesIO()
+                    self.limit = limit
+
+                def write(self, data):
+                    if self.buffer.tell() + len(data) > self.limit:
+                        raise UploadTooLarge(
+                            "Размер файла в 7z превышает заявленный размер"
+                        )
+                    return self.buffer.write(data)
+
+                def read(self, size=None):
+                    return self.buffer.read(size)
+
+                def seek(self, offset, whence=0):
+                    return self.buffer.seek(offset, whence)
+
+                def flush(self):
+                    return self.buffer.flush()
+
+                def size(self):
+                    return len(self.buffer.getbuffer())
+
+            class Factory(WriterFactory):
+                def __init__(self):
+                    self.products = {}
+
+                def create(self, filename):
+                    product = LimitedIO(selected[filename][1])
+                    self.products[filename] = product
+                    return product
+
+            if selected:
+                factory = Factory()
+                archive.extract(targets=list(selected), factory=factory)
+                for original, (name, size) in selected.items():
+                    product = factory.products[original]
+                    if product.size() != size:
+                        raise AgentsInputException(
+                            "Размер файла в 7z не соответствует заголовку"
+                        )
+                    yield name, product.buffer.getvalue(), all_names
+
+
+def _zip_layers(
+    name: str, content: bytes, *, crs: str | None = None
+) -> list[UploadedLayer]:
+    """Keep the existing entry point for callers reading ZIP uploads."""
+    return _archive_layers(name, content, crs=crs)
+
+
+def _archive_layers(
+    name: str,
+    content: bytes,
+    *,
+    crs: str | None = None,
+    _budget: _ArchiveBudget | None = None,
+    _depth: int = 0,
+) -> list[UploadedLayer]:
+    budget = _budget or _ArchiveBudget()
+    layers: list[UploadedLayer] = []
+    groups: dict[str, dict[str, bytes]] = {}
+    all_names = set()
+    try:
+        for member, data, names in _archive_members(
+            content, PurePosixPath(name).suffix.casefold(), budget
+        ):
+            all_names.update(names)
+            path = PurePosixPath(member)
+            suffix = path.suffix.casefold()
+            if suffix in {".zip", ".7z"}:
+                if _depth >= 1:
+                    budget.warnings.append("nested_archive_skipped")
+                else:
+                    nested = _archive_layers(
+                        member, data, crs=crs, _budget=budget, _depth=_depth + 1
+                    )
+                    for item in nested:
+                        item.name = f"{path.with_suffix('')}/{item.name}"
+                    layers.extend(nested)
+            else:
+                stem = str(path.with_suffix(""))
+                groups.setdefault(stem, {})[suffix] = data
+    except AgentsInputException:
+        raise
+    except Exception as exc:
+        raise AgentsInputException(f"«{name}» — повреждённый архив: {exc}") from exc
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        for index, (stem, siblings) in enumerate(groups.items()):
+            for suffix in sorted(_DATASET_SUFFIXES & siblings.keys()):
+                if suffix == ".dbf" and ({".shp", ".tab"} & siblings.keys()):
+                    continue
+                title = _stem(stem + suffix)
+                # Retain folders only where basenames would otherwise collide.
+                if (
+                    sum(
+                        PurePosixPath(other).name == PurePosixPath(stem).name
+                        for other in groups
+                    )
+                    > 1
+                ):
+                    title = stem
+                if suffix == ".tab":
+                    header = siblings[suffix].decode("latin-1")
+                    warning = None
+                    if stem.casefold() + ".tda" in all_names:
+                        warning = "mapinfo_nativex_unsupported"
+                    elif re.search(r'\bType\s+"?RASTER\b', header, re.IGNORECASE):
+                        warning = "raster_tab_skipped"
+                    elif re.search(
+                        r'(?:\bType\s+"?SEAMLESS|"?\\IsSeamless"?\s*=\s*"?TRUE)',
+                        header,
+                        re.IGNORECASE,
+                    ):
+                        warning = "seamless_tab_skipped"
+                    if warning:
+                        budget.warnings.append(warning)
+                        continue
+                attribute_tab = suffix == ".tab" and bool(
+                    re.search(r'\bType\s+"?(?:DBF|ASCII|CSV)\b', header, re.IGNORECASE)
+                )
+                required = (
+                    _SHAPEFILE_SIDECARS
+                    if suffix == ".shp"
+                    else (
+                        (".dat", ".map", ".id")
+                        if suffix == ".tab" and not attribute_tab
+                        else ()
                     )
                 )
-    if not layers:
-        raise AgentsInputException(
-            f"В архиве «{name}» нет GeoJSON, Shapefile или GeoPackage"
+                missing = [ext for ext in required if ext not in siblings]
+                dataset_root = root / str(index)
+                dataset_root.mkdir(exist_ok=True)
+                path = dataset_root / (PurePosixPath(stem).name + suffix)
+                for ext, data in siblings.items():
+                    path.with_suffix(ext).write_bytes(data)
+                if suffix == ".tab" and missing == [".map", ".id"]:
+                    # Native attribute tables legitimately have only TAB/DAT.
+                    # Probe once; a failed read still uses the sidecar error below.
+                    try:
+                        _, table_warnings = read_vector(
+                            path, names=(title,), native=True
+                        )
+                    except AgentsInputException:
+                        table_warnings = []
+                    if table_warnings:
+                        budget.warnings.extend(table_warnings)
+                        continue
+                if missing:
+                    budget.incomplete.append(
+                        AgentsInputException(
+                            f"В архиве «{name}» у слоя «{stem}» нет файлов {', '.join(missing)}"
+                        )
+                    )
+                    budget.warnings.append(
+                        f"incomplete_layer_skipped:{stem}:{','.join(missing)}"
+                    )
+                    continue
+                if suffix in _GEOJSON_SUFFIXES:
+                    budget.add_layers(1)
+                    layers.append(
+                        _geojson_layer(
+                            title, siblings[suffix], crs=crs, _batch=budget.batch
+                        )
+                    )
+                    continue
+                if suffix == ".gpkg":
+                    result = _gpkg_layers(
+                        title, path, crs=crs, _budget=budget, _batch=budget.batch
+                    )
+                else:
+                    budget.add_layers(1)
+                    result = _vector_layers(title, path, crs=crs, _batch=budget.batch)
+                layers.extend(result)
+    if _depth == 0:
+        budget.batch.finish()
+        if not any(item.features for item in layers) and budget.incomplete:
+            raise budget.incomplete[0]
+        warnings = list(dict.fromkeys(budget.warnings))
+        warnings.extend(
+            w for item in layers if not item.features for w in item.warnings
         )
+        if budget.skipped:
+            warnings.append(
+                "skipped_members:"
+                + ",".join(
+                    f"{ext}={count}" for ext, count in sorted(budget.skipped.items())
+                )
+            )
+        if not layers:
+            details = ", ".join(warnings)
+            raise AgentsInputException(
+                f"В архиве «{name}» нет поддерживаемых векторных слоёв"
+                + (f": {details}" if details else "")
+            )
+        first = next((item for item in layers if item.features), layers[0])
+        first.warnings.extend(warnings)
     return layers
 
 
-def _gpkg_layers(name: str, path: Path) -> list[UploadedLayer]:
+def _gpkg_layers(
+    name: str,
+    path: Path,
+    *,
+    crs: str | None = None,
+    _budget: _ArchiveBudget | None = None,
+    _batch: _ReadBatch | None = None,
+) -> list[UploadedLayer]:
     import pyogrio
 
     try:
         listed = pyogrio.list_layers(path)
     except Exception as exc:  # pyogrio raises driver-specific errors
         raise AgentsInputException(f"«{name}» — не корректный GeoPackage") from exc
+    if len(listed) > MAX_LAYERS:
+        raise UploadTooLarge(f"В файле «{name}» больше {MAX_LAYERS} слоёв")
+    if _budget is not None:
+        _budget.add_layers(len(listed))
+    batch = _batch or _ReadBatch()
     layers: list[UploadedLayer] = []
     for row in listed:
         layer_name = str(row[0])
         title = name if len(listed) == 1 else f"{name}:{layer_name}"
-        layers.extend(_vector_layers(title, path, layer=layer_name))
+        layers.extend(
+            _vector_layers(title, path, layer=layer_name, crs=crs, _batch=batch)
+        )
+    if _batch is None:
+        batch.finish()
+        warnings = [w for item in layers if not item.features for w in item.warnings]
+        if warnings:
+            first = next((item for item in layers if item.features), None)
+            if first is not None:
+                first.warnings.extend(warnings)
     return layers
 
 
 def _vector_layers(
-    name: str, path: Path, *, layer: str | None = None
+    name: str,
+    path: Path,
+    *,
+    layer: str | None = None,
+    crs: str | None = None,
+    _batch: _ReadBatch | None = None,
 ) -> list[UploadedLayer]:
-    import geopandas as gpd
+    if layer is None and path.suffix.casefold() == ".gml":
+        import pyogrio
 
-    try:
-        frame = gpd.read_file(path, layer=layer)
-    except Exception as exc:  # pyogrio raises driver-specific errors
-        raise AgentsInputException(
-            f"Не удалось прочитать слой «{name}»: {exc}"
-        ) from exc
-    if frame.empty or frame.geometry is None:
-        return []
-    local_warnings: list[str] = []
-    declared = frame.crs is not None
-    if not declared:
-        bounds = tuple(float(value) for value in frame.total_bounds)
-        guessed = None if _within_wgs84(bounds) else guess_crs((name,), bounds)
-        if guessed is None:
-            logger.warning("Uploaded layer {} has no CRS; WGS84 is assumed", name)
-        else:
-            logger.info(
-                "Uploaded layer {} has no CRS; {} is assumed", name, guessed.title
+        try:
+            listed = pyogrio.list_layers(path)
+        except Exception as exc:
+            raise AgentsInputException(
+                f"Не удалось прочитать слой «{name}»: {exc}"
+            ) from exc
+        if len(listed) > 1:
+            batch = _batch or _ReadBatch()
+            result = []
+            for row in listed:
+                result.extend(
+                    _vector_layers(
+                        f"{name}:{row[0]}",
+                        path,
+                        layer=str(row[0]),
+                        crs=crs,
+                        _batch=batch,
+                    )
+                )
+            if _batch is None:
+                batch.finish()
+                first = next((item for item in result if item.features), None)
+                if first is not None:
+                    first.warnings.extend(
+                        w for item in result if not item.features for w in item.warnings
+                    )
+            return result
+    frame, local_warnings = read_vector(
+        path, layer=layer, explicit_crs=crs, names=(name,), native=True
+    )
+    if frame.empty:
+        return [_layer(name, [], local_warnings)]
+    bounds = tuple(float(value) for value in frame.total_bounds)
+    source = frame.crs
+    if _batch is not None and source is None:
+        placeholder = _layer(name, [], [])
+        _batch.pending.append(
+            (
+                placeholder,
+                bounds,
+                lambda sibling: _frame_layer(name, frame, crs, sibling),
             )
-            frame = frame.set_crs(guessed.crs()).to_crs("EPSG:4326")
-            local_warnings.append(f"crs_missing_assumed:{guessed.key}")
-    elif not frame.crs.equals("EPSG:4326"):
-        frame = frame.to_crs("EPSG:4326")
+        )
+        return [placeholder]
+    result = _frame_layer(name, frame, crs)
+    if _batch is not None and result.features and source is not None:
+        _batch.add(complete_datum(source)[0], bounds)
+    return [result]
+
+
+def _frame_layer(name, frame, crs, sibling=None):
+    """Serialize only after native CRS resolution, without reading files twice."""
+    frame, local_warnings = reproject_vector(
+        frame,
+        names=(name,),
+        requested=resolve_crs(crs) if crs else None,
+        sibling=sibling,
+    )
+    declared = True
     columns = [column for column in frame.columns if column != frame.geometry.name]
     raw_features = []
     for _, row in frame.iterrows():
@@ -546,7 +1033,7 @@ def _vector_layers(
     features, warnings = _normalized_features(name, raw_features, declared=declared)
     if frame.crs is None:
         warnings.append("crs_missing_assumed_wgs84")
-    return [_layer(name, features, local_warnings + warnings)]
+    return _layer(name, features, local_warnings + warnings)
 
 
 @dataclass
@@ -586,12 +1073,15 @@ class ComplianceUploadService:
         owner: str,
         files: list[tuple[str, bytes]],
         role: LayerRole | None = None,
+        crs: str | None = None,
     ) -> dict[str, Any]:
         if not files:
             raise AgentsInputException("Не передано ни одного файла")
         layers: list[UploadedLayer] = []
         for filename, content in files:
-            layers.extend(parse_upload(filename, content))
+            layers.extend(parse_upload(filename, content, crs=crs))
+            if len(layers) > MAX_LAYERS:
+                raise UploadTooLarge(f"В загрузке больше {MAX_LAYERS} слоёв")
         names: dict[str, int] = {}
         for layer in layers:
             # Layer names are the handle for role overrides: keep them unique.
@@ -621,6 +1111,7 @@ class ComplianceUploadService:
                     created_at + timedelta(seconds=UPLOAD_TTL_SECONDS)
                 ).isoformat(),
                 "files": [filename for filename, _ in files],
+                "crs": crs,
                 "layers": stored,
                 "confirmed_mapping": {},
                 "classified": {},

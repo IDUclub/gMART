@@ -28,6 +28,7 @@ import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from loguru import logger
@@ -35,6 +36,7 @@ from pydantic import BaseModel, Field
 from shapely.geometry import shape
 from shapely.ops import unary_union
 
+from src.agents.common.files.gis_classifier import class_id, gisogd_layer_kind
 from src.agents.services.compilance.compliance_scope import normalized
 from src.agents.services.compilance.compliance_uploads import UploadedLayer, UserFiles
 from src.agents.services.normgraph.normgraph_reasoning import _request_json
@@ -43,6 +45,14 @@ EntityType = Literal["service", "physical_object", "functional_zone"]
 MappingSource = Literal["table", "llm", "user", "none"]
 
 CONFIDENCE_THRESHOLD = 0.8
+# Public FGIS TP classifier, Order No. 10 of 09.01.2018, Ministry of Economic
+# Development. Imported from the supplied public TSV; names and truncated group
+# labels must be checked against the official order before updating the snapshot.
+FGISTP_CLASSIFIER = json.loads(
+    (Path(__file__).parent / "data" / "fgistp_classifier.json").read_text(
+        encoding="utf-8"
+    )
+)
 CLASSIFY_KEYS = (
     "type",
     "building",
@@ -120,6 +130,14 @@ _BLOCK_ZONES: dict[str, tuple[str | None, float]] = {
     "police": ("business", 0.6),
     "empty": (None, 1.0),
 }
+FGISTP_ZONE_TYPES = (
+    "residential",
+    "business",
+    "industrial",
+    "transport",
+    "recreation",
+    "special",
+)
 
 
 @dataclass(frozen=True)
@@ -240,7 +258,7 @@ class EntityMapping:
         )
 
 
-def feature_tags(properties: dict[str, Any]) -> dict[str, str]:
+def feature_tags(properties: dict[str, Any], layer_name: str = "") -> dict[str, str]:
     tags = {}
     for key in CLASSIFY_KEYS:
         value = properties.get(key)
@@ -249,6 +267,15 @@ def feature_tags(properties: dict[str, Any]) -> dict[str, str]:
         text = str(value).strip()
         if text:
             tags[key] = text.casefold()
+    code = class_id(properties)
+    if code:
+        tags["classid"] = code
+        entry = FGISTP_CLASSIFIER.get(code)
+        if entry:
+            tags["fgistp_class"] = entry["name"]
+    kind = gisogd_layer_kind(layer_name)
+    if kind:
+        tags["layer_kind"] = kind
     return tags
 
 
@@ -264,7 +291,7 @@ def tag_groups(files: UserFiles) -> list[TagGroup]:
             continue
         for feature in layer.features:
             properties = feature.get("properties") or {}
-            tags = feature_tags(properties)
+            tags = feature_tags(properties, layer.name)
             signature = signature_of(tags)
             group = groups.get(signature)
             if group is None:
@@ -281,7 +308,8 @@ def tag_groups(files: UserFiles) -> list[TagGroup]:
 
 
 def _example(properties: dict[str, Any]) -> dict[str, Any]:
-    example = {}
+    tags = feature_tags(properties)
+    example = {"fgistp_class": tags["fgistp_class"]} if "fgistp_class" in tags else {}
     for key, value in properties.items():
         if isinstance(value, (dict, list)) or value in (None, ""):
             continue
@@ -292,11 +320,72 @@ def _example(properties: dict[str, Any]) -> dict[str, Any]:
     return example
 
 
+def unsupported_entity_reason(tags: dict[str, str]) -> str | None:
+    """Keep recognized but unused classes visible in stored summaries and reports."""
+    if tags.get("layer_kind") and tags["layer_kind"] != "gr_dpt":
+        return "not_supported_entity:gisogd"
+    code = tags.get("classid", "")
+    for prefix, group in (
+        ("601", "boundaries"),
+        ("603", "zouit"),
+        ("604", "heritage"),
+        ("606", "emergency"),
+        ("609", "mineral_resources"),
+        ("702", "land_categories"),
+        ("704", "special_legal_regime"),
+        ("706", "water_bodies"),
+    ):
+        if code.startswith(prefix):
+            return "not_supported_entity:" + group
+    return None
+
+
+def _classifier_proposal(code: str) -> tuple[EntityTarget | None, float] | None:
+    """Only unambiguous objects and existing Urban API zone names are table rules."""
+    services = {
+        "602010101": "Детский сад",
+        "602010102": "Школа",
+        "602010401": "Больница",
+        "602010402": "Поликлиника",
+        "602010408": "Аптека",
+    }
+    if code.startswith("602"):
+        return (
+            (EntityTarget(services[code], "service"), 1.0) if code in services else None
+        )
+    zone = None
+    confidence = 0.0
+    if code.startswith("7010101"):
+        zone, confidence = "residential", 0.95
+    elif code == "701010200" or code.startswith("7010103"):
+        zone, confidence = "business", 0.7 if code == "701010303" else 0.9
+    elif code in {"701010401", "701010402", "701010403"}:
+        zone, confidence = "industrial", 0.9
+    elif code in {"701010404", "701010405"}:
+        zone, confidence = "transport", 0.7
+    elif code.startswith("7010105"):
+        # No agriculture zone type is used by the current Urban API integration.
+        return None, 1.0
+    elif code.startswith("7010106"):
+        zone, confidence = "recreation", 0.9
+    elif code.startswith("7010107") or code == "701010800":
+        zone, confidence = "special", 0.85
+    elif code in {"701010900", "701011000"}:
+        return None, 1.0
+    return (EntityTarget(zone, "functional_zone"), confidence) if zone else None
+
+
 def table_proposal(tags: dict[str, str]) -> tuple[EntityTarget | None, float] | None:
     """The table's entity for a tag group; ``None`` when the table has no rule.
 
     ``(None, 1.0)`` is a settled «no entity» (the boundary, empty blocks).
     """
+    if unsupported_entity_reason(tags):
+        return None, 1.0
+    if tags.get("classid"):
+        classified = _classifier_proposal(tags["classid"])
+        if classified is not None or tags["classid"].startswith("602"):
+            return classified
     kind = tags.get("type", "")
     building = tags.get("building", "")
     amenity = tags.get("amenity", "")
@@ -494,7 +583,7 @@ class EntityMapper:
             needed_keys if sources is None else {target.key() for target in sources}
         )
         candidates = _unique_targets([*needed, *TABLE_TARGETS])
-        # Zones come only from the generator's blocks (the table): any other object
+        # Zones come only from blocks or classifier codes (the table): any other object
         # taken for a zone would turn a site into an area-wide restriction.
         allowed = set(llm_types) - {"functional_zone"}
         llm_candidates = [
@@ -515,6 +604,7 @@ class EntityMapper:
             if ruled is not None:
                 proposal.target, proposal.confidence = ruled
                 proposal.source = "table"
+                proposal.reason = unsupported_entity_reason(group.tags)
                 proposals.append(proposal)
                 continue
             cached = files.classified.get(
@@ -926,7 +1016,7 @@ def build_entity_layers(
         bucket = project if layer.role == "project" else context
         for index, feature in enumerate(layer.features):
             properties = feature.get("properties") or {}
-            target = assignment.get(signature_of(feature_tags(properties)))
+            target = assignment.get(signature_of(feature_tags(properties, layer.name)))
             if target is None:
                 continue
             bucket.setdefault(target, []).append(
@@ -974,6 +1064,8 @@ def _normalized_feature(
             # Check tools flatten nested properties into columns; the tags and the
             # id identify the object without copying every generator field.
             "source_id": str(source_id),
-            "source_tags": signature_of(feature_tags(properties)).replace("|", ", "),
+            "source_tags": signature_of(feature_tags(properties, layer.name)).replace(
+                "|", ", "
+            ),
         },
     }

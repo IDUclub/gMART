@@ -63,19 +63,13 @@ class PzzApiClient:
 
     @staticmethod
     def _vector_to_geojson(content: bytes, suffix: str) -> bytes:
-        import geopandas as gpd
+        from src.agents.common.files.vector_reader import read_vector
 
         with TemporaryDirectory(prefix="gmart-pzz-") as directory:
             path = Path(directory) / ("layer" + suffix)
             path.write_bytes(content)
-            frame = (
-                gpd.read_parquet(path)
-                if suffix in {".parquet", ".geoparquet"}
-                else gpd.read_file(path)
-            )
-            if frame.crs is None:
-                raise ValueError("Uploaded vector layer must declare its CRS")
-            return frame.to_crs(4326).to_json().encode()
+            frame, _ = read_vector(path, require_crs=True)
+            return frame.to_json().encode()
 
     async def submit_file_task(
         self, mode, arguments, labels_id, classifier_id, request_id
