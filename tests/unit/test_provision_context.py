@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from src.agents.services.provision.provision_context import ProvisionContextBuilder
 
 SUMMARY_SCHOOLS = {
@@ -113,3 +117,118 @@ def test_provision_context_lists_metrics():
     )
     assert "«Школы»" in context
     assert "Дефицит (чел): 250" in context
+
+
+def effects(delta=0.2):
+    metrics = {
+        "provision_before": 0.4,
+        "provision_after": 0.4 + delta,
+        "provision_delta": delta,
+        "deficit_before": 100,
+        "deficit_after": 50,
+        "deficit_delta": -50,
+        "unmet_demand_after": 60,
+        "total_capacity_after": 200,
+        "unused_metric": "large unwanted context",
+    }
+    fc = {"type": "FeatureCollection", "features": []}
+    return {
+        "text_pivot": json.dumps(
+            {"all": metrics, "project": metrics, "context": {"secret": 123}}
+        ),
+        "pivot": {"large": "raw pivot"},
+        "before_prove_data": {"buildings": fc},
+        "after_prove_data": {"services": fc},
+        "effects": fc,
+    }
+
+
+def test_table_columns_sort_rounding_and_no_data():
+    builder = ProvisionContextBuilder()
+    data = {
+        "services": {
+            "1": {"name": "worse", **effects(-0.123456)},
+            "2": {"name": "missing", "text_pivot": "not JSON"},
+            "3": {"name": "better", **effects(0.234567)},
+            "4": {"name": "unchanged", **effects(0)},
+        }
+    }
+    table = builder.build_effects_summary_table(data)
+    assert table["name"] == "provision_effects_summary"
+    assert table["title"] == "Сравнение эффектов обеспеченности по сервисам"
+    assert [col["label"] for col in table["columns"]] == [
+        "Сервис",
+        "Обеспеченность до",
+        "Обеспеченность после",
+        "Изменение обеспеченности",
+        "Дефицит до (чел)",
+        "Дефицит после (чел)",
+        "Изменение дефицита (чел)",
+        "Статус",
+    ]
+    rows = table["rows"]
+    assert [row["service"] for row in rows] == [
+        "better",
+        "unchanged",
+        "worse",
+        "missing",
+    ]
+    assert rows[0]["provision_delta"] == 0.235
+    assert rows[1]["provision_delta"] == 0
+    assert rows[2]["provision_delta"] == -0.123
+    assert rows[0]["status"] == "Рассчитано"
+    assert rows[-1]["status"] == "Нет данных"
+    assert all(rows[-1][col["key"]] is None for col in table["columns"][1:-1])
+    del data["services"]["2"]
+    assert all(
+        col["key"] != "status"
+        for col in builder.build_effects_summary_table(data)["columns"]
+    )
+
+
+@pytest.mark.parametrize(
+    "pivot",
+    [
+        None,
+        "broken",
+        "[]",
+        "null",
+        "{}",
+        '{"all":{}}',
+        '{"all":{"provision_delta":"bad"}}',
+    ],
+)
+def test_missing_or_unparseable_metrics_are_not_zero(pivot):
+    data = {"services": {"1": {"name": "empty", "text_pivot": pivot}}}
+    builder = ProvisionContextBuilder()
+    row = builder.build_effects_summary_table(data)["rows"][0]
+    assert row["status"] == "Нет данных"
+    assert row["provision_delta"] is None
+    assert (
+        json.loads(builder.build_effects_summary_context(data))[0]["metrics"]
+        == "нет данных"
+    )
+
+
+def test_compact_context_has_only_key_all_project_metrics_and_no_errors():
+    data = {
+        "services": {
+            "1": {"name": "Школы", **effects()},
+            "2": {"name": "Сады", "error": "PRIVATE_INTERNAL_ERROR"},
+        }
+    }
+    context = ProvisionContextBuilder().build_effects_summary_context(data)
+    values = json.loads(context)
+    assert set(values[0]["metrics"]) == {"all", "project"}
+    assert values[0]["metrics"]["all"]["provision_delta"] == 0.2
+    assert values[1]["metrics"] == "нет данных"
+    for excluded in (
+        "PRIVATE_INTERNAL_ERROR",
+        "secret",
+        "unused_metric",
+        "raw pivot",
+        "features",
+        '"1"',
+    ):
+        assert excluded not in context
+    assert len(context) < 700

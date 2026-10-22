@@ -32,7 +32,8 @@ class ProvisionA2AAgent(A2AServer):
             description=(
                 "Analyzes service provision for a project scenario: lists available "
                 "services, builds a deficit/surplus summary over the catalog, and "
-                "calculates provision or project effects for a single service. Returns "
+                "calculates provision or project effects for a single service, and compares "
+                "before/after project effects across all or several services. Returns "
                 "status updates, GeoJSON layers, strict data tables, and an "
                 "LLM-generated analysis."
             ),
@@ -60,14 +61,17 @@ class ProvisionA2AAgent(A2AServer):
                     id="calculate-provision-effects",
                     name="Calculate service provision effects",
                     description=(
-                        "Runs the provision effects pipeline: resolves service by name, "
-                        "calls CalculateObjectEffects, and returns layers with a strict "
-                        "pivot table and an analysis."
+                        "Runs project effects for a single service or an all/multi-service "
+                        "before/after comparison (effects_summary). Calls CalculateObjectEffects "
+                        "per service and returns a strict comparison table and analysis. "
+                        "Multi-service layers are included only when explicitly requested."
                     ),
                     tags=["provision", "effects", "geospatial", "geojson"],
                     examples=[
                         "Рассчитай эффекты обеспеченности для школ",
                         "Покажи влияние проекта на обеспеченность детскими садами",
+                        "Сравни обеспеченность по всем сервисам до и после проекта",
+                        "Какие сервисы проект улучшит сильнее всего?",
                     ],
                     input_modes=["text/plain", "application/json"],
                     output_modes=[

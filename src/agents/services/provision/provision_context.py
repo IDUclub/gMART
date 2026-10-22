@@ -1,4 +1,5 @@
 import json
+import math
 
 
 class ProvisionContextBuilder:
@@ -40,6 +41,106 @@ class ProvisionContextBuilder:
         {"key": "metric", "label": "Показатель"},
         {"key": "value", "label": "Значение"},
     ]
+
+    EFFECTS_SUMMARY_TABLE_COLUMNS = [
+        {"key": "service", "label": "Сервис"},
+        {"key": "provision_before", "label": "Обеспеченность до"},
+        {"key": "provision_after", "label": "Обеспеченность после"},
+        {"key": "provision_delta", "label": "Изменение обеспеченности"},
+        {"key": "deficit_before", "label": "Дефицит до (чел)"},
+        {"key": "deficit_after", "label": "Дефицит после (чел)"},
+        {"key": "deficit_delta", "label": "Изменение дефицита (чел)"},
+    ]
+
+    @staticmethod
+    def _effects_summary_sections(service: dict) -> dict:
+        if service.get("error"):
+            return {}
+        try:
+            pivot = service.get("text_pivot")
+            if isinstance(pivot, str):
+                pivot = json.loads(pivot)
+        except (ValueError, TypeError):
+            return {}
+        if not isinstance(pivot, dict):
+            return {}
+        sections = {
+            section: {
+                key: (
+                    value
+                    if isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                    else None
+                )
+                for key, value in values.items()
+            }
+            for section in ("all", "project")
+            if isinstance(values := pivot.get(section), dict)
+        }
+        keys = [
+            column["key"]
+            for column in ProvisionContextBuilder.EFFECTS_SUMMARY_TABLE_COLUMNS[1:]
+        ]
+        return (
+            sections
+            if any(sections.get("all", {}).get(key) is not None for key in keys)
+            else {}
+        )
+
+    def build_effects_summary_table(self, services_result: dict) -> dict:
+        rows = []
+        keys = [col["key"] for col in self.EFFECTS_SUMMARY_TABLE_COLUMNS[1:]]
+        for service in (services_result.get("services") or {}).values():
+            values = self._effects_summary_sections(service).get("all", {})
+            row = {"service": service.get("name", "")}
+            row.update({key: self._round(values.get(key)) for key in keys})
+            if not any(row[key] is not None for key in keys):
+                row["status"] = "Нет данных"
+            rows.append(row)
+        rows.sort(
+            key=lambda row: (
+                "status" in row,
+                row["provision_delta"] is None,
+                -(row["provision_delta"] or 0),
+            )
+        )
+        columns = self.EFFECTS_SUMMARY_TABLE_COLUMNS
+        if any("status" in row for row in rows):
+            columns = [*columns, {"key": "status", "label": "Статус"}]
+            for row in rows:
+                row.setdefault("status", "Рассчитано")
+        return {
+            "name": "provision_effects_summary",
+            "title": "Сравнение эффектов обеспеченности по сервисам",
+            "columns": columns,
+            "rows": rows,
+        }
+
+    def build_effects_summary_context(self, services_result: dict) -> str:
+        compact = []
+        keys = [
+            f"{metric}_{phase}"
+            for metric in ("provision", "deficit", "unmet_demand", "total_capacity")
+            for phase in ("before", "after", "delta")
+        ]
+        for service in (services_result.get("services") or {}).values():
+            sections = self._effects_summary_sections(service)
+            values = {
+                section: {
+                    key: self._round(data[key])
+                    for key in keys
+                    if data.get(key) is not None
+                }
+                for section, data in sections.items()
+            }
+            compact.append(
+                {
+                    "service": service.get("name", ""),
+                    "metrics": values if any(values.values()) else "нет данных",
+                }
+            )
+        return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
 
     # Strict row labels for the single-service provision metrics table.
     _PROVISION_METRIC_LABELS: list[tuple[str, str]] = [

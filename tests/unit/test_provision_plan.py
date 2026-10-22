@@ -23,7 +23,7 @@ class FakeLlmClient:
         self.calls: list[dict] = []
 
     async def chat(self, model, messages=None, options=None, **kwargs):
-        self.calls.append({"model": model, "messages": messages or kwargs})
+        self.calls.append({"model": model, "messages": messages or kwargs, **kwargs})
         return {"message": {"content": json.dumps(self.plan, ensure_ascii=False)}}
 
 
@@ -43,7 +43,7 @@ def test_legacy_found_mode_maps_to_effects():
 
 
 def test_all_modes_are_accepted():
-    for mode in ("effects", "provision", "summary", "list_services"):
+    for mode in ("effects", "effects_summary", "provision", "summary", "list_services"):
         assert ProvisionPlan(mode=mode).mode == ProvisionPlanMode(mode)
 
 
@@ -71,37 +71,40 @@ async def test_unknown_service_name_needs_clarification():
 
 
 @pytest.mark.asyncio
-async def test_summary_names_are_canonicalized_and_unknown_dropped():
+@pytest.mark.parametrize("mode", ["summary", "effects_summary"])
+async def test_summary_names_are_canonicalized_and_unknown_dropped(mode):
     builder = build_builder(
         {
-            "mode": "summary",
+            "mode": mode,
             "service_names": ["школы", "Аптеки", "детские сады"],
             "layer_service_names": ["школы"],
         }
     )
     plan = await builder.build_plan("model", "запрос", CATALOG)
-    assert plan.mode == ProvisionPlanMode.SUMMARY
+    assert plan.mode == ProvisionPlanMode(mode)
     assert plan.service_names == ["Школы", "Детские сады"]
     assert plan.layer_service_names == ["Школы"]
 
 
 @pytest.mark.asyncio
-async def test_summary_with_only_unknown_names_needs_clarification():
-    builder = build_builder({"mode": "summary", "service_names": ["Аптеки"]})
+@pytest.mark.parametrize("mode", ["summary", "effects_summary"])
+async def test_summary_with_only_unknown_names_needs_clarification(mode):
+    builder = build_builder({"mode": mode, "service_names": ["Аптеки"]})
     plan = await builder.build_plan("model", "запрос", CATALOG)
     assert plan.mode == ProvisionPlanMode.NEEDS_CLARIFICATION
 
 
 @pytest.mark.asyncio
-async def test_summary_without_names_means_full_catalog():
-    builder = build_builder({"mode": "summary"})
+@pytest.mark.parametrize("mode", ["summary", "effects_summary"])
+async def test_summary_without_names_means_full_catalog(mode):
+    builder = build_builder({"mode": mode})
     plan = await builder.build_plan("model", "запрос", CATALOG)
-    assert plan.mode == ProvisionPlanMode.SUMMARY
+    assert plan.mode == ProvisionPlanMode(mode)
     assert plan.service_names == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["summary", "provision"])
+@pytest.mark.parametrize("mode", ["summary", "effects_summary", "provision"])
 async def test_target_population_is_preserved(mode):
     plan_payload = {"mode": mode, "target_population": 25000}
     if mode == "provision":
@@ -143,3 +146,41 @@ async def test_clarification_without_question_gets_default_text():
     assert plan.mode == ProvisionPlanMode.NEEDS_CLARIFICATION
     assert plan.clarification_question
     assert "Школы" in plan.clarification_question
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [None, "", "   "])
+async def test_effects_without_service_falls_back_to_all_services(name):
+    builder = build_builder(
+        {
+            "mode": "effects",
+            "service_name": name,
+            "service_names": ["Школы"],
+            "layer_service_names": ["школы"],
+            "target_population": 25000,
+        }
+    )
+    plan = await builder.build_plan("model", "Сравни эффекты проекта", CATALOG)
+    assert plan.mode == ProvisionPlanMode.EFFECTS_SUMMARY
+    assert plan.service_name is None
+    assert plan.service_names == []
+    assert plan.layer_service_names == ["Школы"]
+    assert plan.target_population == 25000
+
+
+@pytest.mark.asyncio
+async def test_effects_summary_is_in_prompt_and_schema():
+    builder = build_builder({"mode": "effects_summary"})
+    await builder.build_plan("model", "Сравни эффекты", CATALOG)
+    call = builder.llm_client.calls[0]
+    assert "effects_summary" in call["format"]["$defs"]["ProvisionPlanMode"]["enum"]
+    prompt = call["messages"][0]["content"]
+    for example in (
+        "сравни обеспеченность по всем сервисам до и после реализации проекта",
+        "как проект повлияет на обеспеченность всеми сервисами?",
+        "сравнение эффектов обеспеченности по всем сервисам",
+        "какие сервисы проект улучшит сильнее всего?",
+    ):
+        assert example in prompt
+    for field in ("service_names", "layer_service_names"):
+        assert call["format"]["properties"][field]["items"]["enum"] == CATALOG

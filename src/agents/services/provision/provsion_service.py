@@ -23,7 +23,10 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
-from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
+from src.agents.common.exceptions.token_exceptions import (
+    PipelineSuspendedError,
+    TokenExpiredError,
+)
 from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.layer_attributes import compact_layer, compact_layer_event
@@ -51,6 +54,15 @@ MessagePart = (
     TextPartRequest | StatusPartRequest | ToolCallPartRequest | TablePartRequest
 )
 
+EFFECTS_SUMMARY_CONCURRENCY = 3
+EFFECTS_SUMMARY_ANALYSIS_INSTRUCTIONS = (
+    "Сравни эффекты проекта по сервисам до и после реализации: какие сервисы "
+    "улучшаются сильнее всего, какие не меняются или ухудшаются. "
+    "Используй только числа из контекста, не придумывай показатели. "
+    "Сервисы без данных обозначай как «нет данных», никогда не как нулевые значения. "
+    "Различай all (вся расчётная территория) и project (проект). "
+    "Не оформляй таблицы — строгая таблица уже показана отдельно."
+)
 EFFECTS_ANALYSIS_INSTRUCTIONS = (
     "Проанализируй эффекты обеспеченности на основе сводных данных расчёта. "
     "Ответ формулируй как аналитический комментарий: что изменилось, "
@@ -93,6 +105,9 @@ class ProvisionService(BaseLlmService):
         - summary:        CalculateServicesProvision (catalog, layers off unless
                           explicitly requested) -> strict deficit/surplus table
                           + LLM commentary.
+        - effects_summary: CalculateObjectEffects per catalog service (up to 3
+                          concurrent) -> strict before/after table + LLM
+                          comparison; layers only on explicit request.
         - list_services:  deterministic text listing the scenario catalog.
     """
 
@@ -350,8 +365,13 @@ class ProvisionService(BaseLlmService):
                 yield event
             return
 
-        if plan.mode == ProvisionPlanMode.SUMMARY:
-            async for event in self._run_summary(
+        if plan.mode in (ProvisionPlanMode.SUMMARY, ProvisionPlanMode.EFFECTS_SUMMARY):
+            runner = (
+                self._run_effects_summary
+                if plan.mode == ProvisionPlanMode.EFFECTS_SUMMARY
+                else self._run_summary
+            )
+            async for event in runner(
                 request_id,
                 idu_mcp_client,
                 effects_mcp_client,
@@ -422,7 +442,8 @@ class ProvisionService(BaseLlmService):
                 "В проекте и его контексте доступны следующие сервисы:\n"
                 f"{listing}\n\n"
                 "Могу рассчитать сводку обеспеченности по всем сервисам "
-                "или обеспеченность и эффекты по конкретному сервису."
+                "и сравнить эффекты проекта до/после по всем или нескольким сервисам, "
+                "либо рассчитать обеспеченность и эффекты по конкретному сервису."
             )
         else:
             text = "В сценарии нет доступных для анализа сервисов."
@@ -556,6 +577,191 @@ class ProvisionService(BaseLlmService):
                 request_id, PipelineStep.FINAL_RESPONSE, True
             )
 
+        await self.state_store.set_status(request_id, PipelineStatus.DONE)
+
+    async def _run_effects_summary(
+        self,
+        request_id: str,
+        idu_mcp_client: IduMcpClient,
+        effects_mcp_client: EffectsMcpClient,
+        token_ref: list[str],
+        checkpoint: dict,
+        plan: ProvisionPlan,
+        service_types: dict[str, int],
+        model: str,
+        temperature: float,
+        user_query: str,
+        scenario_id: int,
+        llm_history: list[dict],
+    ) -> AsyncGenerator:
+        names = plan.service_names or list(service_types)
+        yield await self._buf(
+            request_id,
+            self._status(
+                "effects_calculation",
+                "Сравниваю эффекты проекта по сервисам до и после",
+            ),
+        )
+        if PipelineStep.CALCULATE_EFFECTS_SUMMARY not in checkpoint:
+            semaphore = asyncio.Semaphore(EFFECTS_SUMMARY_CONCURRENCY)
+
+            async def calculate(name: str) -> tuple[str, dict]:
+                type_id = service_types[name]
+                async with semaphore:
+                    try:
+                        result = await self.tool_executor.calculate_effects(
+                            effects_mcp_client,
+                            type_id,
+                            scenario_id,
+                            plan.target_population,
+                        )
+                        data = result.data
+                        service = {
+                            "name": name,
+                            "pivot": data.get("pivot"),
+                            "text_pivot": data.get("text_pivot"),
+                            "error": data.get("error"),
+                        }
+                        if not self.context_builder._effects_summary_sections(service):
+                            service["error"] = service["error"] or "missing_text_pivot"
+                        if name in plan.layer_service_names and not service["error"]:
+                            for key in (
+                                "before_prove_data",
+                                "after_prove_data",
+                                "effects",
+                            ):
+                                service[key] = data.get(key)
+                    except TokenExpiredError:
+                        raise
+                    except Exception as exc:
+                        service = {
+                            "name": name,
+                            "pivot": None,
+                            "text_pivot": None,
+                            "error": str(exc) or type(exc).__name__,
+                        }
+                    if service["error"]:
+                        logger.error(
+                            "Effects calculation failed request_id={} scenario_id={} "
+                            "service_type_id={} reason={}",
+                            request_id,
+                            scenario_id,
+                            type_id,
+                            service["error"],
+                        )
+                    return str(type_id), service
+
+            # Cancel and drain siblings on auth failure/cancellation before returning.
+            tasks = [asyncio.create_task(calculate(name)) for name in names]
+            try:
+                pending = set(tasks)
+                state = await self.state_store.get_state(request_id)
+                while pending:
+                    done, pending = await asyncio.wait(
+                        pending, timeout=30, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for task in done:
+                        task.result()  # Propagate authentication errors immediately.
+                    await self.state_store.keep_alive(
+                        request_id, chat_id=(state or {}).get("chat_id")
+                    )
+                    yield await self._buf(
+                        request_id,
+                        self._status(
+                            "effects_calculation",
+                            f"Расчёт эффектов: завершено {len(tasks) - len(pending)} из {len(tasks)} сервисов",
+                        ),
+                    )
+                services = dict(task.result() for task in tasks)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            data = {"services": services}
+            await self.state_store.save_checkpoint(
+                request_id, PipelineStep.CALCULATE_EFFECTS_SUMMARY, data
+            )
+            calls = []
+            for name in names:
+                arguments = {
+                    "service_type_id": service_types[name],
+                    "scenario_id": scenario_id,
+                }
+                if plan.target_population is not None:
+                    arguments["target_population"] = plan.target_population
+                calls.append(
+                    {
+                        "function": {
+                            "name": "CalculateObjectEffects",
+                            "arguments": arguments,
+                        }
+                    }
+                )
+            yield await self._buf(
+                request_id,
+                self._tool_call(
+                    "effects_calculation", calls, mcp_source="OBJECTS_EFFECTS_MCP_URL"
+                ),
+            )
+        else:
+            data = checkpoint[PipelineStep.CALCULATE_EFFECTS_SUMMARY]
+
+        yield await self._buf(
+            request_id,
+            self._status(
+                "effects_calculation", "Сравнение эффектов по сервисам завершено"
+            ),
+        )
+        for service in data["services"].values():
+            if service["name"] in plan.layer_service_names and not service.get("error"):
+                for item in self._effects_feature_collections(service):
+                    item["content"][
+                        "name"
+                    ] = f"effects_summary.{service['name']}.{item['content']['name']}"
+                    yield await self._buf(request_id, item)
+        if not any(
+            self.context_builder._effects_summary_sections(service)
+            for service in data["services"].values()
+        ):
+            await self.state_store.set_status(request_id, PipelineStatus.FAILED)
+            yield await self._buf(
+                request_id,
+                {
+                    "type": "error",
+                    "content": {
+                        "traceback": "",
+                        "message": "Не удалось рассчитать эффекты обеспеченности. Повторите попытку.",
+                    },
+                },
+            )
+            return
+        yield await self._buf(
+            request_id,
+            self._table(self.context_builder.build_effects_summary_table(data)),
+        )
+        if PipelineStep.FINAL_RESPONSE not in checkpoint:
+            context = self.context_builder.build_effects_summary_context(data)
+            note = POPULATION_HINT
+            if plan.target_population is not None:
+                note = (
+                    "\n\nРасчёт выполнен для заданной пользователем численности "
+                    f"населения: {plan.target_population} человек."
+                )
+                context += note
+            async for chunk in self._generate_analysis(
+                model,
+                user_query,
+                context,
+                temperature,
+                history=llm_history,
+                instructions=EFFECTS_SUMMARY_ANALYSIS_INSTRUCTIONS,
+                trailing_note=note,
+            ):
+                yield await self._buf(request_id, chunk)
+            await self.state_store.save_checkpoint(
+                request_id, PipelineStep.FINAL_RESPONSE, True
+            )
         await self.state_store.set_status(request_id, PipelineStatus.DONE)
 
     # ------------------------------------------------------------------
