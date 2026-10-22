@@ -54,7 +54,8 @@ async def upload_compliance_files(
     files: list[UploadFile] = File(
         ...,
         description=(
-            "GeoJSON (.geojson/.json), ZIP of GeoJSON or Shapefiles, or GeoPackage. "
+            "GeoJSON, GeoPackage, GML, KML, MIF; ZIP or 7z containing these "
+            "formats, Shapefiles or MapInfo TAB/MIF datasets. "
             "Each file, archive member and GeoPackage layer becomes one layer."
         ),
     ),
@@ -73,6 +74,10 @@ async def upload_compliance_files(
             "Chat the files belong to: a project created later in this chat offers "
             "to reuse them."
         ),
+    ),
+    crs: str | None = Form(
+        default=None,
+        description="CRS for layers without one: EPSG, PROJ, WKT or a registry key.",
     ),
     token: str = Depends(verify_bearer_token),
     uploads: ComplianceUploadService = Depends(get_compliance_upload_service),
@@ -96,7 +101,7 @@ async def upload_compliance_files(
                 detail=f"Upload exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MiB",
             )
         contents.append((item.filename or "layer.geojson", content))
-    summary = await uploads.create(owner, contents, role=role)
+    summary = await uploads.create(owner, contents, role=role, crs=crs)
     if chat_id:
         await uploads.state_store.add_chat_uploads(chat_id, [summary["upload_id"]])
     return summary

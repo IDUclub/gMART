@@ -120,6 +120,66 @@ def test_bad_file_is_a_client_error(client):
     assert response.status_code == 400
 
 
+def test_upload_crs_form_field_is_applied_and_stored(client):
+    http, service, _ = client
+    data = json.loads(GEOJSON)
+    data["features"][0]["geometry"]["coordinates"] = [1255000, 385000]
+    response = http.post(
+        "/compliance/uploads",
+        data={"crs": "msk76_zone1"},
+        files=[
+            (
+                "files",
+                ("test.geojson", json.dumps(data).encode(), "application/geo+json"),
+            )
+        ],
+    )
+    assert response.status_code == 201
+    summary = response.json()
+    assert "crs_from_request:msk76_zone1" in summary["layers"][0]["warnings"]
+    # The real service writes the caller's value, not just the derived CRS.
+    import asyncio
+
+    record = asyncio.run(service.compliance_uploads.get(summary["upload_id"], "alice"))
+    assert record["crs"] == "msk76_zone1"
+
+
+def test_invalid_upload_crs_is_400(client):
+    http, _, _ = client
+    response = http.post(
+        "/compliance/uploads",
+        data={"crs": "invalid"},
+        files=[("files", ("test.geojson", GEOJSON, "application/geo+json"))],
+    )
+    assert response.status_code == 400
+    assert "crs" in response.text
+
+
+def test_explicit_role_overrides_classifier_role(client):
+    http, _, _ = client
+    data = json.loads(GEOJSON)
+    data["features"][0]["properties"] = {"CLASSID": "701010101"}
+    response = http.post(
+        "/compliance/uploads",
+        data={"role": "project"},
+        files=[
+            (
+                "files",
+                ("zones.geojson", json.dumps(data).encode(), "application/geo+json"),
+            )
+        ],
+    )
+    assert response.status_code == 201
+    summary = response.json()
+    assert summary["layers"][0]["role"] == "project"
+    response = http.patch(
+        f"/compliance/uploads/{summary['upload_id']}",
+        json={"roles": {"zones": "border"}},
+    )
+    assert response.status_code == 200
+    assert response.json()["layers"][0]["role"] == "border"
+
+
 def test_check_takes_uploads_instead_of_a_scenario(client):
     http, service, _ = client
     assert (

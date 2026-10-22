@@ -15,6 +15,7 @@ from shapely.ops import unary_union
 
 from src.agents.services.compilance.compliance_entity_mapping import (
     _BLOCK_ZONES,
+    FGISTP_ZONE_TYPES,
     EntityLayers,
     EntityMapping,
     EntityTarget,
@@ -33,10 +34,32 @@ from src.agents.services.service_entities.compliance import (
 USER_FILES_STATUS = "user_files"
 _ZONE_TARGETS = tuple(
     EntityTarget(zone, "functional_zone")
-    for zone, _ in _BLOCK_ZONES.values()
+    for zone in dict.fromkeys(
+        [*(zone for zone, _ in _BLOCK_ZONES.values()), *FGISTP_ZONE_TYPES]
+    )
     if zone is not None
 )
 _ROLE_TITLES = {"project": "проект", "context": "окружение", "border": "граница"}
+_UNSUPPORTED_TITLES = {
+    "boundaries": "границы и территории",
+    "zouit": "ЗОУИТ",
+    "heritage": "объекты культурного наследия",
+    "emergency": "зоны риска ЧС",
+    "mineral_resources": "участки недр и месторождения полезных ископаемых",
+    "land_categories": "категории земель",
+    "special_legal_regime": "территории и зоны с особым юридическим статусом",
+    "water_bodies": "поверхностные водные объекты",
+    "gisogd": "слои ГИСОГД (красные линии, участки и планировочные ограничения)",
+}
+
+
+def _unsupported_text(reason: str | None) -> str | None:
+    if not reason or not reason.startswith("not_supported_entity:"):
+        return None
+    group = reason.split(":", 1)[1]
+    return "распознано, нормами пока не используется: " + _UNSUPPORTED_TITLES.get(
+        group, group
+    )
 
 
 def boundary_geometry(files: UserFiles) -> dict[str, Any] | None:
@@ -210,6 +233,15 @@ def user_files_text(user_files: dict[str, Any]) -> str:
             f"Не сопоставлено с объектами норм и не проверялось объектов проекта: "
             f"{unmapped}."
         )
+    unsupported = sum(
+        item["count"]
+        for item in user_files.get("mapping") or []
+        if _unsupported_text(item.get("reason"))
+    )
+    if unsupported:
+        lines.append(
+            f"Распознано, нормами пока не используется объектов: {unsupported}."
+        )
     not_checked = user_files.get("not_checked") or []
     if not_checked:
         labels = list(dict.fromkeys(entry["label"] for entry in not_checked))
@@ -260,10 +292,8 @@ def user_files_report(user_files: dict[str, Any] | None) -> list[str]:
         method = how.get(item.get("source"), "—")
         if item.get("source") == "llm":
             method += f", уверенность {round((item.get('confidence') or 0) * 100)}%"
-        lines.append(
-            f"| {item['label']} | {item['count']} | {item.get('entity') or '—'}"
-            f" | {method} |"
-        )
+        status = _unsupported_text(item.get("reason")) or item.get("entity") or "—"
+        lines.append(f"| {item['label']} | {item['count']} | {status}" f" | {method} |")
     not_checked = user_files.get("not_checked") or []
     lines += ["", "## Не проверено: нет данных в файлах", ""]
     if not not_checked:

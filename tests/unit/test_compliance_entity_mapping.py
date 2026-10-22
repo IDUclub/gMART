@@ -5,6 +5,7 @@ import json
 import pytest
 
 from src.agents.services.compilance.compliance_entity_mapping import (
+    FGISTP_CLASSIFIER,
     EntityMapper,
     EntityMapping,
     EntityTarget,
@@ -16,8 +17,18 @@ from src.agents.services.compilance.compliance_entity_mapping import (
     render_mapping_question,
     signature_of,
     table_proposal,
+    tag_groups,
 )
-from src.agents.services.compilance.compliance_uploads import UploadedLayer, UserFiles
+from src.agents.services.compilance.compliance_uploads import (
+    UploadedLayer,
+    UserFiles,
+    detect_role,
+)
+from src.agents.services.compilance.compliance_user_files import (
+    user_files_report,
+    user_files_summary,
+    user_files_text,
+)
 
 HOUSE = EntityTarget("Жилой дом", "physical_object")
 PLAYGROUND = EntityTarget("Детская площадка", "service")
@@ -108,6 +119,206 @@ def test_table_rules(properties, expected):
 def test_signature_uses_only_classifying_tags():
     tags = feature_tags({"type": "Buildings", "building": "residential", "levels": 9})
     assert signature_of(tags) == "type=buildings|building=residential"
+
+
+@pytest.mark.parametrize("key", ["CLASSID", "CLASS_ID", "classid", "ClAsS_iD"])
+@pytest.mark.parametrize(
+    "value", [701010101, 701010101.0, " 701010101 ", "701010101.0"]
+)
+def test_classifier_tags_normalize_dbf_identifiers(key, value):
+    tags = feature_tags({key: value})
+    assert tags["classid"] == "701010101"
+    assert tags["fgistp_class"] == FGISTP_CLASSIFIER["701010101"]["name"]
+    assert len(FGISTP_CLASSIFIER) == 463
+
+
+@pytest.mark.parametrize(
+    ("code", "zone", "confidence"),
+    [
+        ("701010100", "residential", 0.95),
+        ("701010101", "residential", 0.95),
+        ("701010200", "business", 0.9),
+        ("701010301", "business", 0.9),
+        ("701010303", "business", 0.7),
+        ("701010401", "industrial", 0.9),
+        ("701010402", "industrial", 0.9),
+        ("701010403", "industrial", 0.9),
+        ("701010404", "transport", 0.7),
+        ("701010405", "transport", 0.7),
+        ("701010601", "recreation", 0.9),
+        ("701010701", "special", 0.85),
+        ("701010800", "special", 0.85),
+    ],
+)
+def test_classifier_zone_rules_precede_osm(code, zone, confidence):
+    assert table_proposal(feature_tags({"CLASSID": code, "amenity": "school"})) == (
+        EntityTarget(zone, "functional_zone"),
+        confidence,
+    )
+
+
+@pytest.mark.parametrize("code", ["701010501", "701010900", "701011000"])
+def test_classifier_zones_without_entity(code):
+    assert table_proposal(feature_tags({"CLASSID": code})) == (None, 1.0)
+
+
+@pytest.mark.parametrize(
+    ("code", "name"),
+    [
+        ("602010101", "Детский сад"),
+        ("602010102", "Школа"),
+        ("602010401", "Больница"),
+        ("602010402", "Поликлиника"),
+        ("602010408", "Аптека"),
+    ],
+)
+def test_classifier_unambiguous_services(code, name):
+    assert table_proposal(feature_tags({"CLASSID": code})) == (
+        EntityTarget(name, "service"),
+        1.0,
+    )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "601010301",
+        "603010801",
+        "604010100",
+        "606010100",
+        "609010101",
+        "702010100",
+        "704010100",
+        "706020100",
+    ],
+)
+async def test_unsupported_classifier_groups_are_settled_and_reported(code):
+    user_files = UserFiles(
+        upload_ids=("u",),
+        layers=[layer("classes", "context", [feature({"CLASSID": code})])],
+    )
+    llm = FakeLlm([])
+    mapping = await EntityMapper(llm).propose("m", user_files, [])
+    proposal = mapping.proposals[0]
+    assert proposal.target is None and proposal.confidence == 1.0
+    assert proposal.source == "table"
+    assert proposal.reason.startswith("not_supported_entity:")
+    if code.startswith("603"):
+        assert proposal.reason == "not_supported_entity:zouit"
+    assert not llm.requests
+    restored = EntityMapping.from_dict(mapping.to_dict())
+    assert restored.proposals[0].reason == proposal.reason
+    summary = user_files_summary(
+        files=user_files,
+        mapping_result=mapping,
+        layers=build_entity_layers(user_files, mapping.assignment()),
+        not_checked=[],
+        overlay=False,
+    )
+    assert summary["mapping"][0]["reason"] == proposal.reason
+    report = "\n".join(user_files_report(summary))
+    assert "распознано, нормами пока не используется" in report
+    assert "Распознано, нормами пока не используется объектов: 1" in user_files_text(
+        summary
+    )
+
+
+async def test_other_602_class_reaches_llm_with_name_and_no_zone_candidates():
+    # The classifier knows this code, but the deterministic service table does not.
+    code = "602010103"
+    user_files = UserFiles(
+        upload_ids=("u",),
+        layers=[
+            layer(
+                "objects", "project", [feature({"CLASSID": code, "amenity": "school"})]
+            )
+        ],
+    )
+    llm = FakeLlm([{"items": [{"id": 1, "entity": "Школа", "confidence": 0.6}]}])
+    await EntityMapper(llm).propose(
+        "m",
+        user_files,
+        [
+            EntityTarget("residential", "functional_zone"),
+            EntityTarget("Школа", "service"),
+        ],
+    )
+    payload = json.loads(llm.requests[0]["messages"][1]["content"])
+    expected_name = FGISTP_CLASSIFIER[code]["name"]
+    assert payload["groups"][0]["example"]["fgistp_class"] == expected_name
+    assert all(
+        item["entity_type"] != "functional_zone" for item in payload["candidates"]
+    )
+    assert (
+        table_proposal(feature_tags({"CLASSID": "602999999", "amenity": "school"}))
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "redline",
+        "formedland",
+        "constructionzoneborders",
+        "elementplanningstructure",
+        "publicterritoryborders",
+        "indentline",
+        "easement",
+    ],
+)
+@pytest.mark.parametrize("suffix", ["", "_line", "_poly"])
+async def test_gisogd_layer_names_are_settled_without_llm(name, suffix):
+    user_files = UserFiles(
+        upload_ids=("u",),
+        layers=[
+            layer(f"folder/{name}{suffix}", "project", [feature({"amenity": "school"})])
+        ],
+    )
+    group = tag_groups(user_files)[0]
+    assert group.tags["layer_kind"] == name
+    mapping = await EntityMapper(FakeLlm([])).propose("m", user_files, [])
+    assert mapping.proposals[0].reason == "not_supported_entity:gisogd"
+    assert mapping.proposals[0].target is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "701010101",
+        "702010100",
+        "603010801",
+        "604010100",
+        "606010100",
+        "609010101",
+        "704010100",
+        "706020100",
+    ],
+)
+def test_classifier_context_roles(code):
+    assert detect_role("classes", [feature({"CLASS_ID": float(code)})]) == "context"
+
+
+def test_classifier_border_and_mixed_roles():
+    assert detect_role("classes", [feature({"CLASSID": "601010301"})]) == "border"
+    assert (
+        detect_role("classes", [feature({"CLASSID": "601010301"}), feature({})])
+        == "project"
+    )
+    assert (
+        detect_role(
+            "classes",
+            [feature({"CLASSID": "701010101"}), feature({"CLASSID": "602010102"})],
+        )
+        == "project"
+    )
+    assert detect_role("classes", []) == "project"
+    assert detect_role("boundary", [feature({"CLASSID": "701010101"})]) == "border"
+
+
+@pytest.mark.parametrize("name", ["gr_dpt", "gr_dpt_line", "folder/GR_DPT_poly"])
+def test_gisogd_boundary_role(name):
+    assert detect_role(name, [feature({})]) == "border"
 
 
 class FakeLlm:
