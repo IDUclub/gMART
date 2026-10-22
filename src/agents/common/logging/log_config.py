@@ -73,6 +73,7 @@ def config_logger(log_file_name: str = ".log", level: str = "INFO") -> Path:
     logger.add(
         sys.stderr,
         level=level,
+        diagnose=False,
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {name}:{function}:{line} - {message}",
     )
     logger.add(
