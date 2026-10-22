@@ -1,3 +1,9 @@
+## v0.25.2 (2026-10-22)
+
+[fix/sensitive-data-leaks](https://github.com/IDUclub/gMART/pull/244) (#244)
+
+- fix: не раскрывать токены в ответах 500 и логах, 401 вместо 500 для несервисного токена в idu_mcp
+
 ## v0.25.1 (2026-10-20)
 
 [fix/ICII-190-docker-log-rotation](https://github.com/IDUclub/gMART/pull/242) (#242)
