@@ -1,3 +1,9 @@
+## v0.26.0 (2026-10-22)
+
+[feat/ICII-208-do-scope](https://github.com/IDUclub/gMART/pull/243) (#243)
+
+- feat(agents): загружать слои MapInfo, MIF/MID, GML, KML и 7z с классами ФГИС ТП
+
 ## v0.25.2 (2026-10-22)
 
 [fix/sensitive-data-leaks](https://github.com/IDUclub/gMART/pull/244) (#244)
