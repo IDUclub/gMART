@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 
 from geojson_pydantic import FeatureCollection
 from loguru import logger
@@ -168,6 +169,73 @@ class UrbanApiTool:
                     "revision": f"project:{project_id}:territory",
                 },
             }
+        }
+
+    async def get_territories_by_geometry(
+        self,
+        geometry: dict,
+        token: str,
+        *,
+        max_requests: int = 40,
+        max_levels: int = 8,
+    ) -> dict[str, Any]:
+        """The deepest Urban API territories a geometry lies in.
+
+        Descends from the top-level territories one ``intersecting_territories``
+        call per level, like IDU_DVD does for a project boundary: a territory whose
+        children do not intersect the geometry is a leaf. Once the request budget is
+        spent the remaining frontier counts as leaves — coarser, never wrong.
+        """
+
+        roots = await self.client.get_root_territories(token)
+        known: dict[int, dict[str, Any]] = {
+            int(item["territory_id"]): self._territory_row(item) for item in roots
+        }
+        frontier = list(known)
+        leaves: list[int] = []
+        budget = max_requests
+        complete = True
+        for _ in range(max_levels):
+            if not frontier:
+                break
+            deeper: list[int] = []
+            for parent in frontier:
+                if budget <= 0:
+                    complete = False
+                    leaves.append(parent)
+                    continue
+                budget -= 1
+                children = await self.client.get_intersecting_territories(
+                    parent, geometry, token
+                )
+                if not children:
+                    leaves.append(parent)
+                    continue
+                for child in children:
+                    territory_id = int(child["territory_id"])
+                    known[territory_id] = self._territory_row(child)
+                    deeper.append(territory_id)
+            frontier = list(dict.fromkeys(deeper))
+        if frontier:
+            complete = False
+            leaves.extend(frontier)
+        leaf_ids = sorted(set(leaves))
+        return {
+            "territories": [known[territory_id] for territory_id in leaf_ids],
+            "complete": complete,
+        }
+
+    @staticmethod
+    def _territory_row(item: dict) -> dict[str, Any]:
+        territory_type = item.get("territory_type") or {}
+        parent = item.get("parent") or {}
+        return {
+            "territory_id": int(item["territory_id"]),
+            "name": item.get("name"),
+            "level": item.get("level"),
+            "territory_type": territory_type.get("name"),
+            "parent_id": parent.get("id"),
+            "parent_name": parent.get("name"),
         }
 
     async def get_functional_zones(

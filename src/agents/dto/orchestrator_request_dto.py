@@ -52,3 +52,12 @@ class OrchestratorRequestDTO(SimpleRequestDTO):
 
 class OrchestratorBodyDTO(OrchestratorRequestDTO):
     pzz_inputs: PzzInputs | None = None
+    compliance_upload_ids: list[str] | None = Field(
+        default=None,
+        examples=[["5b1f0c3e-6a77-4d0e-9e43-1f3b1d6b2c11"]],
+        description=(
+            "Uploads from POST /compliance/uploads: the compliance agent checks the "
+            "user's files instead of the scenario's objects (over the scenario when "
+            "scenario_id is given)."
+        ),
+    )

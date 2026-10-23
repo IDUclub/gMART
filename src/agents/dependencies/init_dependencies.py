@@ -19,12 +19,21 @@ from src.agents.services.a2a_service import A2AService
 from src.agents.services.compilance.compliance_a2a_service import (
     ComplianceA2AService,
 )
+from src.agents.services.compilance.compliance_uploads import (
+    ComplianceUploadService,
+)
 from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.normgraph.normgraph_a2a_service import NormGraphA2AService
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 from src.agents.services.orchestrator.orchestrator_service import OrchestratorService
 from src.agents.services.pipeline_state import PipelineStateStore
+from src.agents.services.project_files.project_a2a_service import (
+    ProjectA2AService,
+)
+from src.agents.services.project_files.project_files_service import (
+    ProjectFilesService,
+)
 from src.agents.services.provision.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provision.provsion_service import ProvisionService
 from src.agents.services.pzz.pzz_a2a_service import PzzA2AService
@@ -140,6 +149,14 @@ def init_dependencies() -> dict[str, object]:
         urban_api_client,
         pipeline_state_store,
     )
+    project_files_service = ProjectFilesService(
+        app_config.OLLAMA_URL,
+        chat_storage_client,
+        urban_api_client,
+        pipeline_state_store,
+        ComplianceUploadService(pipeline_state_store),
+        user_urban_api_client=UrbanApiClient(JsonApiHandler(app_config.URBAN_API_URL)),
+    )
     orchestrator_service = OrchestratorService(
         app_config.OLLAMA_URL,
         chat_storage_client,
@@ -152,6 +169,7 @@ def init_dependencies() -> dict[str, object]:
         app_config,
         scenario_data_service=scenario_data_service,
         pzz_service=pzz_service,
+        project_files_service=project_files_service,
     )
     return {
         "app_config": app_config,
@@ -169,6 +187,8 @@ def init_dependencies() -> dict[str, object]:
         "orchestrator_service": orchestrator_service,
         "pzz_service": pzz_service,
         "pzz_a2a_service": PzzA2AService(pzz_service),
+        "project_files_service": project_files_service,
+        "project_a2a_service": ProjectA2AService(project_files_service),
         "a2a_service": A2AService(restriction_parser_service),
         "compliance_a2a_service": ComplianceA2AService(restriction_parser_service),
         "provision_a2a_service": ProvisionA2AService(provision_service),

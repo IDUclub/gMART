@@ -130,6 +130,28 @@ def is_document_list_question(text: str) -> bool:
     return bool(_DOCUMENT_LIST.search(text or ""))
 
 
+def is_document_comparison_question(text: str) -> bool:
+    """Comparison language plus document context, never an ordinary norm lookup."""
+    text = (text or "").casefold()
+    action = re.search(
+        r"различ|отлич|разниц|сравн|что\s+изменил[а-яё]*|чем\s+новая\s+редакци", text
+    )
+    documents = (
+        re.search(r"редакци|верси", text)
+        or len(list(DESIGNATION.finditer(text))) >= 2
+        or (re.search(r"что\s+изменил", text) and DESIGNATION.search(text))
+        or re.search(
+            r"(?:различ[а-яё]*|отлич[а-яё]*|разниц[а-яё]*|сравн[а-яё]*)\s+(?:между\s+)?(?:(?:нов[а-яё]*|загруженн[а-яё]*|мо[а-яё]*)\s+)?документ",
+            text,
+        )
+        or len(re.findall(r"документ[а-яё]*", text)) >= 2
+        or re.search(
+            r"\bв\s+[«\"']?[аa][»\"']?\s+и\s+[«\"']?[бbв][»\"']?(?:\W|$)", text
+        )
+    )
+    return bool(action and documents)
+
+
 def mentioned_documents(hits: list[dict]) -> list[str]:
     """Normative designations a fragment refers to (resolved references first)."""
 

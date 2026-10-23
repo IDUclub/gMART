@@ -45,6 +45,7 @@ def _service(*, pending=None, outcome=None, reply=None, restrictions=()):
         new_request_id=lambda: "request-1",
         create=AsyncMock(),
         get_compliance_choice=AsyncMock(return_value=pending),
+        get_compliance_mapping=AsyncMock(return_value=None),
         set_compliance_choice=AsyncMock(),
         get_checkpoint=AsyncMock(return_value={}),
         save_checkpoint=AsyncMock(),

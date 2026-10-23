@@ -52,6 +52,23 @@ class JsonApiHandler:
         self.max_retries = max_retries
         self.backoff_base = backoff_base
         self.service_auth = service_auth
+        # Connections are reused across calls (no TCP/TLS setup per request).
+        self._pooled: aiohttp.ClientSession | None = None
+        self._pooled_loop: asyncio.AbstractEventLoop | None = None
+
+    def _session(self) -> aiohttp.ClientSession:
+        """The handler's pooled session for the running event loop."""
+        loop = asyncio.get_running_loop()
+        if self._pooled is None or self._pooled.closed or self._pooled_loop is not loop:
+            self._pooled = aiohttp.ClientSession()
+            self._pooled_loop = loop
+        return self._pooled
+
+    async def close(self) -> None:
+        """Close the pooled session (application shutdown)."""
+        if self._pooled is not None and not self._pooled.closed:
+            await self._pooled.close()
+        self._pooled = None
 
     async def _check_response_status(
         self,
@@ -181,7 +198,8 @@ class JsonApiHandler:
         headers: dict | None,
         params: dict | None,
         session: aiohttp.ClientSession,
-        data: dict | None = None,
+        data: dict | list | None = None,
+        attempts: int | None = None,
     ) -> dict | list | None:
         """
         Perform an HTTP request with bounded retries and exponential backoff.
@@ -189,12 +207,14 @@ class JsonApiHandler:
         Retries only transient failures (network errors and "reset by peer" 500s);
         terminal statuses raise immediately via :meth:`_check_response_status`.
         Args:
-            method (str): "get" or "post".
+            method (str): "get", "post", "patch" or "delete".
             endpoint (str): Endpoint url.
             headers (dict | None): Request headers.
             params (dict | None): Query parameters.
             session (aiohttp.ClientSession): Session to use.
-            data (dict | None): JSON body for POST requests.
+            data (dict | list | None): JSON body for POST/PATCH requests.
+            attempts (int | None): Attempts instead of ``max_retries``; ``1`` for a
+                write that must not be repeated when its outcome is unknown.
         Returns:
             dict | list | None: Parsed response data.
         Raises:
@@ -205,12 +225,16 @@ class JsonApiHandler:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         params = await self._check_request_params(params)
         last_exc: Exception | None = None
-        for attempt in range(1, self.max_retries + 1):
+        max_attempts = attempts or self.max_retries
+        for attempt in range(1, max_attempts + 1):
             try:
                 if method == "get":
                     request_cm = session.get(url=url, headers=headers, params=params)
+                elif method == "delete":
+                    request_cm = session.delete(url=url, headers=headers, params=params)
                 else:
-                    request_cm = session.post(
+                    send = session.patch if method == "patch" else session.post
+                    request_cm = send(
                         url=url, headers=headers, params=params, json=data
                     )
                 async with request_cm as response:
@@ -219,22 +243,22 @@ class JsonApiHandler:
                     return result
                 logger.warning(
                     f"Transient failure from {url} "
-                    f"(attempt {attempt}/{self.max_retries}), retrying"
+                    f"(attempt {attempt}/{max_attempts}), retrying"
                 )
             except _RETRYABLE_ERRORS as exc:
                 last_exc = exc
                 logger.warning(
                     f"Network error calling {url} "
-                    f"(attempt {attempt}/{self.max_retries}): {exc!r}"
+                    f"(attempt {attempt}/{max_attempts}): {exc!r}"
                 )
-            if attempt < self.max_retries:
+            if attempt < max_attempts:
                 await asyncio.sleep(self.backoff_base * 2 ** (attempt - 1))
         raise DownstreamServiceError(
             service=self.base_url,
             downstream_status=None,
             message=(
                 f"Downstream service {self.base_url} unavailable after "
-                f"{self.max_retries} attempts"
+                f"{max_attempts} attempts"
             ),
             error_input=repr(last_exc) if last_exc else "transient 500 response",
         ) from last_exc
@@ -260,12 +284,46 @@ class JsonApiHandler:
         """
 
         headers = await self._with_auth(headers, auth_token, user_id)
-        if not session:
-            async with aiohttp.ClientSession() as session:
-                return await self._request("get", endpoint, headers, params, session)
-        return await self._request("get", endpoint, headers, params, session)
+        return await self._request(
+            "get", endpoint, headers, params, session or self._session()
+        )
 
     async def post(
+        self,
+        endpoint: str,
+        auth_token: str | None = None,
+        headers: dict | None = None,
+        params: dict | None = None,
+        data: dict | list | None = None,
+        session: aiohttp.ClientSession | None = None,
+        user_id: str | None = None,
+        attempts: int | None = None,
+    ) -> dict | list | None:
+        """Function to post data to api.
+        Args:
+            endpoint (str): Endpoint url.
+            auth_token (str | None): Authorization token.defaults to None.
+            headers (dict | None): Headers.
+            params (dict | None): Query parameters.
+            data (dict | list | None): Data to post to API.
+            session (aiohttp.ClientSession | None): Session to use.
+            attempts (int | None): Attempts instead of ``max_retries``.
+        Returns:
+            dict | list | None: Response data as python object.
+        """
+
+        headers = await self._with_auth(headers, auth_token, user_id)
+        return await self._request(
+            "post",
+            endpoint,
+            headers,
+            params,
+            session or self._session(),
+            data=data,
+            attempts=attempts,
+        )
+
+    async def patch(
         self,
         endpoint: str,
         auth_token: str | None = None,
@@ -274,25 +332,33 @@ class JsonApiHandler:
         data: dict | None = None,
         session: aiohttp.ClientSession | None = None,
         user_id: str | None = None,
+        attempts: int | None = None,
     ) -> dict | list | None:
-        """Function to post data to api.
-        Args:
-            endpoint (str): Endpoint url.
-            auth_token (str | None): Authorization token.defaults to None.
-            headers (dict | None): Headers.
-            params (dict | None): Query parameters.
-            data (dict | None): Data to post to API.
-            session (aiohttp.ClientSession | None): Session to use.
-        Returns:
-            dict | list | None: Response data as python object.
-        """
+        """Function to partially update data in api; arguments as in :meth:`post`."""
 
         headers = await self._with_auth(headers, auth_token, user_id)
-        if not session:
-            async with aiohttp.ClientSession() as session:
-                return await self._request(
-                    "post", endpoint, headers, params, session, data=data
-                )
         return await self._request(
-            "post", endpoint, headers, params, session, data=data
+            "patch",
+            endpoint,
+            headers,
+            params,
+            session or self._session(),
+            data=data,
+            attempts=attempts,
+        )
+
+    async def delete(
+        self,
+        endpoint: str,
+        auth_token: str | None = None,
+        headers: dict | None = None,
+        params: dict | None = None,
+        session: aiohttp.ClientSession | None = None,
+        user_id: str | None = None,
+    ) -> dict | list | None:
+        """Function to delete a resource; arguments as in :meth:`get`."""
+
+        headers = await self._with_auth(headers, auth_token, user_id)
+        return await self._request(
+            "delete", endpoint, headers, params, session or self._session()
         )

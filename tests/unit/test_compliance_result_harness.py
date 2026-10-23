@@ -194,6 +194,7 @@ async def test_service_answers_follow_up_without_rerunning_compliance_pipeline()
         new_request_id=lambda: "follow-up-request",
         create=AsyncMock(),
         get_compliance_choice=AsyncMock(return_value=None),
+        get_compliance_mapping=AsyncMock(return_value=None),
         get_checkpoint=AsyncMock(return_value={}),
         buffer_event=AsyncMock(),
         set_status=AsyncMock(),

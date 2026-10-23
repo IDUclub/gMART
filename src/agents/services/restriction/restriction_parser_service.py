@@ -25,11 +25,24 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
+from src.agents.common.exceptions.base_exceptions import (
+    AgentsBaseException,
+    AgentsInputException,
+)
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
 from src.agents.common.files.temporary_file_store import TemporaryFileStore
 from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.compilance.compliance_dedup import group_checks
+from src.agents.services.compilance.compliance_entity_mapping import (
+    TABLE_TARGETS,
+    EntityMapper,
+    EntityMapping,
+    apply_reply,
+    build_entity_layers,
+    mapping_options,
+    render_mapping_question,
+)
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
 )
@@ -55,8 +68,14 @@ from src.agents.services.compilance.compliance_report import (
     REPORT_MIME_TYPE,
     REPORT_SLOT,
     REPORT_TITLE,
+    STRICTEST_NORM_NOTICE,
+    TRANSPORT_NOTICE,
     build_compliance_report,
+    plan_scope,
     report_filename,
+    scope_text,
+    strictest_applicability,
+    transport_accessibility,
 )
 from src.agents.services.compilance.compliance_result_harness import (
     ComplianceResultHarness,
@@ -79,6 +98,22 @@ from src.agents.services.compilance.compliance_territory import (
     ComplianceTerritoryFilter,
     TerritoryDocuments,
 )
+from src.agents.services.compilance.compliance_uploads import (
+    ComplianceUploadService,
+    UserFiles,
+)
+from src.agents.services.compilance.compliance_user_files import (
+    USER_FILES_STATUS,
+    boundary_geometry,
+    mapping_event,
+    needed_targets,
+    not_checked_entry,
+    pending_candidates,
+    pending_record,
+    user_files_summary,
+    user_files_text,
+)
+from src.agents.services.compilance.compliance_user_layers import UserLayerSource
 from src.agents.services.layer_attributes import compact_layer, compact_layer_event
 from src.agents.services.normgraph.normgraph_restriction_retriever import (
     NormGraphRestrictionRetriever,
@@ -114,6 +149,13 @@ if TYPE_CHECKING:
     from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
     from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
     from src.agents.mcp_clients.normgraph_mcp_client import NormGraphMcpClient
+
+
+_NOTHING_TO_CHECK = (
+    "Проверка соответствия не выполнена: не выбран сценарий и не переданы файлы "
+    "проекта, а в этом чате нет вопроса, на который отвечает сообщение. Выберите "
+    "сценарий или загрузите файлы (upload_ids)."
+)
 
 
 def _ablation_no_catalog() -> bool:
@@ -161,6 +203,8 @@ class RestrictionParserService(BaseLlmService):
         self.context_builder = RestrictionContextBuilder()
         self.state_store = state_store
         self.file_store = file_store
+        self.compliance_uploads = ComplianceUploadService(state_store)
+        self.entity_mapper = EntityMapper(self.llm_client)
 
     async def run_restriction_execution_pipline(
         self,
@@ -198,13 +242,14 @@ class RestrictionParserService(BaseLlmService):
         temperature: float,
         model: str | None,
         user_query: str,
-        scenario_id: int,
+        scenario_id: int | None,
         normgraph_mcp_client: NormGraphMcpClient | None,
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
         conversation_key: str | None = None,
         dvd_mcp_client: DvdMcpClient | None = None,
+        upload_ids: list[str] | None = None,
     ) -> AsyncGenerator:
         """Run the compliance pipeline with optional normative grounding.
 
@@ -213,6 +258,9 @@ class RestrictionParserService(BaseLlmService):
         orchestrator, A2A) pass their conversation identity instead.
         ``dvd_mcp_client`` tells which documents are in force on the scenario's
         territory; without it no norm is applied.
+        ``upload_ids`` check the user's uploaded files instead of the scenario's
+        objects — over the scenario when ``scenario_id`` is given, on their own
+        otherwise.
         """
 
         async for item in self._run_pipeline_entry(
@@ -229,6 +277,7 @@ class RestrictionParserService(BaseLlmService):
             history_agent="compliance",
             conversation_key=conversation_key,
             dvd_mcp_client=dvd_mcp_client,
+            upload_ids=upload_ids,
         ):
             yield item
 
@@ -239,7 +288,7 @@ class RestrictionParserService(BaseLlmService):
         temperature: float,
         model: str | None,
         user_query: str,
-        scenario_id: int,
+        scenario_id: int | None,
         chat_id: str | None = None,
         request_id: str | None = None,
         persist_history: bool = True,
@@ -247,6 +296,7 @@ class RestrictionParserService(BaseLlmService):
         history_agent: str = "restrictions",
         conversation_key: str | None = None,
         dvd_mcp_client: DvdMcpClient | None = None,
+        upload_ids: list[str] | None = None,
     ) -> AsyncGenerator:
         # Fill in the provider's model when the caller named none; keeps REST and A2A
         # on one behaviour and out of backend-specific literals.
@@ -277,6 +327,7 @@ class RestrictionParserService(BaseLlmService):
             history_agent=history_agent,
             conversation_key=conversation_key,
             dvd_mcp_client=dvd_mcp_client,
+            upload_ids=upload_ids,
         ):
             chat_id = self._chat_id_from_storage_event(item) or chat_id
             if item.get("type") == "tool_call":
@@ -326,7 +377,7 @@ class RestrictionParserService(BaseLlmService):
         temperature: float,
         model: str,
         user_query: str,
-        scenario_id: int,
+        scenario_id: int | None,
         token_ref: list[str],
         chat_id: str | None = None,
         request_id: str | None = None,
@@ -335,6 +386,7 @@ class RestrictionParserService(BaseLlmService):
         history_agent: str = "restrictions",
         conversation_key: str | None = None,
         dvd_mcp_client: DvdMcpClient | None = None,
+        upload_ids: list[str] | None = None,
     ) -> AsyncGenerator:
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
@@ -472,7 +524,51 @@ class RestrictionParserService(BaseLlmService):
                 if reply.kind == "selected":
                     chosen_scope = scope_for_choice(pending_choice, reply.documents)
 
-        if history_agent == "compliance" and not is_reconnect and chosen_scope is None:
+        # A reply to a pending entity mapping continues the check of user files.
+        if (
+            history_agent == "compliance"
+            and not is_reconnect
+            and scope_key
+            and normgraph_mcp_client is not None
+            and chosen_scope is None
+        ):
+            pending_mapping = await self.state_store.get_compliance_mapping(scope_key)
+            if pending_mapping:
+                outcome = await self._answer_mapping(
+                    model, user_query, pending_mapping, token_ref[0]
+                )
+                if outcome == "unresolved":
+                    mapping = EntityMapping.from_dict(pending_mapping["mapping"])
+                    question = (
+                        "Не удалось понять ответ на вопрос о сопоставлении.\n\n"
+                        + render_mapping_question(mapping.pending)
+                    )
+                    await self.state_store.save_checkpoint(
+                        request_id, PipelineStep.COMPLIANCE_MAPPING, {"pending": True}
+                    )
+                    yield await self._buf(
+                        request_id,
+                        self._mapping_clarification(question, mapping),
+                    )
+                    await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                    return
+                await self.state_store.set_compliance_mapping(scope_key, None)
+                if outcome == "confirmed":
+                    # The answer continues the original request on the same files.
+                    upload_ids = list(pending_mapping.get("upload_ids") or [])
+                    user_query = pending_mapping.get("user_query") or user_query
+                    if scenario_id is None:
+                        scenario_id = pending_mapping.get("scenario_id")
+                    chosen_scope = ComplianceScope.from_dict(
+                        pending_mapping.get("scope")
+                    )
+
+        if (
+            history_agent == "compliance"
+            and not is_reconnect
+            and chosen_scope is None
+            and not upload_ids
+        ):
             prepared_follow_up = self.compliance_result_harness.prepare_follow_up(
                 user_query, chat_messages, llm_history
             )
@@ -493,7 +589,52 @@ class RestrictionParserService(BaseLlmService):
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
 
+        # A chat message without a scenario is accepted for an answer to a pending
+        # mapping; anything else has nothing to check.
+        if history_agent == "compliance" and scenario_id is None and not upload_ids:
+            yield await self._buf(
+                request_id,
+                self._chunk(_NOTHING_TO_CHECK, done=True),
+            )
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
+
         checkpoint = await self.state_store.get_checkpoint(request_id)
+
+        # The user's uploaded files replace (or overlay) the scenario's objects.
+        user_files: UserFiles | None = None
+        if history_agent == "compliance" and upload_ids:
+            try:
+                owner = self._report_owner(token_ref[0])
+                if owner is None:
+                    raise AgentsInputException(
+                        "в токене нет идентификатора пользователя"
+                    )
+                user_files = await self.compliance_uploads.load(upload_ids, owner)
+                if scope_key:
+                    # A project created later in this chat offers these files.
+                    await self.state_store.add_chat_uploads(scope_key, upload_ids)
+            except AgentsBaseException as exc:
+                yield await self._buf(
+                    request_id,
+                    self._chunk(
+                        f"Проверка файлов не выполнена: {exc.message}.", done=True
+                    ),
+                )
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
+            if not user_files.has_project:
+                yield await self._buf(
+                    request_id,
+                    self._chunk(
+                        "Проверка файлов не выполнена: в загруженных файлах нет слоёв "
+                        "проекта — все слои отмечены как окружение или граница. "
+                        "Укажите роль «project» для слоёв, которые нужно проверить.",
+                        done=True,
+                    ),
+                )
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
 
         # Only norms of documents in force where the scenario is are applied.
         territory: TerritoryDocuments | None = None
@@ -501,6 +642,21 @@ class RestrictionParserService(BaseLlmService):
             if PipelineStep.COMPLIANCE_TERRITORY in checkpoint:
                 territory = TerritoryDocuments.from_dict(
                     checkpoint[PipelineStep.COMPLIANCE_TERRITORY]
+                )
+            elif user_files is not None and scenario_id is None:
+                yield await self._buf(
+                    request_id,
+                    self._status(
+                        "compliance_territory",
+                        "Определяю документы, действующие на территории проекта "
+                        "из загруженных файлов",
+                    ),
+                )
+                territory = await self.compliance_territory.resolve_geometry(
+                    mcp_client,
+                    dvd_mcp_client,
+                    normgraph_mcp_client,
+                    boundary_geometry(user_files),
                 )
             else:
                 yield await self._buf(
@@ -513,6 +669,7 @@ class RestrictionParserService(BaseLlmService):
                 territory = await self.compliance_territory.resolve(
                     dvd_mcp_client, normgraph_mcp_client, scenario_id
                 )
+            if PipelineStep.COMPLIANCE_TERRITORY not in checkpoint:
                 await self.state_store.save_checkpoint(
                     request_id, PipelineStep.COMPLIANCE_TERRITORY, territory.to_dict()
                 )
@@ -657,10 +814,33 @@ class RestrictionParserService(BaseLlmService):
                     )
                 await self.state_store.set_status(request_id, PipelineStatus.DONE)
                 return
+            if scope.is_inventory and user_files is not None:
+                yield await self._buf(
+                    request_id,
+                    self._chunk(
+                        "Для загруженных файлов доступна только проверка соответствия "
+                        "нормам. Перечень ограничений на территории строится по "
+                        "сценарию: отправьте запрос без файлов или попросите проверить "
+                        "файлы на соответствие нормам.",
+                        done=True,
+                    ),
+                )
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
             run = (
                 self._run_restriction_inventory
                 if scope.is_inventory
                 else self._run_executable_compliance
+            )
+            extra: dict[str, Any] = (
+                {}
+                if scope.is_inventory
+                else {
+                    "user_files": user_files,
+                    "model": model,
+                    "scope_key": scope_key,
+                    "user_query": user_query,
+                }
             )
             async for event in run(
                 mcp_client=mcp_client,
@@ -672,6 +852,7 @@ class RestrictionParserService(BaseLlmService):
                 owner=self._report_owner(token_ref[0]),
                 scope=scope,
                 territory=territory,
+                **extra,
             ):
                 yield event
             return
@@ -952,15 +1133,24 @@ class RestrictionParserService(BaseLlmService):
         *,
         mcp_client: IduMcpClient,
         request_id: str,
-        scenario_id: int,
+        scenario_id: int | None,
         restrictions: list[dict[str, Any]],
         checkpoint: dict[str, Any],
         skipped_without_plan: int = 0,
         owner: str | None = None,
         scope: ComplianceScope | None = None,
         territory: TerritoryDocuments | None = None,
+        user_files: UserFiles | None = None,
+        model: str | None = None,
+        scope_key: str | None = None,
+        user_query: str | None = None,
     ) -> AsyncGenerator[dict, None]:
-        """Execute each NormGraph CheckPlan independently and emit replayable results."""
+        """Execute each NormGraph CheckPlan independently and emit replayable results.
+
+        With ``user_files`` the objects come from the uploaded files: their objects
+        are mapped to norm entities first (a doubtful mapping is put to the user),
+        and norms whose objects the files lack are reported as not checked.
+        """
 
         if PipelineStep.VERDICT_AGGREGATION in checkpoint:
             await self.state_store.set_status(request_id, PipelineStatus.DONE)
@@ -1005,6 +1195,30 @@ class RestrictionParserService(BaseLlmService):
             request_id, PipelineStep.CHECK_PLAN_VALIDATION, plans
         )
 
+        layer_source: UserLayerSource | None = None
+        user_files_info: dict[str, Any] | None = None
+        if user_files is not None:
+            prepared: list[Any] = []
+            async for event in self._prepare_user_files(
+                request_id=request_id,
+                mcp_client=mcp_client,
+                plans=plans,
+                sources_by_id=sources_by_id,
+                user_files=user_files,
+                model=model,
+                scope_key=scope_key,
+                user_query=user_query or "",
+                scope=scope,
+                scenario_id=scenario_id,
+                checkpoint=checkpoint,
+                owner=owner,
+                out=prepared,
+            ):
+                yield event
+            if not prepared:
+                return  # the mapping waits for the user's answer
+            layer_source, plans, user_files_info = prepared[0]
+
         yield await self._buf(
             request_id,
             self._status(
@@ -1024,13 +1238,19 @@ class RestrictionParserService(BaseLlmService):
         )
         for index, raw_plan in enumerate(plans, start=1):
             execution_calls: list[dict[str, Any]] = []
+            effects_calls: list[dict[str, Any]] = []
             timings_ms: dict[str, float] = {}
             try:
                 execution = await self.compliance_executor.execute(
-                    mcp_client, raw_plan, scenario_id
+                    mcp_client,
+                    raw_plan,
+                    scenario_id,
+                    user_id=owner,
+                    layer_source=layer_source,
                 )
                 result = execution.result
                 execution_calls = execution.tool_calls
+                effects_calls = execution.effects_tool_calls
                 timings_ms = execution.timings_ms
             except Exception as exc:  # one norm must not erase the others
                 logger.bind(
@@ -1088,11 +1308,20 @@ class RestrictionParserService(BaseLlmService):
                     f"Выполняю {result.template}@v{result.template_version}",
                 ),
             )
-            if execution_calls:
+            # Calls over uploaded layers cannot be replayed from the chat history:
+            # the files are not kept there.
+            if execution_calls and layer_source is None:
                 yield await self._buf(
                     request_id,
                     self._tool_call(
                         "template_execution", execution_calls, "IDU_MCP_URL"
+                    ),
+                )
+            if effects_calls:
+                yield await self._buf(
+                    request_id,
+                    self._tool_call(
+                        "template_execution", effects_calls, "OBJECTS_EFFECTS_MCP_URL"
                     ),
                 )
             yield await self._buf(
@@ -1152,6 +1381,8 @@ class RestrictionParserService(BaseLlmService):
             summary["scope"] = scope.to_dict()
         if territory is not None:
             summary["territory"] = self._territory_summary(territory)
+        if user_files_info is not None:
+            summary["user_files"] = user_files_info
         await self.state_store.save_checkpoint(
             request_id, PipelineStep.VERDICT_AGGREGATION, summary
         )
@@ -1159,6 +1390,8 @@ class RestrictionParserService(BaseLlmService):
             request_id, {"type": "compliance_summary", "content": summary}
         )
         summary_text = self._compliance_summary_text(summary)
+        if user_files_info is not None:
+            summary_text += "\n\n" + user_files_text(user_files_info)
         notes = []
         if duplicates:
             notes.append(f"Повторных проверок объединено: {duplicates}.")
@@ -1190,7 +1423,7 @@ class RestrictionParserService(BaseLlmService):
             ),
             slot=REPORT_SLOT,
             title=REPORT_TITLE,
-            scenario_id=scenario_id,
+            scenario_id=scenario_id if scenario_id is not None else "files",
             owner=owner,
         )
         if report_event is not None:
@@ -1393,9 +1626,194 @@ class RestrictionParserService(BaseLlmService):
 
     @staticmethod
     def _territory_summary(territory: TerritoryDocuments) -> dict[str, Any]:
-        return {
+        summary: dict[str, Any] = {
             "documents_in_force": len(territory.allowed),
             "documents_out_of_force": len(territory.excluded),
+        }
+        if territory.place != "scenario":
+            summary["place"] = territory.place
+            summary["territories"] = list(territory.territories)
+        return summary
+
+    async def _prepare_user_files(
+        self,
+        *,
+        request_id: str,
+        mcp_client: IduMcpClient,
+        plans: list[dict[str, Any]],
+        sources_by_id: dict[str, list[dict[str, Any]]],
+        user_files: UserFiles,
+        model: str | None,
+        scope_key: str | None,
+        user_query: str,
+        scope: ComplianceScope | None,
+        scenario_id: int | None,
+        checkpoint: dict[str, Any],
+        out: list[Any],
+        owner: str | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Map the files' objects to norm entities and select the checkable norms.
+
+        Appends ``(layer source, runnable plans, user_files summary)`` to ``out``;
+        leaves it empty when the mapping is put to the user.
+        """
+        stored = checkpoint.get(PipelineStep.COMPLIANCE_MAPPING) or {}
+        if stored.get("pending"):
+            # A reconnect after the question: the buffered events already carry it.
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
+        yield await self._buf(
+            request_id,
+            self._status(
+                USER_FILES_STATUS,
+                "Сопоставляю объекты загруженных файлов с объектами норм",
+            ),
+        )
+        canonical = {
+            raw_plan["source"]["restriction_id"]: (
+                await self.compliance_executor.canonical_requirements(
+                    mcp_client, raw_plan
+                )
+            )
+            for raw_plan in plans
+        }
+        overlay = scenario_id is not None
+        if stored.get("mapping"):
+            mapping = EntityMapping.from_dict(stored["mapping"])
+        else:
+            needed, sources = needed_targets(
+                [item for item in canonical.values() if item is not None]
+            )
+            mapping = await self.entity_mapper.propose(
+                model or "", user_files, needed, sources
+            )
+            if mapping.classified and owner:
+                try:
+                    await self.compliance_uploads.cache_classifications(
+                        user_files.upload_ids, owner, mapping.classified
+                    )
+                except AgentsBaseException as exc:  # the run goes on without it
+                    logger.warning(f"Entity classification not cached: {exc}")
+            if mapping.pending:
+                candidates = list(dict.fromkeys([*needed, *TABLE_TARGETS]))
+                if scope_key:
+                    await self.state_store.set_compliance_mapping(
+                        scope_key,
+                        pending_record(
+                            files=user_files,
+                            mapping_result=mapping,
+                            candidates=candidates,
+                            user_query=user_query,
+                            scope=scope.to_dict() if scope is not None else None,
+                            scenario_id=scenario_id,
+                        ),
+                    )
+                await self.state_store.save_checkpoint(
+                    request_id, PipelineStep.COMPLIANCE_MAPPING, {"pending": True}
+                )
+                yield await self._buf(
+                    request_id, mapping_event(user_files, mapping, overlay)
+                )
+                yield await self._buf(
+                    request_id,
+                    self._mapping_clarification(
+                        render_mapping_question(mapping.pending), mapping
+                    ),
+                )
+                await self.state_store.set_status(request_id, PipelineStatus.DONE)
+                return
+            await self.state_store.save_checkpoint(
+                request_id,
+                PipelineStep.COMPLIANCE_MAPPING,
+                {"mapping": mapping.to_dict()},
+            )
+        yield await self._buf(request_id, mapping_event(user_files, mapping, overlay))
+
+        layers = build_entity_layers(user_files, mapping.assignment())
+
+        async def scenario_layers(requirements):
+            return await self.compliance_executor._retrieve_layers(
+                mcp_client, requirements, scenario_id
+            )
+
+        source = UserLayerSource(
+            layers,
+            scenario=scenario_layers if overlay else None,
+            revision="user:" + "+".join(user_files.upload_ids),
+        )
+        runnable: list[dict[str, Any]] = []
+        not_checked: list[dict[str, Any]] = []
+        for raw_plan in plans:
+            restriction_id = raw_plan["source"]["restriction_id"]
+            resolved = canonical.get(restriction_id)
+            missing = source.missing(*resolved) if resolved is not None else []
+            if missing:
+                not_checked.append(
+                    not_checked_entry(
+                        raw_plan, sources_by_id.get(restriction_id) or [], missing
+                    )
+                )
+            else:
+                runnable.append(raw_plan)
+        yield await self._buf(
+            request_id,
+            self._status(
+                USER_FILES_STATUS,
+                f"По данным файлов можно проверить норм: {len(runnable)}; "
+                f"нет нужных объектов в файлах: {len(not_checked)}.",
+            ),
+        )
+        out.append(
+            (
+                source,
+                runnable,
+                user_files_summary(
+                    files=user_files,
+                    mapping_result=mapping,
+                    layers=layers,
+                    not_checked=not_checked,
+                    overlay=overlay,
+                ),
+            )
+        )
+
+    async def _answer_mapping(
+        self,
+        model: str,
+        reply: str,
+        pending: dict[str, Any],
+        token: str,
+    ) -> str:
+        """``confirmed``, ``new_request`` or ``unresolved`` for a mapping reply."""
+        mapping = EntityMapping.from_dict(pending["mapping"])
+        answer = await self.entity_mapper.resolve_reply(
+            model, reply, mapping.pending, pending_candidates(pending)
+        )
+        if answer.kind == "unresolved":
+            return "unresolved"
+        if answer.kind == "new_request":
+            return "new_request"
+        owner = self._report_owner(token)
+        if owner is None:
+            return "new_request"
+        try:
+            await self.compliance_uploads.confirm_mapping(
+                pending.get("upload_ids") or [], owner, apply_reply(mapping, answer)
+            )
+        except AgentsBaseException:
+            # The uploads expired: the answer has nothing left to continue.
+            return "new_request"
+        return "confirmed"
+
+    @staticmethod
+    def _mapping_clarification(question: str, mapping: EntityMapping) -> dict:
+        return {
+            "type": "clarification",
+            "content": {
+                "question": question,
+                "kind": "entity_mapping",
+                "options": mapping_options(mapping.pending),
+            },
         }
 
     @staticmethod
@@ -1625,6 +2043,13 @@ class RestrictionParserService(BaseLlmService):
 
     @staticmethod
     def _compliance_summary_text(summary: dict[str, Any]) -> str:
+        if summary["total_norms"] == 0 and (summary.get("user_files") or {}).get(
+            "not_checked"
+        ):
+            return (
+                "Ни одну из подобранных норм не удалось проверить по данным файлов: "
+                "в них нет объектов, к которым эти нормы относятся."
+            )
         if summary["total_norms"] == 0:
             return "Нормы с исполнимыми планами не найдены. Проверка соответствия не выполнена; отсутствие проверок не подтверждает отсутствие нарушений."
         label = (summary.get("scope") or {}).get("label")
@@ -1650,6 +2075,23 @@ class RestrictionParserService(BaseLlmService):
             parts.append(
                 f"С частичным покрытием: {summary['partial_norms']}; вывод относится только к проверенной части."
             )
+        strictest = [
+            result
+            for result in summary.get("results", [])
+            if result.get("compliance_status") in {"violated", "passed"}
+            and strictest_applicability(result)
+        ]
+        if strictest:
+            parts.append(
+                f"По самой строгой норме проверено: {len(strictest)}. "
+                f"{STRICTEST_NORM_NOTICE}"
+            )
+        if any(
+            transport_accessibility(result)
+            and result.get("compliance_status") in {"violated", "passed"}
+            for result in summary.get("results", [])
+        ):
+            parts.append(TRANSPORT_NOTICE)
         violations = []
         for result in summary.get("results", []):
             count = result.get("summary", {}).get("violated_objects", 0)
@@ -1664,6 +2106,25 @@ class RestrictionParserService(BaseLlmService):
             if result.get("verification_status") == "partial":
                 unchecked = result.get("coverage", {}).get("unchecked_objects", 0)
                 detail += f" Не проверено объектов: {unchecked}."
+            applicability = strictest_applicability(result)
+            if applicability:
+                conditions = "; ".join(applicability.get("conditions") or [])
+                if not detail.endswith("."):
+                    detail += "."
+                detail += (
+                    f" Применена самая строгая норма ({applicability['applied']}); "
+                    "проверьте дополнительные условия"
+                    + (f": {conditions}." if conditions else ".")
+                )
+            scope = plan_scope(result)
+            if scope:
+                if not detail.endswith("."):
+                    detail += "."
+                detail += f" Проверены только {scope_text(scope)}."
+            if transport_accessibility(result):
+                if not detail.endswith("."):
+                    detail += "."
+                detail += " Транспортная доступность оценена приближённо."
             violations.append(detail)
         overview = scope_line + " ".join(parts)
         if violations:

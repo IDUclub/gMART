@@ -21,6 +21,7 @@ from src.agents.services.compilance.compliance_registry import (
 )
 from src.agents.services.compilance.compliance_sources import source_reference
 from src.agents.services.service_entities.compliance import (
+    AccessibilityWithinParams,
     CheckPlan,
     DeclaredRequirements,
 )
@@ -86,7 +87,11 @@ class RestrictionZone:
 
 def zone_kind(plan: CheckPlan, params) -> ZoneKind:
     """Where targets must not be (``restriction``) or must be (``required``)."""
-    if plan.template == "presence_within":
+    if plan.template in {
+        "presence_within",
+        "accessibility_within",
+        "service_provision",
+    }:
         return "required"
     if plan.template in {"distance_from_source", "distance_table"}:
         return "required" if params.violation_when == "not_matched" else "restriction"
@@ -224,6 +229,14 @@ class RestrictionZoneBuilder:
         if plan.template in {"distance_from_source", "presence_within"}:
             if getattr(params, "geometry_mode", "buffered") == "buffered":
                 arguments.update(geometry_mode="buffer", distance_m=params.distance_m)
+        elif plan.template in {"accessibility_within", "service_provision"}:
+            radius = _accessibility_radius(plan, params)
+            if radius is None:
+                # The Urban API normative is resolved only by ObjectEffects.
+                zone.missing_requirements = ["accessibility:urban_api_normative"]
+                zone.tool_calls = calls
+                return zone
+            arguments.update(geometry_mode="buffer", distance_m=radius)
         elif plan.template == "distance_table":
             arguments.update(
                 geometry_mode="attribute_buffer",
@@ -277,9 +290,29 @@ def _zone_roles(plan: CheckPlan, params) -> set[str]:
     """The layer roles a norm's area is drawn from."""
     if plan.template in {"distance_from_source", "distance_table"}:
         return {params.source_layer}
-    if plan.template == "presence_within":
+    if plan.template in {
+        "presence_within",
+        "accessibility_within",
+        "object_attribute_threshold",
+    }:
         return {params.objects_layer}
+    if plan.template == "service_provision":
+        return {params.services_layer}
     return {params.zones_layer}
+
+
+def _accessibility_radius(plan: CheckPlan, params) -> float | None:
+    """Straight-line radius of an accessibility area (``buffer_v1``)."""
+    if plan.template == "accessibility_within":
+        return params.radius_m()
+    accessibility = params.accessibility
+    if accessibility is None:
+        return None
+    return AccessibilityWithinParams(
+        objects_layer="objects",
+        required_neighbor_layers=["neighbors"],
+        limit=accessibility,
+    ).radius_m()
 
 
 def _covers_every_zone(plan: CheckPlan, params, entities: dict[str, str]) -> bool:
@@ -316,6 +349,33 @@ def _describe(plan: CheckPlan, params, entities: dict[str, str]) -> dict[str, An
             "distance_m": params.distance_m,
             "applies_to": names(params.required_neighbor_layers),
             "minimum": params.minimum_neighbors,
+        }
+    if plan.template == "accessibility_within":
+        return {
+            "around": entities.get(params.objects_layer, params.objects_layer),
+            "distance_m": params.radius_m(),
+            "applies_to": names(params.required_neighbor_layers),
+            "minimum": params.minimum_neighbors,
+        }
+    if plan.template == "object_attribute_threshold":
+        objects = entities.get(params.objects_layer, params.objects_layer)
+        return {
+            "around": objects,
+            "applies_to": [objects],
+            "operator": params.operator,
+            "threshold": params.threshold,
+            "unit": params.unit,
+        }
+    if plan.template == "service_provision":
+        return {
+            "around": entities.get(params.services_layer, params.services_layer),
+            "distance_m": _accessibility_radius(plan, params),
+            "capacity_per_1000": params.capacity_per_1000,
+            **(
+                {"residents_per_service": params.residents_per_service}
+                if params.residents_per_service
+                else {}
+            ),
         }
     zones = entities.get(params.zones_layer, params.zones_layer)
     description: dict[str, Any] = {
@@ -371,6 +431,23 @@ def describe_zone(payload: dict[str, Any]) -> str:
             area = f"{_number(description['distance_m'])} м вокруг объектов {around}"
         else:
             area = f"территория объектов {around}"
+        if "capacity_per_1000" in description:
+            capacity = description.get("capacity_per_1000")
+            residents = description.get("residents_per_service")
+            if residents:
+                rule = (
+                    "зона доступности; норматив 1 объект на "
+                    f"{_number(residents)} жителей"
+                )
+            elif capacity:
+                rule = f"зона доступности; норматив {_number(capacity)} мест на 1000 жителей"
+            else:
+                rule = "зона доступности по нормативу сервиса"
+            return f"{area}; {rule}"
+        if description.get("threshold") is not None:
+            sign = _OPERATOR_SIGNS.get(description.get("operator"), "")
+            limit = f"{sign} {_number(description['threshold'])} {description.get('unit') or ''}"
+            return f"{area}; ограничение для {applies}: {limit.strip()}"
         if payload.get("zone_kind") == "required":
             minimum = int(description.get("minimum") or 1)
             rule = f"здесь должны располагаться {applies}" + (

@@ -24,6 +24,9 @@ TOKEN_REFRESH_TIMEOUT: float = 60.0
 PIPELINE_TTL: int = 15 * 60  # absolute reconnect/token-refresh window
 # A document choice waits for the user's next message, which can come much later.
 COMPLIANCE_CHOICE_TTL: int = 24 * 60 * 60
+# Files uploaded for a compliance check stay for a day; the check is not replayable
+# after that.
+COMPLIANCE_UPLOAD_TTL: int = 24 * 60 * 60
 
 
 class PipelineStatus(StrEnum):
@@ -38,6 +41,7 @@ class PipelineStatus(StrEnum):
 class PipelineStep(StrEnum):
     COMPLIANCE_TERRITORY = "compliance_territory"
     COMPLIANCE_SCOPE = "compliance_scope"
+    COMPLIANCE_MAPPING = "compliance_mapping"
     RESTRICTION_INVENTORY = "restriction_inventory"
     NORMGRAPH = "normgraph"
     CHECK_PLAN_VALIDATION = "check_plan_validation"
@@ -263,12 +267,118 @@ class PipelineStateStore:
                 json.dumps(choice, ensure_ascii=False),
             )
 
+    async def save_compliance_upload(self, upload_id: str, record: dict) -> None:
+        await self._retry(
+            self._redis.setex,
+            self._key(upload_id, "compliance_upload"),
+            COMPLIANCE_UPLOAD_TTL,
+            json.dumps(record, ensure_ascii=False),
+        )
+
+    async def update_compliance_upload(self, upload_id: str, record: dict) -> None:
+        # The upload keeps the expiry it was created with.
+        await self._retry(
+            self._redis.set,
+            self._key(upload_id, "compliance_upload"),
+            json.dumps(record, ensure_ascii=False),
+            keepttl=True,
+        )
+
+    async def get_compliance_upload(self, upload_id: str) -> dict | None:
+        raw = await self._retry(
+            self._redis.get, self._key(upload_id, "compliance_upload")
+        )
+        return json.loads(raw) if raw else None
+
+    async def delete_compliance_upload(self, upload_id: str) -> None:
+        await self._retry(self._redis.delete, self._key(upload_id, "compliance_upload"))
+
+    async def get_compliance_mapping(self, conversation_key: str) -> dict | None:
+        raw = await self._retry(
+            self._redis.get, self._key(conversation_key, "compliance_mapping")
+        )
+        return json.loads(raw) if raw else None
+
+    async def set_compliance_mapping(
+        self, conversation_key: str, pending: dict | None
+    ) -> None:
+        """The entity mapping a compliance check of user files waits to confirm."""
+        key = self._key(conversation_key, "compliance_mapping")
+        if pending is None:
+            await self._retry(self._redis.delete, key)
+        else:
+            await self._retry(
+                self._redis.setex,
+                key,
+                COMPLIANCE_UPLOAD_TTL,
+                json.dumps(pending, ensure_ascii=False),
+            )
+
+    async def get_chat_uploads(self, conversation_key: str) -> list[str]:
+        """Uploads used in a dialogue, oldest first."""
+        raw = await self._retry(
+            self._redis.get, self._key(conversation_key, "chat_uploads")
+        )
+        return json.loads(raw) if raw else []
+
+    async def add_chat_uploads(
+        self, conversation_key: str, upload_ids: list[str]
+    ) -> None:
+        """Remember the uploads of a dialogue for as long as uploads live."""
+        if not upload_ids:
+            return
+        known = await self.get_chat_uploads(conversation_key)
+        merged = list(dict.fromkeys([*known, *upload_ids]))
+        if merged == known:
+            return
+        await self._retry(
+            self._redis.setex,
+            self._key(conversation_key, "chat_uploads"),
+            COMPLIANCE_UPLOAD_TTL,
+            json.dumps(merged),
+        )
+
+    async def get_project_dialogue(self, conversation_key: str) -> dict | None:
+        raw = await self._retry(
+            self._redis.get, self._key(conversation_key, "project_dialogue")
+        )
+        return json.loads(raw) if raw else None
+
+    async def set_project_dialogue(
+        self, conversation_key: str, dialogue: dict | None
+    ) -> None:
+        """The question a project creation from files waits to have answered."""
+        key = self._key(conversation_key, "project_dialogue")
+        if dialogue is None:
+            await self._retry(self._redis.delete, key)
+        else:
+            await self._retry(
+                self._redis.setex,
+                key,
+                COMPLIANCE_UPLOAD_TTL,
+                json.dumps(dialogue, ensure_ascii=False),
+            )
+
     async def set_status(self, request_id: str, status: PipelineStatus) -> None:
         raw = await self._retry(self._redis.get, self._key(request_id, "state"))
         if not raw:
             return
         state = json.loads(raw)
         state["status"] = status
+        await self._retry(
+            self._redis.set,
+            self._key(request_id, "state"),
+            json.dumps(state, ensure_ascii=False),
+            keepttl=True,
+        )
+
+    async def set_chat_id(self, request_id: str, chat_id: str | None) -> None:
+        """Record the chat of a run whose chat was created after the run started."""
+        raw = await self._retry(self._redis.get, self._key(request_id, "state"))
+        if not raw:
+            return
+        state = json.loads(raw)
+        state["chat_id"] = chat_id
         await self._retry(
             self._redis.set,
             self._key(request_id, "state"),

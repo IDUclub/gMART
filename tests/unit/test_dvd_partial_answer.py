@@ -10,6 +10,13 @@ from tests.helpers import FakeDvdMcpClient, answer_text, plan_json
 from tests.unit.test_dvd_rag_service import _run
 
 
+@pytest.fixture(autouse=True)
+def _strict_answers(monkeypatch):
+    # These cases cover the strict mode: a rejected line is rewritten, and a
+    # final partial answer keeps only verified claims.
+    monkeypatch.setenv("DVD_KNOWLEDGE_FALLBACK", "false")
+
+
 async def test_live_critic_schema_keeps_draft_wording_and_conditions(fake_llm):
     from src.agents.services.dvd.dvd_reasoning import AnswerCritic
     from src.agents.services.dvd.partial_answer import PartialAnswerEvidence

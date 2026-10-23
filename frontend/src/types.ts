@@ -3,6 +3,7 @@ export type AgentId =
   | "synapse"
   | "restrictions"
   | "compliance"
+  | "project_files"
   | "provision"
   | "scenario_data"
   | "documents"
@@ -237,4 +238,20 @@ export type Settings = {
   keycloakClientId: string;
   model: string;
   temperature: number;
+};
+export type UploadLayerRole = "project" | "context" | "border";
+export type ComplianceUploadLayer = {
+  name: string;
+  role: UploadLayerRole;
+  role_source: "auto" | "user";
+  feature_count: number;
+  geometry_types: string[];
+  warnings: string[];
+};
+export type ComplianceUpload = {
+  upload_id: string;
+  created_at?: string | null;
+  expires_at?: string | null;
+  files: string[];
+  layers: ComplianceUploadLayer[];
 };

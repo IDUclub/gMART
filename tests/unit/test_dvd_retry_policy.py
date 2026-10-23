@@ -27,8 +27,8 @@ async def test_repeated_plan_reuses_sources_and_prepared_context(
 
     assert len(fake_mcp.search_calls) == 1
     assert len([e for e in events if e["type"] == "tool_call"]) == 1
-    # Prepare sources once, then prepare each of the two distinct reviews.
-    assert service.context_reducer.prepare.await_count == 3
+    # Prepare sources once; both reviews fit and reuse them without a reduction.
+    assert service.context_reducer.prepare.await_count == 1
     assert "PRIVATE_" not in json.dumps(events)
     drafts = [c for c in fake_llm.chat_calls if c.stream]
     assert "PRIVATE_FIRST" in drafts[1].messages[0]["content"]

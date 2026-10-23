@@ -8,10 +8,13 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from src.agents.services.service_entities.compliance import (
+    AccessibilityWithinParams,
     CheckPlan,
     DistanceFromSourceParams,
     DistanceTableParams,
+    ObjectAttributeThresholdParams,
     PresenceWithinParams,
+    ServiceProvisionParams,
     ZonalAttributeThresholdParams,
     ZonalRatioParams,
 )
@@ -233,6 +236,54 @@ def build_default_registry(
             ("Polygon", "MultiPolygon"),
             timeout_seconds=180,
             enabled="zonal_ratio" not in disabled,
+        ),
+        TemplateRegistration(
+            "object_attribute_threshold",
+            1,
+            ObjectAttributeThresholdParams,
+            ("$objects_layer",),
+            ("$attribute_role",),
+            "execute_object_attribute_threshold",
+            ("CheckObjectAttributeThreshold",),
+            (
+                "Point",
+                "MultiPoint",
+                "LineString",
+                "MultiLineString",
+                "Polygon",
+                "MultiPolygon",
+            ),
+            enabled="object_attribute_threshold" not in disabled,
+        ),
+        TemplateRegistration(
+            "accessibility_within",
+            1,
+            AccessibilityWithinParams,
+            ("$objects_layer", "$required_neighbor_layers"),
+            (),
+            "execute_accessibility_within",
+            ("CheckAccessibilityWithin",),
+            (
+                "Point",
+                "MultiPoint",
+                "LineString",
+                "MultiLineString",
+                "Polygon",
+                "MultiPolygon",
+            ),
+            enabled="accessibility_within" not in disabled,
+        ),
+        TemplateRegistration(
+            "service_provision",
+            1,
+            ServiceProvisionParams,
+            ("$services_layer",),
+            (),
+            "execute_service_provision",
+            ("CalculateNormativeProvision",),
+            ("Point", "MultiPoint", "Polygon", "MultiPolygon"),
+            timeout_seconds=300,
+            enabled="service_provision" not in disabled,
         ),
     ]
     return TemplateRegistry(entries)

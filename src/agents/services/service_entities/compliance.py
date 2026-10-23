@@ -22,6 +22,12 @@ RoleName = Annotated[
 ]
 
 
+# Registered deterministic attribute conversions (``ComplianceDataGate``).
+DeriveName = Literal[
+    "height_to_floors_v1", "floors_to_height_v1", "geometry_area_m2_v1"
+]
+
+
 class EntityType(StrEnum):
     SERVICE = "service"
     PHYSICAL_OBJECT = "physical_object"
@@ -52,7 +58,7 @@ class AttributeCandidate(StrictModel):
         pattern=r"^[A-Za-zА-Яа-яЁё0-9_.:-]+$",
     )
     unit: str = Field(min_length=1, max_length=32)
-    derive: Literal["height_to_floors_v1"] | None = None
+    derive: DeriveName | None = None
     quality: Literal["direct", "derived"]
 
     @model_validator(mode="after")
@@ -97,6 +103,59 @@ class CheckPlanSource(StrictModel):
     extraction_text: str | None = Field(default=None, max_length=8000)
 
 
+# The plan applies the strictest value of a conditional clause to every object.
+STRICTEST_NORM_WARNING = "strictest_norm_applied"
+# Only the objects meeting the clause's condition (``CheckPlan.scope``) were checked.
+SCOPE_WARNING = "scope_applied"
+# A transport accessibility estimated by a radius at an average transport speed.
+TRANSPORT_WARNING = "transport_accessibility_approximated"
+
+
+class CheckPlanApplicability(StrictModel):
+    """How NormGraph turned a clause with conditions or variants into one plan.
+
+    ``strictest_variant``: the strictest of the clause's values is applied to every
+    object; the clause's conditions must still be checked by a person.
+    """
+
+    mode: Literal["strictest_variant"]
+    conditions: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=20
+    )
+    variants: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=20
+    )
+    applied: str = Field(min_length=1, max_length=500)
+
+
+class CheckPlanScope(StrictModel):
+    """Only the objects of one layer meeting a clause's condition are checked.
+
+    The condition is a range of a numeric attribute of those objects («при
+    многоэтажной застройке» — residential buildings of 9 floors and more). Objects
+    without a value cannot be placed in or out of the range and stay unchecked.
+    """
+
+    layer: RoleName
+    attribute: RoleName
+    min: float | None = Field(default=None, ge=0, le=1000)
+    max: float | None = Field(default=None, ge=0, le=1000)
+    condition: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def range_is_bounded(self) -> "CheckPlanScope":
+        if self.min is None and self.max is None:
+            raise ValueError("scope needs min or max")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("scope min exceeds max")
+        return self
+
+    def contains(self, value: float) -> bool:
+        return (self.min is None or value >= self.min) and (
+            self.max is None or value <= self.max
+        )
+
+
 class CheckPlan(StrictModel):
     schema_version: Literal["1.0"]
     template: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
@@ -105,6 +164,26 @@ class CheckPlan(StrictModel):
     declared_requirements: DeclaredRequirements | None = None
     source: CheckPlanSource
     planner_status: Literal["auto", "reviewed", "unsupported"]
+    applicability: CheckPlanApplicability | None = None
+    scope: CheckPlanScope | None = None
+
+    @model_validator(mode="after")
+    def scope_refers_to_declared_roles(self) -> "CheckPlan":
+        if self.scope is None:
+            return self
+        declared = self.declared_requirements
+        layers = {item.role for item in (declared.layers if declared else [])}
+        attributes = {
+            item.role: item.on for item in (declared.attributes if declared else [])
+        }
+        if self.scope.layer not in layers:
+            raise ValueError(f"scope layer {self.scope.layer!r} is not declared")
+        if attributes.get(self.scope.attribute) != self.scope.layer:
+            raise ValueError(
+                f"scope attribute {self.scope.attribute!r} is not declared on "
+                f"{self.scope.layer!r}"
+            )
+        return self
 
 
 class DistanceFromSourceParams(StrictModel):
@@ -226,6 +305,98 @@ class ZonalRatioParams(StrictModel):
     result_mode: Literal["violated", "passed", "both"] = "both"
 
 
+class ObjectAttributeThresholdParams(StrictModel):
+    """Every object of a layer compares one numeric attribute with a constant."""
+
+    objects_layer: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    attribute_role: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    operator: Literal["<", "<=", ">", ">=", "=="]
+    threshold: float = Field(ge=-1_000_000_000, le=1_000_000_000)
+    unit: str = Field(min_length=1, max_length=32)
+    result_mode: Literal["violated", "passed", "both"] = "both"
+
+
+class TimeLimit(StrictModel):
+    kind: Literal["time"]
+    minutes: float = Field(gt=0, le=240)
+
+
+class DistanceLimit(StrictModel):
+    kind: Literal["distance"]
+    meters: float = Field(gt=0, le=100_000)
+
+
+class AccessibilityWithinParams(StrictModel):
+    """Every object must reach a neighbour within a time or route length.
+
+    ``buffer_v1`` approximates the route by a straight-line radius
+    ``(minutes * speed_m_per_min | meters) / detour_factor``. ``mode="transport"``
+    is a transport accessibility estimated at an average transport speed: a rough
+    approximation without a road graph, reported as such.
+    """
+
+    objects_layer: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    required_neighbor_layers: list[RoleName] = Field(min_length=1, max_length=16)
+    limit: Annotated[TimeLimit | DistanceLimit, Field(discriminator="kind")]
+    speed_m_per_min: float = Field(default=80.0, gt=0, le=1000)
+    detour_factor: float = Field(default=1.3, ge=1, le=3)
+    measurement: Literal["buffer_v1"] = "buffer_v1"
+    mode: Literal["walk", "transport"] = "walk"
+    minimum_neighbors: int = Field(default=1, ge=1, le=1000)
+    result_mode: Literal["violated", "passed", "both"] = "both"
+
+    def radius_m(self) -> float:
+        """Straight-line radius standing in for the route (``buffer_v1``)."""
+        route = (
+            self.limit.minutes * self.speed_m_per_min
+            if isinstance(self.limit, TimeLimit)
+            else self.limit.meters
+        )
+        return route / self.detour_factor
+
+
+class ServiceProvisionParams(StrictModel):
+    """Residents' demand for a service type must be met within its accessibility.
+
+    ``None`` keeps the Urban API normative of the service type. A norm of the
+    "1 object per N residents" kind sets ``residents_per_service`` instead of
+    ``capacity_per_1000``: every resident is then demand and each object serves N.
+    A building is violated when the share of its demand served within accessibility
+    is below ``min_provision``.
+    """
+
+    services_layer: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    capacity_per_1000: float | None = Field(default=None, gt=0, le=100_000)
+    residents_per_service: float | None = Field(default=None, gt=0, le=10_000_000)
+    accessibility: (
+        Annotated[TimeLimit | DistanceLimit, Field(discriminator="kind")] | None
+    ) = None
+    # "transport": the norm's transport accessibility, passed as the straight-line
+    # distance an average transport covers in that time (a rough approximation).
+    accessibility_mode: Literal["walk", "transport"] = "walk"
+    min_provision: float = Field(default=1.0, gt=0, le=1)
+    result_mode: Literal["violated", "passed", "both"] = "both"
+
+    @model_validator(mode="after")
+    def one_capacity_basis(self) -> ServiceProvisionParams:
+        if (
+            self.capacity_per_1000 is not None
+            and self.residents_per_service is not None
+        ):
+            raise ValueError(
+                "capacity_per_1000 and residents_per_service exclude each other"
+            )
+        return self
+
+
 class ResolvedRequirement(StrictModel):
     role: str
     requirement_type: Literal["layer", "attribute"]
@@ -234,7 +405,7 @@ class ResolvedRequirement(StrictModel):
     field: str | None = None
     unit: str | None = None
     quality: Literal["direct", "derived"] | None = None
-    derive: Literal["height_to_floors_v1"] | None = None
+    derive: DeriveName | None = None
     fill_rate: float | None = Field(default=None, ge=0, le=1)
     reason: str | None = None
 
@@ -282,6 +453,8 @@ class ComplianceEvidence(StrictModel):
     neighbor_layers: list[str] = Field(default_factory=list, max_length=16)
     numerator_area_m2: float | None = Field(default=None, ge=0)
     denominator_area_m2: float | None = Field(default=None, ge=0)
+    demand: float | None = Field(default=None, ge=0)
+    supplied_demand: float | None = Field(default=None, ge=0)
 
 
 class ComplianceResult(StrictModel):
@@ -330,4 +503,7 @@ TEMPLATE_PARAM_MODELS: dict[str, type[StrictModel]] = {
     "presence_within": PresenceWithinParams,
     "zonal_attribute_threshold": ZonalAttributeThresholdParams,
     "zonal_ratio": ZonalRatioParams,
+    "object_attribute_threshold": ObjectAttributeThresholdParams,
+    "accessibility_within": AccessibilityWithinParams,
+    "service_provision": ServiceProvisionParams,
 }

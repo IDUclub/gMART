@@ -14,6 +14,7 @@ class OrchestratorAgent(StrEnum):
     DOCUMENTS = "documents"
     NORMS = "norms"
     PZZ = "pzz"
+    PROJECT_FILES = "project_files"
 
 
 class OrchestratorPlanMode(StrEnum):

@@ -1,6 +1,6 @@
 """Exception handling middleware is defined here."""
 
-import traceback
+from typing import Any
 
 from fastapi import FastAPI, Request
 from loguru import logger
@@ -33,37 +33,40 @@ class ExceptionHandlerMiddleware(
         super().__init__(app)
 
     @staticmethod
-    async def prepare_request_info(request: Request) -> dict:
+    def redacted_headers(request: Request) -> dict[str, str]:
         """
-        Function prepares request input data
+        Remove sensitive headers before logging request metadata.
         Args:
             request (Request): Request instance.
         Returns:
-            dict: Request input data.
+            dict: Headers safe to include in logs.
         """
 
-        request_info = {
-            "method": request.method,
-            "url": str(request.url),
-            "path_params": dict(request.path_params),
-            "query_params": dict(request.query_params),
-            "headers": dict(request.headers),
+        return {
+            name: value
+            for name, value in request.headers.items()
+            if name.lower() not in {"cookie", "set-cookie"}
+            and not any(
+                sensitive in name.lower()
+                for sensitive in ("token", "secret", "password", "auth", "key")
+            )
         }
 
+    @staticmethod
+    async def request_id(request: Request) -> Any:
+        """
+        Extract only the JSON-RPC request id from the request body.
+        Args:
+            request (Request): Request instance.
+        Returns:
+            Any: Request id if available, otherwise None.
+        """
+
         try:
-            request_info["body"] = await request.json()
-            return request_info
-        except Exception as e:
-            logger.error("Faced error during request_info parsing")
-            logger.exception(e)
-            try:
-                request_info["body"] = str(await request.body())
-                return request_info
-            except Exception as e:
-                logger.error("Couldn't pars request body as str")
-                logger.exception(e)
-                request_info["body"] = "Could not read request body"
-                return request_info
+            body = await request.json()
+        except Exception:
+            return None
+        return body.get("id") if isinstance(body, dict) else None
 
     async def dispatch(self, request: Request, call_next):
         """
@@ -84,41 +87,40 @@ class ExceptionHandlerMiddleware(
                 content={"message": e.message, "input": e.error_input},
             )
         except A2AJsonRpcError as e:
-            request_info = await self.prepare_request_info(request)
+            request_id = await self.request_id(request)
             return JSONResponse(
                 status_code=200,
-                content=self.a2a_error_response(e, request_info.get("body")),
+                content=self.a2a_error_response(e, request_id),
             )
         except Exception as e:
-            request_info = await self.prepare_request_info(request)
+            logger.exception(
+                "Unhandled exception: method={} path={} headers={}",
+                request.method,
+                request.url.path,
+                self.redacted_headers(request),
+            )
             return JSONResponse(
                 status_code=500,
                 content={
                     "message": "Internal server error",
                     "error_type": e.__class__.__name__,
-                    "request": request_info,
                     "detail": str(e),
-                    "traceback": traceback.format_exc().splitlines(),
                 },
             )
 
     @staticmethod
     def a2a_error_response(
         error: A2AJsonRpcError,
-        request_body,
+        request_id,
     ) -> dict:
         """
         Convert A2A errors to JSON-RPC error envelope.
         Args:
             error (A2AJsonRpcError): A2A error.
-            request_body: Parsed request body if available.
+            request_id: JSON-RPC request id if available.
         Returns:
             dict: JSON-RPC error response.
         """
-
-        request_id = None
-        if isinstance(request_body, dict):
-            request_id = request_body.get("id")
 
         error_body = {
             "code": error.code,

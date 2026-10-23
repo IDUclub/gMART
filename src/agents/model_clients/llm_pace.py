@@ -27,6 +27,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Awaitable, Callable, TypeVar
 
+from src.agents.model_clients import llm_usage
+
 T = TypeVar("T")
 
 NOMINAL_TOKENS_PER_SECOND_ENV = "LLM_NOMINAL_TOKENS_PER_SECOND"
@@ -104,6 +106,9 @@ class LlmPace:
     ) -> None:
         """Record a call; one without a token count only leaves the in-flight set."""
 
+        llm_usage.record(
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+        )
         started = self._in_flight.pop(call_id, None)
         if started is None or not isinstance(completion_tokens, int):
             return
