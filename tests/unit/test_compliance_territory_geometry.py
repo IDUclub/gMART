@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from src.agents.services.compilance.compliance_territory import (
     ComplianceTerritoryFilter,
     TerritoryDocuments,
@@ -63,6 +65,148 @@ async def test_no_boundary_and_no_territory_stop_the_check():
     assert nowhere.status == "unavailable"
     assert "ни в одну территорию" in nowhere.message
     dvd.list_documents.assert_not_awaited()
+
+
+async def resolve_geometry_documents(territory, documents, *, complete=True):
+    idu = SimpleNamespace(
+        territories_by_geometry=AsyncMock(
+            return_value={"territories": [territory], "complete": complete}
+        )
+    )
+    dvd = SimpleNamespace(list_documents=AsyncMock(return_value=documents))
+    graph = SimpleNamespace(
+        list_restriction_documents=AsyncMock(
+            return_value=[{"name": document["name"]} for document in documents]
+        )
+    )
+    result = await ComplianceTerritoryFilter().resolve_geometry(
+        idu, dvd, graph, GEOMETRY
+    )
+    dvd.list_documents.assert_awaited_once_with(
+        territory_ids=[int(territory["territory_id"])]
+    )
+    return result
+
+
+@pytest.mark.parametrize("complete", [True, False])
+async def test_root_leaf_excludes_descendants_only_after_complete_descent(complete):
+    result = await resolve_geometry_documents(
+        {"territory_id": 12639, "name": "Россия", "parent_id": None},
+        [
+            {
+                "name": "Федеральный документ",
+                "territory_id": 12639,
+                "territory_path": [12639],
+            },
+            {
+                "name": "Документ Ленинградской области",
+                "territory_id": 1,
+                "territory_path": [12639, 1],
+            },
+            {
+                "name": "Документ Гатчины",
+                "territory_id": 73,
+                "territory_path": [12639, 1, 67, 73],
+            },
+        ],
+        complete=complete,
+    )
+    assert result.status == "ok"
+    descendants = ("Документ Ленинградской области", "Документ Гатчины")
+    expected = ("Федеральный документ",) + (() if complete else descendants)
+    assert result.allowed == expected
+    assert result.excluded == (descendants if complete else ())
+    assert result.outside_loaded_regions is complete
+    assert result.note().count("вне регионов, загруженных в Urban API") == int(complete)
+    assert result.message is None
+
+
+async def test_regional_leaf_keeps_its_own_and_federal_documents():
+    result = await resolve_geometry_documents(
+        {"territory_id": 13368, "name": "Республика Карелия", "parent_id": 12639},
+        [
+            {
+                "name": "Документ Карелии",
+                "territory_id": 13368,
+                "territory_path": [12639, 13368],
+            },
+            {
+                "name": "Федеральный документ",
+                "territory_id": 12639,
+                "territory_path": [12639],
+            },
+        ],
+    )
+    assert result.status == "ok"
+    assert result.allowed == ("Документ Карелии", "Федеральный документ")
+    assert result.excluded == ()
+    assert result.outside_loaded_regions is False
+    assert "вне регионов, загруженных в Urban API" not in result.note()
+    assert result.message is None
+
+
+async def test_descendant_filter_normalizes_ids_and_keeps_missing_paths():
+    result = await resolve_geometry_documents(
+        {"territory_id": "13368", "name": "Республика Карелия", "parent_id": 12639},
+        [
+            {"name": "Без пути", "territory_id": 73},
+            {
+                "name": "Документ Карелии",
+                "territory_id": "13368",
+                "territory_path": [12639, "13368", "invalid", None],
+            },
+            {
+                "name": "Документ потомка",
+                "territory_id": "73",
+                "territory_path": ["12639", "13368", "invalid", None, "73"],
+            },
+            {
+                "name": "Неизвестные идентификаторы",
+                "territory_id": "invalid",
+                "territory_path": ["invalid", None],
+            },
+        ],
+    )
+    assert result.status == "ok"
+    assert result.allowed == (
+        "Без пути",
+        "Документ Карелии",
+        "Неизвестные идентификаторы",
+    )
+    assert result.excluded == ("Документ потомка",)
+
+
+async def test_root_leaf_without_applicable_documents_explains_why_once():
+    result = await resolve_geometry_documents(
+        {"territory_id": 12639, "name": "Россия", "parent_id": None},
+        [
+            {
+                "name": "Документ Гатчины",
+                "territory_id": 73,
+                "territory_path": [12639, 1, 67, 73],
+            }
+        ],
+    )
+    assert result.status == "empty"
+    assert result.allowed == ()
+    assert result.excluded == ("Документ Гатчины",)
+    assert result.outside_loaded_regions is True
+    assert result.message.count("вне регионов, загруженных в Urban API") == 1
+
+
+@pytest.mark.parametrize("outside_loaded_regions", [True, False])
+def test_territory_documents_round_trip_keeps_outside_loaded_regions(
+    outside_loaded_regions,
+):
+    result = TerritoryDocuments(
+        status="ok",
+        allowed=("Федеральный документ",),
+        place="files",
+        territories=("Россия",),
+        outside_loaded_regions=outside_loaded_regions,
+    )
+    assert result.to_dict()["outside_loaded_regions"] is outside_loaded_regions
+    assert TerritoryDocuments.from_dict(result.to_dict()) == result
 
 
 class FakeUrbanClient:

@@ -1,3 +1,9 @@
+## v0.26.2 (2026-10-23)
+
+[fix/ICII-208-territory-descendants](https://github.com/IDUclub/gMART/pull/247) (#247)
+
+- fix(agents): не считать действующими документы территорий ниже найденных по границе файлов
+
 ## v0.26.1 (2026-10-23)
 
 [fix/provision-effects-all-services-dev](https://github.com/IDUclub/gMART/pull/246) (#246)
