@@ -46,6 +46,7 @@ from .clarification import parse_choice, selected_choice
 from .context_reducer import current_context_window
 from .dvd_context import source_records
 from .query_terms import (
+    is_document_comparison_question,
     is_document_list_question,
     router_topic,
     split_task,
@@ -431,7 +432,11 @@ class RetrievalPlanner:
         ):
             return None
         literal = DESIGNATION.sub(" ", user_query)
-        if _NEEDS_PLANNER.search(literal) or is_document_list_question(question):
+        if (
+            _NEEDS_PLANNER.search(literal)
+            or is_document_list_question(question)
+            or is_document_comparison_question(question)
+        ):
             return None
         plan = self._clamp(
             validate_retrieval_plan(
@@ -464,6 +469,18 @@ class RetrievalPlanner:
         user_query: str,
         available_tags: list[str] | None = None,
     ) -> RetrievalPlan:
+        if plan.intent == "document_comparison" or is_document_comparison_question(
+            split_task(user_query)[0]
+        ):
+            return validate_retrieval_plan(
+                {
+                    **plan.model_dump(),
+                    "intent": "document_comparison",
+                    "retrieval_mode": "semantic",
+                    "pattern": None,
+                    "name_query": None,
+                }
+            )
         if choice := parse_choice(user_query):
             return validate_retrieval_plan({**plan.model_dump(), **choice})
         block = (plan.block or "").strip().lower() or None
@@ -591,7 +608,15 @@ class RetrievalPlanner:
             "include_shared": True,
             "search_query": "тема для векторного поиска",
             "alternative_queries": '[] | ["другая формулировка темы", ...]',
-            "intent": "norm | document_list",
+            "intent": "norm | document_list | document_comparison",
+            "comparison_left": {
+                "name": "название или null",
+                "doc_id": None,
+                "version": None,
+                "owner": None,
+            },
+            "comparison_right": None,
+            "comparison_topic": "null | только тема сравнения",
             "tags": 'null | ["тег из списка корпуса", ...]',
             "kind": "text | table | all",
             "limit": 10,
@@ -637,6 +662,16 @@ class RetrievalPlanner:
 8. intent=document_list, если спрашивают, КАКИЕ документы/регламенты/нормативы
    относятся к теме («в каких документах…», «какие есть регламенты…»); иначе norm.
    Для document_list: semantic, limit=15..20, context_height=0.
+8а. Сравнение документов или редакций: intent=document_comparison, semantic.
+   comparison_left/right: name (название/обозначение) или известный doc_id,
+   version — только явно названная редакция, owner=user/shared — только если указан.
+   Для версий одного документа повтори name справа, неназванные версии null.
+   Одну названную редакцию помещай слева, справа тот же документ без version.
+   comparison_topic — только предмет более узкий, чем целые документы («требования к парковкам»),
+   минимум два содержательных слова. Для сравнения документов целиком — null.
+   Никогда не записывай сюда слова сравнения («различия», «изменения», «сравнение»),
+   обозначения документов или годы редакций.
+   Не подменяй сравнение поиском норм. Не придумывай ID и редакции.
 9. «Задача:» после вопроса — поручение оркестратора этому агенту. Другие части
    вопроса выполняют другие агенты: search_query — тема задачи, не склеивай вопрос
    с задачей. intent определяй по вопросу пользователя, а не по словам задачи.

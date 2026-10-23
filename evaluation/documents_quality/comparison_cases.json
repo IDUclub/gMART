@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "note": "Отдельные сценарии сравнения ICII-151; не меняют замороженный набор cases.json. Требуют загрузить перечисленные редакции/пользовательские файлы. Проверяются по фактическому CompareResponse, без заранее придуманных различий.",
+  "cases": [
+    {
+      "id": "COMPARE-01",
+      "query": "Чем отличаются версии СП 42?",
+      "expect": ["document_comparison", "newest_and_previous", "other_available_editions", "citations_both_sides"]
+    },
+    {
+      "id": "COMPARE-02",
+      "query": "Что изменилось в требованиях к парковкам в СП 42 в редакции 2024 по сравнению с 2016?",
+      "expect": ["explicit_editions", "topic_query", "changed_numbers", "citations_both_sides"]
+    },
+    {
+      "id": "COMPARE-03",
+      "query": "Сравни требования к парковкам в СП 42 и СП 55.",
+      "expect": ["documents_mode", "clarify_ambiguous_editions", "no_legal_equivalence"]
+    },
+    {
+      "id": "COMPARE-04",
+      "query": "В чём различия моего загруженного документа «Проект А» и СП 42?",
+      "expect": ["user_identity_transport", "user_and_shared_sources", "clarification_if_unresolved"]
+    },
+    {
+      "id": "COMPARE-05",
+      "query": "Какие требования к парковкам в СП 42?",
+      "expect": ["norm", "no_compare_documents_call"]
+    }
+  ]
+}
