@@ -25,6 +25,29 @@ class UrbanApiClient:
         )
         return result["project"]["project_id"]
 
+    async def get_project_base_scenario_id(
+        self, token: str, scenario_id: int
+    ) -> int | None:
+        """
+        Function retrieves the project's base scenario ID by scenario_id.
+        Args:
+            token (str): Authorization token.
+            scenario_id (int): Scenario ID from Urban API.
+        Returns:
+            int | None: Project base scenario ID, or None if fields are missing.
+        """
+
+        scenario = await self.json_handler.get(
+            f"/v1/scenarios/{scenario_id}", auth_token=token
+        )
+        project_id = ((scenario or {}).get("project") or {}).get("project_id")
+        if project_id is None:
+            return None
+        project = await self.json_handler.get(
+            f"/v1/projects/{project_id}", auth_token=token
+        )
+        return ((project or {}).get("base_scenario") or {}).get("id")
+
     async def get_scenario_service_types(
         self, token: str, scenario_id: int
     ) -> dict[str, int]:

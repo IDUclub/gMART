@@ -8,12 +8,14 @@ from unittest.mock import AsyncMock
 import pytest
 from loguru import logger
 
+from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.exceptions.token_exceptions import TokenExpiredError
 from src.agents.services.pipeline_state import PipelineStatus, PipelineStep
 from src.agents.services.provision.provision_context import ProvisionContextBuilder
 from src.agents.services.provision.provision_plan_builder import ProvisionPlanBuilder
 from src.agents.services.provision.provision_tool_executor import ProvisionToolExecutor
 from src.agents.services.provision.provsion_service import (
+    BASE_SCENARIO_EFFECTS_MESSAGE,
     EFFECTS_SUMMARY_ANALYSIS_INSTRUCTIONS,
     POPULATION_HINT,
     ProvisionService,
@@ -115,6 +117,9 @@ def test_unknown_service_requires_clarification(mode, fields):
 
 def service_for(store, plan):
     svc = object.__new__(ProvisionService)
+    svc.urban_api_client = SimpleNamespace(
+        get_project_base_scenario_id=AsyncMock(return_value=771)
+    )
     svc.state_store = store
     svc.resolve_model = AsyncMock(return_value="m")
     svc.context_builder = ProvisionContextBuilder()
@@ -288,7 +293,9 @@ async def test_resume_after_analysis_interruption_skips_calculations(state_store
     assert PipelineStep.CALCULATE_EFFECTS_SUMMARY in checkpoint
     assert PipelineStep.FINAL_RESPONSE not in checkpoint
     svc._generate_analysis = original_analysis
+    svc.urban_api_client.get_project_base_scenario_id.reset_mock()
     events = await run(svc, mcp, request_id="resume-effects")
+    svc.urban_api_client.get_project_base_scenario_id.assert_not_awaited()
     assert mcp.calculate_object_effects.await_count == 2
     assert events[-1]["content"]["done"]
     assert len(svc.analysis_calls) == 1
@@ -358,6 +365,7 @@ async def test_resume_calculation_checkpoint_still_generates_answer(state_store)
     mcp = SimpleNamespace(calculate_object_effects=AsyncMock())
     events = await run(svc, mcp, request_id=request_id)
     mcp.calculate_object_effects.assert_not_awaited()
+    svc.urban_api_client.get_project_base_scenario_id.assert_not_awaited()
     assert len(svc.analysis_calls) == 1
     assert any(event["type"] == "table" for event in events)
     assert (await state_store.get_state(request_id))["status"] == PipelineStatus.DONE
@@ -372,3 +380,87 @@ async def test_missing_calculation_data_is_a_failure(state_store, payload):
     assert not svc.analysis_calls
     request_id = events[0]["content"]["request_id"]
     assert (await state_store.get_state(request_id))["status"] == PipelineStatus.FAILED
+
+
+async def test_base_scenario_skips_effects_summary(state_store):
+    svc = service_for(state_store, ProvisionPlan(mode="effects_summary"))
+    svc.urban_api_client.get_project_base_scenario_id.return_value = 772
+    mcp = SimpleNamespace(calculate_object_effects=AsyncMock())
+    events = await run(svc, mcp)
+    mcp.calculate_object_effects.assert_not_awaited()
+    svc.urban_api_client.get_project_base_scenario_id.assert_awaited_once_with("t", 772)
+    assert [e for e in events if e["type"] == "chunk"] == [
+        svc._chunk(BASE_SCENARIO_EFFECTS_MESSAGE, done=True)
+    ]
+    assert any(e["type"] == "status" for e in events)
+    assert not any(e["type"] in {"tool_call", "table"} for e in events)
+    assert not svc.analysis_calls
+    request_id = events[0]["content"]["request_id"]
+    assert (await state_store.get_state(request_id))["status"] == PipelineStatus.DONE
+
+
+@pytest.mark.parametrize("base_id", [771, None, RuntimeError("lookup failed")])
+async def test_base_lookup_fallback_runs_effects_summary(state_store, base_id):
+    svc = service_for(state_store, ProvisionPlan(mode="effects_summary"))
+    lookup = svc.urban_api_client.get_project_base_scenario_id
+    if isinstance(base_id, Exception):
+        lookup.side_effect = base_id
+    else:
+        lookup.return_value = base_id
+    mcp = SimpleNamespace(calculate_object_effects=AsyncMock(return_value=effects()))
+    logs = []
+    sink = logger.add(lambda message: logs.append(message.record))
+    try:
+        events = await run(svc, mcp)
+    finally:
+        logger.remove(sink)
+    assert mcp.calculate_object_effects.await_count == 2
+    assert svc.analysis_calls
+    assert events[-1]["content"]["done"]
+    if base_id is None or isinstance(base_id, Exception):
+        assert any(record["level"].name == "WARNING" for record in logs)
+
+
+async def test_base_lookup_token_expiration_propagates(state_store):
+    svc = service_for(state_store, ProvisionPlan(mode="effects_summary"))
+    svc.urban_api_client.get_project_base_scenario_id.side_effect = TokenExpiredError(
+        "expired"
+    )
+    mcp = SimpleNamespace(calculate_object_effects=AsyncMock())
+    with pytest.raises(TokenExpiredError):
+        await run(svc, mcp)
+    mcp.calculate_object_effects.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "scenario,project,expected",
+    [
+        (
+            {"project": {"project_id": 604}, "is_based": True},
+            {"base_scenario": {"id": 772}},
+            772,
+        ),
+        ({}, {}, None),
+        ({"project": None}, {}, None),
+        ({"project": {}}, {}, None),
+        ({"project": {"project_id": None}}, {}, None),
+        ({"project": {"project_id": 604}}, {}, None),
+        ({"project": {"project_id": 604}}, {"base_scenario": None}, None),
+        ({"project": {"project_id": 604}}, {"base_scenario": {}}, None),
+        ({"project": {"project_id": 604}}, {"base_scenario": {"id": None}}, None),
+    ],
+)
+async def test_get_project_base_scenario_id(scenario, project, expected):
+    handler = SimpleNamespace(get=AsyncMock(side_effect=[scenario, project]))
+    assert (
+        await UrbanApiClient(handler).get_project_base_scenario_id("t", 1146)
+        == expected
+    )
+    assert handler.get.await_args_list[0].args == ("/v1/scenarios/1146",)
+    assert handler.get.await_args_list[0].kwargs == {"auth_token": "t"}
+    if (scenario.get("project") or {}).get("project_id") is None:
+        assert handler.get.await_count == 1
+    else:
+        assert handler.get.await_count == 2
+        assert handler.get.await_args_list[1].args == ("/v1/projects/604",)
+        assert handler.get.await_args_list[1].kwargs == {"auth_token": "t"}

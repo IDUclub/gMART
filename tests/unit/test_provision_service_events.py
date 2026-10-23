@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.agents.api_clients.chat_storage_client.request_models import (
     TablePartRequest,
 )
+from src.agents.common.exceptions.token_exceptions import TokenExpiredError
 from src.agents.schema.provision_response import ProvisionResponse
+from src.agents.services.pipeline_state import PipelineStatus, PipelineStep
+from src.agents.services.provision.provision_context import ProvisionContextBuilder
 from src.agents.services.provision.provision_tool_executor import ProvisionToolExecutor
 from src.agents.services.provision.provsion_service import (
+    BASE_SCENARIO_EFFECTS_MESSAGE,
     POPULATION_HINT,
     ProvisionService,
 )
+from src.agents.services.service_entities.provision_plan import ProvisionPlan
 
 TABLE_EVENT = {
     "type": "table",
@@ -146,3 +152,100 @@ async def test_generate_analysis_without_note_keeps_terminal_chunk():
     ]
     assert chunks[-1]["content"]["done"] is True
     assert all(chunk["content"]["text"] != POPULATION_HINT for chunk in chunks)
+
+
+@pytest.mark.parametrize(
+    "base_id,checkpoint_present",
+    [
+        (772, False),
+        (771, False),
+        (None, False),
+        (RuntimeError("lookup failed"), False),
+        (772, True),
+    ],
+)
+async def test_single_effects_base_scenario_guard(
+    state_store, base_id, checkpoint_present
+):
+    service = ProvisionService.__new__(ProvisionService)
+    service.state_store = state_store
+    service.tool_executor = ProvisionToolExecutor()
+    service.context_builder = ProvisionContextBuilder()
+    service.llm_client = FakeStreamingLlm()
+    lookup = AsyncMock(return_value=base_id)
+    if isinstance(base_id, Exception):
+        lookup.side_effect = base_id
+    service.urban_api_client = SimpleNamespace(get_project_base_scenario_id=lookup)
+    idu_mcp = SimpleNamespace(execute_tool=AsyncMock(return_value=22))
+    effects_mcp = SimpleNamespace(calculate_object_effects=AsyncMock(return_value={}))
+    await state_store.create(
+        "single-effects",
+        chat_id=None,
+        user_query="compare",
+        scenario_id=772,
+        model="m",
+        temperature=0,
+    )
+    checkpoint = {}
+    if checkpoint_present:
+        checkpoint = {
+            PipelineStep.GET_SERVICE_ID: {"service_type_id": 22},
+            PipelineStep.CALCULATE_EFFECTS: {},
+        }
+    events = [
+        event
+        async for event in service._run_effects(
+            request_id="single-effects",
+            idu_mcp_client=idu_mcp,
+            effects_mcp_client=effects_mcp,
+            token_ref=["t"],
+            checkpoint=checkpoint,
+            plan=ProvisionPlan(mode="effects", service_name="Школы"),
+            model="m",
+            temperature=0,
+            user_query="compare",
+            scenario_id=772,
+            llm_history=[],
+        )
+    ]
+    if checkpoint_present:
+        lookup.assert_not_awaited()
+        idu_mcp.execute_tool.assert_not_awaited()
+        effects_mcp.calculate_object_effects.assert_not_awaited()
+    elif base_id == 772:
+        lookup.assert_awaited_once_with("t", 772)
+        idu_mcp.execute_tool.assert_not_awaited()
+        effects_mcp.calculate_object_effects.assert_not_awaited()
+        assert events == [
+            service._status("effects_calculation", BASE_SCENARIO_EFFECTS_MESSAGE),
+            service._chunk(BASE_SCENARIO_EFFECTS_MESSAGE, done=True),
+        ]
+    else:
+        idu_mcp.execute_tool.assert_awaited_once()
+        effects_mcp.calculate_object_effects.assert_awaited_once()
+    assert (await state_store.get_state("single-effects"))[
+        "status"
+    ] == PipelineStatus.DONE
+
+
+async def test_single_effects_base_lookup_token_expiration_propagates(state_store):
+    service = ProvisionService.__new__(ProvisionService)
+    service.state_store = state_store
+    service.urban_api_client = SimpleNamespace(
+        get_project_base_scenario_id=AsyncMock(side_effect=TokenExpiredError("expired"))
+    )
+    with pytest.raises(TokenExpiredError):
+        async for _ in service._run_effects(
+            request_id="expired",
+            idu_mcp_client=object(),
+            effects_mcp_client=object(),
+            token_ref=["t"],
+            checkpoint={},
+            plan=ProvisionPlan(mode="effects", service_name="Школы"),
+            model="m",
+            temperature=0,
+            user_query="compare",
+            scenario_id=772,
+            llm_history=[],
+        ):
+            pytest.fail("No events expected before token expiration propagates")

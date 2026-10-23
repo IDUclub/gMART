@@ -54,6 +54,11 @@ MessagePart = (
     TextPartRequest | StatusPartRequest | ToolCallPartRequest | TablePartRequest
 )
 
+BASE_SCENARIO_EFFECTS_MESSAGE = (
+    "Выбранный сценарий — базовый сценарий проекта, сравнивать не с чем. "
+    "Выберите другой сценарий проекта, чтобы сравнить его с базовым."
+)
+
 EFFECTS_SUMMARY_CONCURRENCY = 3
 EFFECTS_SUMMARY_ANALYSIS_INSTRUCTIONS = (
     "Сравни обеспеченность сервисами в выбранном сценарии с базовым сценарием "
@@ -597,6 +602,20 @@ class ProvisionService(BaseLlmService):
         scenario_id: int,
         llm_history: list[dict],
     ) -> AsyncGenerator:
+        if (
+            PipelineStep.CALCULATE_EFFECTS_SUMMARY not in checkpoint
+            and await self._is_project_base_scenario(token_ref[0], scenario_id)
+        ):
+            yield await self._buf(
+                request_id,
+                self._status("effects_calculation", BASE_SCENARIO_EFFECTS_MESSAGE),
+            )
+            yield await self._buf(
+                request_id, self._chunk(BASE_SCENARIO_EFFECTS_MESSAGE, done=True)
+            )
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
+
         names = plan.service_names or list(service_types)
         yield await self._buf(
             request_id,
@@ -918,6 +937,20 @@ class ProvisionService(BaseLlmService):
         scenario_id: int,
         llm_history: list[dict],
     ) -> AsyncGenerator:
+        if (
+            PipelineStep.CALCULATE_EFFECTS not in checkpoint
+            and await self._is_project_base_scenario(token_ref[0], scenario_id)
+        ):
+            yield await self._buf(
+                request_id,
+                self._status("effects_calculation", BASE_SCENARIO_EFFECTS_MESSAGE),
+            )
+            yield await self._buf(
+                request_id, self._chunk(BASE_SCENARIO_EFFECTS_MESSAGE, done=True)
+            )
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
+
         service_name: str = plan.service_name  # type: ignore[assignment]
         target_population: int | None = plan.target_population
 
@@ -1032,6 +1065,26 @@ class ProvisionService(BaseLlmService):
     # ------------------------------------------------------------------
     # Shared checkpointed steps
     # ------------------------------------------------------------------
+
+    async def _is_project_base_scenario(self, token: str, scenario_id: int) -> bool:
+        """Check the comparison baseline without blocking effects on lookup failures."""
+        try:
+            base_scenario_id = await self.urban_api_client.get_project_base_scenario_id(
+                token, scenario_id
+            )
+        except TokenExpiredError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                f"Failed to fetch project base scenario for scenario_id={scenario_id}: {exc}"
+            )
+            return False
+        if base_scenario_id is None:
+            logger.warning(
+                f"Missing project base scenario for scenario_id={scenario_id}"
+            )
+            return False
+        return scenario_id == base_scenario_id
 
     async def _get_service_id_step(
         self,
