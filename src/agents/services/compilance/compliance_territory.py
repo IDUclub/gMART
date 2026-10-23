@@ -10,7 +10,8 @@ is assumed in force when IDU_DVD cannot say: the filter is strict.
 A check of user files without a scenario has no project boundary in Urban API; the
 boundary from the files names the territories instead (``resolve_geometry``): IDU
 MCP finds the deepest Urban API territories it lies in, and IDU_DVD lists the
-documents of those territories and of every territory above them.
+documents of those territories, their ancestors and their descendants. A complete
+descent rules out descendants of the resolved leaves: none intersects the boundary.
 """
 
 from __future__ import annotations
@@ -41,6 +42,10 @@ _NO_DOCUMENTS = (
     "На территории {place} не найдено действующих документов с нормами из графа "
     "норм. Нормы не применялись."
 )
+_OUTSIDE_LOADED_REGIONS = (
+    "Граница проекта находится вне регионов, загруженных в Urban API. "
+    "Применимы только документы корневого уровня."
+)
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,7 @@ class TerritoryDocuments:
     place: Place = "scenario"
     # Names of the Urban API territories found from the files' boundary.
     territories: tuple[str, ...] = ()
+    outside_loaded_regions: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +69,7 @@ class TerritoryDocuments:
             "message": self.message,
             "place": self.place,
             "territories": list(self.territories),
+            "outside_loaded_regions": self.outside_loaded_regions,
         }
 
     @classmethod
@@ -74,6 +81,7 @@ class TerritoryDocuments:
             message=data.get("message"),
             place="files" if data.get("place") == "files" else "scenario",
             territories=tuple(data.get("territories") or ()),
+            outside_loaded_regions=data.get("outside_loaded_regions", False),
         )
 
     def note(self) -> str:
@@ -81,10 +89,13 @@ class TerritoryDocuments:
         where = _PLACES[self.place]
         if self.territories:
             where += " (" + ", ".join(self.territories) + ")"
-        return (
+        note = (
             f"Учтены только документы, действующие на территории {where}: "
             f"{len(self.allowed)}; не действуют на ней: {len(self.excluded)}."
         )
+        if self.outside_loaded_regions:
+            note += " " + _OUTSIDE_LOADED_REGIONS
+        return note
 
 
 class ComplianceTerritoryFilter:
@@ -141,6 +152,23 @@ class ComplianceTerritoryFilter:
             return _unavailable(
                 f"ошибка сервиса документов IDU_DVD ({exc})", place="files"
             )
+        complete = found.get("complete") is True
+        if complete:
+            # DVD includes descendants, but no child of a resolved leaf intersects
+            # the boundary. Missing paths remain eligible conservatively.
+            leaf_ids = set(territory_ids)
+            before = len(in_force)
+            in_force = [
+                item for item in in_force if not _strictly_below_leaf(item, leaf_ids)
+            ]
+            logger.info(
+                "Compliance territory territory_ids={} descendant_documents_dropped={}",
+                territory_ids,
+                before - len(in_force),
+            )
+        outside_loaded_regions = complete and all(
+            item.get("parent_id") is None for item in territories
+        )
         result = await self._match(
             in_force,
             normgraph_client,
@@ -149,6 +177,12 @@ class ComplianceTerritoryFilter:
         )
         return replace(
             result,
+            outside_loaded_regions=outside_loaded_regions,
+            message=(
+                result.message + " " + _OUTSIDE_LOADED_REGIONS
+                if outside_loaded_regions and result.message
+                else result.message
+            ),
             territories=tuple(
                 str(item["name"]) for item in territories if item.get("name")
             ),
@@ -199,6 +233,25 @@ class ComplianceTerritoryFilter:
         return TerritoryDocuments(
             status="ok", allowed=tuple(allowed), excluded=tuple(excluded), place=place
         )
+
+
+def _integer_id(value: Any) -> int | None:
+    """DVD can encode the same territory ID as a number or a string."""
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _strictly_below_leaf(document: dict[str, Any], leaf_ids: set[int]) -> bool:
+    """Only a known ancestor path can rule a document out as a descendant."""
+    territory_id = _integer_id(document.get("territory_id"))
+    path_ids = {
+        path_id
+        for value in document.get("territory_path") or ()
+        if (path_id := _integer_id(value)) is not None
+    }
+    return any(leaf_id != territory_id for leaf_id in leaf_ids & path_ids)
 
 
 def _unavailable(reason: str, *, place: Place = "scenario") -> TerritoryDocuments:
