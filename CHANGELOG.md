@@ -1,3 +1,11 @@
+## v0.26.1 (2026-10-23)
+
+[fix/provision-effects-all-services-dev](https://github.com/IDUclub/gMART/pull/246) (#246)
+
+- fix(agents): сравнивать эффекты обеспеченности по всем сервисам сценария
+- fix(agents): описывать сравнение эффектов как сравнение выбранного сценария с базовым
+- fix(agents): не сравнивать базовый сценарий проекта с самим собой
+
 ## v0.26.0 (2026-10-22)
 
 [feat/ICII-208-do-scope](https://github.com/IDUclub/gMART/pull/243) (#243)
