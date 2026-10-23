@@ -1,3 +1,9 @@
+## v0.27.0 (2026-10-23)
+
+[feat/ICII-151-doc-comparasion](https://github.com/IDUclub/gMART/pull/248) (#248)
+
+- feat(agents): сравнивать документы и редакции документа в агенте документов
+
 ## v0.26.2 (2026-10-23)
 
 [fix/ICII-208-territory-descendants](https://github.com/IDUclub/gMART/pull/247) (#247)

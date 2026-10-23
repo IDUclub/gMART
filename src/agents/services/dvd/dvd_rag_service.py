@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
+from fastmcp.exceptions import ToolError
 from loguru import logger
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
@@ -24,6 +25,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
+from src.agents.model_clients.context_budget import output_budget
 from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.dvd import (
@@ -45,7 +47,11 @@ from src.agents.services.dvd.clarification import (
     ranked_choices,
     selected_choice,
 )
-from src.agents.services.dvd.context_reducer import DvdContextReducer, PreparedContext
+from src.agents.services.dvd.context_reducer import (
+    DvdContextReducer,
+    PreparedContext,
+    current_context_window,
+)
 from src.agents.services.dvd.conversation_evidence import (
     ConversationEvidence,
     compact_hits,
@@ -58,6 +64,18 @@ from src.agents.services.dvd.dialogue import (
     pending_question,
     render_question,
     resolve_reply,
+)
+from src.agents.services.dvd.document_comparison import (
+    COMPARISON_PROMPT,
+    ComparisonClarification,
+    ComparisonClient,
+    build_comparison_context,
+    comparison_notice,
+    comparison_numbers_supported,
+    has_paired_citations,
+    literal_comparison,
+    prepare_comparison_response,
+    resolve_comparison,
 )
 from src.agents.services.dvd.document_reference import (
     parse_reference,
@@ -75,6 +93,7 @@ from src.agents.services.dvd.fragment_continuation import complete_cut_fragments
 from src.agents.services.dvd.partial_answer import PartialAnswerEvidence
 from src.agents.services.dvd.query_terms import (
     TASK_LABEL,
+    is_document_comparison_question,
     mentioned_documents,
     split_task,
 )
@@ -86,6 +105,7 @@ from src.agents.services.dvd.retrieval_scope import (
 )
 from src.agents.services.dvd.retry_policy import (
     CriticBudgetError,
+    CriticResponseError,
     normalized_query,
     retrieval_key,
 )
@@ -654,7 +674,11 @@ class DvdRagService(BaseLlmService):
             )
             intent_query = original + "\n" + user_query
 
-        if not progress and not collected.get("reply_plan"):
+        if (
+            not progress
+            and not collected.get("reply_plan")
+            and not is_document_comparison_question(user_query)
+        ):
             async for event in self._answer_from_context(
                 model, user_query, history, collected, request_id
             ):
@@ -713,6 +737,19 @@ class DvdRagService(BaseLlmService):
             # The chat is needed from here on (document scope, clarifications).
             for event in await self._join_chat_setup(request_id, collected):
                 yield event
+            if plan.intent == "document_comparison":
+                async for event in self._run_comparison(
+                    dvd_mcp_client,
+                    plan,
+                    model,
+                    intent_query,
+                    history,
+                    collected,
+                    request_id,
+                    scenario_id,
+                ):
+                    yield event
+                return
             plan = apply_scope(
                 plan, user_query, collected.get("document_scope"), history
             )
@@ -1539,6 +1576,206 @@ class DvdRagService(BaseLlmService):
     # LLM answer generation (streaming)
     # ------------------------------------------------------------------
 
+    async def _run_comparison(
+        self, client, plan, model, question, history, collected, request_id, scenario_id
+    ):
+        metrics = run_metrics(collected)
+        collected["intent"] = "document_comparison"
+        metrics.decide(query_type="document_comparison", rag_iterations=1)
+        proxy = ComparisonClient(client)
+        message, pending, response, note = None, None, None, ""
+        yield await self._buf(
+            request_id, self._status("searching", "Сопоставляю документы и редакции…")
+        )
+        try:
+            with metrics.stage("retrieval"):
+                resolved = await resolve_comparison(proxy, plan, question, scenario_id)
+                note = resolved.note
+                comparison_budget = max(
+                    512, int(self.context_reducer.budget(question, history) * 0.8)
+                )
+                resolved.arguments.update(
+                    limit=max(8, min(60, comparison_budget // 450)), max_chars=600
+                )
+                response = await resolved.compare(proxy)
+        except ComparisonClarification as exc:
+            message, pending = str(exc), exc.pending
+        except ToolError:
+            logger.warning(
+                "DVD comparison resolution/tool error request_id={}", request_id
+            )
+            message = (
+                "Не удалось сопоставить документы. Уточните оба документа и их редакции: "
+                "документ может быть недоступен либо иметь несколько редакций. "
+                "Для пользовательских файлов проверьте выбранный проект."
+            )
+        metrics.add("retrieval_rounds")
+        metrics.add("mcp_calls", len(proxy.calls))
+        for call in proxy.calls:
+            collected["tool_calls"].append(call)
+            yield await self._buf(
+                request_id,
+                self._tool_call(_EXECUTION_MODE, [call], mcp_source=_MCP_SOURCE),
+            )
+        if collected.get("chat_id"):
+            await self.state_store.set_document_question(collected["chat_id"], pending)
+        if message is not None:
+            async for event in self._finish_retrieval(
+                request_id, collected, message, 1
+            ):
+                yield event
+            return
+        response = prepare_comparison_response(response, comparison_budget)
+        summary, context, refs = build_comparison_context(
+            response, budget=comparison_budget
+        )
+        collected["citations"] = refs
+        notice = comparison_notice(response)
+        if not response.get("changes"):
+            answer = (
+                "Детали изменений не поместились в бюджет контекста. Уточните раздел или тему сравнения."
+                if response.get("omitted_changes")
+                else "В сопоставленной выборке различий не найдено."
+            )
+        else:
+            yield await self._buf(
+                request_id,
+                self._status("answer_drafting", "Готовлю сравнение с источниками…"),
+            )
+            draft = ""
+            context_failures = []
+            metrics.add("drafts")
+            try:
+                with metrics.stage("answer_generation"):
+                    async for event in self._generate_answer(
+                        model,
+                        question,
+                        context,
+                        _answer_temperature(),
+                        history,
+                        1,
+                        intent="document_comparison",
+                        comparison_summary=summary,
+                        context_failures=context_failures,
+                    ):
+                        draft += event.get("content", {}).get("text", "")
+            except AnswerGenerationError:
+                # A large comparison still has a useful deterministic result.
+                context_failures.append("comparison_draft_unavailable")
+            used = set(re.findall(r"\[\d+\]", draft))
+            # Repair citation-only defects once, using the same paired evidence.
+            # The repaired draft still passes the full critic and literal checks.
+            unlabelled = re.sub(r"\[(?:N|\d+)\]", "", draft)
+            if (
+                draft.strip()
+                and not context_failures
+                and (not used or not used <= set(refs) or "[N]" in draft)
+                and not AnswerCritic._literal_defects(context, unlabelled)
+                and comparison_numbers_supported(
+                    response, summary + "\n" + context, draft
+                )
+            ):
+                revised = ""
+                metrics.add("drafts")
+                try:
+                    with metrics.stage("revision"):
+                        async for event in self._generate_answer(
+                            model,
+                            question,
+                            context,
+                            _answer_temperature(),
+                            history,
+                            2,
+                            revision_note=(
+                                "добавь метки источников [N] к каждому пункту. "
+                                "Используй только конкретные метки из контекста; "
+                                "для сравнения цитируй обе стороны. Сохрани смысл черновика:\n"
+                                + draft
+                            ),
+                            intent="document_comparison",
+                            comparison_summary=summary,
+                            context_failures=context_failures,
+                        ):
+                            revised += event.get("content", {}).get("text", "")
+                    draft = revised
+                    metrics.decide(revision_used=True)
+                except AnswerGenerationError:
+                    context_failures.append("comparison_revision_unavailable")
+            yield await self._buf(
+                request_id,
+                self._status("self_review", "Проверяю сравнение по источникам…"),
+            )
+            critic_question = question + "\n" + COMPARISON_PROMPT + "\n" + summary
+            # Match review's initial request, including its repeated claim texts.
+            critic_messages = [
+                {"role": "system", "content": AnswerCritic._prompt()},
+                {
+                    "role": "user",
+                    "content": AnswerCritic._payload(critic_question, context, draft),
+                },
+            ]
+            budget = await output_budget(
+                self.llm_client,
+                model,
+                critic_messages,
+                current_context_window(),
+                reasoning_effort=critic_reasoning_effort(self.llm_client, model),
+            )
+            accepted = True
+            if budget.window_rest < 128:
+                metrics.add("critic_skipped")
+            else:
+                metrics.add("critic_calls")
+                metrics.add(
+                    "critic_input_bytes",
+                    sum(len(m["content"].encode("utf-8")) for m in critic_messages),
+                )
+                try:
+                    with metrics.stage("critic"):
+                        verdict = await self.critic.review(
+                            model,
+                            critic_question,
+                            context,
+                            draft,
+                            intent="document_comparison",
+                            literal_context=context,
+                        )
+                    accepted = verdict.satisfied
+                except (CriticResponseError, ValueError) as exc:
+                    if not isinstance(exc, CriticResponseError) and not any(
+                        marker in str(exc).lower()
+                        for marker in (
+                            "context window",
+                            "context_window",
+                            "context budget",
+                        )
+                    ):
+                        raise
+                    metrics.add("critic_fallbacks")
+            # Comparison summaries need not literally restate individual claims.
+            defects = AnswerCritic._literal_defects(context, draft)
+            known = set(refs)
+            used = set(re.findall(r"\[\d+\]", draft))
+            accepted = (
+                accepted
+                and bool(used)
+                and used <= known
+                and not defects
+                and not context_failures
+                and has_paired_citations(response, draft)
+                and comparison_numbers_supported(
+                    response, summary + "\n" + context, draft
+                )
+            )
+            answer = (
+                draft + "\n\n" + literal_comparison(response, numbers_only=True)
+                if accepted
+                else literal_comparison(response)
+            )
+        answer = "\n\n".join(filter(None, [notice, note, answer]))
+        async for event in self._finish_retrieval(request_id, collected, answer, 1):
+            yield event
+
     async def _generate_answer(
         self,
         model: str,
@@ -1551,6 +1788,7 @@ class DvdRagService(BaseLlmService):
         *,
         context_failures: list[str] | None = None,
         intent: str = "norm",
+        comparison_summary: str = "",
     ) -> AsyncGenerator[dict[str, Any], None]:
         with_knowledge = knowledge_block.enabled()
         system = (
@@ -1602,6 +1840,14 @@ class DvdRagService(BaseLlmService):
         )
         if intent == "document_list":
             system += _DOCUMENT_LIST_ANSWER
+        if intent == "document_comparison":
+            system = (
+                COMPARISON_PROMPT
+                + "\n"
+                + NO_SYSTEM_IDS_RULE
+                + "\n"
+                + comparison_summary
+            )
         if wants_full_quote(user_query):
             system += "\nДай краткое объяснение смысла выбранного пункта. Сохрани существенные условия и исключения. Даже короткая формулировка в источнике является текстом пункта: не утверждай, что текст отсутствует, когда он приведён. Полную дословную цитату приложение добавит отдельно; не переписывай её в объяснении.\n"
         if revision_note:

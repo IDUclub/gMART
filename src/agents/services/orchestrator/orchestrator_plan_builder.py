@@ -8,7 +8,10 @@ from pydantic import ValidationError
 
 from src.agents.dto.pzz_request_dto import PzzInputs
 from src.agents.services.dvd.document_reference import parse_reference
-from src.agents.services.dvd.query_terms import is_document_list_question
+from src.agents.services.dvd.query_terms import (
+    is_document_comparison_question,
+    is_document_list_question,
+)
 from src.agents.services.orchestrator.orchestrator_catalog import AgentCatalogEntry
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.orchestrator_plan import (
@@ -59,6 +62,28 @@ class OrchestratorPlanBuilder:
             pzz_inputs=pzz_inputs,
             compliance_uploads=compliance_uploads,
         )
+        if is_document_comparison_question(user_query) and any(
+            entry.key == OrchestratorAgent.DOCUMENTS for entry in agents
+        ):
+            # Preserve independent tasks in a mixed question. Comparison itself
+            # belongs to DVD, even if the model selected the normative graph.
+            only_norms = all(
+                step.agent == OrchestratorAgent.NORMS for step in plan.steps
+            )
+            steps = [
+                step
+                for step in plan.steps
+                if step.agent != OrchestratorAgent.NORMS
+                or not (
+                    only_norms
+                    or re.search(r"сравн|различ|отлич|изменил", step.task, re.I)
+                )
+            ]
+            if not any(step.agent == OrchestratorAgent.DOCUMENTS for step in steps):
+                steps.append(
+                    OrchestratorStep(agent=OrchestratorAgent.DOCUMENTS, task=user_query)
+                )
+            plan = OrchestratorPlan(mode=OrchestratorPlanMode.EXECUTE, steps=steps)
         plan = self._canonicalize_plan(plan, agents)
         plan = self._complement_regulation_steps(plan, agents, user_query)
         if (
@@ -106,7 +131,11 @@ class OrchestratorPlanBuilder:
         inconsistently, so a single-source plan is completed deterministically:
         norms first, then documents, which receives the norms digest as context.
         """
-        if plan.mode != OrchestratorPlanMode.EXECUTE or not plan.steps:
+        if (
+            plan.mode != OrchestratorPlanMode.EXECUTE
+            or not plan.steps
+            or is_document_comparison_question(user_query)
+        ):
             return plan
         pair = {OrchestratorAgent.NORMS, OrchestratorAgent.DOCUMENTS}
         used = {step.agent for step in plan.steps}
