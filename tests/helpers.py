@@ -157,6 +157,9 @@ class FakeUrbanApiClient:
             raise self.raise_exc
         return self.project_id
 
+    async def get_project_base_scenario_id(self, token, scenario_id):
+        return scenario_id + 1
+
 
 # ---------------------------------------------------------------------------
 # JSON builders (what the planner / critic LLM would return)

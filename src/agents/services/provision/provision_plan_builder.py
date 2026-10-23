@@ -63,6 +63,17 @@ class ProvisionPlanBuilder:
         self, plan: ProvisionPlan, services_catalog: list[str]
     ) -> ProvisionPlan:
         """Resolve every LLM-provided service name to its canonical catalog form."""
+        if (
+            plan.mode == ProvisionPlanMode.EFFECTS
+            and not (plan.service_name or "").strip()
+        ):
+            plan = plan.model_copy(
+                update={
+                    "mode": ProvisionPlanMode.EFFECTS_SUMMARY,
+                    "service_name": None,
+                    "service_names": [],
+                }
+            )
         if plan.mode in (ProvisionPlanMode.EFFECTS, ProvisionPlanMode.PROVISION):
             canonical = (
                 self._find_canonical(plan.service_name, services_catalog)
@@ -78,7 +89,7 @@ class ProvisionPlanBuilder:
                 )
             return plan.model_copy(update={"service_name": canonical})
 
-        if plan.mode == ProvisionPlanMode.SUMMARY:
+        if plan.mode in (ProvisionPlanMode.SUMMARY, ProvisionPlanMode.EFFECTS_SUMMARY):
             requested = self._canonicalize_names(plan.service_names, services_catalog)
             if plan.service_names and not requested:
                 return ProvisionPlan(
@@ -156,7 +167,7 @@ class ProvisionPlanBuilder:
     @staticmethod
     def _build_prompt(services_catalog: list[str]) -> str:
         response_structure = {
-            "mode": "effects | provision | summary | list_services | needs_clarification",
+            "mode": "effects | effects_summary | provision | summary | list_services | needs_clarification",
             "service_name": "точное название сервиса из доступных или null",
             "service_names": ["названия сервисов для сводки или пустой список"],
             "layer_service_names": [
@@ -174,9 +185,11 @@ class ProvisionPlanBuilder:
 {json.dumps(response_structure, ensure_ascii=False)}
 
 Режимы (mode):
+- "effects_summary" — сравнение до/после, эффекты, изменения или влияние проекта по всем или нескольким сервисам; также эффекты без названия одного конкретного сервиса.
+Примеры: «сравни обеспеченность по всем сервисам до и после реализации проекта», «как проект повлияет на обеспеченность всеми сервисами?», «сравнение эффектов обеспеченности по всем сервисам», «какие сервисы проект улучшит сильнее всего?».
 - "list_services" — пользователь спрашивает, какие сервисы есть/доступны в проекте, \
 сценарии или контексте. Примеры: «какие сервисы есть в проекте?», «что доступно для анализа?».
-- "summary" — пользователь просит сводку/обзор обеспеченности по всем или нескольким сервисам, \
+- "summary" — только текущее состояние, без сравнения до/после и без влияния проекта: пользователь просит сводку/обзор обеспеченности по всем или нескольким сервисам, \
 либо спрашивает, какими сервисами территория/проект/население обеспечены хуже или лучше всего. \
 Примеры: «дай сводку по обеспеченности сервисами», «какими сервисами меньше всего обеспечен проект?».
 - "provision" — вопрос о ТЕКУЩЕЙ обеспеченности одним конкретным сервисом, без упоминания \
@@ -192,14 +205,14 @@ class ProvisionPlanBuilder:
 - service_name — только для "effects" и "provision": ТОЧНОЕ название, скопированное дословно \
 из списка доступных сервисов. Не используй форму слова из запроса пользователя. \
 Склонения и множественное число из запроса замени точной формой из каталога выше.
-- service_names — только для "summary": список точных названий из доступных, если пользователь \
+- service_names — только для "summary" и "effects_summary": список точных названий из доступных, если пользователь \
 ограничил сводку конкретными сервисами; иначе пустой список (значит — по всем доступным).
-- layer_service_names — только для "summary": точные названия сервисов, для которых пользователь \
+- layer_service_names — только для "summary" и "effects_summary": точные названия сервисов, для которых пользователь \
 ЯВНО попросил показать слои/карту/геометрию; иначе пустой список.
 - Слова «проект», «сценарий», «территория», «население» обозначают контекст анализа, \
 а не названия сервисов. Не сопоставляй их с каталогом сервисов.
 - target_population — целевая численность населения для расчёта (для "effects", "provision" \
-и "summary"): заполняй, только если пользователь явно указал число жителей в текущем запросе \
+и "summary", "effects_summary"): заполняй, только если пользователь явно указал число жителей в текущем запросе \
 или ранее в диалоге; иначе null.
 - clarification_question обязателен при mode = "needs_clarification": укажи, чего именно не хватает, \
 перечисли все доступные сервисы и попроси уточнить запрос.

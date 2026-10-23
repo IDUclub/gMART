@@ -5,6 +5,7 @@ from pydantic import BaseModel, model_validator
 
 class ProvisionPlanMode(StrEnum):
     EFFECTS = "effects"
+    EFFECTS_SUMMARY = "effects_summary"
     PROVISION = "provision"
     SUMMARY = "summary"
     LIST_SERVICES = "list_services"
