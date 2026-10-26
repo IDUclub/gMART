@@ -1,3 +1,9 @@
+## v0.28.1 (2026-10-26)
+
+[chore/prod-default-llm-model](https://github.com/IDUclub/gMART/pull/251) (#251)
+
+- fix(build_and_deploy_all): передавать DEFAULT_LLM_MODEL в прод-контейнеры
+
 ## v0.28.0 (2026-10-26)
 
 [feat/ICII-205-img-processing](https://github.com/IDUclub/gMART/pull/250) (#250)
