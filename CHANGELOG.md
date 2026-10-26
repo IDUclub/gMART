@@ -1,3 +1,9 @@
+## v0.28.1 (2026-10-26)
+
+[fix/ICII-205-critic-latency](https://github.com/IDUclub/gMART/pull/252) (#252)
+
+- fix(agents): ускорить проверку ответов критиком агента документов
+
 ## v0.28.0 (2026-10-26)
 
 [feat/ICII-205-img-processing](https://github.com/IDUclub/gMART/pull/250) (#250)
