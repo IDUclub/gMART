@@ -109,7 +109,7 @@ async def test_local_corrections_do_not_request_new_evidence(fake_llm):
     assert not verdict.satisfied and not verdict.needs_evidence
     assert [c.target for c in verdict.corrections] == [ROOF]
     schema = fake_llm.chat_calls[0].format["$defs"]["Correction"]
-    assert schema["properties"]["target"]["enum"] == [ROOF, ACCESS, ""]
+    assert schema["properties"]["target"]["enum"] == ["L1", "L2", ""]
     assert schema["properties"]["source_id"]["enum"] == ["[1]", ""]
 
 
@@ -158,8 +158,8 @@ async def test_verified_lines_are_not_audited_again(fake_llm):
         verified=[kept],
     )
     call = fake_llm.chat_calls[0]
-    choices = call.format["$defs"]["AuditedClaim"]["properties"]["text"]
-    assert choices["enum"] == [FIXED_ROOF]
+    choices = call.format["$defs"]["LineClaim"]["properties"]["line"]
+    assert choices["enum"] == ["L1"]
     assert "already_verified_lines" in call.messages[-1]["content"]
     assert verdict.satisfied and kept in verdict.claims
 
@@ -193,8 +193,8 @@ async def test_rejected_draft_is_repaired_without_redrafting(service, fake_llm):
     assert len(client.search_calls) == 1
     revision, review = [c for c in fake_llm.chat_calls if not c.stream][-2:]
     assert "замени пункт 6.1.14 на 6.1.11" in revision.messages[-1]["content"]
-    audited = review.format["$defs"]["AuditedClaim"]["properties"]["text"]
-    assert audited["enum"] == [FIXED_ROOF]
+    audited = review.format["$defs"]["LineClaim"]["properties"]["line"]
+    assert audited["enum"] == ["L1"]
     statuses = [e["content"].get("text") or "" for e in events if e["type"] == "status"]
     assert any("Исправляю отмеченные места" in m for m in statuses)
 
