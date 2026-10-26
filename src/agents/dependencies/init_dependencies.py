@@ -107,7 +107,7 @@ def init_dependencies() -> dict[str, object]:
             service_client_id=app_config.SYNAPSE_A2A_CLIENT_ID,
             audience=app_config.SYNAPSE_AUTH_AUDIENCE,
         )
-    file_store = TemporaryFileStore(public_base_url=app_config.PUBLIC_BASE_URL)
+    file_store = TemporaryFileStore()
     restriction_parser_service = RestrictionParserService(
         app_config.OLLAMA_URL,
         chat_storage_client,
@@ -136,6 +136,7 @@ def init_dependencies() -> dict[str, object]:
         chat_storage_client,
         urban_api_client,
         pipeline_state_store,
+        dvd_api_url=app_config.DVD_API_URL,
     )
     normgraph_rag_service = NormGraphRagService(
         app_config.OLLAMA_URL,

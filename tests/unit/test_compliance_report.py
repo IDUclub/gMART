@@ -292,7 +292,7 @@ async def _run(service, owner="user-1"):
 
 
 async def test_pipeline_closes_stream_with_report_file_event(tmp_path):
-    store = TemporaryFileStore(tmp_path, public_base_url="http://gmart.example/")
+    store = TemporaryFileStore(tmp_path)
     events = await _run(_service(store))
     await asyncio.sleep(0)
 
@@ -306,7 +306,7 @@ async def test_pipeline_closes_stream_with_report_file_event(tmp_path):
     assert descriptor["source_service"] == "gmart"
     assert descriptor["filename"].startswith("compliance_report_772_")
     assert descriptor["filename"].endswith(".md")
-    assert descriptor["url"].startswith("http://gmart.example/files/compliance_report/")
+    assert descriptor["url"].startswith("/files/compliance_report/")
     assert descriptor["download_url"] == descriptor["url"] + "?download=1"
 
     file_id = descriptor["url"].rsplit("/", 1)[1]
@@ -371,8 +371,8 @@ def test_history_keeps_file_link_without_role_and_download_url():
                 "name": "compliance_report",
                 "title": "Отчёт",
                 "role": "result",
-                "url": "http://gmart/files/compliance_report/id",
-                "download_url": "http://gmart/files/compliance_report/id?download=1",
+                "url": "/files/compliance_report/id",
+                "download_url": "/files/compliance_report/id?download=1",
                 "filename": "report.md",
                 "mime_type": "text/markdown",
                 "source_service": "gmart",

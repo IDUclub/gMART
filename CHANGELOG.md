@@ -1,3 +1,9 @@
+## v0.28.0 (2026-10-26)
+
+[feat/ICII-205-img-processing](https://github.com/IDUclub/gMART/pull/250) (#250)
+
+- feat(agents): показывать рисунки из документов в ответах агента документов
+
 ## v0.27.0 (2026-10-23)
 
 [feat/ICII-151-doc-comparasion](https://github.com/IDUclub/gMART/pull/248) (#248)

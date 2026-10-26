@@ -78,7 +78,6 @@ def load_config() -> AgentsAppConfig:
                 ).lower()
                 in {"1", "true", "yes", "on"},
                 **synapse_settings(),
-                public_base_url=os.getenv("PUBLIC_BASE_URL"),
             )
     logger.info("No .env file found; loading configuration from process environment")
     try:
@@ -109,7 +108,6 @@ def load_config() -> AgentsAppConfig:
             ).lower()
             in {"1", "true", "yes", "on"},
             **synapse_settings(),
-            public_base_url=os.getenv("PUBLIC_BASE_URL"),
         )
     except ValueError:
         raise

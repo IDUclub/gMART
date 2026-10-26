@@ -44,7 +44,8 @@ from . import flags
 from .answer_risk import AnswerRisk
 from .clarification import parse_choice, selected_choice
 from .context_reducer import current_context_window
-from .dvd_context import source_records
+from .dvd_context import has_figures, source_records
+from .figures import FIGURE_CRITIC_RULE
 from .query_terms import (
     is_document_comparison_question,
     is_document_list_question,
@@ -747,7 +748,7 @@ class AnswerCritic:
         messages: list[dict] = [
             {
                 "role": "system",
-                "content": self._prompt()
+                "content": self._prompt(context)
                 + (
                     "\nThis is an answer from conversation context BEFORE retrieval. "
                     "Reject refusals and claims that evidence is insufficient: they mean "
@@ -1011,7 +1012,7 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
         return defects
 
     @staticmethod
-    def _prompt() -> str:
+    def _prompt(context: str = "") -> str:
         structure = {
             "claims": [
                 {
@@ -1043,8 +1044,9 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
             "critique": "кратко: что не так с ответом (пусто, если всё хорошо)",
             "refined_search_query": "улучшенный поисковый запрос или null",
         }
+        figure_rule = FIGURE_CRITIC_RULE if has_figures(context) else ""
         return f"""Audit a Russian answer against the supplied document EXCERPTS, not your prior knowledge.
-Return JSON only: {json.dumps(structure, ensure_ascii=False)}
+{figure_rule}Return JSON only: {json.dumps(structure, ensure_ascii=False)}
 First inspect every assertion and list evidence defects; only then decide satisfied.
 Audit each material factual statement explicitly in claims, even if the overall
 answer is rejected. Choose text ONLY from allowed_claim_texts (also constrained by

@@ -2,10 +2,11 @@ import asyncio
 import json
 from collections.abc import AsyncIterable
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from fastapi.sse import EventSourceResponse
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from src.agents.api_clients.dvd_api_client import DvdApiClient
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
@@ -16,6 +17,7 @@ from src.agents.common.exceptions.base_exceptions import (
 )
 from src.agents.dependencies.dependencies import (
     get_dvd_api_client,
+    get_dvd_figure_client,
     get_dvd_mcp_client,
     get_dvd_rag_service,
     get_urban_api_client,
@@ -23,12 +25,37 @@ from src.agents.dependencies.dependencies import (
 from src.agents.dto.dvd_request_dto import DocumentQaRequestDTO
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.schema.dvd_response import DvdResponse
+from src.agents.schema.file_event import file_sse_event
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.dvd.runs import stream_document_run, validate_resume
 
 dvd_router = APIRouter(prefix="/documents", tags=["documents"])
 
 _TERMINAL_DOCUMENT_JOB_STATUSES = {"done", "error"}
+
+
+@dvd_router.get("/figures/{node_id}")
+async def get_document_figure(
+    node_id: str,
+    project_id: str | None = None,
+    scenario_id: str | None = None,
+    download: bool = False,
+    dvd_api_client: DvdApiClient = Depends(get_dvd_figure_client),
+):
+    """Serve a permanent figure through the same public scope as document QA."""
+    image = await dvd_api_client.get_figure_image(
+        node_id, project_id=project_id, scenario_id=scenario_id
+    )
+    disposition = "attachment" if download else "inline"
+    filename = quote(f"figure-{node_id}.png", safe="")
+    return StreamingResponse(
+        iter([image]),
+        media_type="image/png",
+        headers={
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{filename}",
+            "Cache-Control": "private",
+        },
+    )
 
 
 async def _stream_document_job_snapshots(
@@ -236,7 +263,7 @@ async def stream_document_qa(
     token: str | None = Depends(resolve_document_qa_token),
     dvd_mcp_client: DvdMcpClient = Depends(get_dvd_mcp_client),
     dvd_rag_service: DvdRagService = Depends(get_dvd_rag_service),
-) -> AsyncIterable[DvdResponse]:
+) -> AsyncIterable[DvdResponse | ServerSentEvent]:
 
     async for chunk in stream_document_run(
         dvd_rag_service,
@@ -253,4 +280,9 @@ async def stream_document_qa(
         # Chat Storage always requires a user JWT — an anonymous run keeps no history.
         persist_history=token is not None,
     ):
-        yield DvdResponse(**chunk)
+        file_event = file_sse_event(chunk)
+        if file_event is not None:
+            file_event.id = str(chunk["event_id"]) if chunk.get("event_id") else None
+            yield file_event
+        else:
+            yield DvdResponse(**chunk)
