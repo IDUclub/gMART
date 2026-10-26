@@ -92,6 +92,9 @@ jobs:
           DVD_KNOWLEDGE_FALLBACK: ${{ vars.DVD_KNOWLEDGE_FALLBACK }}
           DVD_READABLE_CITATIONS: ${{ vars.DVD_READABLE_CITATIONS }}
           DVD_CRITIC_MAX_OUTPUT_TOKENS: ${{ vars.DVD_CRITIC_MAX_OUTPUT_TOKENS }}
+          DVD_PARALLEL_CRITIC: ${{ vars.DVD_PARALLEL_CRITIC }}
+          DVD_CRITIC_LINES_PER_CALL: ${{ vars.DVD_CRITIC_LINES_PER_CALL }}
+          DVD_CRITIC_MAX_PARALLEL: ${{ vars.DVD_CRITIC_MAX_PARALLEL }}
           PZZ_MCP_SERVER: ${{ vars.PZZ_MCP_SERVER }}
           PZZ_API_URL: ${{ vars.PZZ_API_URL }}
           NORM_GRAPH_MCP_SERVER: ${{ vars.NORM_GRAPH_MCP_SERVER }}
@@ -101,12 +104,13 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_THINK_MODE: ${{ vars.OPENAI_THINK_MODE }}
           OPENAI_THINK_EFFORT: ${{ vars.OPENAI_THINK_EFFORT }}
+          DEFAULT_LLM_MODEL: ${{ vars.DEFAULT_LLM_MODEL }}
+          DEFAULT_LLM_MODEL_HINT: ${{ vars.DEFAULT_LLM_MODEL_HINT }}
           LLM_NOMINAL_TOKENS_PER_SECOND: ${{ vars.LLM_NOMINAL_TOKENS_PER_SECOND }}
           LLM_DEADLINE_MAX_FACTOR: ${{ vars.LLM_DEADLINE_MAX_FACTOR }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
           SYSTEM_PASSWORD: ${{ secrets.SYSTEM_PASSWORD }}
           AUTH_HELPER_URL: ${{ vars.AUTH_HELPER_URL }}
-          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
           COMPLIANCE_MAX_UPLOAD_MB: ${{ vars.COMPLIANCE_MAX_UPLOAD_MB }}
           COMPLIANCE_MAX_ARCHIVE_MEMBERS: ${{ vars.COMPLIANCE_MAX_ARCHIVE_MEMBERS }}
           COMPLIANCE_MAX_UNPACKED_MB: ${{ vars.COMPLIANCE_MAX_UNPACKED_MB }}
@@ -117,6 +121,10 @@ jobs:
           SERVICE_AUTH_CLIENT_ID: ${{ vars.SERVICE_AUTH_CLIENT_ID }}
           SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.SERVICE_AUTH_CLIENT_SECRET }}
           SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED: ${{ vars.SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED }}
+          SYNAPSE_ENABLED: ${{ vars.SYNAPSE_ENABLED }}
+          SYNAPSE_API_URL: ${{ vars.SYNAPSE_API_URL }}
+          SYNAPSE_SERVICE_EMAIL: ${{ secrets.SYNAPSE_SERVICE_EMAIL }}
+          SYNAPSE_SERVICE_PASSWORD: ${{ secrets.SYNAPSE_SERVICE_PASSWORD }}
         run: docker compose -f docker-compose.actions.yaml up -d --wait --wait-timeout 120
 
       - name: Container diagnostics

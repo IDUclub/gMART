@@ -257,7 +257,13 @@ async def test_evidence_defects_override_positive_model_verdict(field):
         "message": {
             "content": json.dumps(
                 {
-                    field: ["Неверная ссылка на таблицу"],
+                    field: [
+                        (
+                            "L1"
+                            if field == "unsupported_claims"
+                            else "Неверная ссылка на таблицу"
+                        )
+                    ],
                     "satisfied": True,
                 }
             )
@@ -265,9 +271,13 @@ async def test_evidence_defects_override_positive_model_verdict(field):
     }
     verdict = await AnswerCritic(llm).review("m", "q", "source", "answer")
     assert not verdict.satisfied
-    assert "Неверная ссылка" in verdict.critique
+    assert (
+        "answer" if field == "unsupported_claims" else "Неверная ссылка"
+    ) in verdict.critique
     schema = llm.chat.call_args.kwargs["format"]
-    assert list(schema["properties"])[:2] == [
+    # Per-line evidence first, then the defects, all before the verdict.
+    assert list(schema["properties"])[:3] == [
+        "claims",
         "unsupported_claims",
         "missing_requirements",
     ]

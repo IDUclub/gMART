@@ -739,17 +739,15 @@ deterministically from `compliance_summary` by
 `unverifiable`, `unsupported` and `not_applicable` norms appear only in the
 counters. Without a checked norm no report and no `file` event are produced.
 
-`PUBLIC_BASE_URL` must be the public origin through which clients reach the agents
-app (for the Urban Assistant proxy, e.g. `https://<host>/gmart`). Left empty, the
-links are relative (`/files/…`) and a client served from another origin resolves
-them against itself, receiving its own page instead of the report.
+File links are always relative to the agents root (`/files/…`). The frontend
+must resolve them against its configured agents root, including any proxy prefix.
 
 The file is written to the container's temp directory (no volume) and served by
 `StaticFiles` mounted at `/files`, behind `OwnedFilesApp`: a Bearer token is
 required and only the author (`sub`) receives it; after one hour it is refused
 with `404` and deleted (lazily and by a 5-minute purge task). `url` opens it
-inline, `download_url` (`?download=1`) as an attachment; both are built on
-`PUBLIC_BASE_URL`. The link, without `role` and `download_url`, is stored in
+inline, `download_url` (`?download=1`) as an attachment; both are relative to the
+agents root. The link, without `role` and `download_url`, is stored in
 ChatStorage as a `kind: "file"` part. With several agents replicas the file lives
 only on the replica that produced it.
 

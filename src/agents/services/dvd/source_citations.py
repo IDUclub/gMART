@@ -14,6 +14,7 @@ from typing import Any
 
 from . import flags
 from .dvd_context import DvdContextBuilder
+from .figures import figure_address, is_figure
 
 _KIND = {
     "article": "статья",
@@ -76,6 +77,8 @@ def _title_address(title: str) -> str:
 
 
 def _address(hit: dict[str, Any]) -> str:
+    if is_figure(hit):
+        return figure_address(hit)
     if number := str(hit.get("numbering") or "").strip():
         return f"{_KIND.get(hit.get('type'), 'п.')} {number}"
     path = [p for p in hit.get("structure_path") or [] if str(p).strip()]

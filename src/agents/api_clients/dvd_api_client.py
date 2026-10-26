@@ -16,7 +16,7 @@ from src.common.service_auth import service_headers
 
 
 class DvdApiClient:
-    """Request-scoped REST client for IDU_DVD user-document operations."""
+    """Request-scoped REST client for IDU_DVD user documents and figures."""
 
     def __init__(
         self,
@@ -127,6 +127,36 @@ class DvdApiClient:
         )
 
     async def _request(self, method: str, path: str, **kwargs) -> dict[str, Any]:
+        response = await self._send(method, path, **kwargs)
+        return self._parse_response(response)
+
+    async def get_figure_image(
+        self,
+        node_id: str,
+        *,
+        project_id: str | None = None,
+        scenario_id: str | None = None,
+    ) -> bytes:
+        params = {}
+        if project_id is not None:
+            params["project_id"] = project_id
+        if scenario_id is not None:
+            params["scenario_id"] = scenario_id
+        response = await self._send(
+            "GET", f"/library/figures/{quote(node_id, safe='')}/image", params=params
+        )
+        if response.status_code == 404:
+            raise AgentsNotFound("Рисунок не найден")
+        if response.status_code != 200:
+            raise DownstreamServiceError(
+                service=self.base_url,
+                downstream_status=response.status_code,
+                message="Не удалось получить рисунок из IDU_DVD",
+                error_input=response.text,
+            )
+        return response.content
+
+    async def _send(self, method: str, path: str, **kwargs) -> httpx.Response:
         url = f"{self.base_url}/{path.lstrip('/')}"
         headers = await service_headers(self.service_auth, self.user_id)
         try:
@@ -139,7 +169,7 @@ class DvdApiClient:
                 message=f"IDU_DVD is unavailable: {exc}",
                 error_input=repr(exc),
             ) from exc
-        return self._parse_response(response)
+        return response
 
     def _parse_response(self, response: httpx.Response) -> dict[str, Any]:
         try:

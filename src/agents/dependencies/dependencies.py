@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from idu_service_auth import KeycloakTokenClient
 
 from src.agents.api_clients.dvd_api_client import DvdApiClient
@@ -10,7 +10,10 @@ from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiCli
 from src.agents.common.auth.auth import optional_bearer_token, verify_bearer_token
 from src.agents.common.auth.synapse_auth import SynapseCallerVerifier
 from src.agents.common.config.app_config import AgentsAppConfig
-from src.agents.common.exceptions.base_exceptions import AgentsNotFound
+from src.agents.common.exceptions.base_exceptions import (
+    AgentsNotFound,
+    AgentsUnauthorizedException,
+)
 from src.agents.dependencies.init_dependencies import init_dependencies
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
@@ -333,6 +336,26 @@ async def get_dvd_api_client(
             "DVD_API_URL is not configured and could not be derived from DVD_MCP_SERVER"
         )
     return DvdApiClient(api_url, get_service_auth(), user_id_from_jwt(token))
+
+
+async def get_dvd_figure_client(
+    project_id: str | None = None,
+    scenario_id: str | None = None,
+    token: str | None = Depends(optional_bearer_token),
+) -> DvdApiClient:
+    """Public corpus images; project images retain the caller's identity."""
+    if token is None and (project_id is not None or scenario_id is not None):
+        raise AgentsUnauthorizedException(
+            "Для рисунков пользовательских документов требуется авторизация"
+        )
+    api_url = app_deps["app_config"].DVD_API_URL
+    if not api_url:
+        raise HTTPException(503, "DVD_API_URL не настроен")
+    return DvdApiClient(
+        api_url,
+        get_service_auth(),
+        user_id_from_jwt(token) if token else ANONYMOUS_USER_ID,
+    )
 
 
 def get_dvd_rag_service() -> DvdRagService:

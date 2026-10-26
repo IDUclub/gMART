@@ -54,11 +54,13 @@ def test_target_context_cannot_attribute_neighbour_to_clause():
 
 
 async def test_full_quote_retains_paginated_condition_even_if_explanation_omits_it(
-    service, fake_llm
+    service, fake_llm, monkeypatch
 ):
     from tests.helpers import answer_text, verdict_json
     from tests.unit.test_dvd_structured_retrieval import Pages, run
 
+    # This tests quote preservation, independently of critic request grouping.
+    monkeypatch.setenv("DVD_PARALLEL_CRITIC", "false")
     # An explicit address with its document is planned without the LLM.
     fake_llm.json_responses = [verdict_json(satisfied=True)]
     fake_llm.answer_texts = ["Пункт перечисляет меры экономии энергии [1]."]

@@ -3,7 +3,8 @@
 import re
 
 from . import flags
-from .dvd_context import source_records
+from .dvd_context import DvdContextBuilder, source_records
+from .figures import is_figure
 
 EMPTY_ANSWER = (
     "Не удалось подтвердить ответ по найденным источникам. "
@@ -25,8 +26,13 @@ class PartialAnswerEvidence:
     def __init__(self, records=None):
         self.records = list(records or [])
 
-    def add(self, claims, draft, context, literal_check):
+    def add(self, claims, draft, context, literal_check, *, hits=None):
         sources = source_records(context)
+        source_hits = {
+            f"[{n}]": hit
+            for n, hit in enumerate(DvdContextBuilder.ordered_hits(hits or []), 1)
+            if is_figure(hit)
+        }
         for claim in claims:
             text = statement(claim.text)
             if not text or normalize(claim.text) not in normalize(draft):
@@ -40,6 +46,8 @@ class PartialAnswerEvidence:
                     break
                 header = re.sub(r"^\[\d+\]\s*", "", source[0])
                 evidence.append({"source": header, "quote": quote})
+                if ref.source_id in source_hits:
+                    evidence[-1]["hit"] = source_hits[ref.source_id]
             status = claim.status
             if status == "supported" and (
                 not evidence or literal_check(context, claim.text)

@@ -67,9 +67,6 @@ class AgentsAppConfig:
         AUTH_HELPER_API_KEY (str | None): API key for the auth helper /api/token endpoint.
             Secret — kept server-side only, never exposed via /system/config or logs.
         SYNAPSE_ENABLED (bool): Enable the optional Synapse gateway.
-        PUBLIC_BASE_URL (str | None): External origin the browser uses to reach this
-            service; generated file links (``/files/...``) are built on it. Relative
-            links are emitted when it is unset.
     """
 
     OLLAMA_URL: str
@@ -101,7 +98,6 @@ class AgentsAppConfig:
     SYNAPSE_RUN_TTL_SECONDS: int
     SYNAPSE_A2A_CLIENT_ID: str
     SYNAPSE_AUTH_AUDIENCE: str | None
-    PUBLIC_BASE_URL: str | None
 
     def __init__(
         self,
@@ -136,7 +132,6 @@ class AgentsAppConfig:
         synapse_auth_audience: str | None = None,
         pzz_mcp_url: str | None = None,
         pzz_api_url: str | None = None,
-        public_base_url: str | None = None,
     ) -> None:
 
         if not ollama_api_url:
@@ -208,7 +203,6 @@ class AgentsAppConfig:
         self.SYNAPSE_RUN_TTL_SECONDS = synapse_run_ttl_seconds
         self.SYNAPSE_A2A_CLIENT_ID = synapse_a2a_client_id
         self.SYNAPSE_AUTH_AUDIENCE = synapse_auth_audience or None
-        self.PUBLIC_BASE_URL = (public_base_url or "").strip().rstrip("/") or None
         self.COMPLIANCE_UPLOAD_LIMITS = ComplianceUploadLimits.from_env()
         if self.SYNAPSE_ENABLED:
             required_synapse = {
@@ -264,7 +258,6 @@ class AgentsAppConfig:
             "SYNAPSE_APPROVAL_MODE": self.SYNAPSE_APPROVAL_MODE,
             "SYNAPSE_A2A_CLIENT_ID": self.SYNAPSE_A2A_CLIENT_ID,
             "SYNAPSE_AUTH_AUDIENCE": self.SYNAPSE_AUTH_AUDIENCE or "",
-            "PUBLIC_BASE_URL": self.PUBLIC_BASE_URL or "",
         }
 
     def __repr__(self) -> str:

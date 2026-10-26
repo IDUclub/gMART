@@ -46,6 +46,13 @@ def compact_hits(hits):
         "structure_path",
         "block",
         "user_id",
+        "node_id",
+        "kind",
+        "element_type",
+        "figure",
+        "image_url",
+        "owner",
+        "project_id",
     }
     result = []
     for hit in DvdContextBuilder.ordered_hits(hits):

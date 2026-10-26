@@ -15,7 +15,7 @@ from pydantic import BaseModel
 class FileEventContent(BaseModel):
     name: str
     title: str
-    role: Literal["result", "input"]
+    role: Literal["result", "input", "figure"]
     url: str
     download_url: str | None
     filename: str

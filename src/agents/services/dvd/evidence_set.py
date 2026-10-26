@@ -21,7 +21,7 @@ import os
 import re
 
 from .answer_risk import _ABSENCE
-from .dvd_context import SOURCE_SEPARATOR, source_records
+from .dvd_context import SOURCE_SEPARATOR, preserve_figure_sources, source_records
 
 _QUOTATION = "Полная цитата:"
 _LABEL = re.compile(r"\[\d+\]")
@@ -58,8 +58,9 @@ def cited_context(context: str, answer: str) -> str | None:
         return None
     if cited == set(records):
         return None  # Nothing to leave out.
-    return "".join(
+    selected = "".join(
         header + "\n" + body + SOURCE_SEPARATOR
         for label, (header, body) in records.items()
         if label in cited
     )
+    return preserve_figure_sources(selected, context)

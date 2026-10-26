@@ -413,12 +413,12 @@ Markdown-отчёт (см. [`file`](#file)). Та же ссылка сохран
 
 ```
 event: file
-data: {"name": "compliance_report", "title": "Отчёт о проверке соответствия нормам", "role": "result", "url": "http://10.32.1.46:8200/files/compliance_report/a1b2c3…", "download_url": "http://10.32.1.46:8200/files/compliance_report/a1b2c3…?download=1", "filename": "compliance_report_772_20260923-1415.md", "mime_type": "text/markdown", "source_service": "gmart"}
+data: {"name": "compliance_report", "title": "Отчёт о проверке соответствия нормам", "role": "result", "url": "/files/compliance_report/a1b2c3…", "download_url": "/files/compliance_report/a1b2c3…?download=1", "filename": "compliance_report_772_20260923-1415.md", "mime_type": "text/markdown", "source_service": "gmart"}
 ```
 
 - `url` — просмотр (`Content-Disposition: inline`), `download_url` — вложение
-  (`attachment`). Обе ссылки абсолютные, если задан `PUBLIC_BASE_URL`, иначе
-  относительные к agents.
+  (`attachment`). Обе ссылки относительные к корню agents, включая префикс
+  обратного прокси. Фронтенд добавляет настроенный корень agents.
 - `GET /files/{name}/{id}` требует `Authorization: Bearer <token>` и отдаёт файл
   только его автору (Keycloak `sub`). Без токена — `401`; чужой, неизвестный или
   истёкший файл — `404`.

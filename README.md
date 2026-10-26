@@ -9,5 +9,6 @@
 ## Documentation
 
 - [Frontend integration guide](docs/frontend-service.md)
+- [Document QA, citations and document figures](docs/frontend-document-qa.md)
 - [Synapse frontend integration](docs/integrations/synapse-front.md)
 - [Synapse architecture and backend integration](docs/synapse-integration.md)

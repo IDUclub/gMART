@@ -45,12 +45,10 @@ class TemporaryFileStore:
         self,
         directory: Path = FILES_DIR,
         *,
-        public_base_url: str | None = None,
         ttl_seconds: int = FILES_TTL_SECONDS,
     ) -> None:
         self.data_dir = directory / "data"
         self.meta_dir = directory / "meta"
-        self.public_base_url = (public_base_url or "").rstrip("/")
         self.ttl_seconds = ttl_seconds
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.meta_dir.mkdir(parents=True, exist_ok=True)
@@ -84,7 +82,7 @@ class TemporaryFileStore:
             ),
             encoding="utf-8",
         )
-        url = f"{self.public_base_url}{FILES_MOUNT_PATH}/{slot}/{file_id}"
+        url = f"{FILES_MOUNT_PATH}/{slot}/{file_id}"
         return StoredFile(file_id=file_id, url=url, download_url=f"{url}?download=1")
 
     def metadata(self, slot: str, file_id: str) -> dict | None:
