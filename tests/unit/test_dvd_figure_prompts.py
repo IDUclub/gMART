@@ -1,4 +1,4 @@
-"""Figure-free prompts retain the exact UTF-8 bytes of the dev prompts."""
+"""Pin the current figure-free critic prompt and the other dev prompts' UTF-8 bytes."""
 
 import hashlib
 import json
@@ -22,14 +22,15 @@ from src.agents.services.dvd.evidence_set import cited_context
 from src.agents.services.dvd.figures import FIGURE_CRITIC_RULE, FIGURE_RULE
 from tests.helpers import verdict_json
 
-# SHA-256 of the system prompts evaluated from dev before ICII-205. Reducer
-# snapshots use budget=2000; comparison uses comparison_summary="summary".
+# SHA-256 pins the current figure-free critic prompt; other prompts were evaluated
+# from dev before ICII-205. Reducer snapshots use budget=2000; comparison uses
+# comparison_summary="summary".
 DEV_PROMPT_SHA256 = {
     "draft_norm": "2d55ad375220f4ca3bb0135a213df7f183655dedc099816ec86df0ebbf3a4389",
     "draft_knowledge": "60ba58307d8c82e71db98a2dc5c988993c8298446fed1c372bd4e1a77274800a",
     "reducer_summary": "c65b3c861f09d101f34ee2ebe6ca6fd13825c13167e3efa4691b98adc8faec4f",
     "reducer_select": "1f7ab3d08f8650ef36e5202bc29373c7692f7795505344aec73124ec63e5eaac",
-    "critic": "f1600534f2bf97ea0d393a6b50a180eb702ab5fe8573bff5736bed938fd856d7",
+    "critic": "579203db265fda219ed798faf0d8bf80334be2115e0e2f337c9988bb0035376d",
     "comparison_base": "21de61291737d5d1b73e031d86ab1b7323e2cf34a5cfd72a4696605a08d3dc52",
     "comparison": "e480cf9f6877ab2d36e48549aaae5d778e446f76eb17e68dd33b1d336c113a34",
 }

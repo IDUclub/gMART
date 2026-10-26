@@ -1406,6 +1406,7 @@ class DvdRagService(BaseLlmService):
                         verified=verified,
                         risk=risk,
                         literal_context=context,
+                        metrics=metrics,
                         **recheck,
                     )
             except CriticBudgetError as exc:
@@ -1452,7 +1453,7 @@ class DvdRagService(BaseLlmService):
                 self.critic._literal_defects,
                 hits=hits,
             )
-            if metrics.counters.get("critic_calls") == 1:
+            if metrics.counters.get("critic_reviews") == 1:
                 metrics.decide(first_draft_accepted=verdict.satisfied)
             if not verdict.satisfied and verdict.claims and knowledge_block.enabled():
                 # One audit sorts the lines instead of starting a rewrite: what
@@ -1751,11 +1752,7 @@ class DvdRagService(BaseLlmService):
             if budget.window_rest < 128:
                 metrics.add("critic_skipped")
             else:
-                metrics.add("critic_calls")
-                metrics.add(
-                    "critic_input_bytes",
-                    sum(len(m["content"].encode("utf-8")) for m in critic_messages),
-                )
+                metrics.add("critic_reviews")
                 try:
                     with metrics.stage("critic"):
                         verdict = await self.critic.review(
@@ -1764,6 +1761,7 @@ class DvdRagService(BaseLlmService):
                             context,
                             draft,
                             intent="document_comparison",
+                            metrics=metrics,
                             literal_context=context,
                         )
                     accepted = verdict.satisfied
@@ -2181,7 +2179,7 @@ class DvdRagService(BaseLlmService):
 
     def _record_critic_effort(self, metrics, model: str, risk: AnswerRisk) -> None:
         effort = critic_reasoning_effort(self.llm_client, model, risk) or "default"
-        metrics.add("critic_calls")
+        metrics.add("critic_reviews")
         metrics.add(f"critic_effort_{effort}")
         metrics.decide(
             critic_reasoning_effort=effort,
@@ -2473,7 +2471,9 @@ class DvdRagService(BaseLlmService):
         )
         try:
             with run_metrics(collected).stage("critic"):
-                approved = await self.critic.select_partial(model, query, evidence)
+                approved = await self.critic.select_partial(
+                    model, query, evidence, metrics=run_metrics(collected)
+                )
             run_metrics(collected).decide(partial_answer=True)
             answer = evidence.render(approved)
             listing = self._source_listing(collected)
@@ -2682,6 +2682,7 @@ class DvdRagService(BaseLlmService):
                             assessment.answer,
                             require_answer=True,
                             risk=risk,
+                            metrics=run_metrics(collected),
                         )
                     if verdict.satisfied:
                         reference = parse_reference(query)

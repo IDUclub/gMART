@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from loguru import logger
 from pydantic import (
@@ -30,9 +31,11 @@ from src.agents.services.dvd.document_reference import (
 )
 from src.agents.services.dvd.retrieval_scope import apply_scope
 from src.agents.services.dvd.retry_policy import CriticBudgetError, CriticResponseError
+from src.agents.services.dvd.run_metrics import DvdRunMetrics
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.dvd_plan import (
     AuditedClaim,
+    ClaimEvidence,
     Correction,
     CriticVerdict,
     RetrievalPlan,
@@ -89,6 +92,37 @@ class EvidenceAudit(BaseModel):
 class PartialSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     approved_ids: list[StrictInt]
+
+
+class LineClaim(BaseModel):
+    line: str
+    status: Literal["supported", "contradicted", "insufficient"]
+    evidence: list[ClaimEvidence] = Field(default_factory=list)
+
+
+class CompactAudit(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "required": [
+                "claims",
+                "unsupported_claims",
+                "missing_requirements",
+                "corrections",
+                "satisfied",
+                "critique",
+                "refined_search_query",
+            ]
+        }
+    )
+    # Guided decoding emits fields in schema order: evidence must precede the
+    # verdict, so claims must come first.
+    claims: list[LineClaim] = Field(default_factory=list)
+    unsupported_claims: list[str] = Field(default_factory=list)
+    missing_requirements: list[str] = Field(default_factory=list)
+    corrections: list[Correction] = Field(default_factory=list)
+    satisfied: bool
+    critique: str = ""
+    refined_search_query: str | None = None
 
 
 _LIMIT_MIN, _LIMIT_MAX = 1, 20
@@ -148,7 +182,7 @@ class OutputCapped(ValueError):
     """A structured reply reached its fixed output cap; it is not widened."""
 
 
-# An audit restates each answer line with a short quote (~200 tokens per line) after
+# An audit identifies each answer line with a short quote (~200 tokens per line) after
 # its reasoning. Its size follows the answer, not the evidence: a cap derived from
 # the evidence let one F-01 audit (a whole section, 50 fragments) reason for 68k
 # tokens and 14 minutes without finishing.
@@ -165,6 +199,13 @@ def critic_output_cap(lines: int) -> int:
         ceiling = 12000
     wanted = _CRITIC_REASONING_TOKENS + _CRITIC_TOKENS_PER_LINE * max(lines, 1)
     return max(_CRITIC_MIN_TOKENS, min(wanted, ceiling))
+
+
+def _critic_limit(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name) or default))
+    except ValueError:
+        return default
 
 
 def planner_reasoning_effort(llm_client, model: str) -> str | None:
@@ -243,6 +284,7 @@ async def _request_json(
     output: OutputShare = STRUCTURED_OUTPUT,
     empty_lists: tuple[str, ...] = (),
     max_tokens: int | None = None,
+    metrics: DvdRunMetrics | None = None,
 ) -> T:
     """
     Ask the LLM for a JSON object and parse it into ``model_cls``.
@@ -263,9 +305,12 @@ async def _request_json(
     )
     schema = adapter.json_schema()
     if claim_texts:
-        # Constrain generation as well as prompting: live critics otherwise copy
-        # the source into `text`, losing the actual assertion being audited.
-        schema["$defs"]["AuditedClaim"]["properties"]["text"]["enum"] = claim_texts
+        name, prop = (
+            ("LineClaim", "line")
+            if model_cls is CompactAudit
+            else ("AuditedClaim", "text")
+        )
+        schema["$defs"][name]["properties"][prop]["enum"] = claim_texts
     elif claim_texts is not None and "claims" in schema.get("properties", {}):
         # Every line is already audited: nothing is left to classify.
         schema["properties"]["claims"]["maxItems"] = 0
@@ -278,6 +323,11 @@ async def _request_json(
     for name, properties in (schema_enums or {}).items():
         for prop, values in properties.items():
             schema["$defs"][name]["properties"][prop]["enum"] = values
+    if model_cls is CompactAudit:
+        if claim_texts:
+            schema["properties"]["unsupported_claims"]["items"]["enum"] = claim_texts
+        else:
+            schema["properties"]["unsupported_claims"]["maxItems"] = 0
     scale = 1.0
     for attempt in range(retries + 1):
         # Proportional to the input: a runaway reply stops here instead of
@@ -294,6 +344,12 @@ async def _request_json(
         if budget.window_rest < 128:
             raise ValueError("structured request exceeds configured context window")
         tokens = min(budget.tokens, max_tokens) if max_tokens else budget.tokens
+        if metrics is not None:
+            metrics.add("critic_calls")
+            metrics.add(
+                "critic_input_bytes",
+                sum(len(m["content"].encode("utf-8")) for m in messages),
+            )
         try:
             response = await llm_client.chat(
                 model=model,
@@ -327,8 +383,19 @@ async def _request_json(
         content = response["message"]["content"]
         logger.debug(f"LLM {model_name} response [{model}]: {content}")
         try:
-            return adapter.validate_json(strip_json_fence(content))
-        except (ValidationError, json.JSONDecodeError) as exc:
+            result = adapter.validate_json(strip_json_fence(content))
+            if model_cls is CompactAudit:
+                allowed = set(claim_texts or [])
+                targets = schema["$defs"]["Correction"]["properties"]["target"]["enum"]
+                if (
+                    any(c.line not in allowed for c in result.claims)
+                    or any(c.target not in targets for c in result.corrections)
+                    or any(line not in allowed for line in result.unsupported_claims)
+                    or any(getattr(result, name) for name in empty_lists)
+                ):
+                    raise ValueError("Audit must use only allowed line IDs and lists")
+            return result
+        except ValueError as exc:
             validation_details = (
                 json.dumps(
                     exc.errors(include_url=False), ensure_ascii=False, default=str
@@ -718,6 +785,7 @@ class AnswerCritic:
         removed: list[str] | None = None,
         risk: AnswerRisk | None = None,
         literal_context: str | None = None,
+        metrics: DvdRunMetrics | None = None,
     ) -> CriticVerdict:
         """Audit ``answer``; ``verified`` are claims supported by an earlier audit.
 
@@ -744,61 +812,101 @@ class AnswerCritic:
             if claim.status == "supported" and claim.text in lines
         }
         pending = [line for line in lines if line not in kept]
+        line_ids = {text: f"L{i}" for i, text in enumerate(lines, 1)}
         labels = [label for label in source_records(context) if label != "unlabelled"]
-        messages: list[dict] = [
-            {
-                "role": "system",
-                "content": self._prompt(context)
-                + (
-                    "\nThis is an answer from conversation context BEFORE retrieval. "
-                    "Reject refusals and claims that evidence is insufficient: they mean "
-                    "the agent must search, not finish this turn. The answer must actually "
-                    "address the user's question using the supplied source text."
-                    if require_answer
-                    else ""
-                )
-                + (_DOCUMENT_LIST_AUDIT if intent == "document_list" else "")
-                + (_RECHECK_AUDIT if recheck else ""),
-            },
-            {
-                "role": "user",
-                "content": self._payload(
-                    user_query,
-                    context,
-                    answer,
-                    pending,
-                    list(kept),
-                    previous=previous,
-                    removed=removed,
-                ),
-            },
-        ]
+        prompt = self._prompt(context)
+        prompt += (
+            "\nThis is an answer from conversation context BEFORE retrieval. "
+            "Reject refusals and claims that evidence is insufficient: they mean "
+            "the agent must search, not finish this turn. The answer must actually "
+            "address the user's question using the supplied source text."
+            if require_answer
+            else ""
+        )
+        prompt += _DOCUMENT_LIST_AUDIT if intent == "document_list" else ""
+        prompt += _RECHECK_AUDIT if recheck else ""
         effort = critic_reasoning_effort(self.llm_client, model, risk)
-        cap = critic_output_cap(len(pending))
+        size = _critic_limit("DVD_CRITIC_LINES_PER_CALL", 3)
+        parallel = flags.enabled(flags.PARALLEL_CRITIC) and len(pending) > size
+        groups = (
+            [pending[i : i + size] for i in range(0, len(pending), size)]
+            if parallel
+            else [pending]
+        )
+        omissions = parallel and not recheck
+        if metrics is not None:
+            metrics.decide(critic_groups=len(groups), critic_omissions=omissions)
+        semaphore = asyncio.Semaphore(_critic_limit("DVD_CRITIC_MAX_PARALLEL", 6))
 
-        async def audit_at(effort):
-            return await _request_json(
-                self.llm_client,
-                model,
-                messages,
-                EvidenceAudit,
-                claim_texts=pending,
-                source_ids=labels,
-                schema_enums={
-                    "Correction": {
-                        "target": [*pending, ""],
-                        **({"source_id": [*labels, ""]} if labels else {}),
-                    }
+        async def request(group, *, omissions_only=False):
+            ids = [line_ids[line] for line in group]
+            cap = critic_output_cap(len(group))
+            instruction = ""
+            if parallel:
+                instruction = (
+                    "\nCheck omissions only: claims and unsupported_claims must be []; "
+                    'corrections may only add lines (target "").'
+                    if omissions_only
+                    else "\nAudit and correct only the allowed line IDs, considering the "
+                    "whole answer. Do not add lines or raise omissions: "
+                    "missing_requirements must be []."
+                )
+            messages = [
+                {"role": "system", "content": prompt + instruction},
+                {
+                    "role": "user",
+                    "content": self._payload(
+                        user_query,
+                        context,
+                        answer,
+                        group,
+                        list(kept),
+                        previous=previous,
+                        removed=removed,
+                    ),
                 },
-                reasoning_effort=effort,
-                output=AUDIT_OUTPUT,
-                # A re-review checks the requested edits; new omissions would undo
-                # deletions the critic asked for and never converge.
-                empty_lists=("missing_requirements",) if recheck else (),
-                max_tokens=cap,
-            )
+            ]
 
-        try:
+            async def audit_at(effort):
+                async with semaphore:
+                    return await _request_json(
+                        self.llm_client,
+                        model,
+                        messages,
+                        CompactAudit,
+                        claim_texts=ids,
+                        source_ids=labels,
+                        schema_enums={
+                            "Correction": {
+                                "target": (
+                                    ids
+                                    if parallel and not omissions_only
+                                    else [*ids, ""]
+                                ),
+                                **({"source_id": [*labels, ""]} if labels else {}),
+                            }
+                        },
+                        reasoning_effort=effort,
+                        output=AUDIT_OUTPUT,
+                        empty_lists=(
+                            ("claims", "unsupported_claims")
+                            if omissions_only
+                            else (
+                                ("missing_requirements",) if recheck or parallel else ()
+                            )
+                        ),
+                        max_tokens=cap,
+                        metrics=metrics,
+                    )
+
+            try:
+                return await audit_with_retries(audit_at, group, cap)
+            except OutputCapped as exc:
+                raise CriticBudgetError(
+                    f"Critic did not finish within {cap} output tokens"
+                ) from exc
+
+        async def audit_with_retries(audit_at, group, cap):
             try:
                 audit = await audit_at(effort)
             except OutputCapped:
@@ -815,7 +923,7 @@ class AnswerCritic:
                 audit = await audit_at("low")
             full = critic_reasoning_effort(self.llm_client, model)
             if (
-                pending
+                group
                 and effort != full
                 and not any(c.status == "supported" for c in audit.claims)
             ):
@@ -836,6 +944,62 @@ class AnswerCritic:
                         cap,
                         full,
                     )
+            return audit
+
+        try:
+            tasks = [asyncio.create_task(request(group)) for group in groups]
+            if omissions:
+                tasks.append(asyncio.create_task(request([], omissions_only=True)))
+            try:
+                audits = await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            by_id = {value: text for text, value in line_ids.items()}
+            order = {value: i for i, value in enumerate(by_id)}
+            compact_claims = sorted(
+                (claim for audit in audits for claim in audit.claims),
+                key=lambda c: order[c.line],
+            )
+            audit = EvidenceAudit(
+                claims=[
+                    AuditedClaim(
+                        text=by_id[c.line], status=c.status, evidence=c.evidence
+                    )
+                    for c in compact_claims
+                ],
+                corrections=[
+                    c.model_copy(update={"target": by_id[c.target] if c.target else ""})
+                    for audit in audits
+                    for c in audit.corrections
+                ],
+                unsupported_claims=list(
+                    dict.fromkeys(
+                        by_id[line]
+                        for audit in audits
+                        for line in audit.unsupported_claims
+                    )
+                ),
+                missing_requirements=[
+                    m for audit in audits for m in audit.missing_requirements
+                ],
+                satisfied=all(audit.satisfied for audit in audits),
+                critique="; ".join(a.critique for a in audits if a.critique.strip()),
+                refined_search_query=(
+                    audits[-1].refined_search_query
+                    if omissions
+                    else next(
+                        (
+                            a.refined_search_query
+                            for a in audits
+                            if (a.refined_search_query or "").strip()
+                        ),
+                        None,
+                    )
+                ),
+            )
             claims = [
                 *(c for c in audit.claims if c.text not in kept),
                 *kept.values(),
@@ -882,10 +1046,8 @@ class AnswerCritic:
                     )
                 ),
             )
-        except OutputCapped as exc:
-            raise CriticBudgetError(
-                f"Critic did not finish within {cap} output tokens"
-            ) from exc
+        except CriticBudgetError:
+            raise
         except ValueError as exc:
             # A malformed audit is a technical failure, not evidence that a new
             # retrieval could repair the answer. The caller logs request/round.
@@ -897,7 +1059,7 @@ class AnswerCritic:
         )
         return verdict
 
-    async def select_partial(self, model, user_query, evidence):
+    async def select_partial(self, model, user_query, evidence, *, metrics=None):
         """Select existing verified statements; never ask the model for new prose."""
         if not evidence.candidates():
             return []
@@ -939,6 +1101,7 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
                 PartialSelection,
                 reasoning_effort=critic_reasoning_effort(self.llm_client, model),
                 max_tokens=critic_output_cap(len(evidence.candidates())),
+                metrics=metrics,
             )
             # A valid JSON response is not sufficient: IDs must belong to the
             # verified closed set, and a claim can appear at most once.
@@ -1016,28 +1179,26 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
         structure = {
             "claims": [
                 {
-                    "text": "exact standalone factual statement copied from the draft, including its citations",
+                    "line": "L1",
                     "status": "supported | contradicted | insufficient",
                     "evidence": [
                         {
                             "source_id": "[1]",
-                            "quote": "verbatim supporting or contradicting excerpt",
+                            "quote": "shortest verbatim proof/contradiction, <=25 words",
                         }
                     ],
                 }
             ],
-            "unsupported_claims": [
-                "unsupported statements, including definitions and citation metadata; [] if none"
-            ],
+            "unsupported_claims": ["L1"],
             "missing_requirements": [
                 "directly relevant requirements omitted from the answer; [] if none"
             ],
             "corrections": [
                 {
-                    "target": 'allowed_claim_texts line, or "" to add one',
+                    "target": 'L1 | "" to add a line',
                     "instruction": "что заменить, удалить или добавить",
                     "source_id": '[1] | ""',
-                    "quote": 'verbatim excerpt for the fix | ""',
+                    "quote": 'shortest verbatim fix, <=25 words | ""',
                 }
             ],
             "satisfied": "true | false",
@@ -1049,9 +1210,11 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
 {figure_rule}Return JSON only: {json.dumps(structure, ensure_ascii=False)}
 First inspect every assertion and list evidence defects; only then decide satisfied.
 Audit each material factual statement explicitly in claims, even if the overall
-answer is rejected. Choose text ONLY from allowed_claim_texts (also constrained by
-the response schema), preserving the entire selected line. Never copy source text
-into the claim or repair/rewrite the draft. Put source excerpts in evidence.quote.
+answer is rejected. Use ONLY allowed_claim_lines IDs in claims.line,
+corrections.target and unsupported_claims (also constrained by the response schema);
+target "" adds a line. Never copy source text into claims or repair/rewrite the draft.
+Put the SHORTEST verbatim proof or contradiction (number, condition or clause) in
+evidence.quote and corrections.quote, at most 25 words.
 Skip headings and introductions that assert no facts. Mark supported only when
 exact quoted excerpts entail the entire selected line,
 including conditions, units, negation and applicability. Use contradicted for a
@@ -1166,12 +1329,16 @@ sounds helpful."""
     ) -> str:
         ctx = context or "(релевантные фрагменты не найдены)"
         claims = AnswerCritic._claim_texts(answer) if pending is None else pending
+        line_ids = {
+            text: f"L{i}" for i, text in enumerate(AnswerCritic._claim_texts(answer), 1)
+        }
         payload = (
             f"Вопрос пользователя:\n{user_query}\n\n"
             f"Доступные фрагменты:\n{ctx}\n\n"
             f"Ответ ассистента для проверки:\n{answer}\n\n"
-            "allowed_claim_texts (choose each claims.text and corrections.target "
-            "verbatim from this list):\n" + json.dumps(claims, ensure_ascii=False)
+            "allowed_claim_lines (choose claims.line, corrections.target and "
+            "unsupported_claims ONLY from these IDs):\n"
+            + json.dumps({line_ids[text]: text for text in claims}, ensure_ascii=False)
         )
         if verified:
             payload += (

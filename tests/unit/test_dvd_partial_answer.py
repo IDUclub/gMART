@@ -32,10 +32,11 @@ async def test_live_critic_schema_keeps_draft_wording_and_conditions(fake_llm):
         "test", "Где размещать помещения?", f"[1] Правила\n{source}", draft
     )
     call = fake_llm.chat.call_args.kwargs
-    choices = call["format"]["$defs"]["AuditedClaim"]["properties"]["text"]["enum"]
-    assert choices == [claim, "Все школы должны иметь дирижабль."]
+    choices = call["format"]["$defs"]["LineClaim"]["properties"]["line"]["enum"]
+    assert choices == ["L1", "L2"]
     assert source not in choices
     assert claim in call["messages"][-1]["content"]
+    assert verdict.claims[0].text == claim
     evidence = PartialAnswerEvidence()
     evidence.add(
         verdict.claims, draft, f"[1] Правила\n{source}", critic._literal_defects

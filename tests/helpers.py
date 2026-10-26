@@ -52,6 +52,34 @@ class FakeLlmClient:
             text = self.answer_texts.pop(0) if self.answer_texts else ""
             return self._stream(text)
         content = self.json_responses.pop(0) if self.json_responses else "{}"
+        schema = kwargs.get("format") or {}
+        if "LineClaim" in schema.get("$defs", {}):
+            # Existing scenarios describe audits by text; encode the fixture in
+            # the requested wire format, just as a schema-aware model would.
+            payload = next(
+                m["content"].split("IDs):\n", 1)[1]
+                for m in messages
+                if "allowed_claim_lines (" in m["content"]
+            )
+            lines, _ = json.JSONDecoder().raw_decode(payload)
+            ids = {text: line for line, text in lines.items()}
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                return {"message": {"content": content}}
+            claims = []
+            for claim in data.get("claims", []):
+                if "text" in claim:
+                    text = claim.pop("text")
+                    if text not in ids:
+                        continue
+                    claim["line"] = ids[text]
+                claims.append(claim)
+            data["claims"] = claims
+            for correction in data.get("corrections", []):
+                target = correction.get("target", "")
+                correction["target"] = ids.get(target, target)
+            content = json.dumps(data, ensure_ascii=False)
         return {"message": {"content": content}}
 
     @staticmethod
