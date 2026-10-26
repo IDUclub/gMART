@@ -17,6 +17,7 @@ from .clarification import normalized
 from .dialogue import narrow_candidates, pending_question, render_question
 from .document_reference import DESIGNATION, parse_reference
 from .dvd_context import DvdContextBuilder
+from .figures import figure_text, is_figure
 from .source_citations import citations
 
 COMPARISON_PROMPT = """
@@ -495,7 +496,18 @@ def _source_hit(response, side, fragment, order):
         "name": name,
         "version": version,
         "order": order,
+        "owner": doc.get("owner"),
+        "project_id": doc.get("project_id"),
     }
+
+
+def comparison_hits(response):
+    hits = []
+    for change in response.get("changes", []):
+        for side in ("left", "right"):
+            if fragment := change.get(side):
+                hits.append(_source_hit(response, side, fragment, len(hits)))
+    return hits
 
 
 def prepare_comparison_response(response, budget):
@@ -537,7 +549,7 @@ def prepare_comparison_response(response, budget):
     for change in changes:
         for side in ("left", "right"):
             if fragment := change.get(side):
-                text = fragment.get("text", "")
+                text = fragment.get("text") or ""
                 cap = 600
                 fragment["text"] = text[:cap]
                 fragment["text_truncated"] = (
@@ -570,7 +582,7 @@ def prepare_comparison_response(response, budget):
         for change in result["changes"]:
             for side in ("left", "right"):
                 if fragment := change.get(side):
-                    text = fragment.get("text", "")
+                    text = fragment.get("text") or ""
                     fragment["text"] = text[:cap]
                     fragment["text_truncated"] = (
                         fragment.get("text_truncated", False) or len(text) > cap
@@ -794,7 +806,14 @@ def literal_comparison(response, *, numbers_only=False):
                 # Source text remains opaque, including its own bibliography labels.
                 lines += [
                     f"{title} {label}",
-                    *("> " + line for line in fragment["text"].splitlines()),
+                    *(
+                        "> " + line
+                        for line in (
+                            figure_text(fragment)
+                            if is_figure(fragment)
+                            else fragment.get("text") or ""
+                        ).splitlines()
+                    ),
                 ]
         if numbers := change.get("changed_numbers"):
             pair = " ".join(

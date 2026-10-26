@@ -25,7 +25,13 @@ async def test_live_qa_end_to_end(require_redis, require_ollama, require_dvd_mcp
 
     store = PipelineStateStore(require_redis)
     # Real Ollama (require_ollama is the base URL) + real Redis; ChatStorage/Urban API stubbed.
-    svc = DvdRagService(require_ollama, Mock(), Mock(), store)
+    svc = DvdRagService(
+        require_ollama,
+        Mock(),
+        Mock(),
+        store,
+        dvd_api_url=os.environ.get("DVD_API_URL"),
+    )
     svc.get_chat_messages = AsyncMock(return_value=SimpleNamespace(messages=[]))
     svc._schedule_persist_answer = Mock()
 
@@ -44,3 +50,6 @@ async def test_live_qa_end_to_end(require_redis, require_ollama, require_dvd_mcp
     assert types_of(events)[0] == "pipeline_started"
     assert final_chunk(events) is not None
     assert answer_text(events).strip() != ""
+    for event in events:
+        if event["type"] == "file":
+            assert event["content"]["url"].startswith("/documents/figures/")

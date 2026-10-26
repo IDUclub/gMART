@@ -21,6 +21,7 @@ from src.agents.model_clients.context_budget import (
 )
 
 from .context_reducer import DvdContextReducer, cost
+from .dvd_context import FigureContext, has_figures
 
 _CONTINUE = (
     "Продолжи незавершённый ответ. Начни с ТОЧНОГО повторения указанного ниже "
@@ -207,7 +208,12 @@ class DvdAnswerGenerator:
                 fixed_available = await remaining_output_tokens(
                     self.llm_client,
                     model,
-                    build_messages("") + continuation,
+                    build_messages(
+                        FigureContext("", context.figure_sources)
+                        if has_figures(context)
+                        else ""
+                    )
+                    + continuation,
                     self.reducer.window,
                 )
                 allowance = fixed_available - self.reducer.window // 4

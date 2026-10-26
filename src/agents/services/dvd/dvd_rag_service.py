@@ -18,6 +18,7 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 )
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
+    FilePartRequest,
     TextPartRequest,
     TextPayload,
     ToolCall,
@@ -70,6 +71,7 @@ from src.agents.services.dvd.document_comparison import (
     ComparisonClarification,
     ComparisonClient,
     build_comparison_context,
+    comparison_hits,
     comparison_notice,
     comparison_numbers_supported,
     has_paired_citations,
@@ -82,13 +84,20 @@ from src.agents.services.dvd.document_reference import (
     quote_only,
     wants_full_quote,
 )
-from src.agents.services.dvd.dvd_context import DvdContextBuilder
+from src.agents.services.dvd.dvd_context import DvdContextBuilder, has_figures
 from src.agents.services.dvd.dvd_reasoning import (
     AnswerCritic,
     RetrievalPlanner,
     critic_reasoning_effort,
 )
 from src.agents.services.dvd.evidence_set import cited_context, critic_context_policy
+from src.agents.services.dvd.figures import (
+    FIGURE_RULE,
+    MAX_FIGURES,
+    cited_figures,
+    figure_file,
+    is_figure,
+)
 from src.agents.services.dvd.fragment_continuation import complete_cut_fragments
 from src.agents.services.dvd.partial_answer import PartialAnswerEvidence
 from src.agents.services.dvd.query_terms import (
@@ -232,6 +241,8 @@ class DvdRagService(BaseLlmService):
         chat_storage_client: ChatStorageApiClient,
         urban_api_client: UrbanApiClient,
         state_store: PipelineStateStore,
+        *,
+        dvd_api_url: str | None = None,
     ) -> None:
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.planner = RetrievalPlanner(self.llm_client)
@@ -241,6 +252,7 @@ class DvdRagService(BaseLlmService):
         self.context_builder = DvdContextBuilder()
         self.context_reducer = DvdContextReducer(self.llm_client)
         self.state_store = state_store
+        self.dvd_api_url = dvd_api_url
         self._tags_cache: tuple[float, list[str] | None] | None = None
         # ``collected`` of the runs in progress, by request_id: the event journal
         # (``_buf``) reads their metrics without threading them through every call.
@@ -276,6 +288,8 @@ class DvdRagService(BaseLlmService):
             "tool_calls": [],
             "newly_completed": False,
             "model": model,
+            "figure_token": token,
+            "figure_scenario_id": scenario_id,
         }
         is_reconnect = request_id is not None and await self.state_store.exists(
             request_id
@@ -385,6 +399,7 @@ class DvdRagService(BaseLlmService):
                             request_id,
                             self._project_lookup_failed_event(scenario_id),
                         )
+                collected["figure_project_id"] = project_id
                 try:
                     with metrics.stage("chat_setup"):
                         chat_id, title = await self.create_chat(
@@ -1178,6 +1193,7 @@ class DvdRagService(BaseLlmService):
 
             # The user reads document and clause, not this retrieval's labels.
             collected["citations"] = source_citations.citations(hits)
+            collected["citation_hits"] = hits
             quotation = None
             if plan.retrieval_mode == "structure" and wants_full_quote(intent_query):
                 quotation = self.context_builder.full_quote(hits)
@@ -1430,7 +1446,11 @@ class DvdRagService(BaseLlmService):
                 raise
 
             partial_evidence.add(
-                verdict.claims, draft, raw_context, self.critic._literal_defects
+                verdict.claims,
+                draft,
+                raw_context,
+                self.critic._literal_defects,
+                hits=hits,
             )
             if metrics.counters.get("critic_calls") == 1:
                 metrics.decide(first_draft_accepted=verdict.satisfied)
@@ -1452,8 +1472,9 @@ class DvdRagService(BaseLlmService):
                     draft_body, knowledge = grounded, [*moved, *knowledge]
                     verdict = verdict.model_copy(update={"satisfied": True})
             if verdict.satisfied:
+                cited_answer = knowledge_block.render(draft_body, knowledge, quotation)
                 draft = source_citations.readable(
-                    knowledge_block.render(draft_body, knowledge, quotation),
+                    cited_answer,
                     collected.get("citations"),
                 )
                 if collected.get("context_incomplete"):
@@ -1463,6 +1484,10 @@ class DvdRagService(BaseLlmService):
                 )
                 collected["final_answer"] = draft
                 collected["newly_completed"] = True
+                async for event in self._figure_events(
+                    request_id, collected, cited_answer
+                ):
+                    yield event
                 # Emit terminal events BEFORE checkpointing "accepted" so a reconnect that
                 # sees accepted=True always has the done chunk in the replay buffer.
                 yield await self._buf(
@@ -1630,6 +1655,7 @@ class DvdRagService(BaseLlmService):
             response, budget=comparison_budget
         )
         collected["citations"] = refs
+        collected["citation_hits"] = comparison_hits(response)
         notice = comparison_notice(response)
         if not response.get("changes"):
             answer = (
@@ -1708,7 +1734,7 @@ class DvdRagService(BaseLlmService):
             critic_question = question + "\n" + COMPARISON_PROMPT + "\n" + summary
             # Match review's initial request, including its repeated claim texts.
             critic_messages = [
-                {"role": "system", "content": AnswerCritic._prompt()},
+                {"role": "system", "content": AnswerCritic._prompt(context)},
                 {
                     "role": "user",
                     "content": AnswerCritic._payload(critic_question, context, draft),
@@ -1861,6 +1887,7 @@ class DvdRagService(BaseLlmService):
                 {
                     "role": "system",
                     "content": system
+                    + (FIGURE_RULE + "\n" if has_figures(evidence) else "")
                     + "\nФрагменты нормативных документов:\n"
                     + evidence,
                 },
@@ -2374,8 +2401,45 @@ class DvdRagService(BaseLlmService):
         await self.state_store.set_status(request_id, PipelineStatus.FAILED)
         return event
 
+    async def _figure_events(self, request_id, collected, answer):
+        if not self.dvd_api_url:
+            return
+        hits = collected.pop("cited_figure_hits", None)
+        if hits is None:
+            hits = cited_figures(answer, collected.get("citation_hits", []))
+        scenario_id = collected.get("figure_scenario_id")
+        project_id = collected.get("figure_project_id")
+        if (
+            project_id is None
+            and scenario_id is not None
+            and any(
+                (h.get("user_id") or h.get("owner") == "user")
+                and h.get("project_id") is None
+                for h in hits
+            )
+        ):
+            try:
+                project_id = await self.urban_api_client.get_project_by_scenario(
+                    collected.get("figure_token"), scenario_id
+                )
+                collected["figure_project_id"] = project_id
+            except Exception as exc:
+                logger.warning("DVD figure project lookup failed: {}", exc)
+        seen = set()
+        for hit in hits:
+            node_id = hit.get("node_id") or hit.get("id")
+            if not is_figure(hit) or not node_id or node_id in seen:
+                continue
+            seen.add(node_id)
+            content = figure_file(hit, project_id=project_id, scenario_id=scenario_id)
+            collected.setdefault("figure_files", []).append(content)
+            yield await self._buf(request_id, {"type": "file", "content": content})
+            if len(seen) == MAX_FIGURES:
+                break
+
     async def _finish_retrieval(self, request_id, collected, answer, iteration):
         """Grounded not-found / clarification; no model invents an alternative answer."""
+        cited_answer = answer
         answer = source_citations.readable(answer, collected.get("citations"))
         if collected.get("context_incomplete"):
             answer += "\n\n" + _PARTIAL_CONTEXT_WARNING
@@ -2383,6 +2447,8 @@ class DvdRagService(BaseLlmService):
         yield await self._buf(
             request_id, self._chunk(answer, done=False, iteration=iteration)
         )
+        async for event in self._figure_events(request_id, collected, cited_answer):
+            yield event
         yield await self._buf(
             request_id, self._chunk("", done=True, iteration=iteration)
         )
@@ -2435,6 +2501,14 @@ class DvdRagService(BaseLlmService):
         )
         # The partial answer has its own cross-round citation numbering. The last
         # retrieval alone must not be reused as evidence for these citations.
+        collected["cited_figure_hits"] = [
+            ref["hit"]
+            for index in approved
+            for ref in evidence.candidates()[index]["evidence"]
+            if ref.get("hit")
+        ]
+        if collected["cited_figure_hits"]:
+            collected["citations"] = None
         if collected.get("chat_id") and collected.get("chat_context_access"):
             await self.state_store.set_document_evidence(collected["chat_id"], None)
         yield await self._buf(
@@ -2542,6 +2616,8 @@ class DvdRagService(BaseLlmService):
                 "question": query,
             }
             await self.state_store.set_document_evidence(collected["chat_id"], snapshot)
+            collected["citation_hits"] = hits
+            collected["citations"] = source_citations.citations(hits)
             async for event in self._finish_retrieval(
                 request_id, collected, self.context_builder.full_quote(hits), 1
             ):
@@ -2621,6 +2697,7 @@ class DvdRagService(BaseLlmService):
                         collected["citations"] = source_citations.citations(
                             snapshot["hits"]
                         )
+                        collected["citation_hits"] = snapshot["hits"]
                         async for event in self._finish_retrieval(
                             request_id,
                             collected,
@@ -2900,7 +2977,7 @@ class DvdRagService(BaseLlmService):
         if question := collected.get("question_persisted"):
             # The question was stored beside the pipeline; keep it first in the chat.
             await question
-        parts: list[TextPartRequest | ToolCallPartRequest] = []
+        parts: list[TextPartRequest | ToolCallPartRequest | FilePartRequest] = []
         if collected.get("tool_calls"):
             calls = [
                 self._tool_call_to_storage(step, tc)
@@ -2919,6 +2996,17 @@ class DvdRagService(BaseLlmService):
             TextPartRequest(
                 kind="text", payload=TextPayload(text=collected["final_answer"])
             )
+        )
+        parts.extend(
+            FilePartRequest(
+                kind="file",
+                payload={
+                    key: value
+                    for key, value in content.items()
+                    if key not in {"role", "download_url"}
+                },
+            )
+            for content in collected.get("figure_files", [])
         )
         message = await self.add_complex_message(
             token, chat_id, RoleEnum.ASSISTANT, parts, scenario_id=scenario_id

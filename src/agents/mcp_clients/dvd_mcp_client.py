@@ -307,5 +307,8 @@ class DvdMcpClient(BaseMcpClient):
             }
         hits = result.get("hits") or []
         result["hits"] = [cls._to_dict(hit) for hit in hits if hit is not None]
+        for hit in result["hits"]:
+            if hit.get("figure") is not None:
+                hit["figure"] = cls._to_dict(hit["figure"])
         result.setdefault("count", len(result["hits"]))
         return result
