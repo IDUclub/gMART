@@ -121,6 +121,10 @@ jobs:
           SERVICE_AUTH_CLIENT_ID: ${{ vars.SERVICE_AUTH_CLIENT_ID }}
           SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.SERVICE_AUTH_CLIENT_SECRET }}
           SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED: ${{ vars.SCENARIO_DATA_LINEAR_WORKFLOW_ENABLED }}
+          SYNAPSE_ENABLED: ${{ vars.SYNAPSE_ENABLED }}
+          SYNAPSE_API_URL: ${{ vars.SYNAPSE_API_URL }}
+          SYNAPSE_SERVICE_EMAIL: ${{ secrets.SYNAPSE_SERVICE_EMAIL }}
+          SYNAPSE_SERVICE_PASSWORD: ${{ secrets.SYNAPSE_SERVICE_PASSWORD }}
         run: docker compose -f docker-compose.actions.yaml up -d --wait --wait-timeout 120
 
       - name: Container diagnostics

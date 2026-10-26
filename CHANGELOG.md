@@ -1,3 +1,9 @@
+## v0.28.3 (2026-10-26)
+
+[chore/prod-synapse-vars](https://github.com/IDUclub/gMART/pull/253) (#253)
+
+- fix(build_and_deploy_all): передавать настройки Synapse в прод-контейнеры
+
 ## v0.28.2 (2026-10-26)
 
 [fix/ICII-205-critic-latency](https://github.com/IDUclub/gMART/pull/252) (#252)
