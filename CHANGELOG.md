@@ -1,8 +1,8 @@
 ## v0.28.1 (2026-10-26)
 
-[fix/ICII-205-critic-latency](https://github.com/IDUclub/gMART/pull/252) (#252)
+[chore/prod-default-llm-model](https://github.com/IDUclub/gMART/pull/251) (#251)
 
-- fix(agents): ускорить проверку ответов критиком агента документов
+- fix(build_and_deploy_all): передавать DEFAULT_LLM_MODEL в прод-контейнеры
 
 ## v0.28.0 (2026-10-26)
 
