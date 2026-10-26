@@ -1,3 +1,11 @@
+## v0.28.4 (2026-10-26)
+
+[chore/sync-main](https://github.com/IDUclub/gMART/pull/255) (#255)
+
+- v0.22.0 (#245)
+- v0.27.0 (#249)
+- v0.28.3 (#254)
+
 ## v0.28.3 (2026-10-26)
 
 [chore/prod-synapse-vars](https://github.com/IDUclub/gMART/pull/253) (#253)
