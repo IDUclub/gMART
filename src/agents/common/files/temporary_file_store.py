@@ -143,7 +143,8 @@ class OwnedFilesApp:
                 scope, receive, send
             )
             return
-        segments = self.static.get_path(scope).split("/")
+        # ``get_path`` normalises with ``os.path``: backslashes on Windows.
+        segments = re.split(r"[\\/]", self.static.get_path(scope))
         meta = self.store.metadata(*segments) if len(segments) == 2 else None
         # Foreign, expired and unknown files are indistinguishable to the caller.
         if meta is None or meta.get("owner") != owner:

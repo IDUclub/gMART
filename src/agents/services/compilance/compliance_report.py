@@ -15,10 +15,21 @@ from src.agents.services.compilance.compliance_sources import (
     merged_sources,
     source_reference,
 )
+from src.agents.services.compilance.compliance_user_files import user_files_report
 from src.agents.services.readable_refs import object_label
 
 REPORT_SLOT = "compliance_report"
 REPORT_TITLE = "Отчёт о проверке соответствия нормам"
+STRICTEST_NORM_NOTICE = (
+    "Часть норм содержит условия применения или разные значения для разных "
+    "случаев. Для них применена самая строгая норма ко всем объектам; эти нормы "
+    "необходимо проверить на дополнительные условия."
+)
+TRANSPORT_NOTICE = (
+    "Транспортная доступность оценена приближённо: радиусом по прямой при средней "
+    "скорости транспорта, без дорожной сети и расписаний. Пограничные результаты "
+    "таких норм стоит проверить вручную."
+)
 REPORT_MIME_TYPE = "text/markdown"
 MAX_VIOLATORS_PER_NORM = 20
 
@@ -28,6 +39,9 @@ _TEMPLATE_TITLES = {
     "presence_within": "наличие объектов в радиусе",
     "zonal_attribute_threshold": "порог атрибута в зоне",
     "zonal_ratio": "доля площади в зоне",
+    "object_attribute_threshold": "порог атрибута объекта",
+    "accessibility_within": "доступность (по буферу)",
+    "service_provision": "обеспеченность по нормативу",
 }
 _PARAM_LABELS = {
     "source_layer": "Источник",
@@ -47,6 +61,15 @@ _PARAM_LABELS = {
     "threshold_source": "Порог",
     "bands": "Диапазоны",
     "numerator": "Числитель",
+    "neighbors_layer": "Обязательные объекты рядом",
+    "services_layer": "Сервис",
+    "limit": "Доступность",
+    "capacity_per_1000": "Мест на 1000 жителей",
+    "residents_per_service": "Жителей на 1 объект",
+    "accessibility": "Доступность",
+    "min_provision": "Минимальная обеспеченность",
+    "mode": "Вид доступности",
+    "accessibility_mode": "Вид доступности",
 }
 _VALUE_LABELS = {
     "buffered": "буфер вокруг источника",
@@ -56,6 +79,8 @@ _VALUE_LABELS = {
     "contains": "содержит",
     "matched": "объект попадает в зону",
     "not_matched": "объект не попадает в зону",
+    "walk": "пешеходная",
+    "transport": "транспортная (приближённая оценка)",
 }
 _UNIT_LABELS = {"count": "шт."}
 _OPERATOR_LABELS = {
@@ -73,7 +98,10 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
         for item in results
         if item.get("compliance_status") in {"violated", "passed"}
     ]
-    if not checked:
+    user_files = summary.get("user_files")
+    # A check of user files reports which norms the files could not serve even
+    # when none could be run.
+    if not checked and not (user_files or {}).get("not_checked"):
         return None
     violated = [item for item in checked if item["compliance_status"] == "violated"]
     passed = [
@@ -85,6 +113,9 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
     ordered = violated + passed + vacuous
     numbers = {id(item): index for index, item in enumerate(ordered, 1)}
     groups = [item for item in ordered if _equivalents(item)]
+    strictest = [item for item in checked if strictest_applicability(item)]
+    transport = [item for item in checked if transport_accessibility(item)]
+    scoped = [item for item in checked if plan_scope(item)]
     equivalent_count = sum(len(_equivalents(item)) for item in groups)
     not_checked = len(results) - len(checked)
 
@@ -107,11 +138,30 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
     skipped = int(summary.get("skipped_without_plan") or 0)
     if skipped:
         lines.append(f"| Пропущено без исполнимого плана | {skipped} |")
+    if strictest:
+        lines.append(
+            f"| Проверены по самой строгой норме (проверьте условия) | {len(strictest)} |"
+        )
+    if scoped:
+        lines.append(
+            f"| Проверены только на объектах, подходящих под условие пункта | {len(scoped)} |"
+        )
+    if transport:
+        lines.append(
+            f"| Транспортная доступность оценена приближённо | {len(transport)} |"
+        )
     lines += [
         "",
         "Счётчики объектов указаны для каждой нормы отдельно; их нельзя "
         "складывать в число уникальных объектов.",
     ]
+    if strictest:
+        lines += [
+            "",
+            f"> {STRICTEST_NORM_NOTICE} Такие нормы отмечены в разделах ниже.",
+        ]
+    if transport:
+        lines += ["", f"> {TRANSPORT_NOTICE}"]
 
     lines += ["", "## Не прошли проверку", ""]
     lines += _norm_sections(violated, numbers) or ["_Нет._"]
@@ -129,6 +179,7 @@ def build_compliance_report(summary: dict[str, Any]) -> str | None:
             "",
         ]
         lines += _norm_sections(vacuous, numbers)
+    lines += user_files_report(user_files)
     lines += ["", "## Проверены как эквивалентные", ""]
     if groups:
         lines += [
@@ -190,6 +241,10 @@ def _norm_section(result: dict[str, Any], number: int) -> list[str]:
     requirement = _one_line(source.get("extraction_text"))
     if requirement:
         lines.append(f"- **Требование:** {requirement}")
+    lines += _strictest_lines(result)
+    lines += _scope_lines(result)
+    lines += _transport_lines(result)
+    lines += _population_lines(result)
     if vacuous:
         lines.append("- **Объекты:** применимых — 0")
     else:
@@ -213,6 +268,136 @@ def _norm_section(result: dict[str, Any], number: int) -> list[str]:
     lines += _violators(result)
     lines.append("")
     return lines
+
+
+def strictest_applicability(result: dict[str, Any]) -> dict[str, Any] | None:
+    """The plan's ``applicability`` when the strictest value of a clause was applied."""
+
+    plan = (result.get("source") or {}).get("check_plan") or {}
+    applicability = plan.get("applicability") or {}
+    if applicability.get("mode") == "strictest_variant":
+        return applicability
+    return None
+
+
+def _strictest_lines(result: dict[str, Any]) -> list[str]:
+    applicability = strictest_applicability(result)
+    if applicability is None:
+        return []
+    lines = [
+        f"- **Применена самая строгая норма:** {_one_line(applicability.get('applied'))}. "
+        "Пункт задаёт условия применения или разные значения для разных случаев; "
+        "проверка применила самое строгое значение ко всем объектам. Проверьте, "
+        "выполняются ли для объектов сценария дополнительные условия, — по ним "
+        "может действовать менее строгое значение."
+    ]
+    conditions = [_one_line(item) for item in applicability.get("conditions") or []]
+    if conditions:
+        lines.append(f"  - Условия пункта: {'; '.join(conditions)}")
+    variants = [_one_line(item) for item in applicability.get("variants") or []]
+    if variants:
+        lines.append(f"  - Варианты нормы: {'; '.join(variants)}")
+    return lines
+
+
+def plan_scope(result: dict[str, Any]) -> dict[str, Any] | None:
+    """The plan's ``scope``: only objects meeting the clause's condition were checked."""
+
+    plan = (result.get("source") or {}).get("check_plan") or {}
+    return plan.get("scope") or None
+
+
+def transport_accessibility(result: dict[str, Any]) -> bool:
+    """Whether the plan estimated a transport accessibility by a radius."""
+
+    params = ((result.get("source") or {}).get("check_plan") or {}).get("params") or {}
+    return "transport" in {params.get("mode"), params.get("accessibility_mode")}
+
+
+def scope_text(scope: dict[str, Any]) -> str:
+    low, high = scope.get("min"), scope.get("max")
+    if low is not None and high is not None:
+        floors = f"этажностью от {_number(low)} до {_number(high)}"
+    elif low is not None:
+        floors = f"этажностью от {_number(low)} и выше"
+    else:
+        floors = f"этажностью до {_number(high)}"
+    return f"{_one_line(scope.get('condition'))} — объекты {floors}"
+
+
+def _scope_lines(result: dict[str, Any]) -> list[str]:
+    scope = plan_scope(result)
+    if scope is None:
+        return []
+    counts = {}
+    for warning in result.get("warnings") or []:
+        if warning.startswith("scope:") and "=" in warning:
+            key, value = warning[len("scope:") :].split("=", 1)
+            counts[key] = value
+    line = (
+        f"- **Проверены только объекты, к которым относится значение:** "
+        f"{scope_text(scope)}"
+    )
+    if counts:
+        line += (
+            f"; вне условия — {counts.get('outside_condition', 0)}, "
+            f"без этажности (не проверены) — {counts.get('without_value', 0)}"
+        )
+    return [line]
+
+
+def _transport_lines(result: dict[str, Any]) -> list[str]:
+    params = ((result.get("source") or {}).get("check_plan") or {}).get("params") or {}
+    if params.get("mode") == "transport":
+        limit = params.get("limit") or {}
+        speed = float(params.get("speed_m_per_min") or 0)
+        route = (
+            float(limit.get("minutes") or 0) * speed
+            if limit.get("kind") == "time"
+            else float(limit.get("meters") or 0)
+        )
+        radius = route / float(params.get("detour_factor") or 1)
+        return [
+            f"- **Транспортная доступность оценена приближённо:** радиус "
+            f"{radius:.0f} м по прямой при средней скорости транспорта "
+            f"{_number(round(speed * 0.06, 1))} км/ч; дорожная сеть и расписания не "
+            "учитываются."
+        ]
+    if params.get("accessibility_mode") == "transport":
+        access = params.get("accessibility") or {}
+        return [
+            "- **Транспортная доступность оценена приближённо:** "
+            f"{_number(access.get('meters'))} м по прямой при средней скорости "
+            "транспорта; дорожная сеть и расписания не учитываются."
+        ]
+    return []
+
+
+_POPULATION_SOURCES = {
+    "explicit": "задано при запуске проверки",
+    "indicator": "индикатор Urban API, согласованный с жилым фондом",
+    "housing_stock": "ёмкость жилого фонда (жилая площадь / норма на человека)",
+}
+
+
+def _population_lines(result: dict[str, Any]) -> list[str]:
+    values = {}
+    ignored = None
+    for warning in result.get("warnings") or []:
+        if warning.startswith("population:") and "=" in warning:
+            key, value = warning[len("population:") :].split("=", 1)
+            values[key] = value
+        elif warning.startswith("population_indicator_ignored"):
+            ignored = True
+    if "source" not in values:
+        return []
+    line = (
+        f"- **Население сценария:** {values.get('residents', '—')} чел. — "
+        f"{_POPULATION_SOURCES.get(values['source'], values['source'])}"
+    )
+    if ignored:
+        line += "; индикатор Urban API не совпадает с жилым фондом и не использован"
+    return [line]
 
 
 def _parameters(result: dict[str, Any]) -> list[str]:
@@ -257,6 +442,10 @@ def _param_value(key: str, value: Any, entities: dict[str, str]) -> str:
         if value.get("kind") == "constant":
             return f"{_number(value.get('value'))} {value.get('unit', '')}".strip()
         return f"значение атрибута зоны «{value.get('role')}»"
+    if key in {"limit", "accessibility"} and isinstance(value, dict):
+        if value.get("kind") == "time":
+            return f"{_number(value.get('minutes'))} мин"
+        return f"{_number(value.get('meters'))} м"
     if key == "numerator" and isinstance(value, dict):
         return f"площадь «{entities.get(value.get('layer'), value.get('layer'))}»"
     if key == "bands" and isinstance(value, list):

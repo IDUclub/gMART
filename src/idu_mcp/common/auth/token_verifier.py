@@ -1,8 +1,8 @@
 import os
 
-from fastmcp.exceptions import AuthorizationError
 from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.providers.jwt import JWTVerifier
+from loguru import logger
 
 SERVICE_ACCOUNT_PREFIX = "service-account-"
 
@@ -32,6 +32,7 @@ class ServiceTokenVerifier(JWTVerifier):
         if not isinstance(username, str) or not username.startswith(
             SERVICE_ACCOUNT_PREFIX
         ):
-            raise AuthorizationError("A service-account token is required")
+            logger.warning("A service-account token is required")
+            return None
 
         return access_token

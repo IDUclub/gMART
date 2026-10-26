@@ -6,7 +6,11 @@ from src.agents.services.dvd.context_reducer import (
     DvdContextReducer,
     current_context_window,
 )
-from src.agents.services.dvd.dvd_reasoning import RetrievalPlanner, _request_json
+from src.agents.services.dvd.dvd_reasoning import (
+    RetrievalPlanner,
+    _request_json,
+    planner_output_cap,
+)
 from src.agents.services.service_entities.dvd_plan import CriticVerdict
 from tests.helpers import plan_json, verdict_json
 
@@ -87,7 +91,7 @@ async def test_answer_checks_history_and_instructions_before_sending():
     llm.chat.assert_not_called()
 
 
-async def test_planner_output_follows_input_and_ignores_legacy_caps(monkeypatch):
+async def test_planner_output_follows_input_up_to_its_cap(monkeypatch):
     monkeypatch.setenv("DVD_PLANNER_MAX_TOKENS", "1024")
     monkeypatch.setenv("DVD_REQUEST_MAX_CHARS", "32000")
     monkeypatch.delenv("DVD_CONTEXT_WINDOW_TOKENS", raising=False)
@@ -100,7 +104,8 @@ async def test_planner_output_follows_input_and_ignores_legacy_caps(monkeypatch)
         history=[{"role": "user", "content": "История " * 5000}],
     )
     call = llm.chat.call_args.kwargs
-    assert call["options"]["num_predict"] == 4096 + 8000 // 2
+    # Proportional (4096 + 8000 // 2), then held at the planner's own cap.
+    assert call["options"]["num_predict"] == min(4096 + 8000 // 2, planner_output_cap())
     assert call["options"]["num_ctx"] == 32000
     assert sum(len(m["content"]) for m in call["messages"]) > 32000
 

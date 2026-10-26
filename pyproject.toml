@@ -1,6 +1,6 @@
 [project]
 name = "gMART"
-version = "0.21.4"
+version = "0.27.0"
 description = "First look on fastmcp with uv"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
@@ -27,6 +27,7 @@ dependencies = [
     "starlette>=1.6.0",
     "anyio>=4.14.2",
     "idu-service-auth @ https://github.com/IDUclub/idu-service-auth/archive/1b8a418d9b1ab702860eb7289a3b75244666a8d8.tar.gz",
+    "py7zr>=1.0.0",
 ]
 
 [dependency-groups]
@@ -58,7 +59,7 @@ filterwarnings = [
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.21.4"
+version = "0.27.0"
 tag_format = "v$version"
 version_scheme = "pep440"
 major_version_zero = true

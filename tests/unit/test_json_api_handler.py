@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 
+import aiohttp
 import pytest
 
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
@@ -81,6 +82,16 @@ class FakeSession:
 
     def post(self, url=None, headers=None, params=None, json=None):
         self.methods.append("post")
+        return FakeReqCtx(self._outcomes.pop(0))
+
+    def patch(self, url=None, headers=None, params=None, json=None):
+        self.methods.append("patch")
+        self.json = json
+        return FakeReqCtx(self._outcomes.pop(0))
+
+    def delete(self, url=None, headers=None, params=None):
+        self.methods.append("delete")
+        self.params = params
         return FakeReqCtx(self._outcomes.pop(0))
 
 
@@ -248,3 +259,41 @@ async def test_post_retries_with_post_not_get():
     result = await _handler().post("/v1/x", data={"a": 1}, session=session)
     assert result == {"created": True}
     assert session.methods == ["post", "post"]
+
+
+async def test_patch_sends_patch_and_retries_with_patch():
+    session = FakeSession(
+        [
+            FakeResponse(500, json_body={"error": "reset by peer"}),
+            FakeResponse(200, json_body={"title": "Новое"}),
+        ]
+    )
+    result = await _handler().patch(
+        "/chats/1", data={"title": "Новое"}, session=session
+    )
+    assert result == {"title": "Новое"}
+    assert session.methods == ["patch", "patch"]
+    assert session.json == {"title": "Новое"}
+
+
+# --------------------------------------------------------------------------- #
+# DELETE and writes that must not be repeated
+# --------------------------------------------------------------------------- #
+async def test_delete_sends_delete_with_params():
+    session = FakeSession([FakeResponse(200, json_body={"ok": True})])
+    result = await _handler().delete(
+        "/v1/scenarios/1/physical_objects/2",
+        params={"is_scenario_object": False},
+        session=session,
+    )
+    assert result == {"ok": True}
+    assert session.methods == ["delete"]
+    assert session.params == {"is_scenario_object": "false"}
+
+
+async def test_single_attempt_post_is_not_repeated_after_a_network_error():
+    session = FakeSession([aiohttp.ClientConnectionError("reset"), FakeResponse(201)])
+    with pytest.raises(DownstreamServiceError) as error:
+        await _handler().post("/v1/projects", data={}, session=session, attempts=1)
+    assert session.methods == ["post"]
+    assert "after 1 attempts" in error.value.message

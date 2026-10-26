@@ -246,6 +246,24 @@ def resolve_reply(query, pending):
         if not selected:
             return {"unresolved": True}
     plan = dict(pending["plan"])
+    if which := pending.get("comparison_side"):
+        identities = {(c.get("doc_id"), c.get("owner")) for c in selected}
+        if len(identities) != 1:
+            return {"unresolved": True}
+        side = dict(plan.get(which) or {})
+        side.update(
+            doc_id=selected[0]["doc_id"],
+            name=selected[0]["name"],
+            owner=selected[0].get("owner"),
+        )
+        if pending.get("comparison_version"):
+            editions = {c.get("version") for c in selected}
+            if len(editions) != 1:
+                return {"unresolved": True}
+            side["version"] = selected[0].get("version")
+        plan[which] = side
+        # The other selector is resolved independently; never silently choose it.
+        return {"plan": plan}
     # A new explicit structural address starts its own question.
     address = re.search(r"(?:пункт[а-я]*|п\.)\s*(\d+(?:\.\d+)*)", query, re.I)
     if address and address[1] != plan.get("pattern"):

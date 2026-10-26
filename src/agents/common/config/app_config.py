@@ -1,8 +1,47 @@
+import os
+from dataclasses import dataclass
+
 from src.agents.model_clients.endpoint_policy import (
     reject_forbidden_llm_host,
     require_local_ollama_url,
 )
 from src.common.urban_api_url import normalize_urban_api_url
+
+
+@dataclass(frozen=True)
+class ComplianceUploadLimits:
+    """Read one set of limits for parsing and the HTTP upload boundary."""
+
+    max_upload_mb: int = 50
+    max_archive_members: int = 2000
+    max_unpacked_mb: int = 200
+    max_layers: int = 500
+
+    @classmethod
+    def from_env(cls) -> "ComplianceUploadLimits":
+        # Upload modules are imported before dependencies initialize app config.
+        # Load the same dotenv source first, preserving process env precedence.
+        from src.agents.common.config.app_config_loader import (
+            ENV_EXTENSIONS,
+            try_load,
+        )
+
+        for extension in ENV_EXTENSIONS:
+            if try_load(extension):
+                break
+        values = {}
+        for field, default in (
+            ("max_upload_mb", 50),
+            ("max_archive_members", 2000),
+            ("max_unpacked_mb", 200),
+            ("max_layers", 500),
+        ):
+            variable = "COMPLIANCE_" + field.upper()
+            value = int(os.getenv(variable) or default)
+            if value <= 0:
+                raise ValueError(f"{variable} must be positive")
+            values[field] = value
+        return cls(**values)
 
 
 class AgentsAppConfig:
@@ -170,6 +209,7 @@ class AgentsAppConfig:
         self.SYNAPSE_A2A_CLIENT_ID = synapse_a2a_client_id
         self.SYNAPSE_AUTH_AUDIENCE = synapse_auth_audience or None
         self.PUBLIC_BASE_URL = (public_base_url or "").strip().rstrip("/") or None
+        self.COMPLIANCE_UPLOAD_LIMITS = ComplianceUploadLimits.from_env()
         if self.SYNAPSE_ENABLED:
             required_synapse = {
                 "SYNAPSE_API_URL": self.SYNAPSE_API_URL,

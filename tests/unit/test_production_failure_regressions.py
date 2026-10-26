@@ -60,6 +60,9 @@ async def test_partial_document_context_is_reviewed_warned_persisted_and_replaye
             PreparedContext(context),
         ]
     service.context_reducer.prepare = AsyncMock(side_effect=contexts)
+    if stage == "review":
+        # The review reduces its evidence only when that evidence does not fit.
+        service.context_reducer.fits = AsyncMock(return_value=False)
     fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
     fake_llm.answer_texts = [fact + " [1]"]
     events = await _run(service, fake_mcp)

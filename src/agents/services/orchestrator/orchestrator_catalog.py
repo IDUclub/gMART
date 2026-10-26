@@ -173,12 +173,35 @@ AGENT_CATALOG: dict[OrchestratorAgent, AgentCatalogEntry] = {
         ),
         requires_scenario_id=False,
     ),
+    OrchestratorAgent.PROJECT_FILES: AgentCatalogEntry(
+        key=OrchestratorAgent.PROJECT_FILES,
+        title="Агент создания проекта из файлов",
+        description=(
+            "Создаёт новый проект и сценарий в Urban API из загруженных "
+            "пользователем файлов проекта застройки (GeoJSON, ZIP, GeoPackage со "
+            "смешанными объектами: здания, площадки, озеленение, дороги, кварталы). "
+            "Сам сопоставляет объекты с типами Urban API, определяет регион и "
+            "профиль сценария, загружает функциональные зоны, здания с этажностью и "
+            "сервисы; неясное уточняет вопросом. Если файлы уже загружались в этот "
+            "чат, предложит использовать их. Подходит для «создай проект из "
+            "файлов», «загрузи файлы как сценарий». Не проверяет нормы — это "
+            "compliance."
+        ),
+        examples=(
+            "Создай проект из загруженных файлов",
+            "Создай проект «Город-сад» со сценарием по этим слоям",
+            "Загрузи проект из файлов в Urban API",
+        ),
+        requires_scenario_id=False,
+    ),
 }
 
 
 def available_agents(
     app_config: "AgentsAppConfig",
     scenario_id: int | None,
+    *,
+    user_files: bool = False,
 ) -> list[AgentCatalogEntry]:
     """
     Function filters the catalogue down to the agents that can actually run.
@@ -187,13 +210,19 @@ def available_agents(
             the documents/norms agents).
         scenario_id (int | None): Scenario ID from the request; agents requiring
             a scenario are excluded when it is absent.
+        user_files (bool): The request carries uploaded design files; compliance
+            checks them without a scenario.
     Returns:
         list[AgentCatalogEntry]: Agents available for the current request.
     """
 
     agents: list[AgentCatalogEntry] = []
     for entry in AGENT_CATALOG.values():
-        if entry.requires_scenario_id and scenario_id is None:
+        if (
+            entry.requires_scenario_id
+            and scenario_id is None
+            and not (user_files and entry.key == OrchestratorAgent.COMPLIANCE)
+        ):
             continue
         if entry.key == OrchestratorAgent.DOCUMENTS and not app_config.DVD_MCP_URL:
             continue

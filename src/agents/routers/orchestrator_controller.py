@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterable
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from src.agents.common.auth.auth import verify_bearer_token
@@ -50,6 +50,10 @@ async def stream_orchestration(
     urban_mcp_client: UrbanMcpClient | None = Depends(get_optional_urban_mcp_client),
     orchestrator_service: OrchestratorService = Depends(get_orchestrator_service),
     pzz_mcp_client: PzzMcpClient | None = Depends(get_optional_pzz_mcp_client),
+    compliance_upload_ids: list[str] | None = Query(
+        default=None,
+        description="Uploads (POST /compliance/uploads) for the compliance agent",
+    ),
 ) -> AsyncIterable[OrchestratorResponse | ServerSentEvent]:
     """
     Single entry point for all gMART agents.
@@ -73,6 +77,7 @@ async def stream_orchestration(
         normgraph_mcp_client=normgraph_mcp_client,
         urban_mcp_client=urban_mcp_client,
         pzz_mcp_client=pzz_mcp_client,
+        compliance_upload_ids=compliance_upload_ids,
         token=token,
         user_query=user_request.request,
         scenario_id=user_request.scenario_id,
@@ -111,6 +116,7 @@ async def stream_orchestration_body(
         urban_mcp_client=urban_mcp_client,
         pzz_mcp_client=pzz_mcp_client,
         pzz_inputs=user_request.pzz_inputs,
+        compliance_upload_ids=user_request.compliance_upload_ids,
         token=token,
         user_query=user_request.request,
         scenario_id=user_request.scenario_id,

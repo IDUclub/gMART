@@ -31,6 +31,7 @@ class StatusResponse(BaseModel):
         "compliance_territory",
         "compliance_scope",
         "restriction_zones",
+        "user_files",
     ]
     text: str
 
@@ -41,16 +42,37 @@ class TextResponse(BaseModel):
 
 
 class ClarificationOption(BaseModel):
-    """One numbered answer the user can pick, e.g. a document to check against."""
+    """One numbered answer the user can pick, e.g. a document to check against.
+
+    For an entity mapping (``kind="entity_mapping"``) an option is a group of the
+    user's objects: ``value`` is the proposed norm entity (``None`` — not checked),
+    with its type, the model's confidence, the object count and the layers.
+    """
 
     number: int
     label: str
-    value: str
+    value: str | None
+    entity_type: str | None = None
+    confidence: float | None = None
+    count: int | None = None
+    layers: list[str] | None = None
 
 
 class ClarificationContent(BaseModel):
     question: str
+    # ``entity_mapping`` for a mapping of uploaded objects; absent for a document choice.
+    kind: Literal["entity_mapping"] | None = None
     options: list[ClarificationOption] | None = None
+
+
+class UserFilesEventContent(BaseModel):
+    """Layers of the uploaded files and the norm entity of each object group."""
+
+    mode: Literal["overlay", "standalone"]
+    upload_ids: list[str]
+    layers: list[dict[str, Any]]
+    mapping: list[dict[str, Any]]
+    pending: list[str] = Field(default_factory=list)
 
 
 class FeatureCollectionResponse(BaseModel):
@@ -120,6 +142,8 @@ class ComplianceSummaryEventContent(BaseModel):
     scope: dict[str, Any] | None = None
     # How many graph documents are (not) in force on the scenario's territory.
     territory: dict[str, Any] | None = None
+    # Present for a check of uploaded files: layers, mapping, norms not checked.
+    user_files: dict[str, Any] | None = None
 
 
 class RestrictionZoneEventContent(BaseModel):
@@ -186,6 +210,7 @@ class RestrictionsResponse(BaseModel):
         "restriction_zone",
         "restriction_inventory",
         "file",
+        "user_files",
     ]
     content: (
         StatusResponse
@@ -205,4 +230,5 @@ class RestrictionsResponse(BaseModel):
         | RestrictionZoneEventContent
         | RestrictionInventoryEventContent
         | FileEventContent
+        | UserFilesEventContent
     )

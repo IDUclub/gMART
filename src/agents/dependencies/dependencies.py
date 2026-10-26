@@ -22,6 +22,7 @@ from src.agents.services.a2a_service import A2AService
 from src.agents.services.compilance.compliance_a2a_service import (
     ComplianceA2AService,
 )
+from src.agents.services.compilance.compliance_uploads import ComplianceUploadService
 from src.agents.services.dvd.dvd_a2a_service import DocumentQaA2AService
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.mcp_diagnostics_service import McpDiagnosticsService
@@ -29,6 +30,12 @@ from src.agents.services.normgraph.normgraph_a2a_service import NormGraphA2AServ
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 from src.agents.services.orchestrator.orchestrator_service import OrchestratorService
 from src.agents.services.pipeline_state import PipelineStateStore
+from src.agents.services.project_files.project_a2a_service import (
+    ProjectA2AService,
+)
+from src.agents.services.project_files.project_files_service import (
+    ProjectFilesService,
+)
 from src.agents.services.provision.provision_a2a_service import ProvisionA2AService
 from src.agents.services.provision.provsion_service import ProvisionService
 from src.agents.services.pzz.pzz_a2a_service import PzzA2AService
@@ -217,6 +224,11 @@ def get_pipeline_state_store() -> PipelineStateStore:
     if not isinstance(store, PipelineStateStore):
         raise TypeError(f"Expected PipelineStateStore, got {type(store)}")
     return store
+
+
+def get_compliance_upload_service() -> ComplianceUploadService:
+    """Uploads of user files for compliance checks, kept in the pipeline store."""
+    return ComplianceUploadService(get_pipeline_state_store())
 
 
 def get_synapse_run_store() -> SynapseRunStore:
@@ -613,6 +625,14 @@ async def get_optional_pzz_mcp_client(
 
 def get_pzz_service() -> PzzService:
     return app_deps["pzz_service"]
+
+
+def get_project_files_service() -> ProjectFilesService:
+    return app_deps["project_files_service"]
+
+
+async def get_project_a2a_service() -> ProjectA2AService:
+    return app_deps["project_a2a_service"]
 
 
 async def get_pzz_a2a_service() -> PzzA2AService:

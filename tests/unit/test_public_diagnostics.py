@@ -12,7 +12,8 @@ from src.agents.services.synapse.system_service import SystemService
 @pytest.mark.parametrize("body", [None, {}, {"password": "incorrect"}])
 def test_config_and_logs_require_no_credentials(tmp_path, body):
     log_file = tmp_path / "agents.log"
-    log_file.write_text("diagnostic log\n", encoding="utf-8")
+    # Exact bytes: text mode would write "\r\n" on Windows.
+    log_file.write_bytes(b"diagnostic log\n")
     config = {name: "http://localhost" for name in AppConfigResponse.model_fields}
     service = SystemService(
         log_file,

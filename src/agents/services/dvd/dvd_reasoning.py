@@ -23,9 +23,13 @@ from src.agents.model_clients.context_budget import (
 )
 from src.agents.model_clients.llm_base import LlmResponseError
 from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
-from src.agents.services.dvd.document_reference import parse_reference, wants_full_quote
+from src.agents.services.dvd.document_reference import (
+    DESIGNATION,
+    parse_reference,
+    wants_full_quote,
+)
 from src.agents.services.dvd.retrieval_scope import apply_scope
-from src.agents.services.dvd.retry_policy import CriticResponseError
+from src.agents.services.dvd.retry_policy import CriticBudgetError, CriticResponseError
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.dvd_plan import (
     AuditedClaim,
@@ -36,10 +40,13 @@ from src.agents.services.service_entities.dvd_plan import (
     validate_retrieval_plan,
 )
 
+from . import flags
+from .answer_risk import AnswerRisk
 from .clarification import parse_choice, selected_choice
 from .context_reducer import current_context_window
 from .dvd_context import source_records
 from .query_terms import (
+    is_document_comparison_question,
     is_document_list_question,
     router_topic,
     split_task,
@@ -111,6 +118,15 @@ and do not ask to restore removed_lines: missing_requirements must be []. Reject
 only a changed or added line that is still wrong, with a correction for it."""
 # The planner prompt lists the corpus tags only while the list stays readable.
 _MAX_PROMPT_TAGS = 150
+# Literal cues the deterministic route cannot resolve: an edition or year (outside
+# the document designation), amendments, tables/figures, comparisons and
+# selections among several targets. The LLM planner handles these.
+_NEEDS_PLANNER = re.compile(
+    r"\bред(?:акци\w*)?\b|\b(?:19|20)\d{2}\b|изменени|поправк|таблиц|рисун"
+    r"|сравн|отлич|разниц|\bили\b|\bи\s+(?:пункт|стать|раздел|глав|част)"
+    r"|мо[её]м\s+документ|загруженн",
+    re.I,
+)
 
 
 def _clean_str_list(
@@ -127,16 +143,90 @@ def _clean_str_list(
     return cleaned or None
 
 
-def critic_reasoning_effort(llm_client, model: str) -> str | None:
-    """Reasoning effort for gpt-oss audits (``DVD_CRITIC_REASONING_EFFORT``).
+class OutputCapped(ValueError):
+    """A structured reply reached its fixed output cap; it is not widened."""
 
-    Audits dominate document-QA latency. Other models keep their own default.
+
+# An audit restates each answer line with a short quote (~200 tokens per line) after
+# its reasoning. Its size follows the answer, not the evidence: a cap derived from
+# the evidence let one F-01 audit (a whole section, 50 fragments) reason for 68k
+# tokens and 14 minutes without finishing.
+_CRITIC_REASONING_TOKENS = 3000
+_CRITIC_TOKENS_PER_LINE = 200
+_CRITIC_MIN_TOKENS = 4096
+
+
+def critic_output_cap(lines: int) -> int:
+    """Output tokens one audit of ``lines`` answer lines may use, reasoning included."""
+    try:
+        ceiling = int(os.getenv("DVD_CRITIC_MAX_OUTPUT_TOKENS") or "12000")
+    except ValueError:
+        ceiling = 12000
+    wanted = _CRITIC_REASONING_TOKENS + _CRITIC_TOKENS_PER_LINE * max(lines, 1)
+    return max(_CRITIC_MIN_TOKENS, min(wanted, ceiling))
+
+
+def planner_reasoning_effort(llm_client, model: str) -> str | None:
+    """Reasoning effort of the gpt-oss retrieval planner (``DVD_PLANNER_REASONING_EFFORT``).
+
+    A plan is a short JSON object, but on a deployment whose default effort is
+    ``medium`` the planner reasoned for up to 20k tokens before it. ``low`` by
+    default; an empty value leaves the server default. Other models keep theirs.
+    """
+
+    if not (isinstance(llm_client, OpenAiCompatAdapter) and "gpt-oss" in model.lower()):
+        return None
+    effort = os.getenv("DVD_PLANNER_REASONING_EFFORT", "low").strip().lower()
+    return effort if effort in _VALID_EFFORTS else None
+
+
+def planner_output_cap() -> int:
+    """Output tokens one plan may use, reasoning included (``DVD_PLANNER_MAX_OUTPUT_TOKENS``)."""
+    try:
+        return max(1024, int(os.getenv("DVD_PLANNER_MAX_OUTPUT_TOKENS") or "4096"))
+    except ValueError:
+        return 4096
+
+
+def critic_reasoning_effort(
+    llm_client, model: str, risk: AnswerRisk | None = None
+) -> str | None:
+    """Reasoning effort for gpt-oss audits.
+
+    Audits dominate document-QA latency. While ``DVD_ADAPTIVE_CRITIC`` is on,
+    an answer gets the short audit ``DVD_CRITIC_LOW_RISK_EFFORT`` (``low``)
+    unless its risk (see :mod:`answer_risk`) has a reason listed in
+    ``DVD_CRITIC_FULL_AUDIT_REASONS`` (``absence_claim``; ``any`` for every
+    reason). Those, an unclassified audit and every audit with the switch off
+    get the full ``DVD_CRITIC_REASONING_EFFORT`` (``medium``). On the quality
+    benchmark a short audit kept figures and obligations as right as the full
+    one with a fifth of the tokens, but moved «the fragments do not say» lines
+    out of the grounded answer. Other models keep their own default.
     """
 
     if not (isinstance(llm_client, OpenAiCompatAdapter) and "gpt-oss" in model.lower()):
         return None
     effort = (os.getenv("DVD_CRITIC_REASONING_EFFORT") or "medium").strip().lower()
-    return effort if effort in _VALID_EFFORTS else "medium"
+    effort = effort if effort in _VALID_EFFORTS else "medium"
+    if risk is None or not flags.enabled(flags.ADAPTIVE_CRITIC):
+        return effort
+    if _needs_full_audit(risk.reasons):
+        return effort
+    low = (os.getenv("DVD_CRITIC_LOW_RISK_EFFORT") or "low").strip().lower()
+    return low if low in _VALID_EFFORTS else "low"
+
+
+def _needs_full_audit(reasons: tuple[str, ...]) -> bool:
+    raw = os.getenv("DVD_CRITIC_FULL_AUDIT_REASONS")
+    listed = {
+        r.strip().lower()
+        for r in (raw if raw is not None and raw.strip() else "absence_claim").split(
+            ","
+        )
+        if r.strip()
+    }
+    listed.add("unclassified")
+    return bool(reasons) and ("any" in listed or bool(listed & set(reasons)))
 
 
 async def _request_json(
@@ -151,6 +241,7 @@ async def _request_json(
     schema_enums: dict[str, dict[str, list[str]]] | None = None,
     output: OutputShare = STRUCTURED_OUTPUT,
     empty_lists: tuple[str, ...] = (),
+    max_tokens: int | None = None,
 ) -> T:
     """
     Ask the LLM for a JSON object and parse it into ``model_cls``.
@@ -160,7 +251,8 @@ async def _request_json(
     ``schema_enums`` restricts string properties of schema definitions to closed
     sets, as ``{"Definition": {"property": [values]}}``; ``empty_lists`` names
     top-level list properties that must stay empty. ``output`` sets the output
-    tokens allowed per input token.
+    tokens allowed per input token. ``max_tokens`` is a fixed cap: a reply that
+    reaches it raises :class:`OutputCapped` instead of retrying with a wider limit.
     """
     adapter = TypeAdapter(model_cls)
     model_name = (
@@ -200,6 +292,7 @@ async def _request_json(
         )
         if budget.window_rest < 128:
             raise ValueError("structured request exceeds configured context window")
+        tokens = min(budget.tokens, max_tokens) if max_tokens else budget.tokens
         try:
             response = await llm_client.chat(
                 model=model,
@@ -207,7 +300,7 @@ async def _request_json(
                 format=schema,
                 options={
                     "temperature": 0,
-                    "num_predict": budget.tokens,
+                    "num_predict": tokens,
                     "num_ctx": current_context_window(),
                 },
                 messages=messages,
@@ -219,6 +312,8 @@ async def _request_json(
                 raise
             response = {"done_reason": "length"}
         if response.get("done_reason") in {"length", "max_tokens"}:
+            if max_tokens and tokens >= max_tokens:
+                raise OutputCapped(f"{model_name} reply reached its cap {tokens}")
             if not budget.limited or attempt >= retries:
                 raise ValueError("structured_output_exhausted_context_window")
             # A long but legitimate reply: retry with a wider proportional limit.
@@ -290,15 +385,82 @@ class RetrievalPlanner:
             *(history or []),
             {"role": "user", "content": user_query},
         ]
-        plan = await _request_json(
-            self.llm_client,
-            model,
-            messages,
-            RetrievalPlan,
-        )
+        try:
+            plan = await _request_json(
+                self.llm_client,
+                model,
+                messages,
+                RetrievalPlan,
+                reasoning_effort=planner_reasoning_effort(self.llm_client, model),
+                max_tokens=planner_output_cap(),
+            )
+        except OutputCapped as exc:
+            # A plan that does not fit its cap is not worth waiting for: the
+            # question itself is a usable semantic query.
+            logger.warning(f"DVD planner fell back to the question: {exc}")
+            plan = validate_retrieval_plan(
+                {"retrieval_mode": "semantic", "search_query": user_query}
+            )
         plan = self._clamp(plan, user_query, available_tags)
         plan = apply_scope(plan, user_query, history=history)
         logger.info(f"DVD retrieval plan: {plan.model_dump_json(ensure_ascii=False)}")
+        return plan
+
+    def fast_plan(
+        self,
+        user_query: str,
+        history: list[dict] | None = None,
+        scope: dict | None = None,
+    ) -> RetrievalPlan | None:
+        """An exact structural plan read from the literal reference, without the LLM.
+
+        Covers «что сказано в пункте 5.3 СП 55», «процитируй статью 51 ГрК РФ» and
+        an address continuing the document already selected in the conversation.
+        Returns ``None`` whenever the request needs the planner's judgement: no
+        address or no document, a section/chapter topic search, several documents,
+        an edition/amendment, a table or figure, a document list, or the
+        orchestrator's task wording. The same deterministic clamp and scope rules
+        as for an LLM plan apply, so both routes produce the same exact plan.
+        """
+        question, task = split_task(user_query)
+        reference = parse_reference(user_query)
+        if task or not reference.pattern or len(reference.document_names) > 1:
+            return None
+        leaf = reference.pattern.rsplit("/", 1)[-1].strip()
+        if leaf.startswith(("раздел ", "глава ", "приложение ")) and not (
+            wants_full_quote(user_query)
+        ):
+            return None
+        literal = DESIGNATION.sub(" ", user_query)
+        if (
+            _NEEDS_PLANNER.search(literal)
+            or is_document_list_question(question)
+            or is_document_comparison_question(question)
+        ):
+            return None
+        plan = self._clamp(
+            validate_retrieval_plan(
+                {
+                    "retrieval_mode": "structure",
+                    "pattern": reference.pattern,
+                    "search_query": question,
+                    "context_height": 0,
+                }
+            ),
+            user_query,
+        )
+        # The document comes from the request, the selected scope or the last
+        # user message naming one; without any, the planner must search.
+        plan = apply_scope(plan, user_query, scope, history)
+        if (
+            plan.retrieval_mode != "structure"
+            or plan.rank_by_relevance
+            or not (plan.document_names or plan.doc_id)
+        ):
+            return None
+        logger.info(
+            f"DVD retrieval plan (fast path): {plan.model_dump_json(ensure_ascii=False)}"
+        )
         return plan
 
     @staticmethod
@@ -307,6 +469,18 @@ class RetrievalPlanner:
         user_query: str,
         available_tags: list[str] | None = None,
     ) -> RetrievalPlan:
+        if plan.intent == "document_comparison" or is_document_comparison_question(
+            split_task(user_query)[0]
+        ):
+            return validate_retrieval_plan(
+                {
+                    **plan.model_dump(),
+                    "intent": "document_comparison",
+                    "retrieval_mode": "semantic",
+                    "pattern": None,
+                    "name_query": None,
+                }
+            )
         if choice := parse_choice(user_query):
             return validate_retrieval_plan({**plan.model_dump(), **choice})
         block = (plan.block or "").strip().lower() or None
@@ -434,7 +608,15 @@ class RetrievalPlanner:
             "include_shared": True,
             "search_query": "тема для векторного поиска",
             "alternative_queries": '[] | ["другая формулировка темы", ...]',
-            "intent": "norm | document_list",
+            "intent": "norm | document_list | document_comparison",
+            "comparison_left": {
+                "name": "название или null",
+                "doc_id": None,
+                "version": None,
+                "owner": None,
+            },
+            "comparison_right": None,
+            "comparison_topic": "null | только тема сравнения",
             "tags": 'null | ["тег из списка корпуса", ...]',
             "kind": "text | table | all",
             "limit": 10,
@@ -480,6 +662,16 @@ class RetrievalPlanner:
 8. intent=document_list, если спрашивают, КАКИЕ документы/регламенты/нормативы
    относятся к теме («в каких документах…», «какие есть регламенты…»); иначе norm.
    Для document_list: semantic, limit=15..20, context_height=0.
+8а. Сравнение документов или редакций: intent=document_comparison, semantic.
+   comparison_left/right: name (название/обозначение) или известный doc_id,
+   version — только явно названная редакция, owner=user/shared — только если указан.
+   Для версий одного документа повтори name справа, неназванные версии null.
+   Одну названную редакцию помещай слева, справа тот же документ без version.
+   comparison_topic — только предмет более узкий, чем целые документы («требования к парковкам»),
+   минимум два содержательных слова. Для сравнения документов целиком — null.
+   Никогда не записывай сюда слова сравнения («различия», «изменения», «сравнение»),
+   обозначения документов или годы редакций.
+   Не подменяй сравнение поиском норм. Не придумывай ID и редакции.
 9. «Задача:» после вопроса — поручение оркестратора этому агенту. Другие части
    вопроса выполняют другие агенты: search_query — тема задачи, не склеивай вопрос
    с задачей. intent определяй по вопросу пользователя, а не по словам задачи.
@@ -523,6 +715,8 @@ class AnswerCritic:
         verified: list[AuditedClaim] | None = None,
         previous: list[Correction] | None = None,
         removed: list[str] | None = None,
+        risk: AnswerRisk | None = None,
+        literal_context: str | None = None,
     ) -> CriticVerdict:
         """Audit ``answer``; ``verified`` are claims supported by an earlier audit.
 
@@ -530,9 +724,13 @@ class AnswerCritic:
         audited again, so a targeted revision is judged on what it changed.
         ``previous`` are the corrections that revision applied and ``removed`` the
         lines it deleted: a re-review checks them and raises no new omissions.
+        ``risk`` sizes the reasoning effort (:func:`critic_reasoning_effort`).
+        ``literal_context`` is the whole evidence the draft was written from when
+        ``context`` holds only part of it: literal checks of labels and table
+        numbers then see every source, as they did before.
         """
         recheck = previous is not None
-        if defects := self._literal_defects(context, answer):
+        if defects := self._literal_defects(literal_context or context, answer):
             return CriticVerdict(
                 satisfied=False,
                 critique="; ".join(defects),
@@ -574,8 +772,11 @@ class AnswerCritic:
                 ),
             },
         ]
-        try:
-            audit = await _request_json(
+        effort = critic_reasoning_effort(self.llm_client, model, risk)
+        cap = critic_output_cap(len(pending))
+
+        async def audit_at(effort):
+            return await _request_json(
                 self.llm_client,
                 model,
                 messages,
@@ -588,12 +789,52 @@ class AnswerCritic:
                         **({"source_id": [*labels, ""]} if labels else {}),
                     }
                 },
-                reasoning_effort=critic_reasoning_effort(self.llm_client, model),
+                reasoning_effort=effort,
                 output=AUDIT_OUTPUT,
                 # A re-review checks the requested edits; new omissions would undo
                 # deletions the critic asked for and never converge.
                 empty_lists=("missing_requirements",) if recheck else (),
+                max_tokens=cap,
             )
+
+        try:
+            try:
+                audit = await audit_at(effort)
+            except OutputCapped:
+                # Reasoning, not the verdict, fills the cap: one more audit with
+                # short reasoning, never a wider limit.
+                if effort in (None, "low"):
+                    raise
+                logger.warning(
+                    "DVD critic reached its output cap {} at effort {}; "
+                    "auditing again at low effort",
+                    cap,
+                    effort,
+                )
+                audit = await audit_at("low")
+            full = critic_reasoning_effort(self.llm_client, model)
+            if (
+                pending
+                and effort != full
+                and not any(c.status == "supported" for c in audit.claims)
+            ):
+                # A short audit that confirms nothing would replace the whole
+                # answer with a refusal; it sometimes audits one line and skips
+                # the rest. Such a verdict is confirmed by the full audit.
+                logger.info(
+                    "DVD critic confirmed nothing at effort {}; auditing again at {}",
+                    effort,
+                    full,
+                )
+                try:
+                    audit = await audit_at(full)
+                except OutputCapped:
+                    logger.warning(
+                        "DVD critic reached its output cap {} at effort {}; "
+                        "keeping the short audit",
+                        cap,
+                        full,
+                    )
             claims = [
                 *(c for c in audit.claims if c.text not in kept),
                 *kept.values(),
@@ -640,6 +881,10 @@ class AnswerCritic:
                     )
                 ),
             )
+        except OutputCapped as exc:
+            raise CriticBudgetError(
+                f"Critic did not finish within {cap} output tokens"
+            ) from exc
         except ValueError as exc:
             # A malformed audit is a technical failure, not evidence that a new
             # retrieval could repair the answer. The caller logs request/round.
@@ -692,6 +937,7 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
                 ],
                 PartialSelection,
                 reasoning_effort=critic_reasoning_effort(self.llm_client, model),
+                max_tokens=critic_output_cap(len(evidence.candidates())),
             )
             # A valid JSON response is not sufficient: IDs must belong to the
             # verified closed set, and a claim can appear at most once.

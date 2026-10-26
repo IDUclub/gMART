@@ -269,7 +269,9 @@ def _service(file_store, compliance="violated", passed_features=None):
     )
     service.compliance_executor = SimpleNamespace(
         execute=AsyncMock(
-            return_value=SimpleNamespace(result=result, tool_calls=[], timings_ms={})
+            return_value=SimpleNamespace(
+                result=result, tool_calls=[], effects_tool_calls=[], timings_ms={}
+            )
         )
     )
     return service

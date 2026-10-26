@@ -269,6 +269,41 @@ Redis-журнале запроса, но не сохраняются в ист�
 карточку. Кнопка восстановления MCP-вызовов запускает новый расчёт на текущих
 данных сценария и не означает исторически идентичный replay.
 
+#### Проверка файлов пользователя
+
+Файлы проекта загружаются `POST /compliance/uploads` (multipart, поле `files`;
+GeoJSON, ZIP с GeoJSON/Shapefile, GeoPackage; до 50 МиБ; хранятся 24 часа). Ответ —
+`upload_id` и слои с автоматически определёнными ролями `project` / `context` /
+`border`; роль слоя меняется `PATCH /compliance/uploads/{upload_id}` с
+`{"roles": {"<слой>": "context"}}`. Затем `upload_ids` передаются в
+`/compliance/check/stream` (в GET — повторяющимся параметром; `scenario_id` тогда
+необязателен) или `compliance_upload_ids` — в `/orchestrator/route/stream`.
+
+Поток дополнительно отдаёт событие `user_files` (слои, роли, сопоставление групп
+объектов с сущностями норм) и поле `compliance_summary.user_files` (ещё и нормы,
+не проверенные из-за отсутствия объектов в файлах). Если сопоставление спорное,
+приходит `clarification` с `content.kind = "entity_mapping"` и `options`
+`[{number, label, value, entity_type, confidence, count, layers}]`; ответ («да»,
+«нет», «2 — Спортивная площадка») — следующий запрос в тот же `chat_id`, файлы
+повторно передавать не нужно. Встроенный UI показывает панель «Файлы проекта для
+проверки» для агентов «Соответствие» и «Оркестратор». Подробнее —
+[`compliance-agent.md`](compliance-agent.md#проверка-файлов-пользователя).
+
+Загрузку можно привязать к чату полем формы `chat_id`: агент создания проекта в этом
+чате предложит её использовать.
+
+#### Создание проекта из файлов
+
+Те же загрузки создают проект и сценарий в Urban API:
+`POST /projects/from-files/stream` (`{"request", "chat_id", "upload_ids", "inputs"}`) или
+`GET` с параметрами `request`, `upload_ids` (повторяющийся), `project_name`,
+`scenario_name`, `territory_id`, `functional_zone_type_id`, `existing_objects`.
+Вопросы приходят событием `clarification` с `content.kind` (`reuse_files`,
+`entity_mapping`, `region`, `profile`, `existing_objects`, `retry`) и `options`; ответ —
+следующий запрос в тот же `chat_id`. Идентификаторы созданного — в событиях
+`project_created`, `scenario_created` и `project_summary`. Во встроенном UI — агент
+«Проект из файлов». Подробнее — [`project-from-files.md`](project-from-files.md).
+
 Если проверена хотя бы одна норма, поток закрывается событием `file` со ссылкой на
 Markdown-отчёт (см. [`file`](#file)). Та же ссылка сохраняется в историю чата как
 часть `kind: "file"`. Через `/orchestrator` событие приходит так же, на верхнем

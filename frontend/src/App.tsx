@@ -35,6 +35,7 @@ import { createPortal } from "react-dom";
 import remarkGfm from "remark-gfm";
 import MapPanel from "./MapPanel";
 import McpConsole from "./McpConsole";
+import ComplianceFiles from "./ComplianceFiles";
 import DocumentLibrary from "./DocumentLibrary";
 import { reusableChatId } from "./agentSession";
 import { appendLatestVisibleLayer } from "./layerState";
@@ -74,6 +75,7 @@ import type {
   Chat,
   ChatSummary,
   ComplianceProgress,
+  ComplianceUpload,
   ComplianceResult,
   ComplianceSummary,
   FileDescriptor,
@@ -131,6 +133,17 @@ const AGENTS: Agent[] = [
     examples: [
       "Проверь соответствие проекта нормативным ограничениям",
       "Какие объекты проекта нарушают противопожарные расстояния?",
+    ],
+  },
+  {
+    id: "project_files",
+    label: "Проект из файлов",
+    caption: "Создание в Urban API",
+    path: "/projects/from-files/stream",
+    needsScenario: false,
+    examples: [
+      "Создай проект из загруженных файлов",
+      "Создай проект «Город-сад» со сценарием по этим слоям",
     ],
   },
   {
@@ -269,6 +282,9 @@ export default function App() {
       useState<ComplianceSummary | null>(null),
     [complianceProgress, setComplianceProgress] =
       useState<ComplianceProgress | null>(null),
+    [complianceUploads, setComplianceUploads] = useState<ComplianceUpload[]>(
+      [],
+    ),
     [events, setEvents] = useState<Array<{ time: string; event: StreamEvent }>>(
       [],
     ),
@@ -1090,6 +1106,32 @@ export default function App() {
         event.content?.status === "completed" ? "done" : "warning",
       );
     }
+    if (event.type === "user_files") {
+      const groups = Array.isArray(event.content?.mapping)
+        ? event.content.mapping
+        : [];
+      const mapped = groups.filter((item: { entity?: string }) => item.entity);
+      updateStatus(
+        `Файлы: слоёв ${event.content?.layers?.length ?? 0}, групп объектов ` +
+          `${groups.length}, сопоставлено ${
+            agentId === "project_files" ? "с типами Urban API" : "с нормами"
+          } ${mapped.length}`,
+      );
+    }
+    if (event.type === "project_created") {
+      updateStatus(`Проект ${event.content?.project_id} создан в Urban API`);
+    }
+    if (event.type === "scenario_created") {
+      updateStatus(`Сценарий ${event.content?.scenario_id} создан`);
+    }
+    if (event.type === "project_summary") {
+      const objects = event.content?.objects || {};
+      updateStatus(
+        `Проект ${event.content?.project_id}, сценарий ${event.content?.scenario_id}: ` +
+          `сохранено объектов ${objects.saved ?? 0} из ${objects.total ?? 0}`,
+        event.content?.failed_total ? "warning" : "done",
+      );
+    }
     if (event.type === "clarification") {
       updateSseAnswer((current) => current + (event.content?.question || ""));
       updateStatus("Нужно уточнение", "warning");
@@ -1437,6 +1479,16 @@ export default function App() {
     if (settings.model) url.searchParams.set("model", settings.model);
     url.searchParams.set("temperature", String(settings.temperature));
     if (scenario) url.searchParams.set("scenario_id", scenario);
+    // Uploaded design files are checked instead of (or over) the scenario.
+    const uploadParam =
+      agentId === "compliance" || agentId === "project_files"
+        ? "upload_ids"
+        : agentId === "orchestrator"
+          ? "compliance_upload_ids"
+          : null;
+    if (uploadParam)
+      for (const item of complianceUploads)
+        url.searchParams.append(uploadParam, item.upload_id);
     const currentChatId = reusableChatId(chat, agentId);
     if (currentChatId) url.searchParams.set("chat_id", currentChatId);
     abort.current = new AbortController();
@@ -1780,6 +1832,16 @@ export default function App() {
                     </>
                   )}
                 </div>
+                {(agentId === "compliance" ||
+                  agentId === "orchestrator" ||
+                  agentId === "project_files") && (
+                  <ComplianceFiles
+                    settings={settings}
+                    getToken={freshToken}
+                    uploads={complianceUploads}
+                    onChange={setComplianceUploads}
+                  />
+                )}
                 {agentId === "documents" && (
                   <DocumentLibrary
                     settings={settings}

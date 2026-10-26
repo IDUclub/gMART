@@ -8,7 +8,10 @@ from pydantic import ValidationError
 
 from src.agents.dto.pzz_request_dto import PzzInputs
 from src.agents.services.dvd.document_reference import parse_reference
-from src.agents.services.dvd.query_terms import is_document_list_question
+from src.agents.services.dvd.query_terms import (
+    is_document_comparison_question,
+    is_document_list_question,
+)
 from src.agents.services.orchestrator.orchestrator_catalog import AgentCatalogEntry
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.orchestrator_plan import (
@@ -48,6 +51,7 @@ class OrchestratorPlanBuilder:
         history: list[dict] | None = None,
         scenario_id: int | None = None,
         pzz_inputs: PzzInputs | dict | None = None,
+        compliance_uploads: int = 0,
     ) -> OrchestratorPlan:
         plan = await self._request_plan(
             model,
@@ -56,7 +60,30 @@ class OrchestratorPlanBuilder:
             history,
             scenario_id=scenario_id,
             pzz_inputs=pzz_inputs,
+            compliance_uploads=compliance_uploads,
         )
+        if is_document_comparison_question(user_query) and any(
+            entry.key == OrchestratorAgent.DOCUMENTS for entry in agents
+        ):
+            # Preserve independent tasks in a mixed question. Comparison itself
+            # belongs to DVD, even if the model selected the normative graph.
+            only_norms = all(
+                step.agent == OrchestratorAgent.NORMS for step in plan.steps
+            )
+            steps = [
+                step
+                for step in plan.steps
+                if step.agent != OrchestratorAgent.NORMS
+                or not (
+                    only_norms
+                    or re.search(r"сравн|различ|отлич|изменил", step.task, re.I)
+                )
+            ]
+            if not any(step.agent == OrchestratorAgent.DOCUMENTS for step in steps):
+                steps.append(
+                    OrchestratorStep(agent=OrchestratorAgent.DOCUMENTS, task=user_query)
+                )
+            plan = OrchestratorPlan(mode=OrchestratorPlanMode.EXECUTE, steps=steps)
         plan = self._canonicalize_plan(plan, agents)
         plan = self._complement_regulation_steps(plan, agents, user_query)
         if (
@@ -104,7 +131,11 @@ class OrchestratorPlanBuilder:
         inconsistently, so a single-source plan is completed deterministically:
         norms first, then documents, which receives the norms digest as context.
         """
-        if plan.mode != OrchestratorPlanMode.EXECUTE or not plan.steps:
+        if (
+            plan.mode != OrchestratorPlanMode.EXECUTE
+            or not plan.steps
+            or is_document_comparison_question(user_query)
+        ):
             return plan
         pair = {OrchestratorAgent.NORMS, OrchestratorAgent.DOCUMENTS}
         used = {step.agent for step in plan.steps}
@@ -142,11 +173,14 @@ class OrchestratorPlanBuilder:
         _retries: int = 2,
         scenario_id: int | None = None,
         pzz_inputs: PzzInputs | dict | None = None,
+        compliance_uploads: int = 0,
     ) -> OrchestratorPlan:
         messages: list[dict] = [
             {
                 "role": "system",
-                "content": self._build_prompt(agents, scenario_id, pzz_inputs),
+                "content": self._build_prompt(
+                    agents, scenario_id, pzz_inputs, compliance_uploads
+                ),
             },
             {
                 "role": "user",
@@ -202,6 +236,7 @@ class OrchestratorPlanBuilder:
         agents: list[AgentCatalogEntry],
         scenario_id: int | None = None,
         pzz_inputs: PzzInputs | dict | None = None,
+        compliance_uploads: int = 0,
     ) -> str:
         inputs = PzzInputs.model_validate(pzz_inputs or {})
         pzz_context = {
@@ -256,6 +291,14 @@ class OrchestratorPlanBuilder:
 из запроса: агент проверит комплектность и вернёт точный вопрос о недостающих
 входах. Не подменяй этот вопрос требованием года/источника для файлов.
 Год и источник обязательны только для режима scenario, берущего данные из Urban API.
+Загрузки файлов проекта для проверки на соответствие нормам, реально переданные
+в API: {compliance_uploads}. Если загрузки есть и пользователь просит проверить
+проект, файлы, застройку или варианты на соответствие нормам, — это один шаг
+compliance: агент сам сопоставит объекты файлов с нормами (поверх сценария, если он
+выбран, иначе без сценария). Без загрузок упоминание файла в тексте не означает,
+что он передан. Если пользователь просит создать проект или сценарий из
+файлов (загрузить их в Urban API), — это один шаг project_files, а не compliance;
+он работает и без загрузок в запросе, предложив файлы, ранее загруженные в чат.
 
 Верни только валидный JSON без markdown и пояснений:
 {json.dumps(response_structure, ensure_ascii=False)}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -11,10 +12,13 @@ from src.agents.a2a.a2a_format import sanitized_user_message
 from src.agents.a2a.executor import RestrictionAgentExecutor
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
+from src.agents.common.exceptions.base_exceptions import AgentsBaseException
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
+from src.agents.services.compilance.compliance_uploads import LAYER_ROLES
 from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
+from src.common.service_auth import user_id_from_jwt
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
@@ -60,6 +64,7 @@ class ComplianceAgentExecutor:
         token: str,
     ) -> A2AData:
         execution = self._prepare_execution(params)
+        await self._require_scenario_or_pending(execution)
         task = self.task_store.create_task(
             execution["task_id"],
             execution["context_id"],
@@ -77,6 +82,7 @@ class ComplianceAgentExecutor:
         token: str,
     ) -> AsyncGenerator[A2AEventData, None]:
         execution = self._prepare_execution(params)
+        await self._require_scenario_or_pending(execution)
         task = self.task_store.create_task(
             execution["task_id"],
             execution["context_id"],
@@ -109,6 +115,11 @@ class ComplianceAgentExecutor:
         yield self._status_update(task_id, context_id, status, final=False)
 
         try:
+            upload_ids = list(execution["upload_ids"])
+            if execution["inline_files"]:
+                upload_ids += await self._store_inline_files(
+                    execution["inline_files"], token
+                )
             async for item in self.restriction_service.run_compliance_pipeline(
                 mcp_client=clients.idu,
                 normgraph_mcp_client=clients.normgraph,
@@ -125,6 +136,7 @@ class ComplianceAgentExecutor:
                 persist_history=False,
                 # A document choice is answered by the next message of the context.
                 conversation_key=f"a2a-compliance:{context_id}",
+                upload_ids=upload_ids or None,
             ):
                 if item.get("type") == "feature_collection":
                     layer_count += 1
@@ -235,15 +247,85 @@ class ComplianceAgentExecutor:
         # the summary artifact carries every per-norm result.
         return None
 
+    async def _require_scenario_or_pending(self, execution: A2AData) -> None:
+        """A message without scenario and files must answer a pending mapping."""
+        error = execution.get("missing_scenario")
+        if error is None:
+            return
+        pending = await self.restriction_service.state_store.get_compliance_mapping(
+            f"a2a-compliance:{execution['context_id']}"
+        )
+        if not pending:
+            raise error
+
+    async def _store_inline_files(self, files: list[A2AData], token: str) -> list[str]:
+        """Store GeoJSON layers passed in the message as uploads of the caller."""
+        try:
+            owner = user_id_from_jwt(token)
+        except ValueError as exc:
+            raise A2AInvalidParamsError(
+                "Inline files need a caller token with a user id"
+            ) from exc
+        upload_ids = []
+        for index, item in enumerate(files, start=1):
+            name = str(item.get("name") or f"layer_{index}")
+            if not name.casefold().endswith((".geojson", ".json")):
+                name += ".geojson"
+            role = item.get("role")
+            try:
+                summary = await self.restriction_service.compliance_uploads.create(
+                    owner,
+                    [(name, json.dumps(item["geojson"]).encode("utf-8"))],
+                    role=role,
+                )
+            except AgentsBaseException as exc:
+                raise A2AInvalidParamsError(f"files[{index - 1}]: {exc.message}")
+            upload_ids.append(summary["upload_id"])
+        return upload_ids
+
+    @staticmethod
+    def _inline_files(request_data: A2AData) -> list[A2AData]:
+        files = request_data.get("files") or []
+        if not isinstance(files, list):
+            raise A2AInvalidParamsError("files must be a list of {name, role, geojson}")
+        for index, item in enumerate(files):
+            if not isinstance(item, dict) or not isinstance(item.get("geojson"), dict):
+                raise A2AInvalidParamsError(f"files[{index}].geojson is required")
+            if item.get("role") is not None and item["role"] not in LAYER_ROLES:
+                raise A2AInvalidParamsError(
+                    f"files[{index}].role must be one of {', '.join(LAYER_ROLES)}"
+                )
+        return files
+
+    @staticmethod
+    def _upload_ids(request_data: A2AData) -> list[str]:
+        value = request_data.get("upload_ids") or request_data.get("uploadIds") or []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            raise A2AInvalidParamsError("upload_ids must be a list of strings")
+        return [str(item) for item in value if item]
+
     def _prepare_execution(self, params: A2AData) -> A2AData:
         message = self._extract_message(params)
         raw_text = self._extract_text(message)
         request_data = self._extract_request_data(params, message)
+        upload_ids = self._upload_ids(request_data)
+        inline_files = self._inline_files(request_data)
         # Same scenario-context contract as the restriction agent: structured
         # fields first, then an inline ``scenario_id=...`` that is hidden from the LLM.
-        scenario_id = RestrictionAgentExecutor._resolve_scenario_id(
-            request_data, raw_text
-        )
+        # Files of the user's design need no scenario.
+        missing_scenario: A2AInvalidParamsError | None = None
+        try:
+            scenario_id = RestrictionAgentExecutor._resolve_scenario_id(
+                request_data, raw_text
+            )
+        except A2AInvalidParamsError as exc:
+            if not (upload_ids or inline_files):
+                # Still valid as an answer to a pending mapping of this context;
+                # checked before the task starts.
+                missing_scenario = exc
+            scenario_id = None
         user_query = RestrictionAgentExecutor._hide_inline_ids(raw_text)
         if not user_query:
             raise A2AInvalidParamsError("Message text is required")
@@ -261,7 +343,10 @@ class ComplianceAgentExecutor:
             "task_id": task_id,
             "context_id": context_id,
             "message": self._sanitize_user_message(message),
-            "metadata": request_data,
+            # Inline layers are stored as uploads; the task keeps only their ids.
+            "metadata": {
+                key: value for key, value in request_data.items() if key != "files"
+            },
             "model": request_data.get("model") or self.DEFAULT_MODEL,
             "temperature": float(
                 request_data.get("temperature", self.DEFAULT_TEMPERATURE)
@@ -269,6 +354,9 @@ class ComplianceAgentExecutor:
             "scenario_id": scenario_id,
             "chat_id": str(chat_id) if chat_id else None,
             "user_query": user_query,
+            "upload_ids": upload_ids,
+            "inline_files": inline_files,
+            "missing_scenario": missing_scenario,
         }
 
     @staticmethod
@@ -301,6 +389,8 @@ class ComplianceAgentExecutor:
             "scenarioId",
             "chat_id",
             "chatId",
+            "upload_ids",
+            "uploadIds",
         ):
             if key in params:
                 data[key] = params[key]

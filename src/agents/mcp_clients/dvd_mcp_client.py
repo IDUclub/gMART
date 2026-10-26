@@ -116,17 +116,23 @@ class DvdMcpClient(BaseMcpClient):
         return result
 
     async def list_documents(
-        self, scenario_id: str | int | None = None
+        self,
+        scenario_id: str | int | None = None,
+        territory_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
         """Shared documents per ``(name, version)``; ``scenario_id`` keeps those in force there.
 
         In force means under the scenario's project boundary, inside and above it
         (federal, regional and municipal documents of those territories).
+        ``territory_ids`` say where instead: the documents of those Urban API
+        territories and of every territory above them.
         """
 
         arguments: dict[str, Any] = {}
         if scenario_id is not None:
             arguments["scenario_id"] = str(scenario_id)
+        if territory_ids:
+            arguments["territory_ids"] = [int(item) for item in territory_ids]
         result = self._to_dict(await self.execute_tool("list_documents", arguments))
         documents = result.get("documents") if isinstance(result, dict) else None
         return [self._to_dict(item) for item in documents or []]
@@ -151,6 +157,59 @@ class DvdMcpClient(BaseMcpClient):
         result = self._to_dict(await self.execute_tool("get_tags", {}))
         tags = result.get("tags") if isinstance(result, dict) else None
         return [str(tag) for tag in tags or [] if str(tag).strip()]
+
+    @classmethod
+    def _plain(cls, value: Any) -> Any:
+        value = cls._to_dict(value)
+        if isinstance(value, dict):
+            return {key: cls._plain(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._plain(item) for item in value]
+        return value
+
+    async def document_versions(self, name: str) -> list[str]:
+        result = self._plain(
+            await self.execute_tool("document_versions", {"name": name})
+        )
+        return result if isinstance(result, list) else result.get("versions", [])
+
+    async def find_document(self, key: str) -> list[dict[str, Any]]:
+        result = self._plain(await self.execute_tool("find_document", {"key": key}))
+        return result.get("documents", [])
+
+    async def list_user_documents(self, scenario_id: str | int) -> list[dict[str, Any]]:
+        # Identity comes from the same authenticated X-User-Id transport as search.
+        result = self._plain(
+            await self.execute_tool(
+                "list_user_documents", {"scenario_id": str(scenario_id)}
+            )
+        )
+        return result.get("documents", [])
+
+    async def compare_documents(
+        self,
+        left_doc_id: str,
+        right_doc_id: str,
+        left_version: str | None = None,
+        right_version: str | None = None,
+        query: str | None = None,
+        limit: int = 60,
+        max_chars: int = 2000,
+    ) -> dict[str, Any]:
+        return self._plain(
+            await self.execute_tool(
+                "compare_documents",
+                {
+                    "left_doc_id": left_doc_id,
+                    "right_doc_id": right_doc_id,
+                    "left_version": left_version,
+                    "right_version": right_version,
+                    "query": query,
+                    "limit": limit,
+                    "max_chars": max_chars,
+                },
+            )
+        )
 
     async def get_node(self, node_id: str) -> dict[str, Any]:
         """One fragment with its reading-order neighbours ``prev`` and ``next``."""

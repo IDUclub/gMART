@@ -436,3 +436,83 @@ async def check_zonal_ratio(
         provenance=provenance,
         input_revision=input_revision,
     )
+
+
+@geometry_mcp.tool(
+    name="CheckObjectAttributeThreshold",
+    title="Сравнить атрибут объекта с порогом",
+    description=(
+        "Сравнивает числовой атрибут каждого объекта слоя (этажность, высота, площадь) "
+        "с нормативным порогом. Объекты без значения остаются непроверенными. "
+        "Возвращает корзины violated/passed/unchecked, coverage и evidence."
+    ),
+    tags={"geometry", "compliance"},
+)
+async def check_object_attribute_threshold(
+    objects_layer: str,
+    object_attribute: str,
+    operator: Literal["<", "<=", ">", ">=", "=="],
+    threshold: float,
+    unit: str,
+    result_mode: Literal["violated", "passed", "both"],
+    restriction_id: str,
+    layers: dict,
+    template_version: int = 1,
+    provenance: dict[str, Any] | None = None,
+    input_revision: str | None = None,
+    tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
+) -> dict[str, Any]:
+    return await _run_compliance_operation(
+        tools.object_attribute_threshold,
+        objects_layer=objects_layer,
+        object_attribute=object_attribute,
+        operator=operator,
+        threshold=threshold,
+        unit=unit,
+        result_mode=result_mode,
+        restriction_id=restriction_id,
+        layers=layers,
+        template_version=template_version,
+        provenance=provenance,
+        input_revision=input_revision,
+    )
+
+
+@geometry_mcp.tool(
+    name="CheckAccessibilityWithin",
+    title="Проверить доступность объектов",
+    description=(
+        "Проверяет, что у каждого объекта в пределах нормативной доступности (минуты "
+        "или длина пути) есть хотя бы minimum_neighbors объектов каждого слоя. "
+        "Версия buffer_v1 заменяет маршрут буфером radius_m по прямой."
+    ),
+    tags={"geometry", "compliance"},
+)
+async def check_accessibility_within(
+    objects_layer: str,
+    required_neighbor_layers: list[str],
+    radius_m: float,
+    limit: dict[str, Any],
+    minimum_neighbors: int,
+    result_mode: Literal["violated", "passed", "both"],
+    restriction_id: str,
+    layers: dict,
+    template_version: int = 1,
+    provenance: dict[str, Any] | None = None,
+    input_revision: str | None = None,
+    tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
+) -> dict[str, Any]:
+    return await _run_compliance_operation(
+        tools.accessibility_within,
+        objects_layer=objects_layer,
+        required_neighbor_layers=required_neighbor_layers,
+        radius_m=radius_m,
+        limit=limit,
+        minimum_neighbors=minimum_neighbors,
+        result_mode=result_mode,
+        restriction_id=restriction_id,
+        layers=layers,
+        template_version=template_version,
+        provenance=provenance,
+        input_revision=input_revision,
+    )

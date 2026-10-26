@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -16,17 +17,29 @@ from src.agents.services.compilance.compliance_registry import (
     UnsupportedSchemaError,
     UnsupportedTemplateError,
 )
-from src.agents.services.compilance.compliance_requirements import ComplianceDataGate
+from src.agents.services.compilance.compliance_requirements import (
+    ComplianceDataGate,
+    RequirementsResolution,
+    _nested_get,
+)
 from src.agents.services.restriction.restriction_tool_executor import (
     RestrictionToolExecutor,
 )
 from src.agents.services.service_entities.compliance import (
+    SCOPE_WARNING,
+    STRICTEST_NORM_WARNING,
+    TRANSPORT_WARNING,
     CheckPlan,
     ComplianceResult,
     ComplianceSummary,
     DeclaredRequirements,
     VerificationCoverage,
 )
+
+if TYPE_CHECKING:
+    from src.agents.services.compilance.compliance_user_layers import (
+        UserLayerSource,
+    )
 
 
 @dataclass
@@ -36,6 +49,74 @@ class ComplianceExecution:
     tool_calls: list[dict[str, Any]]
     layers: dict[str, dict[str, Any]]
     timings_ms: dict[str, float]
+    # Calls made on the ObjectEffects MCP (replayed against that server, not idu_mcp).
+    effects_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _population_warnings(population: dict[str, Any]) -> list[str]:
+    """How ObjectEffects chose the scenario population behind the provision verdict."""
+    info = population.get("scenario") or {}
+    if not info.get("source"):
+        return []
+    warnings = [
+        f"population:source={info['source']}",
+        f"population:residents={info.get('population')}",
+        f"population:housing_capacity={info.get('housing_capacity')}",
+    ]
+    indicator = info.get("indicator")
+    if info["source"] == "housing_stock" and indicator:
+        warnings.append(
+            "population_indicator_ignored: Urban API population "
+            f"{indicator} does not match the housing capacity "
+            f"{info.get('housing_capacity')} of the scenario buildings"
+        )
+    return warnings
+
+
+def _number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None  # NaN is no value
+
+
+def _apply_scope(plan: CheckPlan, resolution: RequirementsResolution) -> dict | None:
+    """Keep only the scope layer's objects meeting the clause's condition.
+
+    Returns the counts of objects kept, outside the condition and without a value;
+    ``None`` when the scope attribute was not resolved (the plan is then missing it).
+    """
+    scope = plan.scope
+    layer_name = resolution.role_layers.get(scope.layer)
+    field_name = resolution.selected_fields.get(scope.attribute)
+    if not layer_name or not field_name:
+        return None
+    collection = resolution.layers.get(layer_name) or {}
+    kept, outside, unknown = [], 0, 0
+    for feature in collection.get("features") or []:
+        value = _number(_nested_get(feature.get("properties") or {}, field_name))
+        if value is None:
+            unknown += 1
+        elif scope.contains(value):
+            kept.append(feature)
+        else:
+            outside += 1
+    resolution.layers[layer_name] = {**collection, "features": kept}
+    profile = resolution.profiles.get(scope.layer)
+    if profile is not None:
+        resolution.profiles[scope.layer] = {**profile, "object_count": len(kept)}
+    return {"kept": len(kept), "outside": outside, "unknown": unknown}
+
+
+def _scope_warnings(scope_counts: dict | None) -> list[str]:
+    if not scope_counts:
+        return []
+    return [
+        SCOPE_WARNING,
+        f"scope:outside_condition={scope_counts['outside']}",
+        f"scope:without_value={scope_counts['unknown']}",
+    ]
 
 
 def _has_features(*layers: Any) -> bool:
@@ -51,23 +132,78 @@ def _has_features(*layers: Any) -> bool:
     )
 
 
+async def _default_effects_client(user_id: str):
+    # Imported lazily: the dependency module builds clients from app config.
+    from src.agents.dependencies.dependencies import a2a_effects_mcp_client
+
+    return await a2a_effects_mcp_client(user_id)
+
+
 class ComplianceTemplateExecutor:
     def __init__(
         self,
         registry: TemplateRegistry = DEFAULT_COMPLIANCE_REGISTRY,
         data_gate: ComplianceDataGate | None = None,
         catalog_resolver: ComplianceCatalogResolver | None = None,
+        effects_client_factory: Callable[[str], Awaitable[Any]] | None = (
+            _default_effects_client
+        ),
     ) -> None:
         self.registry = registry
         self.data_gate = data_gate or ComplianceDataGate()
         self.catalog_resolver = catalog_resolver or ComplianceCatalogResolver()
+        self.effects_client_factory = effects_client_factory
         self.tools = RestrictionToolExecutor()
 
     async def execute(
         self,
         mcp_client,
         raw_plan: dict[str, Any],
-        scenario_id: int,
+        scenario_id: int | None,
+        *,
+        user_id: str | None = None,
+        layer_source: "UserLayerSource | None" = None,
+    ) -> ComplianceExecution:
+        """Run one plan; ``user_id`` is needed only by ObjectEffects-backed templates.
+
+        ``layer_source`` supplies the layers from the user's files instead of the
+        scenario; ``scenario_id`` may then be ``None``.
+        """
+        execution = await self._execute(
+            mcp_client,
+            raw_plan,
+            scenario_id,
+            user_id=user_id,
+            layer_source=layer_source,
+        )
+        plan = execution.plan
+        warnings = execution.result.warnings
+        if (
+            plan is not None
+            and plan.applicability is not None
+            and STRICTEST_NORM_WARNING not in warnings
+        ):
+            # The verdict holds for the strictest reading of a conditional clause.
+            warnings.append(STRICTEST_NORM_WARNING)
+        if (
+            plan is not None
+            and (
+                plan.params.get("mode") == "transport"
+                or plan.params.get("accessibility_mode") == "transport"
+            )
+            and TRANSPORT_WARNING not in warnings
+        ):
+            warnings.append(TRANSPORT_WARNING)
+        return execution
+
+    async def _execute(
+        self,
+        mcp_client,
+        raw_plan: dict[str, Any],
+        scenario_id: int | None,
+        *,
+        user_id: str | None,
+        layer_source: "UserLayerSource | None" = None,
     ) -> ComplianceExecution:
         timings_ms: dict[str, float] = {}
         validation_started = perf_counter()
@@ -154,6 +290,42 @@ class ComplianceTemplateExecutor:
             mcp_client, scenario_id, requirements
         )
         requirements = catalog_resolution.requirements
+        user_missing = (
+            layer_source.missing(plan, params, requirements)
+            if layer_source is not None and catalog_resolution.executable
+            else []
+        )
+        if user_missing:
+            # Normally filtered out before execution; kept as a guard.
+            timings_ms["requirements_resolution"] = (
+                perf_counter() - resolution_started
+            ) * 1000
+            return ComplianceExecution(
+                plan=plan,
+                result=self._outcome(
+                    restriction_id=plan.source.restriction_id,
+                    template=plan.template,
+                    template_version=plan.template_version,
+                    verification_status="unverifiable",
+                    missing=user_missing,
+                    effective_requirements=requirements,
+                    source=self._result_source(plan),
+                ),
+                tool_calls=[],
+                layers={},
+                timings_ms=timings_ms,
+            )
+        if plan.template == "service_provision" and catalog_resolution.executable:
+            return await self._execute_service_provision(
+                mcp_client,
+                plan,
+                params,
+                requirements,
+                scenario_id,
+                user_id=user_id,
+                timings_ms=timings_ms,
+                started=resolution_started,
+            )
         if not catalog_resolution.executable:
             timings_ms["requirements_resolution"] = (
                 perf_counter() - resolution_started
@@ -176,13 +348,42 @@ class ComplianceTemplateExecutor:
                 timings_ms=timings_ms,
             )
 
-        layers, retrieval_calls = await self._retrieve_layers(
-            mcp_client, requirements, scenario_id
-        )
+        if layer_source is not None:
+            layers, retrieval_calls = await layer_source.retrieve(
+                plan, params, requirements
+            )
+        else:
+            layers, retrieval_calls = await self._retrieve_layers(
+                mcp_client, requirements, scenario_id
+            )
         resolution = self.data_gate.resolve(plan, layers, requirements)
         timings_ms["requirements_resolution"] = (
             perf_counter() - resolution_started
         ) * 1000
+        scope_counts = (
+            _apply_scope(plan, resolution)
+            if plan.scope is not None and resolution.executable
+            else None
+        )
+        if scope_counts and not scope_counts["kept"] and scope_counts["unknown"]:
+            # No object is known to meet the condition, some may: nothing to decide.
+            return ComplianceExecution(
+                plan=plan,
+                result=self._outcome(
+                    restriction_id=plan.source.restriction_id,
+                    template=plan.template,
+                    template_version=plan.template_version,
+                    verification_status="unverifiable",
+                    missing=[f"attribute:{plan.scope.attribute}:no_values"],
+                    warnings=_scope_warnings(scope_counts),
+                    effective_requirements=requirements,
+                    resolved_requirements=resolution.resolved,
+                    source=self._result_source(plan),
+                ),
+                tool_calls=retrieval_calls,
+                layers=layers,
+                timings_ms=timings_ms,
+            )
         if self._no_applicable_objects(plan, params, resolution):
             # This is a complete proof, not missing data: the canonical scenario
             # layers were returned in full and the quantified object set is empty.
@@ -216,7 +417,7 @@ class ComplianceTemplateExecutor:
                 effective_requirements=requirements,
                 resolved_requirements=resolved_requirements,
                 missing_requirements=[],
-                warnings=["no_applicable_objects"],
+                warnings=["no_applicable_objects", *_scope_warnings(scope_counts)],
                 source={
                     **plan.source.model_dump(mode="json"),
                     "planner_status": plan.planner_status,
@@ -258,6 +459,19 @@ class ComplianceTemplateExecutor:
         timings_ms["template_execution"] = (perf_counter() - execution_started) * 1000
         coverage = VerificationCoverage.model_validate(raw_result["coverage"])
         summary = ComplianceSummary.model_validate(raw_result["summary"])
+        if scope_counts and scope_counts["unknown"]:
+            # Objects without the scope attribute may fall under the condition.
+            unknown = scope_counts["unknown"]
+            applicable = coverage.applicable_objects + unknown
+            coverage = coverage.model_copy(
+                update={
+                    "applicable_objects": applicable,
+                    "unchecked_objects": coverage.unchecked_objects + unknown,
+                    "fill_rate": (
+                        coverage.checked_objects / applicable if applicable else 0
+                    ),
+                }
+            )
         if coverage.applicable_objects == 0:
             verification = "not_applicable"
             compliance = "unknown"
@@ -285,7 +499,8 @@ class ComplianceTemplateExecutor:
                 ["Проверена только часть применимых объектов"]
                 if verification == "partial"
                 else []
-            ),
+            )
+            + _scope_warnings(scope_counts),
             source={
                 **plan.source.model_dump(mode="json"),
                 "planner_status": plan.planner_status,
@@ -310,6 +525,213 @@ class ComplianceTemplateExecutor:
             timings_ms=timings_ms,
         )
 
+    async def canonical_requirements(
+        self, mcp_client, raw_plan: dict[str, Any]
+    ) -> tuple[CheckPlan, Any, DeclaredRequirements] | None:
+        """A valid plan with catalogue entity names, or ``None`` when it is not.
+
+        Lets a caller see which entities a norm needs before running it.
+        """
+        try:
+            plan, params = self.registry.validate_plan(raw_plan)
+            effective = self.registry.effective_requirements(plan)
+        except (
+            UnsupportedSchemaError,
+            UnsupportedTemplateError,
+            ValidationError,
+            ValueError,
+        ):
+            return None
+        if effective["missing_registry_roles"]:
+            return None
+        requirements = DeclaredRequirements(
+            layers=effective["layers"], attributes=effective["attributes"]
+        )
+        resolution = await self.catalog_resolver.resolve(mcp_client, None, requirements)
+        if not resolution.executable:
+            return None
+        return plan, params, resolution.requirements
+
+    async def _execute_service_provision(
+        self,
+        mcp_client,
+        plan: CheckPlan,
+        params,
+        requirements: DeclaredRequirements,
+        scenario_id: int,
+        *,
+        user_id: str | None,
+        timings_ms: dict[str, float],
+        started: float,
+    ) -> ComplianceExecution:
+        """Provision of residents with a service type, computed by ObjectEffects.
+
+        The norm's own ``capacity_per_1000`` (or ``residents_per_service``) and
+        accessibility replace the Urban API
+        normative; each scenario residential building with demand is checked on the
+        share of its demand served within accessibility.
+        """
+
+        def unverifiable(missing: list[str]) -> ComplianceExecution:
+            timings_ms["requirements_resolution"] = (perf_counter() - started) * 1000
+            return ComplianceExecution(
+                plan=plan,
+                result=self._outcome(
+                    restriction_id=plan.source.restriction_id,
+                    template=plan.template,
+                    template_version=plan.template_version,
+                    verification_status="unverifiable",
+                    missing=missing,
+                    effective_requirements=requirements,
+                    source=self._result_source(plan),
+                ),
+                tool_calls=[],
+                layers={},
+                timings_ms=timings_ms,
+            )
+
+        service = next(
+            item for item in requirements.layers if item.role == params.services_layer
+        )
+        payload = await mcp_client.resolve_urban_entity_types(
+            service_names=[service.entity], physical_object_names=[]
+        )
+        info = next(iter(((payload or {}).get("service") or {}).values()), {})
+        service_type_id = info.get("type_id") if info.get("found") else None
+        if service_type_id is None:
+            return unverifiable([f"catalog:{params.services_layer}:service:not_found"])
+        if self.effects_client_factory is None or not user_id:
+            return unverifiable(["effects_mcp:unavailable"])
+        accessibility = params.accessibility
+        arguments: dict[str, Any] = {
+            "scenario_id": scenario_id,
+            "service_type_id": int(service_type_id),
+            "capacity_per_1000": params.capacity_per_1000,
+            "residents_per_service": params.residents_per_service,
+            "accessibility_type": (
+                None
+                if accessibility is None
+                else "time" if accessibility.kind == "time" else "dist"
+            ),
+            "accessibility_value": (
+                None
+                if accessibility is None
+                else (
+                    accessibility.minutes
+                    if accessibility.kind == "time"
+                    else accessibility.meters
+                )
+            ),
+        }
+        timings_ms["requirements_resolution"] = (perf_counter() - started) * 1000
+        execution_started = perf_counter()
+        effects_client = await self.effects_client_factory(user_id)
+        raw = await effects_client.calculate_normative_provision(**arguments)
+        timings_ms["template_execution"] = (perf_counter() - execution_started) * 1000
+
+        evidence: list[dict[str, Any]] = []
+        violated_features: list[dict[str, Any]] = []
+        passed_features: list[dict[str, Any]] = []
+        for feature in (raw.get("buildings") or {}).get("features") or []:
+            properties = feature.get("properties") or {}
+            demand = float(properties.get("demand") or 0)
+            if not properties.get("is_project", True) or demand <= 0:
+                continue  # Context buildings and buildings without residents.
+            supplied = float(properties.get("supplied_demands_within") or 0)
+            share = min(1.0, supplied / demand)
+            violated = share + 1e-9 < params.min_provision
+            object_ref = {
+                "layer": "buildings",
+                "building_id": properties.get("building_id"),
+            }
+            item = {
+                "restriction_id": plan.source.restriction_id,
+                "template": plan.template,
+                "template_version": plan.template_version,
+                "object_ref": object_ref,
+                "operation": "normative_provision",
+                "measured_value": round(share, 4),
+                "unit": "share",
+                "threshold": params.min_provision,
+                "operator": ">=",
+                "violated": violated,
+                "demand": demand,
+                "supplied_demand": supplied,
+                "provenance": plan.source.model_dump(mode="json"),
+                "warnings": [],
+            }
+            evidence.append(item)
+            (violated_features if violated else passed_features).append(
+                {
+                    **feature,
+                    "properties": {
+                        **properties,
+                        "object_ref": object_ref,
+                        "compliance_status": "violated" if violated else "passed",
+                        "restriction_id": plan.source.restriction_id,
+                        "compliance_evidence": [item],
+                    },
+                }
+            )
+        checked = len(evidence)
+        violated_count = sum(item["violated"] for item in evidence)
+        if checked == 0:
+            verification, compliance = "not_applicable", "unknown"
+        else:
+            verification = "complete"
+            compliance = "violated" if violated_count else "passed"
+        normative = raw.get("normative") or {}
+        result = ComplianceResult(
+            restriction_id=plan.source.restriction_id,
+            template=plan.template,
+            template_version=plan.template_version,
+            verification_status=verification,
+            compliance_status=compliance,
+            coverage=VerificationCoverage(
+                applicable_objects=checked,
+                checked_objects=checked,
+                unchecked_objects=0,
+                fill_rate=1,
+            ),
+            summary=ComplianceSummary(
+                violated_objects=violated_count,
+                passed_objects=checked - violated_count,
+            ),
+            effective_requirements=requirements,
+            missing_requirements=[],
+            warnings=[
+                f"normative:{key}={value}"
+                for key, value in sorted(normative.items())
+                if value is not None
+            ]
+            + _population_warnings(raw.get("population") or {}),
+            source=self._result_source(plan),
+            evidence=evidence,
+            violated_features={
+                "type": "FeatureCollection",
+                "features": violated_features if params.result_mode != "passed" else [],
+            },
+            passed_features={
+                "type": "FeatureCollection",
+                "features": passed_features if params.result_mode != "violated" else [],
+            },
+        )
+        return ComplianceExecution(
+            plan=plan,
+            result=result,
+            tool_calls=[],
+            layers={},
+            timings_ms=timings_ms,
+            effects_tool_calls=[
+                {
+                    "function": {
+                        "name": "CalculateNormativeProvision",
+                        "arguments": arguments,
+                    }
+                }
+            ],
+        )
+
     @staticmethod
     def _no_applicable_objects(plan: CheckPlan, params, resolution) -> bool:
         """Whether all quantified/application layers are complete and empty."""
@@ -324,6 +746,8 @@ class ComplianceTemplateExecutor:
             roles = [params.objects_layer]
         elif plan.template == "zonal_ratio":
             roles = [params.zones_layer]
+        elif plan.template in {"object_attribute_threshold", "accessibility_within"}:
+            roles = [params.objects_layer]
         else:
             return False
         if not roles:
@@ -462,6 +886,28 @@ class ComplianceTemplateExecutor:
                 "threshold": params.threshold,
                 "result_mode": params.result_mode,
                 "invalid_geometry_policy": params.invalid_geometry_policy,
+            }
+        if plan.template == "object_attribute_threshold":
+            return "CheckObjectAttributeThreshold", {
+                **common,
+                "objects_layer": layer(params.objects_layer),
+                "object_attribute": resolution.selected_fields[params.attribute_role],
+                "operator": params.operator,
+                "threshold": params.threshold,
+                "unit": params.unit,
+                "result_mode": params.result_mode,
+            }
+        if plan.template == "accessibility_within":
+            return "CheckAccessibilityWithin", {
+                **common,
+                "objects_layer": layer(params.objects_layer),
+                "required_neighbor_layers": [
+                    layer(role) for role in params.required_neighbor_layers
+                ],
+                "radius_m": params.radius_m(),
+                "limit": params.limit.model_dump(mode="json"),
+                "minimum_neighbors": params.minimum_neighbors,
+                "result_mode": params.result_mode,
             }
         raise UnsupportedTemplateError(plan.template)
 

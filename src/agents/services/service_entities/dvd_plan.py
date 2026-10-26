@@ -22,6 +22,23 @@ class SearchKind(StrEnum):
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
+class ComparisonSide(BaseModel):
+    """A literal document selector; IDs and editions must never be invented."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: NonEmptyStr | None = None
+    doc_id: NonEmptyStr | None = None
+    version: NonEmptyStr | None = None
+    owner: Literal["shared", "user"] | None = None
+
+    @field_validator("name", "doc_id", "version", mode="before")
+    @classmethod
+    def normalize_absent_selector(cls, value):
+        if isinstance(value, str) and value.strip().casefold() in {"", "null", "none"}:
+            return None
+        return value
+
+
 class _BaseRetrievalPlan(BaseModel):
     """
     LLM-produced retrieval parameters for a single RAG search round.
@@ -40,7 +57,10 @@ class _BaseRetrievalPlan(BaseModel):
         alternative_queries (list[str]): Up to two more topical phrasings; semantic
             retrieval merges their hits with ``search_query``.
         intent (str): ``norm`` for a question about requirements themselves,
-            ``document_list`` for "which documents/regulations cover a subject".
+            ``document_list`` for "which documents/regulations cover a subject",
+            ``document_comparison`` for paired documents or editions. Optional
+            ``comparison_left`` / ``comparison_right`` select each side by literal
+            name or known doc_id, version and owner; ``comparison_topic`` narrows it.
         tags (list[str] | None): Restrict to documents carrying any of these IDU_DVD tags.
     """
 
@@ -54,7 +74,10 @@ class _BaseRetrievalPlan(BaseModel):
     block: str | None = None
     types: list[str] | None = None
     alternative_queries: list[str] = Field(default_factory=list)
-    intent: Literal["norm", "document_list"] = "norm"
+    intent: Literal["norm", "document_list", "document_comparison"] = "norm"
+    comparison_left: ComparisonSide | None = None
+    comparison_right: ComparisonSide | None = None
+    comparison_topic: NonEmptyStr | None = None
     tags: list[str] | None = None
     pattern: str | None = None
     name_query: str | None = None

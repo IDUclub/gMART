@@ -383,11 +383,50 @@ async def test_not_found_does_not_fall_back_to_semantic_or_remove_filters(
     service, fake_llm
 ):
     fake_llm.json_responses = [plan_json()]
+    empty = {"hits": [], "complete": True, "total": 0}
+    client = Pages([dict(empty), dict(empty)])
+    events = await run(service, client)
+    assert "совпадений не найдено" in answer_text(events)
+    # The literal (fast-path) lookup found nothing; the planner's reading of the
+    # request is tried once, still as an exact lookup with every filter kept.
+    assert len(client.calls) == 2
+    for mode, request in client.calls:
+        assert mode == "structure"
+        assert request["pattern"] == "3.3"
+        assert request["document_names"] == ["СП 2.13130.2020"]
+    assert len(fake_llm.chat_calls) == 1
+    assert not any(c.stream for c in fake_llm.chat_calls)
+
+
+async def test_fast_path_skips_planner_for_explicit_address(service, fake_llm):
+    fake_llm.json_responses = [verdict_json(satisfied=True)]
+    fake_llm.answer_texts = ["Пункт устанавливает требование [1]."]
+    client = Pages(
+        [
+            {
+                "hits": [{"id": "a", "name": "СП 2.13130.2020", "text": "3.3 Текст."}],
+                "total": 1,
+                "complete": True,
+            }
+        ]
+    )
+    events = await run(service, client, "что в пункте 3.3 СП 2.13130.2020? Объясни")
+    mode, request = client.calls[0]
+    assert mode == "structure" and request["pattern"] == "3.3"
+    assert request["document_names"] == ["СП 2.13130.2020"]
+    # Only the draft and the audit reach the LLM; no planner call.
+    assert len([c for c in fake_llm.chat_calls if not c.stream]) == 1
+    assert "Пункт устанавливает требование [1]." in answer_text(events)
+
+
+async def test_fast_path_switch_restores_planner(service, fake_llm, monkeypatch):
+    monkeypatch.setenv("DVD_PLANNER_FAST_PATH", "false")
+    fake_llm.json_responses = [plan_json()]
     client = Pages([{"hits": [], "complete": True, "total": 0}])
     events = await run(service, client)
     assert "совпадений не найдено" in answer_text(events)
     assert len(client.calls) == 1
-    assert not any(c.stream for c in fake_llm.chat_calls)
+    assert len(fake_llm.chat_calls) == 1
 
 
 async def test_ambiguity_asks_instead_of_selecting_arbitrary_edition(service, fake_llm):
@@ -454,7 +493,8 @@ async def test_large_retrieval_flows_through_parallel_reducer(service, fake_llm)
     llm = Summarizer()
     service.context_reducer.llm_client = llm
     service.context_reducer.configured_window = 8192
-    fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+    # The default query is an explicit address: planned without the LLM.
+    fake_llm.json_responses = [verdict_json(satisfied=True)]
     fake_llm.answer_texts = ["Условие FACT1 и исключение FACT2 [1] [2]."]
     client = Pages(
         [
@@ -489,7 +529,7 @@ async def test_partial_failure_preserves_verified_answer_with_warning(
     service.context_reducer.configured_window = 8192
     service.context_reducer.llm_client = Summarizer(fail=True)
     service.context_reducer.retries = 0
-    fake_llm.json_responses = [plan_json(), verdict_json(satisfied=True)]
+    fake_llm.json_responses = [verdict_json(satisfied=True)]
     fake_llm.answer_texts = ["Доступное условие FACT2 [2]."]
     client = Pages(
         [

@@ -1,8 +1,16 @@
 version: "3.9"
 
+# Docker keeps at most 5 files of 20 MB (100 MB) of stdout/stderr per container.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
 
   idu_agents:
+    logging: *default-logging
     build:
       context: .
       dockerfile: docker/Dockerfile-agents
@@ -11,6 +19,10 @@ services:
       - "80:80"
     env_file:
       - ./env/.env.agents.example
+    environment:
+      GMART_CACHE_DIR: /var/cache/gmart
+    volumes:
+      - gmart_cache:/var/cache/gmart
     depends_on:
       pipeline_storage:
         condition: service_healthy
@@ -22,6 +34,7 @@ services:
       - localnet
 
   idu_mcp:
+    logging: *default-logging
     build:
       context: .
       dockerfile: docker/Dockerfile-mcp
@@ -40,6 +53,7 @@ services:
       - localnet
 
   context_worker:
+    logging: *default-logging
     build:
       context: .
       dockerfile: docker/Dockerfile-agents
@@ -57,6 +71,7 @@ services:
       - localnet
 
   pipeline_storage:
+    logging: *default-logging
     image: redis:7-alpine
     container_name: pipeline_storage
     ports:
@@ -71,6 +86,9 @@ services:
       retries: 5
     networks:
       - localnet
+
+volumes:
+  gmart_cache:
 
 networks:
   localnet:
