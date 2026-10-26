@@ -1,0 +1,3 @@
+# Pilot only, installed on top of the project's own dependencies.
+# Not the [openai] extra: it pins openai<3, gMART needs openai>=3.3.1.
+google-adk[mcp]==2.13.0
