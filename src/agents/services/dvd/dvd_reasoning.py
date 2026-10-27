@@ -162,6 +162,53 @@ _NEEDS_PLANNER = re.compile(
     r"|мо[её]м\s+документ|загруженн",
     re.I,
 )
+_HISTORY_REFERENCE = re.compile(
+    r"\b(?:он|она|оно|они|его|е[её]|их|этот|эта|это|этом|этого|этой|эту|эти|"
+    r"этих|этим|этому|этими|там|тут|такой|такая|такое|такие|таком|н[её]м|него|не[её]|"
+    r"тот\s+же|тому\s+же|а\s+(?:для|если|в)|и\s+ещ[её])\b|^\s*[аи]\s+",
+    re.I,
+)
+_DOCUMENT_DETAIL = re.compile(
+    r"редакци|изменени|действующ|утратил|таблиц|рисун|приложени|раздел|глав"
+    r"|\bдокумент|\b(?:сп|снип|санпин|гост)\b|\b(?:19|20)\d{2}\b",
+    re.I,
+)
+
+
+def is_simple_question(user_query: str, history: list[dict] | None = None) -> bool:
+    """Accept a standalone semantic question, conservatively.
+
+    Reject task wording, clarification choices, document references/designations,
+    editions, amendments, tables/figures/appendices, section/chapter topics,
+    planner cues, lists/comparisons, full quotes, multiple questions and >300 chars.
+    With any history, also reject anaphora/ellipses and <4 content words. Without
+    history a short question is allowed. Iteration/replan guards belong to the caller;
+    exact references are excluded here and keep their separate first-priority path.
+    """
+    question, task = split_task(user_query)
+    reference = parse_reference(question)
+    if (
+        not question.strip()
+        or task
+        or len(user_query) > 300
+        or question.count("?") > 1
+        or selected_choice(user_query, history or [])
+        or reference.pattern
+        or reference.document_names
+        or DESIGNATION.search(question)
+        or _NEEDS_PLANNER.search(question)
+        or _DOCUMENT_DETAIL.search(question)
+        or is_document_list_question(question)
+        or is_document_comparison_question(question)
+        or wants_full_quote(question)
+    ):
+        return False
+    words = [
+        word
+        for word in re.findall(r"[а-яёa-z]+", question.casefold())
+        if len(word) > 2 and word not in {"как", "что", "это", "для", "при", "или"}
+    ]
+    return not history or (not _HISTORY_REFERENCE.search(question) and len(words) >= 4)
 
 
 def _clean_str_list(
@@ -530,6 +577,27 @@ class RetrievalPlanner:
             f"DVD retrieval plan (fast path): {plan.model_dump_json(ensure_ascii=False)}"
         )
         return plan
+
+    def simple_plan(
+        self,
+        user_query: str,
+        history: list[dict] | None = None,
+        scope: dict | None = None,
+    ) -> RetrievalPlan | None:
+        """Default semantic retrieval of a standalone question, without an LLM."""
+        if not is_simple_question(user_query, history):
+            return None
+        question, _ = split_task(user_query)
+        plan = self._clamp(
+            validate_retrieval_plan(
+                {"retrieval_mode": "semantic", "search_query": question}
+            ),
+            user_query,
+        )
+        # Keep the literal question for this path; clamp still validates every
+        # selector and default, but its topical paraphrase is unnecessary here.
+        plan = validate_retrieval_plan({**plan.model_dump(), "search_query": question})
+        return apply_scope(plan, user_query, scope, history)
 
     @staticmethod
     def _clamp(
