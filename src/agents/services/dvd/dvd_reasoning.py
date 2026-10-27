@@ -276,6 +276,7 @@ async def _request_json(
     model: str,
     messages: list[dict],
     model_cls: Any,
+    request_kind: str,
     retries: int = 2,
     reasoning_effort: str | None = None,
     claim_texts: list[str] | None = None,
@@ -352,6 +353,7 @@ async def _request_json(
             )
         try:
             response = await llm_client.chat(
+                request_kind=request_kind,
                 model=model,
                 think=False,
                 format=schema,
@@ -459,6 +461,7 @@ class RetrievalPlanner:
                 model,
                 messages,
                 RetrievalPlan,
+                request_kind="dvd.planner",
                 reasoning_effort=planner_reasoning_effort(self.llm_client, model),
                 max_tokens=planner_output_cap(),
             )
@@ -874,6 +877,7 @@ class AnswerCritic:
                         model,
                         messages,
                         CompactAudit,
+                        request_kind="dvd.critic",
                         claim_texts=ids,
                         source_ids=labels,
                         schema_enums={
@@ -1099,6 +1103,7 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
                     },
                 ],
                 PartialSelection,
+                request_kind="dvd.revision",
                 reasoning_effort=critic_reasoning_effort(self.llm_client, model),
                 max_tokens=critic_output_cap(len(evidence.candidates())),
                 metrics=metrics,

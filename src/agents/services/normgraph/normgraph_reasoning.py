@@ -76,6 +76,7 @@ async def _request_json(
     model: str,
     messages: list[dict],
     model_cls: type[T],
+    request_kind: str,
     retries: int = 2,
 ) -> T:
     """
@@ -87,6 +88,7 @@ async def _request_json(
     """
     for attempt in range(retries + 1):
         response = await llm_client.chat(
+            request_kind=request_kind,
             model=model,
             messages=messages,
             # Reasoning models such as gpt-oss may spend the entire prediction
@@ -149,7 +151,13 @@ class NormGraphRetrievalPlanner:
             *(history or []),
             {"role": "user", "content": user_query},
         ]
-        plan = await _request_json(self.llm_client, model, messages, NormGraphPlan)
+        plan = await _request_json(
+            self.llm_client,
+            model,
+            messages,
+            NormGraphPlan,
+            request_kind="norms.planner",
+        )
         plan = self._clamp(plan, user_query)
         logger.info(f"NormGraph plan: {plan.model_dump_json(ensure_ascii=False)}")
         return plan
@@ -268,7 +276,11 @@ class NormGraphAnswerCritic:
         ]
         try:
             verdict = await _request_json(
-                self.llm_client, model, messages, NormGraphCriticVerdict
+                self.llm_client,
+                model,
+                messages,
+                NormGraphCriticVerdict,
+                request_kind="norms.review",
             )
         except ValueError:
             logger.warning("Critic produced invalid JSON; draft remains unverified")

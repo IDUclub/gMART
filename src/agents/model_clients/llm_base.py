@@ -95,13 +95,20 @@ class BaseLlmAdapter(ABC):
         think: bool | None = None,
         format: Any = None,  # noqa: A002 — the Ollama keyword the call sites pass
         options: dict[str, Any] | None = None,
+        request_kind: str | None = None,
         **kwargs: Any,
     ) -> LlmChatResponse | AsyncIterator[LlmChatResponse]:
         """Chat completion. ``format`` takes a JSON schema for structured output."""
 
     @abstractmethod
     async def generate(
-        self, model: str, prompt: str, *, stream: bool = False, **kwargs: Any
+        self,
+        model: str,
+        prompt: str,
+        *,
+        stream: bool = False,
+        request_kind: str | None = None,
+        **kwargs: Any,
     ) -> LlmGenerateResponse:
         """Single-prompt completion (used for chat titles)."""
 

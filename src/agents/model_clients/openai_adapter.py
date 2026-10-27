@@ -53,6 +53,7 @@ from src.agents.model_clients.llm_base import (
     LlmResponseError,
 )
 from src.agents.model_clients.llm_pace import llm_pace
+from src.agents.model_clients.request_priority import priority_enabled, request_priority
 
 THINK_REASONING_EFFORT = "reasoning_effort"
 THINK_CHAT_TEMPLATE = "chat_template"
@@ -89,11 +90,8 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         request_priority: int | str | None = None,
     ):
         self.base_url = base_url
-        priority = (
-            request_priority
-            if request_priority is not None
-            else os.getenv("OPENAI_REQUEST_PRIORITY", "")
-        )
+        self._request_priority_override = request_priority is not None
+        priority = request_priority if request_priority is not None else ""
         self.request_priority = None
         self._priority_disabled = False
         if str(priority).strip():
@@ -423,9 +421,26 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         think: bool | None = None,
         format: Any = None,  # noqa: A002
         options: dict[str, Any] | None = None,
+        request_kind: str | None = None,
         **kwargs: Any,
     ) -> LlmChatResponse | AsyncIterator[LlmChatResponse]:
         call = self._build(model, messages, stream, think, format, options, kwargs)
+        priority = (
+            self.request_priority
+            if request_kind is None and self._request_priority_override
+            else request_priority(request_kind)
+        )
+        call["priority"] = call.get("priority", priority)
+        if self._priority_disabled or not priority_enabled():
+            call["priority"] = None
+            if "extra_body" in call:
+                call["extra_body"] = dict(call["extra_body"])
+                call["extra_body"].pop("priority", None)
+        logger.debug(
+            "LLM request priority: key={} value={}",
+            request_kind,
+            (call.get("extra_body") or {}).get("priority", call["priority"]) or None,
+        )
         pace_call = None
         try:
             if stream:
@@ -499,15 +514,22 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         # Keep this at the completion boundary: /tokenize also uses _build.
         call = dict(call)
         extra_body = dict(call.get("extra_body") or {})
-        priority = call.pop("priority", self.request_priority)
+        priority = call.pop(
+            "priority",
+            (
+                self.request_priority
+                if self._request_priority_override
+                else request_priority(None)
+            ),
+        )
         priority = extra_body.get("priority", priority)
-        if self._priority_disabled:
+        if self._priority_disabled or not priority_enabled() or priority == 0:
             extra_body.pop("priority", None)
         elif priority is not None and priority != 0:
             extra_body.setdefault("priority", priority)
         if extra_body:
             call["extra_body"] = extra_body
-        elif self._priority_disabled and "extra_body" in call:
+        elif "extra_body" in call:
             call.pop("extra_body")
         return call
 
@@ -564,10 +586,20 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             )
 
     async def generate(
-        self, model: str, prompt: str, *, stream: bool = False, **kwargs: Any
+        self,
+        model: str,
+        prompt: str,
+        *,
+        stream: bool = False,
+        request_kind: str | None = None,
+        **kwargs: Any,
     ) -> LlmGenerateResponse:
         response = await self.chat(
-            model, [{"role": "user", "content": prompt}], stream=False, **kwargs
+            model,
+            [{"role": "user", "content": prompt}],
+            stream=False,
+            request_kind=request_kind,
+            **kwargs,
         )
         return LlmGenerateResponse(
             model=response.model, response=response.message.content, done=True

@@ -1262,6 +1262,7 @@ class ProvisionService(BaseLlmService):
         async for part in await self.llm_client.chat(
             model,
             messages,
+            request_kind="provision.answer",
             think=False,
             options={"temperature": temperature},
             stream=True,

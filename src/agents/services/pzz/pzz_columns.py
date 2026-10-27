@@ -78,6 +78,7 @@ async def detect_columns(
             for key in missing
         }
         response = await llm.chat(
+            request_kind="pzz.columns",
             model=model,
             think=False,
             options={"temperature": 0},

@@ -175,7 +175,7 @@ class BaseLlmService(BaseLlmClient):
 
         try:
             title = await self.llm_client.generate(
-                model=model_name, prompt=prompt, stream=False
+                request_kind="chat_title", model=model_name, prompt=prompt, stream=False
             )
         except LlmResponseError as exc:
             # Both backends answer 404 when the requested model is not served. Map

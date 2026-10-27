@@ -21,7 +21,11 @@ async def test_legacy_character_limit_no_longer_rejects_model_input(monkeypatch)
     llm = AsyncMock()
     llm.chat.return_value = {"message": {"content": verdict_json()}}
     await _request_json(
-        llm, "m", [{"role": "user", "content": "Я" * 5000}], CriticVerdict
+        llm,
+        "m",
+        [{"role": "user", "content": "Я" * 5000}],
+        CriticVerdict,
+        request_kind="dvd.critic",
     )
     call = llm.chat.call_args.kwargs
     # Byte estimate of the input (10000 + framing), half of it plus the floor.
@@ -33,7 +37,11 @@ async def test_oversized_planning_is_rejected_before_model_call():
     llm = AsyncMock()
     with pytest.raises(ValueError, match="context window"):
         await _request_json(
-            llm, "m", [{"role": "user", "content": "я" * 32000}], CriticVerdict
+            llm,
+            "m",
+            [{"role": "user", "content": "я" * 32000}],
+            CriticVerdict,
+            request_kind="dvd.critic",
         )
     llm.chat.assert_not_called()
 
@@ -119,6 +127,7 @@ async def test_reasoning_output_is_bounded_by_remaining_window(monkeypatch):
         "m",
         [{"role": "user", "content": "x" * 6000}],
         CriticVerdict,
+        request_kind="dvd.critic",
     )
     assert (
         128 <= llm.chat.call_args.kwargs["options"]["num_predict"] <= 8192 - 6000 - 256
@@ -133,7 +142,11 @@ async def test_runaway_structured_reply_is_cut_at_the_proportional_limit():
         {"message": {"content": verdict_json()}},
     ]
     verdict = await _request_json(
-        llm, "m", [{"role": "user", "content": "q"}], CriticVerdict
+        llm,
+        "m",
+        [{"role": "user", "content": "q"}],
+        CriticVerdict,
+        request_kind="dvd.critic",
     )
     first, second = (
         c.kwargs["options"]["num_predict"] for c in llm.chat.call_args_list
@@ -151,7 +164,13 @@ async def test_reply_truncated_by_the_window_itself_is_not_retried(monkeypatch):
     llm.model_input_tokens.return_value = 6000
     llm.chat.return_value = {"message": {"content": "{"}, "done_reason": "length"}
     with pytest.raises(ValueError, match="exhausted_context_window"):
-        await _request_json(llm, "m", [{"role": "user", "content": "q"}], CriticVerdict)
+        await _request_json(
+            llm,
+            "m",
+            [{"role": "user", "content": "q"}],
+            CriticVerdict,
+            request_kind="dvd.critic",
+        )
     assert llm.chat.await_count == 1
 
 
@@ -167,7 +186,11 @@ async def test_adapter_truncation_error_is_retried_with_a_wider_limit():
         {"message": {"content": verdict_json()}},
     ]
     verdict = await _request_json(
-        llm, "m", [{"role": "user", "content": "q"}], CriticVerdict
+        llm,
+        "m",
+        [{"role": "user", "content": "q"}],
+        CriticVerdict,
+        request_kind="dvd.critic",
     )
     first, second = (
         c.kwargs["options"]["num_predict"] for c in llm.chat.call_args_list

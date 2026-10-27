@@ -39,6 +39,7 @@ class _GenOk:
         self._response = response
 
     async def generate(self, model=None, prompt=None, stream=False, **kwargs):
+        assert kwargs["request_kind"] == "chat_title"
         return SimpleNamespace(response=self._response)
 
 

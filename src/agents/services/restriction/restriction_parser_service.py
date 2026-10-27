@@ -2193,6 +2193,7 @@ class RestrictionParserService(BaseLlmService):
         async for part in await self.llm_client.chat(
             model,
             messages,
+            request_kind="restriction.explain",
             think=False,
             options={"temperature": min(temperature, 0.4)},
             stream=True,
@@ -2237,6 +2238,7 @@ class RestrictionParserService(BaseLlmService):
         async for part in await self.llm_client.chat(
             model,
             messages,
+            request_kind="restriction.answer",
             think=False,
             options={"temperature": temperature},
             stream=True,
@@ -2264,6 +2266,7 @@ class RestrictionParserService(BaseLlmService):
         async for part in await self.llm_client.chat(
             model,
             prepared.messages,
+            request_kind="restriction.answer",
             think=False,
             options={"temperature": min(temperature, 0.2)},
             stream=True,

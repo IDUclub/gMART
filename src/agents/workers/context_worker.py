@@ -170,6 +170,7 @@ failed_attempts. Общий ответ не должен превышать пр
                     "num_predict": available,
                 }
         response = await self.llm.chat(
+            request_kind="context_summary",
             model=job["model"],
             messages=messages,
             think=False,

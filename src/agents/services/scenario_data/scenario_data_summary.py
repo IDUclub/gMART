@@ -143,6 +143,7 @@ async def summarize_comparison(
     facts = comparison_facts(rows, column_labels, counts, missing)
     try:
         response = await llm_client.chat(
+            request_kind="scenario.answer",
             model=model,
             messages=summary_messages(facts),
             think=False,

@@ -91,6 +91,7 @@ async def extract_intent(
                 {"role": "user", "content": query},
             ],
             ProjectIntent,
+            request_kind="project.inputs",
         )
     except Exception as exc:  # the defaults below still create the project
         logger.warning(f"Project intent extraction failed: {exc}")

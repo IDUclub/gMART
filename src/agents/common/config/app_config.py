@@ -68,6 +68,7 @@ class AgentsAppConfig:
             Secret — kept server-side only, never exposed via /system/config or logs.
         SYNAPSE_ENABLED (bool): Enable the optional Synapse gateway.
 
+    LLM_REQUEST_PRIORITIES, LLM_REQUEST_PRIORITY_ENABLED,
     OPENAI_REQUEST_PRIORITY and OPENAI_THINK_* are read directly by
     OpenAiCompatAdapter, rather than validated or exposed by this config.
     """

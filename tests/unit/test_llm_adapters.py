@@ -18,6 +18,7 @@ from src.agents.model_clients.llm_base import (
 )
 from src.agents.model_clients.ollama_adapter import OllamaAdapter
 from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
+from src.agents.model_clients.request_priority import _warn_once
 
 
 # --------------------------------------------------------------------------- #
@@ -79,6 +80,9 @@ def _adapter_with(result) -> tuple[OpenAiCompatAdapter, FakeCompletions]:
 @pytest.fixture(autouse=True)
 def _clear_request_priority(monkeypatch):
     monkeypatch.delenv("OPENAI_REQUEST_PRIORITY", raising=False)
+    monkeypatch.delenv("LLM_REQUEST_PRIORITIES", raising=False)
+    monkeypatch.delenv("LLM_REQUEST_PRIORITY_ENABLED", raising=False)
+    _warn_once.cache_clear()
 
 
 @pytest.fixture
@@ -246,7 +250,12 @@ async def test_unsupported_priority_retries_and_disables_once(
     try:
         for _ in range(2):
             response = await adapter.chat(
-                "m", [], stream=stream, think=False, extra_body=extra_body
+                "m",
+                [],
+                stream=stream,
+                think=False,
+                extra_body=extra_body,
+                request_kind="dvd.critic",
             )
             if stream:
                 assert [part async for part in response][-1].done
@@ -368,9 +377,76 @@ async def test_ollama_ignores_request_priority(monkeypatch):
     adapter = OllamaAdapter("http://localhost:11434")
     adapter.client.chat = AsyncMock(return_value=LlmChatResponse(done=True))
 
-    await adapter.chat("m", [])
+    await adapter.chat("m", [], request_kind="dvd.critic")
 
     adapter.client.chat.assert_awaited_once_with(model="m", messages=[], stream=False)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [("dvd.critic", -100), ("chat_title", -60), ("context_summary", 20)],
+)
+async def test_keyed_priority(monkeypatch, priority_client, stream, key, expected):
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-1")
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    if stream:
+        priority_client.chat.completions.create.return_value = _FakeStream(
+            [_Completion([_Choice(delta=_Delta("ok"), finish_reason="stop")])]
+        )
+    result = await adapter.chat("m", [], stream=stream, request_kind=key)
+    if stream:
+        assert [part async for part in result][-1].done
+    sent = priority_client.chat.completions.create.call_args.kwargs
+    assert "request_kind" not in sent
+    assert sent["extra_body"]["priority"] == expected
+
+
+async def test_keyed_override_is_read_after_adapter_creation(
+    monkeypatch, priority_client
+):
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    for value in (-60, 0, -100):
+        monkeypatch.setenv("LLM_REQUEST_PRIORITIES", f"dvd.critic={value}")
+        await adapter.chat("m", [], request_kind="dvd.critic")
+        body = (
+            priority_client.chat.completions.create.call_args.kwargs.get("extra_body")
+            or {}
+        )
+        assert body.get("priority") == (value or None)
+
+
+@pytest.mark.parametrize("enabled", ["true", "false"])
+async def test_zero_override_and_master_switch(monkeypatch, priority_client, enabled):
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-1")
+    monkeypatch.setenv("LLM_REQUEST_PRIORITIES", "dvd.critic=0")
+    monkeypatch.setenv("LLM_REQUEST_PRIORITY_ENABLED", enabled)
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    await adapter.chat("m", [], request_kind="dvd.critic")
+    if enabled == "false":
+        await adapter.chat("m", [], priority=-20, extra_body={"priority": -30})
+        await adapter.chat("m", [], request_kind="dvd.planner", stream=True)
+        await adapter.generate("m", "title", request_kind="chat_title")
+    for call in priority_client.chat.completions.create.call_args_list:
+        assert "priority" not in (call.kwargs.get("extra_body") or {})
+        assert "priority" not in call.kwargs
+        assert "request_kind" not in call.kwargs
+
+
+async def test_generate_passes_priority_and_ollama_ignores_key(priority_client):
+    from unittest.mock import AsyncMock
+
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    await adapter.generate("m", "title", request_kind="chat_title")
+    assert priority_client.chat.completions.create.call_args.kwargs["extra_body"] == {
+        "priority": -60
+    }
+    ollama = OllamaAdapter("http://localhost:11434")
+    ollama.client.generate = AsyncMock()
+    await ollama.generate("m", "title", request_kind="chat_title")
+    ollama.client.generate.assert_awaited_once_with(
+        model="m", prompt="title", stream=False
+    )
 
 
 # --------------------------------------------------------------------------- #
