@@ -715,6 +715,7 @@ class DvdRagService(BaseLlmService):
         for iteration in range(start_iteration, self.MAX_ITERATIONS + 1):
             final_iteration = iteration
             is_last = iteration == self.MAX_ITERATIONS
+            prefetched = None
 
             # ── Step 1: plan retrieval (LLM chooses query + context size) ──
             yield await self._buf(
@@ -733,7 +734,10 @@ class DvdRagService(BaseLlmService):
                 plan = validate_retrieval_plan(last_plan)
             elif fast_plan := (
                 flags.enabled(flags.PLANNER_FAST_PATH)
+                and iteration == 1
                 and not prev_critique
+                and not replan
+                and not collected.get("selected_choice")
                 and not collected.get("fast_path_failed")
                 and self.planner.fast_plan(
                     user_query, history, collected.get("document_scope")
@@ -742,20 +746,42 @@ class DvdRagService(BaseLlmService):
                 # An exact address with its document needs no LLM to plan.
                 plan = fast_plan
                 collected["fast_path"] = True
-                metrics.decide(planner_bypassed=True)
+                collected["simple_path"] = False
+                metrics.decide(planner_bypassed=True, planner_path="exact")
+            elif simple_plan := (
+                flags.enabled(flags.PLANNER_SIMPLE_PATH)
+                and iteration == 1
+                and not prev_critique
+                and not replan
+                and not collected.get("selected_choice")
+                and not collected.get("fast_path_failed")
+                and self.planner.simple_plan(
+                    user_query, history, collected.get("document_scope")
+                )
+            ):
+                plan = simple_plan
+                collected["fast_path"] = True
+                collected["simple_path"] = True
+                metrics.decide(planner_bypassed=True, planner_path="simple")
             else:
                 collected["fast_path"] = False
-                with metrics.stage("planner"):
-                    plan = await self.planner.build_plan(
-                        model,
-                        user_query,
-                        history,
-                        prev_critique,
-                        prev_query,
-                        available_tags=await self._corpus_tags(dvd_mcp_client),
-                    )
+                collected["simple_path"] = False
+                plan, prefetched = await self._plan_with_prefetch(
+                    dvd_mcp_client,
+                    model,
+                    user_query,
+                    history,
+                    prev_critique,
+                    prev_query,
+                    collected,
+                    scenario_id,
+                    iteration == 1
+                    and not replan
+                    and not prev_critique
+                    and not collected.get("selected_choice"),
+                )
                 metrics.add("planner_calls")
-                metrics.decide(planner_bypassed=False)
+                metrics.decide(planner_bypassed=False, planner_path="llm")
             # The chat is needed from here on (document scope, clarifications).
             for event in await self._join_chat_setup(request_id, collected):
                 yield event
@@ -976,6 +1002,19 @@ class DvdRagService(BaseLlmService):
                             _EXECUTION_MODE, [call], mcp_source=_MCP_SOURCE
                         ),
                     )
+                if collected.get("fast_path") and (
+                    (
+                        not search_result.get("hits")
+                        and not search_result.get("ambiguous")
+                    )
+                    or (collected.get("simple_path") and search_result.get("ambiguous"))
+                ):
+                    if await self._fast_path_fallback(
+                        request_id, collected, iteration, is_last
+                    ):
+                        progress = {**progress, "retrieval_constraints": None}
+                        last_plan, replan = None, True
+                        continue
                 if search_result.get("ambiguous") and not plan.allow_multiple:
                     candidates = search_result.get("candidates", [])
                     question = (
@@ -1007,33 +1046,6 @@ class DvdRagService(BaseLlmService):
                     ):
                         yield event
                     return
-                if not search_result.get("hits") and collected.get("fast_path"):
-                    # The literal reading of the reference found nothing. The planner
-                    # reads the request instead (another title, edition or address).
-                    logger.info(
-                        "DVD fast path found nothing request_id={} iteration={}; "
-                        "falling back to the planner",
-                        request_id,
-                        iteration,
-                    )
-                    metrics.decide(fast_path_fallback=True)
-                    collected.update(
-                        fast_path=False,
-                        fast_path_failed=True,
-                        retrieval_constraints=None,
-                        last_plan=None,
-                    )
-                    progress = {**progress, "retrieval_constraints": None}
-                    last_plan, replan = None, True
-                    if not is_last:
-                        await self._save_progress(
-                            request_id,
-                            collected,
-                            completed_iterations=iteration,
-                            accepted=False,
-                            replan=True,
-                        )
-                        continue
                 if not search_result.get("hits"):
                     answer = "По заданным документу, редакции, структуре и наименованию совпадений не найдено. Уточните обозначение или структурную ссылку. Ограничения поиска сохранены."
                     async for event in self._finish_retrieval(
@@ -1082,12 +1094,18 @@ class DvdRagService(BaseLlmService):
                     ),
                 )
                 with metrics.stage("retrieval"):
-                    search_result, calls = await self._semantic_search(
-                        dvd_mcp_client,
-                        plan,
-                        scenario_id,
-                        max_hits=_first_pass_max_hits() if first_pass else None,
-                    )
+                    if prefetched and prefetched[0] == self._prefetch_key(
+                        plan, scenario_id
+                    ):
+                        search_result, calls = prefetched[1]
+                        metrics.add("prefetch_reused")
+                    else:
+                        search_result, calls = await self._semantic_search(
+                            dvd_mcp_client,
+                            plan,
+                            scenario_id,
+                            max_hits=_first_pass_max_hits() if first_pass else None,
+                        )
                 metrics.add("retrieval_rounds")
                 metrics.add("retrieval_queries", len(queries))
                 if plan.intent == "document_list" and search_result.get("hits"):
@@ -1113,6 +1131,17 @@ class DvdRagService(BaseLlmService):
                             _EXECUTION_MODE, [call], mcp_source=_MCP_SOURCE
                         ),
                     )
+
+            if collected.get("fast_path") and (
+                not hits
+                or (collected.get("simple_path") and search_result.get("ambiguous"))
+            ):
+                if await self._fast_path_fallback(
+                    request_id, collected, iteration, is_last
+                ):
+                    progress = {**progress, "retrieval_constraints": None}
+                    last_plan, replan = None, True
+                    continue
 
             if search_key not in retrieved:
                 with metrics.stage("fragment_completion"):
@@ -2048,6 +2077,125 @@ class DvdRagService(BaseLlmService):
     # ------------------------------------------------------------------
     # Retrieval helpers (multi-query, document lists, broadening)
     # ------------------------------------------------------------------
+
+    async def _fast_path_fallback(self, request_id, collected, iteration, is_last):
+        if is_last:
+            return False
+        logger.info(
+            "DVD fast path empty or ambiguous request_id={} iteration={}; "
+            "falling back to the planner",
+            request_id,
+            iteration,
+        )
+        run_metrics(collected).decide(fast_path_fallback=True)
+        collected.update(
+            fast_path=False,
+            simple_path=False,
+            fast_path_failed=True,
+            retrieval_constraints=None,
+            last_plan=None,
+            planned_sizes=None,
+        )
+        await self._save_progress(
+            request_id,
+            collected,
+            completed_iterations=iteration,
+            accepted=False,
+            replan=True,
+        )
+        return True
+
+    @staticmethod
+    def _prefetch_key(plan, scenario_id):
+        """Effective single vector search; filtered/structural routes cannot reuse it."""
+        if (
+            plan.retrieval_mode != "semantic"
+            or plan.intent != "norm"
+            or plan.alternative_queries
+            or plan.document_names
+            or plan.doc_id
+            or not plan.include_shared
+        ):
+            return None
+        values = {
+            key: getattr(plan, key) or None
+            for key in (
+                "kind",
+                "limit",
+                "context_height",
+                "tags",
+                "document_names",
+                "doc_id",
+                "version",
+                "block",
+                "types",
+                "include_shared",
+            )
+        }
+        values.update(
+            query=normalized_query(plan.search_query), scenario_id=scenario_id
+        )
+        return json.dumps(values, sort_keys=True, ensure_ascii=False)
+
+    async def _plan_with_prefetch(
+        self,
+        client,
+        model,
+        user_query,
+        history,
+        prev_critique,
+        prev_query,
+        collected,
+        scenario_id,
+        first_iteration,
+    ):
+        """Own the speculative task entirely, including cancellation and failures."""
+        metrics = run_metrics(collected)
+        task = None
+        prefetched = None
+        question, _ = split_task(user_query)
+        candidate = validate_retrieval_plan(
+            {"retrieval_mode": "semantic", "search_query": question}
+        )
+        candidate = self._first_pass(candidate) or candidate
+        key = self._prefetch_key(candidate, scenario_id)
+
+        async def search():
+            try:
+                return await self._semantic_search(client, candidate, scenario_id)
+            except Exception as exc:
+                logger.debug("DVD planner prefetch failed: {}", exc)
+                return None
+
+        try:
+            if first_iteration and key and flags.enabled(flags.PLANNER_PREFETCH):
+                # FastMCP supports concurrent reentrant entries; _semantic_search
+                # already uses that same session for parallel alternative queries.
+                task = asyncio.create_task(search())
+                metrics.add("prefetch_started")
+            with metrics.stage("planner"):
+                plan = await self.planner.build_plan(
+                    model,
+                    user_query,
+                    history,
+                    prev_critique,
+                    prev_query,
+                    available_tags=await self._corpus_tags(client),
+                )
+            effective = apply_scope(
+                plan, user_query, collected.get("document_scope"), history
+            )
+            effective = self._first_pass(effective) or effective
+            if task is not None and key == self._prefetch_key(effective, scenario_id):
+                result = await task
+                if result is not None:
+                    prefetched = (key, result)
+            return plan, prefetched
+        finally:
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     async def _corpus_tags(self, client) -> list[str] | None:
         """Corpus tags for the planner, cached briefly; ``None`` when unavailable."""

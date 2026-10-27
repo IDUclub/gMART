@@ -1,3 +1,11 @@
+## v0.30.0 (2026-10-27)
+
+[feat/ICII-205-planner-bypass](https://github.com/IDUclub/gMART/pull/259) (#259)
+
+- feat(agents): искать по вопросу без планировщика для простых вопросов агента документов
+- ci: пушить bump-коммит токеном VERSION_STATUS_TOKEN, чтобы проверки шли без подтверждения
+- Revert "ci: пушить bump-коммит токеном VERSION_STATUS_TOKEN, чтобы проверки шли без подтверждения"
+
 ## v0.29.0 (2026-10-27)
 
 [feat/ICII-205-answer-preview](https://github.com/IDUclub/gMART/pull/258) (#258)
