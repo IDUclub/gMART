@@ -67,6 +67,9 @@ class AgentsAppConfig:
         AUTH_HELPER_API_KEY (str | None): API key for the auth helper /api/token endpoint.
             Secret — kept server-side only, never exposed via /system/config or logs.
         SYNAPSE_ENABLED (bool): Enable the optional Synapse gateway.
+
+    OPENAI_REQUEST_PRIORITY and OPENAI_THINK_* are read directly by
+    OpenAiCompatAdapter, rather than validated or exposed by this config.
     """
 
     OLLAMA_URL: str

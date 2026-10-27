@@ -103,6 +103,7 @@ jobs:
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_THINK_MODE: ${{ vars.OPENAI_THINK_MODE }}
+          OPENAI_REQUEST_PRIORITY: ${{ vars.OPENAI_REQUEST_PRIORITY }}
           OPENAI_THINK_EFFORT: ${{ vars.OPENAI_THINK_EFFORT }}
           DEFAULT_LLM_MODEL: ${{ vars.DEFAULT_LLM_MODEL }}
           DEFAULT_LLM_MODEL_HINT: ${{ vars.DEFAULT_LLM_MODEL_HINT }}

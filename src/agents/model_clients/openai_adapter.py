@@ -86,8 +86,23 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         think_mode: str | None = None,
         think_chat_template_kwarg: str | None = None,
         think_effort: str | None = None,
+        request_priority: int | str | None = None,
     ):
         self.base_url = base_url
+        priority = (
+            request_priority
+            if request_priority is not None
+            else os.getenv("OPENAI_REQUEST_PRIORITY", "")
+        )
+        self.request_priority = None
+        self._priority_disabled = False
+        if str(priority).strip():
+            try:
+                self.request_priority = int(priority) or None
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid OPENAI_REQUEST_PRIORITY={!r}; priority is off", priority
+                )
         # How think= is spelled for this server; see the module docstring.
         self.think_mode = (
             think_mode
@@ -414,12 +429,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         pace_call = None
         try:
             if stream:
-                pace_call = llm_pace.started(call.get("max_tokens"))
-                try:
-                    result = await self.client.chat.completions.create(**call)
-                except BaseException:
-                    llm_pace.finished(pace_call, completion_tokens=None)
-                    raise
+                result, pace_call = await self._send_completion(call)
             else:
                 result = await self._create(call)
             if not stream and call.get("response_format"):
@@ -485,13 +495,65 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             self._as_stream(result, pace_call) if stream else self._as_response(result)
         )
 
+    def _with_priority(self, call: dict[str, Any]) -> dict[str, Any]:
+        # Keep this at the completion boundary: /tokenize also uses _build.
+        call = dict(call)
+        extra_body = dict(call.get("extra_body") or {})
+        priority = call.pop("priority", self.request_priority)
+        priority = extra_body.get("priority", priority)
+        if self._priority_disabled:
+            extra_body.pop("priority", None)
+        elif priority is not None and priority != 0:
+            extra_body.setdefault("priority", priority)
+        if extra_body:
+            call["extra_body"] = extra_body
+        elif self._priority_disabled and "extra_body" in call:
+            call.pop("extra_body")
+        return call
+
+    async def _send_completion(self, call: dict[str, Any]) -> tuple[Any, int]:
+        for attempt in range(2):
+            sent = self._with_priority(call)
+            pace_call = llm_pace.started(sent.get("max_tokens"))
+            try:
+                result = await self.client.chat.completions.create(**sent)
+                return result, pace_call
+            except BaseException as exc:
+                llm_pace.finished(pace_call, completion_tokens=None)
+                text = str(exc).lower()
+                unsupported = any(
+                    phrase in text
+                    for phrase in (
+                        "priority scheduling is not enabled",
+                        "priority scheduling is not supported",
+                        "priority is not supported",
+                        "priority not supported",
+                        "unsupported priority",
+                        "does not support priority",
+                    )
+                )
+                if (
+                    attempt == 0
+                    and isinstance(exc, APIStatusError)
+                    and exc.status_code == 400
+                    and "priority" in (sent.get("extra_body") or {})
+                    and unsupported
+                ):
+                    if not self._priority_disabled:
+                        self._priority_disabled = True
+                        logger.warning(
+                            "Server does not support request priority; disabling it "
+                            "for this adapter and retrying without priority"
+                        )
+                    continue
+                raise
+
     async def _create(self, call: dict[str, Any]) -> Any:
         """One non-streaming completion, timed for the deadline pace estimate."""
 
-        pace_call = llm_pace.started(call.get("max_tokens"))
+        result, pace_call = await self._send_completion(call)
         usage = None
         try:
-            result = await self.client.chat.completions.create(**call)
             usage = getattr(result, "usage", None)
             return result
         finally:
