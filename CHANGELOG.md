@@ -1,3 +1,9 @@
+## v0.31.0 (2026-10-27)
+
+[feat/ICII-205-critic-sentence-ids](https://github.com/IDUclub/gMART/pull/260) (#260)
+
+- feat(agents): подтверждать строки ответа номерами предложений в критике агента документов
+
 ## v0.30.0 (2026-10-27)
 
 [feat/ICII-205-planner-bypass](https://github.com/IDUclub/gMART/pull/259) (#259)
