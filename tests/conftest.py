@@ -80,6 +80,10 @@ def service(monkeypatch, fake_llm, fake_urban, state_store):
     ``create_chat`` / ``get_chat_messages`` / ``_schedule_persist_answer`` are stubbed by
     default so loop tests stay focused; tests that exercise those paths override the stubs.
     """
+    # Existing scenarios queue a planner response before the audit. Tests of the
+    # optional planner paths enable them explicitly instead of changing that queue.
+    monkeypatch.setenv("DVD_PLANNER_SIMPLE_PATH", "false")
+    monkeypatch.setenv("DVD_PLANNER_PREFETCH", "false")
     monkeypatch.setattr(
         "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,

@@ -5,8 +5,8 @@ import json
 import os
 import re
 import time
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import aclosing, asynccontextmanager, suppress
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +40,7 @@ from src.agents.services.dvd.answer_generation import (
     DvdAnswerGenerator,
     tables_to_lists,
 )
+from src.agents.services.dvd.answer_preview import AnswerPreview
 from src.agents.services.dvd.answer_revision import AnswerReviser
 from src.agents.services.dvd.answer_risk import AnswerRisk, assess_risk
 from src.agents.services.dvd.clarification import (
@@ -323,21 +324,24 @@ class DvdRagService(BaseLlmService):
         collected["metrics"] = metrics
         self._active[request_id] = collected
         try:
-            async for event in self._serve_request(
-                dvd_mcp_client,
-                token,
-                model,
-                temperature,
-                user_query,
-                scenario_id,
-                chat_id,
-                request_id,
-                persist_history,
-                context_note,
-                collected,
-                is_reconnect,
-            ):
-                yield event
+            async with aclosing(
+                self._serve_request(
+                    dvd_mcp_client,
+                    token,
+                    model,
+                    temperature,
+                    user_query,
+                    scenario_id,
+                    chat_id,
+                    request_id,
+                    persist_history,
+                    context_note,
+                    collected,
+                    is_reconnect,
+                )
+            ) as events:
+                async for event in events:
+                    yield event
         finally:
             self._active.pop(request_id, None)
             metrics.finish()
@@ -538,20 +542,23 @@ class DvdRagService(BaseLlmService):
             self.context_reducer.model_window(model),
             self._mcp_session(dvd_mcp_client, metrics),
         ):
-            async for event in self._run_qa_loop(
-                dvd_mcp_client,
-                model,
-                temperature,
-                user_query,
-                history,
-                collected,
-                request_id,
-                scenario_id,
-            ):
-                # Chat events the journal recorded just before this event.
-                for joined in collected.pop("joined_events", []):
-                    yield joined
-                yield event
+            async with aclosing(
+                self._run_qa_loop(
+                    dvd_mcp_client,
+                    model,
+                    temperature,
+                    user_query,
+                    history,
+                    collected,
+                    request_id,
+                    scenario_id,
+                )
+            ) as events:
+                async for event in events:
+                    # Chat events the journal recorded just before this event.
+                    for joined in collected.pop("joined_events", []):
+                        yield joined
+                    yield event
         for event in await self._join_chat_setup(request_id, collected):
             yield event
         chat_id = collected.get("chat_id")
@@ -709,6 +716,7 @@ class DvdRagService(BaseLlmService):
         for iteration in range(start_iteration, self.MAX_ITERATIONS + 1):
             final_iteration = iteration
             is_last = iteration == self.MAX_ITERATIONS
+            prefetched = None
 
             # ── Step 1: plan retrieval (LLM chooses query + context size) ──
             yield await self._buf(
@@ -727,7 +735,10 @@ class DvdRagService(BaseLlmService):
                 plan = validate_retrieval_plan(last_plan)
             elif fast_plan := (
                 flags.enabled(flags.PLANNER_FAST_PATH)
+                and iteration == 1
                 and not prev_critique
+                and not replan
+                and not collected.get("selected_choice")
                 and not collected.get("fast_path_failed")
                 and self.planner.fast_plan(
                     user_query, history, collected.get("document_scope")
@@ -736,35 +747,60 @@ class DvdRagService(BaseLlmService):
                 # An exact address with its document needs no LLM to plan.
                 plan = fast_plan
                 collected["fast_path"] = True
-                metrics.decide(planner_bypassed=True)
+                collected["simple_path"] = False
+                metrics.decide(planner_bypassed=True, planner_path="exact")
+            elif simple_plan := (
+                flags.enabled(flags.PLANNER_SIMPLE_PATH)
+                and iteration == 1
+                and not prev_critique
+                and not replan
+                and not collected.get("selected_choice")
+                and not collected.get("fast_path_failed")
+                and self.planner.simple_plan(
+                    user_query, history, collected.get("document_scope")
+                )
+            ):
+                plan = simple_plan
+                collected["fast_path"] = True
+                collected["simple_path"] = True
+                metrics.decide(planner_bypassed=True, planner_path="simple")
             else:
                 collected["fast_path"] = False
-                with metrics.stage("planner"):
-                    plan = await self.planner.build_plan(
-                        model,
-                        user_query,
-                        history,
-                        prev_critique,
-                        prev_query,
-                        available_tags=await self._corpus_tags(dvd_mcp_client),
-                    )
+                collected["simple_path"] = False
+                plan, prefetched = await self._plan_with_prefetch(
+                    dvd_mcp_client,
+                    model,
+                    user_query,
+                    history,
+                    prev_critique,
+                    prev_query,
+                    collected,
+                    scenario_id,
+                    iteration == 1
+                    and not replan
+                    and not prev_critique
+                    and not collected.get("selected_choice"),
+                )
                 metrics.add("planner_calls")
-                metrics.decide(planner_bypassed=False)
+                metrics.decide(planner_bypassed=False, planner_path="llm")
             # The chat is needed from here on (document scope, clarifications).
             for event in await self._join_chat_setup(request_id, collected):
                 yield event
             if plan.intent == "document_comparison":
-                async for event in self._run_comparison(
-                    dvd_mcp_client,
-                    plan,
-                    model,
-                    intent_query,
-                    history,
-                    collected,
-                    request_id,
-                    scenario_id,
-                ):
-                    yield event
+                async with aclosing(
+                    self._run_comparison(
+                        dvd_mcp_client,
+                        plan,
+                        model,
+                        intent_query,
+                        history,
+                        collected,
+                        request_id,
+                        scenario_id,
+                    )
+                ) as events:
+                    async for event in events:
+                        yield event
                 return
             plan = apply_scope(
                 plan, user_query, collected.get("document_scope"), history
@@ -967,6 +1003,19 @@ class DvdRagService(BaseLlmService):
                             _EXECUTION_MODE, [call], mcp_source=_MCP_SOURCE
                         ),
                     )
+                if collected.get("fast_path") and (
+                    (
+                        not search_result.get("hits")
+                        and not search_result.get("ambiguous")
+                    )
+                    or (collected.get("simple_path") and search_result.get("ambiguous"))
+                ):
+                    if await self._fast_path_fallback(
+                        request_id, collected, iteration, is_last
+                    ):
+                        progress = {**progress, "retrieval_constraints": None}
+                        last_plan, replan = None, True
+                        continue
                 if search_result.get("ambiguous") and not plan.allow_multiple:
                     candidates = search_result.get("candidates", [])
                     question = (
@@ -998,33 +1047,6 @@ class DvdRagService(BaseLlmService):
                     ):
                         yield event
                     return
-                if not search_result.get("hits") and collected.get("fast_path"):
-                    # The literal reading of the reference found nothing. The planner
-                    # reads the request instead (another title, edition or address).
-                    logger.info(
-                        "DVD fast path found nothing request_id={} iteration={}; "
-                        "falling back to the planner",
-                        request_id,
-                        iteration,
-                    )
-                    metrics.decide(fast_path_fallback=True)
-                    collected.update(
-                        fast_path=False,
-                        fast_path_failed=True,
-                        retrieval_constraints=None,
-                        last_plan=None,
-                    )
-                    progress = {**progress, "retrieval_constraints": None}
-                    last_plan, replan = None, True
-                    if not is_last:
-                        await self._save_progress(
-                            request_id,
-                            collected,
-                            completed_iterations=iteration,
-                            accepted=False,
-                            replan=True,
-                        )
-                        continue
                 if not search_result.get("hits"):
                     answer = "По заданным документу, редакции, структуре и наименованию совпадений не найдено. Уточните обозначение или структурную ссылку. Ограничения поиска сохранены."
                     async for event in self._finish_retrieval(
@@ -1073,12 +1095,18 @@ class DvdRagService(BaseLlmService):
                     ),
                 )
                 with metrics.stage("retrieval"):
-                    search_result, calls = await self._semantic_search(
-                        dvd_mcp_client,
-                        plan,
-                        scenario_id,
-                        max_hits=_first_pass_max_hits() if first_pass else None,
-                    )
+                    if prefetched and prefetched[0] == self._prefetch_key(
+                        plan, scenario_id
+                    ):
+                        search_result, calls = prefetched[1]
+                        metrics.add("prefetch_reused")
+                    else:
+                        search_result, calls = await self._semantic_search(
+                            dvd_mcp_client,
+                            plan,
+                            scenario_id,
+                            max_hits=_first_pass_max_hits() if first_pass else None,
+                        )
                 metrics.add("retrieval_rounds")
                 metrics.add("retrieval_queries", len(queries))
                 if plan.intent == "document_list" and search_result.get("hits"):
@@ -1104,6 +1132,17 @@ class DvdRagService(BaseLlmService):
                             _EXECUTION_MODE, [call], mcp_source=_MCP_SOURCE
                         ),
                     )
+
+            if collected.get("fast_path") and (
+                not hits
+                or (collected.get("simple_path") and search_result.get("ambiguous"))
+            ):
+                if await self._fast_path_fallback(
+                    request_id, collected, iteration, is_last
+                ):
+                    progress = {**progress, "retrieval_constraints": None}
+                    last_plan, replan = None, True
+                    continue
 
             if search_key not in retrieved:
                 with metrics.stage("fragment_completion"):
@@ -1315,21 +1354,25 @@ class DvdRagService(BaseLlmService):
                 )
                 metrics.add("drafts")
                 try:
-                    with metrics.stage("answer_generation"):
-                        async for chunk_event in self._generate_answer(
-                            model,
-                            intent_query,
-                            context,
-                            # A grounded draft needs low variance; the request default
-                            # (1.0) suits free chat, not quoting norms.
-                            min(temperature, _answer_temperature()),
-                            history,
-                            iteration,
-                            revision_note,
-                            context_failures=generation_failures,
-                            intent=plan.intent,
-                        ):
-                            if text := chunk_event["content"]["text"]:
+                    async with self._draft_events(
+                        request_id,
+                        collected,
+                        model,
+                        intent_query,
+                        context,
+                        # A grounded draft needs low variance; the request default
+                        # (1.0) suits free chat, not quoting norms.
+                        min(temperature, _answer_temperature()),
+                        history,
+                        iteration=iteration,
+                        revision_note=revision_note,
+                        context_failures=generation_failures,
+                        intent=plan.intent,
+                    ) as events:
+                        async for chunk_event in events:
+                            if chunk_event["type"] == "status":
+                                yield await self._buf(request_id, chunk_event)
+                            elif text := chunk_event["content"]["text"]:
                                 draft_parts.append(text)
                 except AnswerGenerationError as exc:
                     yield await self._fail_context(
@@ -1686,19 +1729,24 @@ class DvdRagService(BaseLlmService):
             context_failures = []
             metrics.add("drafts")
             try:
-                with metrics.stage("answer_generation"):
-                    async for event in self._generate_answer(
-                        model,
-                        question,
-                        context,
-                        _answer_temperature(),
-                        history,
-                        1,
-                        intent="document_comparison",
-                        comparison_summary=summary,
-                        context_failures=context_failures,
-                    ):
-                        draft += event.get("content", {}).get("text", "")
+                async with self._draft_events(
+                    request_id,
+                    collected,
+                    model,
+                    question,
+                    context,
+                    _answer_temperature(),
+                    history,
+                    iteration=1,
+                    intent="document_comparison",
+                    comparison_summary=summary,
+                    context_failures=context_failures,
+                ) as events:
+                    async for event in events:
+                        if event["type"] == "status":
+                            yield await self._buf(request_id, event)
+                        else:
+                            draft += event.get("content", {}).get("text", "")
             except AnswerGenerationError:
                 # A large comparison still has a useful deterministic result.
                 context_failures.append("comparison_draft_unavailable")
@@ -1718,25 +1766,31 @@ class DvdRagService(BaseLlmService):
                 revised = ""
                 metrics.add("drafts")
                 try:
-                    with metrics.stage("revision"):
-                        async for event in self._generate_answer(
-                            model,
-                            question,
-                            context,
-                            _answer_temperature(),
-                            history,
-                            2,
-                            revision_note=(
-                                "добавь метки источников [N] к каждому пункту. "
-                                "Используй только конкретные метки из контекста; "
-                                "для сравнения цитируй обе стороны. Сохрани смысл черновика:\n"
-                                + draft
-                            ),
-                            intent="document_comparison",
-                            comparison_summary=summary,
-                            context_failures=context_failures,
-                        ):
-                            revised += event.get("content", {}).get("text", "")
+                    async with self._draft_events(
+                        request_id,
+                        collected,
+                        model,
+                        question,
+                        context,
+                        _answer_temperature(),
+                        history,
+                        iteration=2,
+                        stage="revision",
+                        revision_note=(
+                            "добавь метки источников [N] к каждому пункту. "
+                            "Используй только конкретные метки из контекста; "
+                            "для сравнения цитируй обе стороны. Сохрани смысл черновика:\n"
+                            + draft
+                        ),
+                        intent="document_comparison",
+                        comparison_summary=summary,
+                        context_failures=context_failures,
+                    ) as events:
+                        async for event in events:
+                            if event["type"] == "status":
+                                yield await self._buf(request_id, event)
+                            else:
+                                revised += event.get("content", {}).get("text", "")
                     draft = revised
                     metrics.decide(revision_used=True)
                 except AnswerGenerationError:
@@ -1813,6 +1867,84 @@ class DvdRagService(BaseLlmService):
         async for event in self._finish_retrieval(request_id, collected, answer, 1):
             yield event
 
+    @asynccontextmanager
+    async def _draft_events(
+        self,
+        request_id,
+        collected,
+        *args,
+        iteration,
+        stage="answer_generation",
+        **kwargs,
+    ):
+        async def timed(stream):
+            async with aclosing(stream):
+                while True:
+                    with run_metrics(collected).stage(stage):
+                        event = await anext(stream, None)
+                    if event is None:
+                        return
+                    yield event
+
+        if not flags.enabled(flags.ANSWER_PREVIEW) or collected.get("answer_started"):
+            async with aclosing(
+                timed(self._generate_answer(*args, iteration=iteration, **kwargs))
+            ) as events:
+                yield events
+            return
+
+        preview = AnswerPreview(
+            collected.get("citations"),
+            iteration,
+            last_sent=collected.get("answer_preview_sent_at"),
+        )
+        queue = asyncio.Queue(maxsize=1)
+
+        async def progress(text):
+            await queue.put(("preview", text))
+
+        async def generate():
+            try:
+                async with aclosing(
+                    self._generate_answer(
+                        *args, iteration=iteration, progress_callback=progress, **kwargs
+                    )
+                ) as events:
+                    async for event in events:
+                        await queue.put(("chunk", event))
+            except Exception as exc:
+                await queue.put(("error", exc))
+            else:
+                await queue.put(("done", None))
+
+        async def events():
+            while True:
+                kind, value = await queue.get()
+                if kind == "preview":
+                    if event := preview.event(value):
+                        collected["answer_preview_sent_at"] = preview.last_sent
+                        yield event
+                elif kind == "chunk":
+                    if event := preview.event(value["content"]["text"], final=True):
+                        collected["answer_preview_sent_at"] = preview.last_sent
+                        yield event
+                    yield value
+                elif kind == "error":
+                    raise value
+                else:
+                    return
+
+        task = asyncio.create_task(
+            generate(), name=f"dvd-answer-{request_id}-{iteration}"
+        )
+        try:
+            async with aclosing(timed(events())) as stream:
+                yield stream
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
     async def _generate_answer(
         self,
         model: str,
@@ -1826,6 +1958,7 @@ class DvdRagService(BaseLlmService):
         context_failures: list[str] | None = None,
         intent: str = "norm",
         comparison_summary: str = "",
+        progress_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         with_knowledge = knowledge_block.enabled()
         system = (
@@ -1908,7 +2041,13 @@ class DvdRagService(BaseLlmService):
 
         generator = DvdAnswerGenerator(self.context_reducer, llm_client=self.llm_client)
         answer = await generator.generate(
-            model, user_query, context, temperature, build_messages, iteration=iteration
+            model,
+            user_query,
+            context,
+            temperature,
+            build_messages,
+            iteration=iteration,
+            progress_callback=progress_callback,
         )
         if context_failures is not None:
             context_failures.extend(generator.failed_parts)
@@ -1951,6 +2090,125 @@ class DvdRagService(BaseLlmService):
     # ------------------------------------------------------------------
     # Retrieval helpers (multi-query, document lists, broadening)
     # ------------------------------------------------------------------
+
+    async def _fast_path_fallback(self, request_id, collected, iteration, is_last):
+        if is_last:
+            return False
+        logger.info(
+            "DVD fast path empty or ambiguous request_id={} iteration={}; "
+            "falling back to the planner",
+            request_id,
+            iteration,
+        )
+        run_metrics(collected).decide(fast_path_fallback=True)
+        collected.update(
+            fast_path=False,
+            simple_path=False,
+            fast_path_failed=True,
+            retrieval_constraints=None,
+            last_plan=None,
+            planned_sizes=None,
+        )
+        await self._save_progress(
+            request_id,
+            collected,
+            completed_iterations=iteration,
+            accepted=False,
+            replan=True,
+        )
+        return True
+
+    @staticmethod
+    def _prefetch_key(plan, scenario_id):
+        """Effective single vector search; filtered/structural routes cannot reuse it."""
+        if (
+            plan.retrieval_mode != "semantic"
+            or plan.intent != "norm"
+            or plan.alternative_queries
+            or plan.document_names
+            or plan.doc_id
+            or not plan.include_shared
+        ):
+            return None
+        values = {
+            key: getattr(plan, key) or None
+            for key in (
+                "kind",
+                "limit",
+                "context_height",
+                "tags",
+                "document_names",
+                "doc_id",
+                "version",
+                "block",
+                "types",
+                "include_shared",
+            )
+        }
+        values.update(
+            query=normalized_query(plan.search_query), scenario_id=scenario_id
+        )
+        return json.dumps(values, sort_keys=True, ensure_ascii=False)
+
+    async def _plan_with_prefetch(
+        self,
+        client,
+        model,
+        user_query,
+        history,
+        prev_critique,
+        prev_query,
+        collected,
+        scenario_id,
+        first_iteration,
+    ):
+        """Own the speculative task entirely, including cancellation and failures."""
+        metrics = run_metrics(collected)
+        task = None
+        prefetched = None
+        question, _ = split_task(user_query)
+        candidate = validate_retrieval_plan(
+            {"retrieval_mode": "semantic", "search_query": question}
+        )
+        candidate = self._first_pass(candidate) or candidate
+        key = self._prefetch_key(candidate, scenario_id)
+
+        async def search():
+            try:
+                return await self._semantic_search(client, candidate, scenario_id)
+            except Exception as exc:
+                logger.debug("DVD planner prefetch failed: {}", exc)
+                return None
+
+        try:
+            if first_iteration and key and flags.enabled(flags.PLANNER_PREFETCH):
+                # FastMCP supports concurrent reentrant entries; _semantic_search
+                # already uses that same session for parallel alternative queries.
+                task = asyncio.create_task(search())
+                metrics.add("prefetch_started")
+            with metrics.stage("planner"):
+                plan = await self.planner.build_plan(
+                    model,
+                    user_query,
+                    history,
+                    prev_critique,
+                    prev_query,
+                    available_tags=await self._corpus_tags(client),
+                )
+            effective = apply_scope(
+                plan, user_query, collected.get("document_scope"), history
+            )
+            effective = self._first_pass(effective) or effective
+            if task is not None and key == self._prefetch_key(effective, scenario_id):
+                result = await task
+                if result is not None:
+                    prefetched = (key, result)
+            return plan, prefetched
+        finally:
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     async def _corpus_tags(self, client) -> list[str] | None:
         """Corpus tags for the planner, cached briefly; ``None`` when unavailable."""
@@ -2571,7 +2829,14 @@ class DvdRagService(BaseLlmService):
             )
         await self.state_store.buffer_event(request_id, event)
         if event.get("type") == "chunk" and (event.get("content") or {}).get("text"):
+            if collected is not None:
+                collected["answer_started"] = True
             run_metrics(self._active.get(request_id)).first_answer()
+        elif (
+            event.get("type") == "status"
+            and (event.get("content") or {}).get("status") == "answer_preview"
+        ):
+            run_metrics(collected).preview()
         return event
 
     async def _save_progress(
