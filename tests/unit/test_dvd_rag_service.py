@@ -80,10 +80,15 @@ async def test_incomplete_review_is_controlled_failure(
             ),
         ]
     )
+    service.critic.review = AsyncMock(
+        side_effect=AssertionError("incomplete review context")
+    )
     events = await _run(service, fake_mcp)
     assert events_of_type(events, "error")
     assert final_chunk(events) is None
     service._schedule_persist_answer.assert_not_called()
+    assert service.context_reducer.prepare.await_count == 2
+    service.critic.review.assert_not_awaited()
 
 
 async def test_exhausted_answer_is_failed_and_replayed_without_partial_success(

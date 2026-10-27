@@ -1,3 +1,29 @@
+## v0.31.0 (2026-10-27)
+
+[feat/ICII-205-critic-sentence-ids](https://github.com/IDUclub/gMART/pull/260) (#260)
+
+- feat(agents): подтверждать строки ответа номерами предложений в критике агента документов
+
+## v0.30.0 (2026-10-27)
+
+[feat/ICII-205-planner-bypass](https://github.com/IDUclub/gMART/pull/259) (#259)
+
+- feat(agents): искать по вопросу без планировщика для простых вопросов агента документов
+- ci: пушить bump-коммит токеном VERSION_STATUS_TOKEN, чтобы проверки шли без подтверждения
+- Revert "ci: пушить bump-коммит токеном VERSION_STATUS_TOKEN, чтобы проверки шли без подтверждения"
+
+## v0.29.0 (2026-10-27)
+
+[feat/ICII-205-answer-preview](https://github.com/IDUclub/gMART/pull/258) (#258)
+
+- feat(agents): показывать предварительный анализ при генерации ответа агента документов
+
+## v0.28.5 (2026-10-27)
+
+[fix/ICII-205-citation-names](https://github.com/IDUclub/gMART/pull/257) (#257)
+
+- fix(agents): не дублировать название документа в ссылках ответа
+
 ## v0.28.4 (2026-10-26)
 
 [chore/sync-main](https://github.com/IDUclub/gMART/pull/255) (#255)

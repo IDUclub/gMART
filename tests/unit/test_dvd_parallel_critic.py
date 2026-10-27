@@ -13,6 +13,8 @@ from src.agents.services.dvd.retry_policy import CriticBudgetError, CriticRespon
 from src.agents.services.dvd.run_metrics import DvdRunMetrics
 from src.agents.services.service_entities.dvd_plan import AuditedClaim
 
+pytestmark = pytest.mark.usefixtures("legacy_critic_quotes")
+
 CONTEXT = "[1] Правила\nУсловие применяется при наличии доступа."
 LINES = [f"Условие {i} применяется при наличии доступа [1]." for i in range(1, 8)]
 
@@ -379,7 +381,7 @@ async def test_short_audit_confirmation_is_per_group(monkeypatch):
     metrics = DvdRunMetrics("retry")
     verdict = await review(llm, risk=AnswerRisk("high", ("numbers",)), metrics=metrics)
     assert verdict.satisfied
-    assert metrics.counters["critic_calls"] == 5
+    assert metrics.counters["critic_calls"] == 4
     assert [
         c["reasoning_effort"] for c in llm.calls if line_enum(c) == ["L1", "L2", "L3"]
     ] == ["low", "medium"]
@@ -403,7 +405,7 @@ async def test_capped_full_confirmation_keeps_short_group_verdict(monkeypatch):
     llm = AuditLlm(capped)
     verdict = await review(llm, risk=AnswerRisk("high", ("numbers",)))
     assert not verdict.satisfied
-    assert len(llm.calls) == 5
+    assert len(llm.calls) == 4
     assert [c.target for c in verdict.corrections] == LINES[:3]
 
 
