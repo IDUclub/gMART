@@ -105,11 +105,12 @@ project owner user_id`). Поэтому при вызове через Synapse, 
 | `clarification` | `question`, `kind`, `options` — ответ следующим сообщением того же `chat_id` |
 | `project_created` | `project_id`, `name`, `region`, `base_scenario_id` |
 | `scenario_created` | `project_id`, `scenario_id`, `name`, `profile` |
+| `project_ready` | только после проверки с токеном пользователя: `project_id`, `scenario_id`, `base_scenario_id`, `objects_confirmed` — число подтверждённых физических объектов |
 | `status` | этапы `project_*`, прогресс `Сохранено объектов: N из M` |
-| `project_summary` | итог: идентификаторы, регион, профиль, удалённые объекты, зоны и объекты по типам, сервисы, `not_created`, `failed` |
+| `project_summary` | итог: идентификаторы, регион, профиль, удалённые объекты, зоны и объекты по типам, сервисы, `not_created`, `failed`, `ready` — подтверждена ли доступность проекта, `ready_error` — причина, если проверка не прошла |
 | `chunk` | текст итога |
 
 Через A2A вопрос переводит задачу в `input-required`; ответ — следующее сообщение того же
-`contextId`. `project_created`, `scenario_created` и `project_summary` приходят
+`contextId`. `project_created`, `scenario_created`, `project_ready` и `project_summary` приходят
 артефактами с теми же именами. Файлы можно передать и прямо в DataPart:
 `files: [{name, role, geojson}]`.

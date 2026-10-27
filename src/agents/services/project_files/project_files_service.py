@@ -646,12 +646,13 @@ class ProjectFilesService(BaseLlmService):
         summary["not_created"] = self._not_created(mapping, specs, problems, rejected)
         yield {"type": "project_summary", "content": summary}
         yield self._text(self._summary_text(summary))
-        if summary["failed_total"] or summary["zones"]["error"]:
+        if summary["failed_total"] or summary["zones"]["error"] or not summary["ready"]:
             async for event in self._ask(
                 key,
                 context,
                 "retry",
-                "Повторить загрузку несохранённых объектов? Ответьте «да» или «нет».",
+                "Повторить загрузку несохранённых объектов и проверку доступности проекта? "
+                "Ответьте «да» или «нет».",
                 [
                     {"value": "yes", "label": "Да, повторить"},
                     {"value": "no", "label": "Нет"},
@@ -870,6 +871,15 @@ class ProjectFilesService(BaseLlmService):
             f"{summary['scenario_id']}, профиль — {summary['profile']}) создан из "
             f"базового сценария {summary['base_scenario_id']}."
         )
+        if summary.get("ready"):
+            lines.append(
+                "Проект готов: доступность территории, сценария и сохранённых объектов подтверждена."
+            )
+        else:
+            lines.append(
+                "Доступность созданного проекта не подтверждена за время ожидания. "
+                f"Причина: {summary.get('ready_error') or 'проверка не завершена'}."
+            )
         if summary["deleted_existing"]:
             lines.append(
                 "Удалено существующих объектов внутри границы: "

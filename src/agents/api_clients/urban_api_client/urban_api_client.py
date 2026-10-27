@@ -148,6 +148,11 @@ class UrbanApiClient:
             f"/v1/projects/{int(project_id)}", auth_token=token
         )
 
+    async def get_project_territory(self, token: str, project_id: int) -> dict:
+        return await self.json_handler.get(
+            f"/v1/projects/{int(project_id)}/territory", auth_token=token
+        )
+
     async def get_project_scenarios(self, token: str, project_id: int) -> list[dict]:
         return await self.json_handler.get(
             f"/v1/projects/{int(project_id)}/scenarios", auth_token=token
