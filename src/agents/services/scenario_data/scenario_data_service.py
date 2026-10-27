@@ -1742,7 +1742,9 @@ class ScenarioDataService(BaseLlmService):
             }
             if attempt:
                 call["reasoning_effort"] = "medium"
-            response = await self.llm_client.chat(**call)
+            response = await self.llm_client.chat(
+                request_kind="scenario.answer", **call
+            )
             answer = sanitize_public_answer(response["message"]["content"] or "")
             done_reason = response.get("done_reason")
             if answer and done_reason != "length":
@@ -2031,6 +2033,7 @@ table_rows и table_total_rows; не утверждай, что полный п�
         fields = {key: self._column_descriptions.get(key, "") for key in keys}
         try:
             response = await self.llm_client.chat(
+                request_kind="scenario.mapping",
                 model=model,
                 messages=column_label_messages(fields),
                 think=False,

@@ -39,6 +39,7 @@ async def test_planner_keeps_valid_filters(fake_llm):
     ]
     plan = await RetrievalPlanner(fake_llm).build_plan("m", "вопрос", history=[])
     assert plan.document_names == ["СП 42.13330"]  # empties dropped
+    assert fake_llm.chat_calls[-1].request_kind == "dvd.planner"
     assert plan.block == "amendment"  # lowercased
     assert plan.types == ["clause", "table"]  # lowercased
 

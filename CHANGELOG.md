@@ -1,3 +1,10 @@
+## v0.32.0 (2026-10-27)
+
+[feat/ICII-205-vllm-priority](https://github.com/IDUclub/gMART/pull/256) (#256)
+
+- feat(agents): приоритет запросов к vLLM через OPENAI_REQUEST_PRIORITY
+- feat(agents): приоритет vLLM для каждого вызова LLM по типу запроса
+
 ## v0.31.0 (2026-10-27)
 
 [feat/ICII-205-critic-sentence-ids](https://github.com/IDUclub/gMART/pull/260) (#260)

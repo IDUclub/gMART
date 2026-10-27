@@ -486,6 +486,7 @@ class PzzService(BaseLlmService):
         await self._save(request_id, progress)
         context = self._answer_context(report, has_layer=not scenario)
         response = await self.llm_client.chat(
+            request_kind="pzz.answer",
             model=model,
             think=False,
             stream=True,
@@ -566,6 +567,7 @@ class PzzService(BaseLlmService):
             inputs.mode == "scenario" and (inputs.year is None or inputs.source is None)
         ):
             response = await self.llm_client.chat(
+                request_kind="pzz.inputs",
                 model=model,
                 think=False,
                 format=PzzIntent.model_json_schema(),

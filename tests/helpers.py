@@ -46,6 +46,7 @@ class FakeLlmClient:
                 options=options,
                 stream=stream,
                 format=kwargs.get("format"),
+                request_kind=kwargs.get("request_kind"),
             )
         )
         if stream:

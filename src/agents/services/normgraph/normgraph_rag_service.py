@@ -658,6 +658,7 @@ class NormGraphRagService(BaseLlmService):
         async for part in await self.llm_client.chat(
             model,
             messages,
+            request_kind="norms.answer",
             think=False,
             options={"temperature": temperature},
             stream=True,

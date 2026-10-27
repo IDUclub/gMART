@@ -368,6 +368,7 @@ class ScenarioDataEvaluator:
         ]
         try:
             response = await self.llm_client.chat(
+                request_kind="scenario.judge",
                 model=model,
                 messages=messages,
                 think=False,

@@ -70,6 +70,7 @@ async def test_repair_retry_preserves_conversation():
     )
     assert plan.mode == RestrictionTaskMode.BUFFERS_ONLY
     assert len(fake.chat_calls) == 2
+    assert {call.request_kind for call in fake.chat_calls} == {"restriction.plan"}
 
     # The retry conversation must carry the whole context forward. (The old bug
     # rebuilt it from the system prompt only, dropping all three of these.)

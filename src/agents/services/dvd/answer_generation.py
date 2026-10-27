@@ -288,6 +288,7 @@ class DvdAnswerGenerator:
             stream = await self.llm_client.chat(
                 model,
                 messages,
+                request_kind="dvd.answer",
                 think=False,
                 stream=True,
                 options={

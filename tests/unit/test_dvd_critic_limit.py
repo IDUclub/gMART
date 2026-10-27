@@ -66,6 +66,7 @@ async def test_capped_audit_is_repeated_once_at_low_effort(medium):
     )
     assert verdict.satisfied
     assert llm.efforts == ["medium", "low"]
+    assert {call.request_kind for call in llm.chat_calls} == {"dvd.critic"}
     # Never a wider limit: both audits share one cap.
     assert {c.options["num_predict"] for c in llm.chat_calls} == {critic_output_cap(1)}
 
