@@ -4,8 +4,8 @@ On gpt-oss-20b an audit takes ~3.5 s with ``reasoning_effort=low`` and ~12.4 s w
 ``medium``. Low risk is a short statement from one or two sources of one document
 edition, with no quantity, obligation or condition. Anything the rules below do
 not recognise as low-risk stays high-risk, and the reasons say why;
-:func:`~.dvd_reasoning.critic_reasoning_effort` decides which reasons need the
-full audit.
+:func:`~.dvd_reasoning.critic_reasoning_effort` sizes gpt-oss reasoning;
+:func:`critic_plan` selects completeness checks for other models.
 """
 
 from __future__ import annotations
@@ -56,6 +56,44 @@ class AnswerRisk:
 
 
 HIGH_RISK = AnswerRisk("high", ("unclassified",))
+FULL_AUDIT_REASONS = (
+    "previous_rejection",
+    "partial_context",
+    "document_list",
+    "no_citations",
+    "long_answer",
+    "unclassified",
+)
+
+
+def critic_plan(
+    risk: AnswerRisk | None,
+    model_is_gpt_oss: bool,
+    *,
+    full_audit_reasons: tuple[str, ...] = FULL_AUDIT_REASONS,
+) -> tuple[bool, Literal["cited", "auto", "full"]]:
+    """Choose omissions and context without changing the logged risk reasons.
+
+    gpt-oss keeps its existing effort-based audit. Other models audit only lines
+    unless a configured reason needs completeness; absence claims always need
+    all retrieved evidence under the auto context policy. The caller applies
+    DVD_ADAPTIVE_CRITIC; explicit DVD_CRITIC_CONTEXT=full/cited always takes
+    precedence over this recommendation. Only unset/empty/auto uses the tier:
+
+    Audit                   Omissions    Context under auto
+    Full / gpt-oss          yes          auto
+    Light, absence_claim    no           full
+    Light, other reasons    no           auto
+
+    Configuration is passed in to keep this pure.
+    """
+    if model_is_gpt_oss or risk is None:
+        return True, "auto"
+    reasons = set(risk.reasons)
+    listed = set(full_audit_reasons) | {"unclassified"}
+    if reasons & listed or (reasons and "any" in listed):
+        return True, "auto"
+    return False, "full" if "absence_claim" in reasons else "auto"
 
 
 def _explanation(answer: str) -> str:
