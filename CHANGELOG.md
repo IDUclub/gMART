@@ -1,3 +1,9 @@
+## v0.32.1 (2026-10-27)
+
+[fix/project-readiness-check](https://github.com/IDUclub/gMART/pull/261) (#261)
+
+- feat(agents): подтверждать доступность проекта из файлов перед ответом о готовности
+
 ## v0.32.0 (2026-10-27)
 
 [feat/ICII-205-vllm-priority](https://github.com/IDUclub/gMART/pull/256) (#256)
