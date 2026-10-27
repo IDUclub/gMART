@@ -14,7 +14,7 @@ from src.agents.services.project_files.project_files_service import (
 )
 from src.agents.services.project_files.project_types import PROJECT_CLASSIFY_PROMPT
 from src.common.service_auth import internal_user_context_jwt
-from tests.unit.test_project_creation import BORDER, FakeUrban, square
+from tests.unit.test_project_creation import BORDER, FakeUrban, no_sleep, square
 from tests.unit.test_project_types import PHYSICAL, SERVICES, ZONES
 
 ALICE = "e30.eyJzdWIiOiJhbGljZSJ9.sig"  # {"sub": "alice"}
@@ -148,6 +148,38 @@ async def test_without_files_asks_to_upload(env):
     events = await run(build(), "Создай проект из файлов")
 
     assert "загрузите файлы проекта" in of_type(events, "chunk")[0]["text"]
+
+
+async def test_readiness_timeout_offers_retry_without_recreating_project(env):
+    class PendingUrban(Urban):
+        available = False
+
+        async def get_project_territory(self, token, project_id):
+            return {"geometry": BORDER if self.available else None}
+
+    store, uploads, build = env
+    upload_id = await upload(
+        uploads, ("design.geojson", DESIGN), ("border.geojson", BOUNDARY)
+    )
+    await store.add_chat_uploads(CHAT, [upload_id])
+    urban = PendingUrban()
+    service = build(urban)
+    service.creator = ProjectCreator(urban, sleep=no_sleep)
+    await run(service, "Создай проект")
+    events = await run(service, "да")
+    assert of_type(events, "project_summary")[0]["ready"] is False
+    text = of_type(events, "chunk")[0]["text"]
+    assert "не подтверждена за время ожидания" in text
+    assert "Геометрия территории" in text
+    assert "project_id 10" in text and "scenario_id 12" in text
+    assert of_type(events, "clarification")[0]["kind"] == "retry"
+    urban.available = True
+    urban.calls.clear()
+    events = await run(service, "да")
+    assert urban.calls == []
+    assert of_type(events, "project_summary")[0]["ready"] is True
+    assert "Проект готов" in of_type(events, "chunk")[0]["text"]
+    assert await store.get_project_dialogue(CHAT) is None
 
 
 async def test_chat_files_are_offered_and_used_after_yes(env):
