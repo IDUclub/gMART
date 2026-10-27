@@ -10,6 +10,8 @@ from tests.helpers import FakeDvdMcpClient, FakeLlmClient, answer_text, plan_jso
 from tests.unit.test_dvd_answer_revision import ACCESS, SOURCE, audit
 from tests.unit.test_dvd_rag_service import _run
 
+pytestmark = pytest.mark.usefixtures("legacy_critic_quotes")
+
 LENGTH = object()
 INVENTED = "Ширина пандуса не менее 1,5 м [1]."
 

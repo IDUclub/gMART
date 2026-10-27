@@ -7,6 +7,8 @@ from tests.helpers import FakeDvdMcpClient, answer_text, plan_json
 from tests.unit.test_dvd_answer_revision import ACCESS, SOURCE, audit
 from tests.unit.test_dvd_rag_service import _run
 
+pytestmark = pytest.mark.usefixtures("legacy_critic_quotes")
+
 HITS = [
     {
         "name": "СП 55.13330.2016",

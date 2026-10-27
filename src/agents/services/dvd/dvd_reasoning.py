@@ -44,7 +44,7 @@ from src.agents.services.service_entities.dvd_plan import (
 )
 
 from . import flags
-from .answer_risk import AnswerRisk
+from .answer_risk import FULL_AUDIT_REASONS, AnswerRisk, critic_plan
 from .clarification import parse_choice, selected_choice
 from .context_reducer import current_context_window
 from .dvd_context import has_figures, source_records
@@ -55,6 +55,12 @@ from .query_terms import (
     router_topic,
     split_task,
     topical_query,
+)
+from .sentence_audit import (
+    match_defect,
+    numbered_context,
+    restore_sentences,
+    sentence_schema,
 )
 
 T = TypeVar("T", bound=BaseModel)
@@ -182,8 +188,8 @@ class OutputCapped(ValueError):
     """A structured reply reached its fixed output cap; it is not widened."""
 
 
-# An audit identifies each answer line with a short quote (~200 tokens per line) after
-# its reasoning. Its size follows the answer, not the evidence: a cap derived from
+# An audit identifies each answer line with evidence after its reasoning. Its legacy
+# quote allowance (~200 tokens per line) also covers sentence IDs. A cap derived from
 # the evidence let one F-01 audit (a whole section, 50 fragments) reason for 68k
 # tokens and 14 minutes without finishing.
 _CRITIC_REASONING_TOKENS = 3000
@@ -271,6 +277,21 @@ def _needs_full_audit(reasons: tuple[str, ...]) -> bool:
     return bool(reasons) and ("any" in listed or bool(listed & set(reasons)))
 
 
+def configured_critic_plan(
+    model: str, risk: AnswerRisk | None
+) -> tuple[bool, Literal["cited", "auto", "full"]]:
+    """Apply audit switches; gpt-oss effort keeps its separate default reasons."""
+    if not flags.enabled(flags.ADAPTIVE_CRITIC):
+        return True, "auto"
+    raw = os.getenv("DVD_CRITIC_FULL_AUDIT_REASONS")
+    reasons = (
+        tuple(r.strip().lower() for r in raw.split(",") if r.strip())
+        if raw and raw.strip()
+        else FULL_AUDIT_REASONS
+    )
+    return critic_plan(risk, "gpt-oss" in model.lower(), full_audit_reasons=reasons)
+
+
 async def _request_json(
     llm_client,
     model: str,
@@ -285,6 +306,7 @@ async def _request_json(
     empty_lists: tuple[str, ...] = (),
     max_tokens: int | None = None,
     metrics: DvdRunMetrics | None = None,
+    sentence_records: dict[str, tuple[str, str]] | None = None,
 ) -> T:
     """
     Ask the LLM for a JSON object and parse it into ``model_cls``.
@@ -328,6 +350,14 @@ async def _request_json(
             schema["properties"]["unsupported_claims"]["items"]["enum"] = claim_texts
         else:
             schema["properties"]["unsupported_claims"]["maxItems"] = 0
+    if sentence_records is not None:
+        sentence_schema(schema, sentence_records)
+        if metrics is not None:
+            metrics.decide(
+                critic_schema_bytes=len(
+                    json.dumps(schema, ensure_ascii=False).encode("utf-8")
+                )
+            )
     scale = 1.0
     for attempt in range(retries + 1):
         # Proportional to the input: a runaway reply stops here instead of
@@ -383,7 +413,13 @@ async def _request_json(
         content = response["message"]["content"]
         logger.debug(f"LLM {model_name} response [{model}]: {content}")
         try:
-            result = adapter.validate_json(strip_json_fence(content))
+            if sentence_records is None:
+                result = adapter.validate_json(strip_json_fence(content))
+            else:
+                data = json.loads(strip_json_fence(content))
+                result = adapter.validate_python(
+                    restore_sentences(data, sentence_records)
+                )
             if model_cls is CompactAudit:
                 allowed = set(claim_texts or [])
                 targets = schema["$defs"]["Correction"]["properties"]["target"]["enum"]
@@ -793,7 +829,7 @@ class AnswerCritic:
         audited again, so a targeted revision is judged on what it changed.
         ``previous`` are the corrections that revision applied and ``removed`` the
         lines it deleted: a re-review checks them and raises no new omissions.
-        ``risk`` sizes the reasoning effort (:func:`critic_reasoning_effort`).
+        ``risk`` sizes reasoning effort and completeness (:func:`critic_plan`).
         ``literal_context`` is the whole evidence the draft was written from when
         ``context`` holds only part of it: literal checks of labels and table
         numbers then see every source, as they did before.
@@ -814,7 +850,12 @@ class AnswerCritic:
         pending = [line for line in lines if line not in kept]
         line_ids = {text: f"L{i}" for i, text in enumerate(lines, 1)}
         labels = [label for label in source_records(context) if label != "unlabelled"]
-        prompt = self._prompt(context)
+        sentence_records = None
+        markers = None
+        critic_context = context
+        if flags.enabled(flags.CRITIC_SENTENCE_IDS):
+            critic_context, sentence_records, markers = numbered_context(context)
+        prompt = self._prompt(context, markers=markers)
         prompt += (
             "\nThis is an answer from conversation context BEFORE retrieval. "
             "Reject refusals and claims that evidence is insufficient: they mean "
@@ -826,6 +867,7 @@ class AnswerCritic:
         prompt += _DOCUMENT_LIST_AUDIT if intent == "document_list" else ""
         prompt += _RECHECK_AUDIT if recheck else ""
         effort = critic_reasoning_effort(self.llm_client, model, risk)
+        full_audit, _ = configured_critic_plan(model, risk)
         size = _critic_limit("DVD_CRITIC_LINES_PER_CALL", 3)
         parallel = flags.enabled(flags.PARALLEL_CRITIC) and len(pending) > size
         groups = (
@@ -833,16 +875,21 @@ class AnswerCritic:
             if parallel
             else [pending]
         )
-        omissions = parallel and not recheck
+        omissions = parallel and not recheck and full_audit
         if metrics is not None:
-            metrics.decide(critic_groups=len(groups), critic_omissions=omissions)
+            metrics.decide(
+                critic_groups=len(groups),
+                critic_omissions=omissions,
+                critic_tier="full" if full_audit else "light",
+                critic_sentence_ids=sentence_records is not None,
+            )
         semaphore = asyncio.Semaphore(_critic_limit("DVD_CRITIC_MAX_PARALLEL", 6))
 
         async def request(group, *, omissions_only=False):
             ids = [line_ids[line] for line in group]
             cap = critic_output_cap(len(group))
             instruction = ""
-            if parallel:
+            if parallel or not full_audit:
                 instruction = (
                     "\nCheck omissions only: claims and unsupported_claims must be []; "
                     'corrections may only add lines (target "").'
@@ -857,7 +904,7 @@ class AnswerCritic:
                     "role": "user",
                     "content": self._payload(
                         user_query,
-                        context,
+                        critic_context,
                         answer,
                         group,
                         list(kept),
@@ -880,7 +927,8 @@ class AnswerCritic:
                             "Correction": {
                                 "target": (
                                     ids
-                                    if parallel and not omissions_only
+                                    if (parallel or not full_audit)
+                                    and not omissions_only
                                     else [*ids, ""]
                                 ),
                                 **({"source_id": [*labels, ""]} if labels else {}),
@@ -892,11 +940,14 @@ class AnswerCritic:
                             ("claims", "unsupported_claims")
                             if omissions_only
                             else (
-                                ("missing_requirements",) if recheck or parallel else ()
+                                ("missing_requirements",)
+                                if recheck or parallel or not full_audit
+                                else ()
                             )
                         ),
                         max_tokens=cap,
                         metrics=metrics,
+                        sentence_records=sentence_records,
                     )
 
             try:
@@ -1000,6 +1051,34 @@ class AnswerCritic:
                     )
                 ),
             )
+            if sentence_records is not None:
+                for claim in audit.claims:
+                    if claim.status != "supported":
+                        continue
+                    defect = match_defect(claim.text, [e.quote for e in claim.evidence])
+                    if not defect:
+                        continue
+                    claim.status = "insufficient"
+                    evidence_sources = {e.source_id for e in claim.evidence}
+                    audit.corrections.append(
+                        Correction(
+                            target=claim.text,
+                            instruction=defect + " " + _UNSUPPORTED_LINE,
+                            source_id=(
+                                next(iter(evidence_sources))
+                                if len(evidence_sources) == 1
+                                else ""
+                            ),
+                            quote=" … ".join(e.quote for e in claim.evidence),
+                        )
+                    )
+                    logger.info(
+                        "DVD critic code rejection line={}: {}",
+                        line_ids[claim.text],
+                        defect,
+                    )
+                    if metrics is not None:
+                        metrics.add("critic_code_rejections")
             claims = [
                 *(c for c in audit.claims if c.text not in kept),
                 *kept.values(),
@@ -1175,7 +1254,7 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
         return defects
 
     @staticmethod
-    def _prompt(context: str = "") -> str:
+    def _prompt(context: str = "", *, markers: tuple[str, str] | None = None) -> str:
         structure = {
             "claims": [
                 {
@@ -1205,8 +1284,13 @@ If nothing can be safely confirmed, return an empty list. Do not write answer te
             "critique": "кратко: что не так с ответом (пусто, если всё хорошо)",
             "refined_search_query": "улучшенный поисковый запрос или null",
         }
+        if markers is not None:
+            structure["claims"][0]["evidence"][0].pop("quote")
+            structure["claims"][0]["evidence"][0]["sentences"] = ["1.1"]
+            structure["corrections"][0].pop("quote")
+            structure["corrections"][0]["sentences"] = ["1.1"]
         figure_rule = FIGURE_CRITIC_RULE if has_figures(context) else ""
-        return f"""Audit a Russian answer against the supplied document EXCERPTS, not your prior knowledge.
+        prompt = f"""Audit a Russian answer against the supplied document EXCERPTS, not your prior knowledge.
 {figure_rule}Return JSON only: {json.dumps(structure, ensure_ascii=False)}
 First inspect every assertion and list evidence defects; only then decide satisfied.
 Audit each material factual statement explicitly in claims, even if the overall
@@ -1286,6 +1370,30 @@ When rejecting, write a short Russian critique identifying the unsupported claim
 or the specific omitted passage. When accepting, satisfied=true, critique="",
 corrections=[], refined_search_query=null. Never reward an answer just because it
 sounds helpful."""
+        if markers is not None:
+            prompt = (
+                prompt.replace(
+                    "Put the SHORTEST verbatim proof or contradiction (number, condition or clause) in\n"
+                    "evidence.quote and corrections.quote, at most 25 words.",
+                    "Cite 1-3 sentence IDs in evidence.sentences; corrections.sentences may be empty.\n"
+                    f"A marker {markers[0]}3.2{markers[1]} identifies sentence ID 3.2 in source [3].\n"
+                    "Return IDs only, without markers or source text; code restores the exact sentences.",
+                )
+                .replace(
+                    "exact quoted excerpts entail the entire selected line,",
+                    "the cited source sentences entail the entire selected line,",
+                )
+                .replace(
+                    "an application source label, and quote must occur literally in that source's body.",
+                    "an application source label, and every sentence ID must belong to that source.",
+                )
+                .replace("and the quote.", "and the sentence IDs.")
+                .replace(
+                    'target "", «добавь: …», quote.',
+                    'target "", «добавь: …», sentence IDs.',
+                )
+            )
+        return prompt
 
     @staticmethod
     def _claim_texts(answer: str) -> list[str]:

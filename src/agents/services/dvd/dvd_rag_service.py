@@ -88,6 +88,7 @@ from src.agents.services.dvd.dvd_context import DvdContextBuilder, has_figures
 from src.agents.services.dvd.dvd_reasoning import (
     AnswerCritic,
     RetrievalPlanner,
+    configured_critic_plan,
     critic_reasoning_effort,
 )
 from src.agents.services.dvd.evidence_set import cited_context, critic_context_policy
@@ -1364,9 +1365,21 @@ class DvdRagService(BaseLlmService):
                     "Проверяю ответ на полноту и соответствие источникам…",
                 ),
             )
+            risk = assess_risk(
+                draft,
+                self._source_documents(hits),
+                intent=plan.intent,
+                rejected_before=iteration > 1 or revision is not None,
+                context_incomplete=bool(collected.get("context_incomplete")),
+            )
             with metrics.stage("review_context_prepare"):
                 review_context = await self._review_context(
-                    model, intent_query + "\n" + draft, draft, context, metrics
+                    model,
+                    intent_query + "\n" + draft,
+                    draft,
+                    context,
+                    metrics,
+                    risk=risk,
                 )
             metrics.add("critic_input_bytes", len(review_context.text.encode("utf-8")))
             if review_context.reduction_rounds:
@@ -2149,15 +2162,26 @@ class DvdRagService(BaseLlmService):
         return None if broadened.model_dump() == plan.model_dump() else broadened
 
     async def _review_context(
-        self, model: str, review_query: str, draft: str, context: str, metrics
+        self,
+        model: str,
+        review_query: str,
+        draft: str,
+        context: str,
+        metrics,
+        *,
+        risk: AnswerRisk | None = None,
     ) -> PreparedContext:
         """The evidence the critic audits ``draft`` against (see :mod:`evidence_set`).
 
         ``context`` is the prepared evidence the draft was written from. It goes to
         the critic as it is when it fits; otherwise the sources the draft cites
         replace a second LLM reduction of everything, unless a claim needs them all.
+        An explicit DVD_CRITIC_CONTEXT=full/cited takes precedence in every tier.
+        Only auto (also unset/empty) uses the tier's context recommendation.
         """
         policy = critic_context_policy()
+        if policy == "auto":
+            _, policy = configured_critic_plan(model, risk)
         if policy == "full":
             metrics.decide(critic_context="full")
             return await self.context_reducer.prepare(model, review_query, context)

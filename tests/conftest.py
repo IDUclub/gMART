@@ -42,6 +42,12 @@ def _labelled_citations(monkeypatch):
 
 
 @pytest.fixture
+def legacy_critic_quotes(monkeypatch):
+    # Scenarios with verbatim quote payloads also exercise the rollback format.
+    monkeypatch.setenv("DVD_CRITIC_SENTENCE_IDS", "false")
+
+
+@pytest.fixture
 def fake_llm() -> FakeLlmClient:
     return FakeLlmClient()
 
