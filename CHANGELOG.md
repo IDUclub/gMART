@@ -1,3 +1,15 @@
+## v0.29.0 (2026-10-27)
+
+[feat/ICII-205-answer-preview](https://github.com/IDUclub/gMART/pull/258) (#258)
+
+- feat(agents): показывать предварительный анализ при генерации ответа агента документов
+
+## v0.28.5 (2026-10-27)
+
+[fix/ICII-205-citation-names](https://github.com/IDUclub/gMART/pull/257) (#257)
+
+- fix(agents): не дублировать название документа в ссылках ответа
+
 ## v0.28.4 (2026-10-26)
 
 [chore/sync-main](https://github.com/IDUclub/gMART/pull/255) (#255)

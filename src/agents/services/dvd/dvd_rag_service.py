@@ -5,8 +5,8 @@ import json
 import os
 import re
 import time
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import aclosing, asynccontextmanager, suppress
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +40,7 @@ from src.agents.services.dvd.answer_generation import (
     DvdAnswerGenerator,
     tables_to_lists,
 )
+from src.agents.services.dvd.answer_preview import AnswerPreview
 from src.agents.services.dvd.answer_revision import AnswerReviser
 from src.agents.services.dvd.answer_risk import AnswerRisk, assess_risk
 from src.agents.services.dvd.clarification import (
@@ -322,21 +323,24 @@ class DvdRagService(BaseLlmService):
         collected["metrics"] = metrics
         self._active[request_id] = collected
         try:
-            async for event in self._serve_request(
-                dvd_mcp_client,
-                token,
-                model,
-                temperature,
-                user_query,
-                scenario_id,
-                chat_id,
-                request_id,
-                persist_history,
-                context_note,
-                collected,
-                is_reconnect,
-            ):
-                yield event
+            async with aclosing(
+                self._serve_request(
+                    dvd_mcp_client,
+                    token,
+                    model,
+                    temperature,
+                    user_query,
+                    scenario_id,
+                    chat_id,
+                    request_id,
+                    persist_history,
+                    context_note,
+                    collected,
+                    is_reconnect,
+                )
+            ) as events:
+                async for event in events:
+                    yield event
         finally:
             self._active.pop(request_id, None)
             metrics.finish()
@@ -537,20 +541,23 @@ class DvdRagService(BaseLlmService):
             self.context_reducer.model_window(model),
             self._mcp_session(dvd_mcp_client, metrics),
         ):
-            async for event in self._run_qa_loop(
-                dvd_mcp_client,
-                model,
-                temperature,
-                user_query,
-                history,
-                collected,
-                request_id,
-                scenario_id,
-            ):
-                # Chat events the journal recorded just before this event.
-                for joined in collected.pop("joined_events", []):
-                    yield joined
-                yield event
+            async with aclosing(
+                self._run_qa_loop(
+                    dvd_mcp_client,
+                    model,
+                    temperature,
+                    user_query,
+                    history,
+                    collected,
+                    request_id,
+                    scenario_id,
+                )
+            ) as events:
+                async for event in events:
+                    # Chat events the journal recorded just before this event.
+                    for joined in collected.pop("joined_events", []):
+                        yield joined
+                    yield event
         for event in await self._join_chat_setup(request_id, collected):
             yield event
         chat_id = collected.get("chat_id")
@@ -779,17 +786,20 @@ class DvdRagService(BaseLlmService):
             for event in await self._join_chat_setup(request_id, collected):
                 yield event
             if plan.intent == "document_comparison":
-                async for event in self._run_comparison(
-                    dvd_mcp_client,
-                    plan,
-                    model,
-                    intent_query,
-                    history,
-                    collected,
-                    request_id,
-                    scenario_id,
-                ):
-                    yield event
+                async with aclosing(
+                    self._run_comparison(
+                        dvd_mcp_client,
+                        plan,
+                        model,
+                        intent_query,
+                        history,
+                        collected,
+                        request_id,
+                        scenario_id,
+                    )
+                ) as events:
+                    async for event in events:
+                        yield event
                 return
             plan = apply_scope(
                 plan, user_query, collected.get("document_scope"), history
@@ -1343,21 +1353,25 @@ class DvdRagService(BaseLlmService):
                 )
                 metrics.add("drafts")
                 try:
-                    with metrics.stage("answer_generation"):
-                        async for chunk_event in self._generate_answer(
-                            model,
-                            intent_query,
-                            context,
-                            # A grounded draft needs low variance; the request default
-                            # (1.0) suits free chat, not quoting norms.
-                            min(temperature, _answer_temperature()),
-                            history,
-                            iteration,
-                            revision_note,
-                            context_failures=generation_failures,
-                            intent=plan.intent,
-                        ):
-                            if text := chunk_event["content"]["text"]:
+                    async with self._draft_events(
+                        request_id,
+                        collected,
+                        model,
+                        intent_query,
+                        context,
+                        # A grounded draft needs low variance; the request default
+                        # (1.0) suits free chat, not quoting norms.
+                        min(temperature, _answer_temperature()),
+                        history,
+                        iteration=iteration,
+                        revision_note=revision_note,
+                        context_failures=generation_failures,
+                        intent=plan.intent,
+                    ) as events:
+                        async for chunk_event in events:
+                            if chunk_event["type"] == "status":
+                                yield await self._buf(request_id, chunk_event)
+                            elif text := chunk_event["content"]["text"]:
                                 draft_parts.append(text)
                 except AnswerGenerationError as exc:
                     yield await self._fail_context(
@@ -1702,19 +1716,24 @@ class DvdRagService(BaseLlmService):
             context_failures = []
             metrics.add("drafts")
             try:
-                with metrics.stage("answer_generation"):
-                    async for event in self._generate_answer(
-                        model,
-                        question,
-                        context,
-                        _answer_temperature(),
-                        history,
-                        1,
-                        intent="document_comparison",
-                        comparison_summary=summary,
-                        context_failures=context_failures,
-                    ):
-                        draft += event.get("content", {}).get("text", "")
+                async with self._draft_events(
+                    request_id,
+                    collected,
+                    model,
+                    question,
+                    context,
+                    _answer_temperature(),
+                    history,
+                    iteration=1,
+                    intent="document_comparison",
+                    comparison_summary=summary,
+                    context_failures=context_failures,
+                ) as events:
+                    async for event in events:
+                        if event["type"] == "status":
+                            yield await self._buf(request_id, event)
+                        else:
+                            draft += event.get("content", {}).get("text", "")
             except AnswerGenerationError:
                 # A large comparison still has a useful deterministic result.
                 context_failures.append("comparison_draft_unavailable")
@@ -1734,25 +1753,31 @@ class DvdRagService(BaseLlmService):
                 revised = ""
                 metrics.add("drafts")
                 try:
-                    with metrics.stage("revision"):
-                        async for event in self._generate_answer(
-                            model,
-                            question,
-                            context,
-                            _answer_temperature(),
-                            history,
-                            2,
-                            revision_note=(
-                                "добавь метки источников [N] к каждому пункту. "
-                                "Используй только конкретные метки из контекста; "
-                                "для сравнения цитируй обе стороны. Сохрани смысл черновика:\n"
-                                + draft
-                            ),
-                            intent="document_comparison",
-                            comparison_summary=summary,
-                            context_failures=context_failures,
-                        ):
-                            revised += event.get("content", {}).get("text", "")
+                    async with self._draft_events(
+                        request_id,
+                        collected,
+                        model,
+                        question,
+                        context,
+                        _answer_temperature(),
+                        history,
+                        iteration=2,
+                        stage="revision",
+                        revision_note=(
+                            "добавь метки источников [N] к каждому пункту. "
+                            "Используй только конкретные метки из контекста; "
+                            "для сравнения цитируй обе стороны. Сохрани смысл черновика:\n"
+                            + draft
+                        ),
+                        intent="document_comparison",
+                        comparison_summary=summary,
+                        context_failures=context_failures,
+                    ) as events:
+                        async for event in events:
+                            if event["type"] == "status":
+                                yield await self._buf(request_id, event)
+                            else:
+                                revised += event.get("content", {}).get("text", "")
                     draft = revised
                     metrics.decide(revision_used=True)
                 except AnswerGenerationError:
@@ -1829,6 +1854,84 @@ class DvdRagService(BaseLlmService):
         async for event in self._finish_retrieval(request_id, collected, answer, 1):
             yield event
 
+    @asynccontextmanager
+    async def _draft_events(
+        self,
+        request_id,
+        collected,
+        *args,
+        iteration,
+        stage="answer_generation",
+        **kwargs,
+    ):
+        async def timed(stream):
+            async with aclosing(stream):
+                while True:
+                    with run_metrics(collected).stage(stage):
+                        event = await anext(stream, None)
+                    if event is None:
+                        return
+                    yield event
+
+        if not flags.enabled(flags.ANSWER_PREVIEW) or collected.get("answer_started"):
+            async with aclosing(
+                timed(self._generate_answer(*args, iteration=iteration, **kwargs))
+            ) as events:
+                yield events
+            return
+
+        preview = AnswerPreview(
+            collected.get("citations"),
+            iteration,
+            last_sent=collected.get("answer_preview_sent_at"),
+        )
+        queue = asyncio.Queue(maxsize=1)
+
+        async def progress(text):
+            await queue.put(("preview", text))
+
+        async def generate():
+            try:
+                async with aclosing(
+                    self._generate_answer(
+                        *args, iteration=iteration, progress_callback=progress, **kwargs
+                    )
+                ) as events:
+                    async for event in events:
+                        await queue.put(("chunk", event))
+            except Exception as exc:
+                await queue.put(("error", exc))
+            else:
+                await queue.put(("done", None))
+
+        async def events():
+            while True:
+                kind, value = await queue.get()
+                if kind == "preview":
+                    if event := preview.event(value):
+                        collected["answer_preview_sent_at"] = preview.last_sent
+                        yield event
+                elif kind == "chunk":
+                    if event := preview.event(value["content"]["text"], final=True):
+                        collected["answer_preview_sent_at"] = preview.last_sent
+                        yield event
+                    yield value
+                elif kind == "error":
+                    raise value
+                else:
+                    return
+
+        task = asyncio.create_task(
+            generate(), name=f"dvd-answer-{request_id}-{iteration}"
+        )
+        try:
+            async with aclosing(timed(events())) as stream:
+                yield stream
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
     async def _generate_answer(
         self,
         model: str,
@@ -1842,6 +1945,7 @@ class DvdRagService(BaseLlmService):
         context_failures: list[str] | None = None,
         intent: str = "norm",
         comparison_summary: str = "",
+        progress_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         with_knowledge = knowledge_block.enabled()
         system = (
@@ -1924,7 +2028,13 @@ class DvdRagService(BaseLlmService):
 
         generator = DvdAnswerGenerator(self.context_reducer, llm_client=self.llm_client)
         answer = await generator.generate(
-            model, user_query, context, temperature, build_messages, iteration=iteration
+            model,
+            user_query,
+            context,
+            temperature,
+            build_messages,
+            iteration=iteration,
+            progress_callback=progress_callback,
         )
         if context_failures is not None:
             context_failures.extend(generator.failed_parts)
@@ -2695,7 +2805,14 @@ class DvdRagService(BaseLlmService):
             )
         await self.state_store.buffer_event(request_id, event)
         if event.get("type") == "chunk" and (event.get("content") or {}).get("text"):
+            if collected is not None:
+                collected["answer_started"] = True
             run_metrics(self._active.get(request_id)).first_answer()
+        elif (
+            event.get("type") == "status"
+            and (event.get("content") or {}).get("status") == "answer_preview"
+        ):
+            run_metrics(collected).preview()
         return event
 
     async def _save_progress(
