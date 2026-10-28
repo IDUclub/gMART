@@ -1,9 +1,16 @@
 """Urban API calls that create the project, its scenario and the objects."""
 
+from copy import deepcopy
+from unittest.mock import AsyncMock
+
 import pytest
 
 from src.agents.common.exceptions.api_exceptions import DownstreamServiceError
-from src.agents.common.exceptions.base_exceptions import AgentsNotFound
+from src.agents.common.exceptions.base_exceptions import (
+    AgentsBaseException,
+    AgentsNotFound,
+    AgentsUnauthorizedException,
+)
 from src.agents.services.compilance.compliance_uploads import UploadedLayer, UserFiles
 from src.agents.services.project_files.project_creation import (
     READINESS_RETRY_DELAYS,
@@ -251,6 +258,7 @@ class FakeUrban:
 
 def run_state(policy="replace_same") -> dict:
     return {
+        "owner": "alice",
         "project_name": "Сад",
         "scenario_name": "Сценарий",
         "region_id": 3,
@@ -264,18 +272,145 @@ def run_state(policy="replace_same") -> dict:
     }
 
 
-async def collect(creator, run, zones, objects):
+async def collect(creator, run, zones, objects, token="t", owner="alice"):
     saves = []
 
     async def save():
         saves.append(dict(run))
 
-    events = [event async for event in creator.create("t", run, zones, objects, save)]
+    events = [
+        event
+        async for event in creator.create(token, run, zones, objects, save, owner=owner)
+    ]
     return events, saves
 
 
 async def no_sleep(_):
     return None
+
+
+async def test_legacy_run_persists_request_owner_before_creation():
+    urban = FakeUrban()
+    run = run_state("keep")
+    run.pop("owner")
+
+    _, saves = await collect(
+        ProjectCreator(urban), run, [], [], token="unreadable", owner="alice"
+    )
+
+    assert saves[0]["owner"] == "alice"
+    assert "project_id" not in saves[0]
+    assert urban.calls[0] == ("create_project", "Сад", "alice")
+
+
+async def test_resumed_run_keeps_owner_when_request_token_changes():
+    class Urban(FakeUrban):
+        unavailable = True
+
+        async def create_project(self, token, project, user_id=None):
+            if self.unavailable:
+                raise AgentsNotFound("later")
+            return await super().create_project(token, project, user_id=user_id)
+
+    urban = Urban()
+    run = run_state("keep")
+    run.pop("owner")
+    creator = ProjectCreator(urban)
+    with pytest.raises(AgentsNotFound):
+        await collect(creator, run, [], [], owner="alice")
+    assert run["owner"] == "alice"
+
+    urban.unavailable = False
+    await collect(creator, run, [], [], token="refreshed-token", owner="alice")
+
+    assert urban.calls[0] == ("create_project", "Сад", "alice")
+    assert run["owner"] == "alice"
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+async def test_foreign_owner_rejected_without_urban_calls_or_state_changes(resumed):
+    urban = AsyncMock()
+    save = AsyncMock()
+    run = run_state("keep")
+    if resumed:
+        run.update(project_id=10, base_scenario_id=11, scenario_id=12)
+    before = deepcopy(run)
+
+    with pytest.raises(AgentsUnauthorizedException):
+        async for _ in ProjectCreator(urban).create(
+            "token", run, [], [], save, owner="bob"
+        ):
+            pass
+
+    assert not urban.mock_calls
+    save.assert_not_awaited()
+    assert run == before
+
+
+@pytest.mark.parametrize("response_owner", [None, "alice"])
+async def test_matching_or_absent_response_owner_allows_creation(response_owner):
+    class Urban(FakeUrban):
+        async def create_project(self, token, project, user_id=None):
+            response = await super().create_project(token, project, user_id=user_id)
+            if response_owner is not None:
+                response["user_id"] = response_owner
+            return response
+
+        async def get_project(self, token, project_id):
+            response = await super().get_project(token, project_id)
+            if response_owner is not None:
+                response["user_id"] = response_owner
+            return response
+
+    run = run_state("keep")
+    events, _ = await collect(ProjectCreator(Urban()), run, [], [])
+
+    assert run["ready"]["done"]
+    assert events[-1]["type"] == "project_ready"
+
+
+@pytest.mark.parametrize("source", ["post", "get", "resume"])
+async def test_wrong_owner_stops_before_scenario_or_object_writes(source):
+    class Urban(FakeUrban):
+        async def create_project(self, token, project, user_id=None):
+            response = await super().create_project(token, project, user_id=user_id)
+            if source == "post":
+                response["user_id"] = "bob"
+            return response
+
+        async def get_project(self, token, project_id):
+            response = await super().get_project(token, project_id)
+            return {**response, "user_id": "bob"}
+
+    urban = Urban()
+    run = run_state()
+    if source == "resume":
+        run.update(project_id=10, base_scenario_id=11, scenario_id=12)
+    _, objects, _ = build_items(project_files(), SPECS)
+
+    with pytest.raises(AgentsBaseException, match="проект другого владельца"):
+        await collect(ProjectCreator(urban, sleep=no_sleep), run, [], objects)
+
+    assert all(call[0] == "create_project" for call in urban.calls)
+    assert run["project_id"] == 10  # keep the id so a retry cannot create a duplicate
+    assert "cleanup" not in run and "objects" not in run
+
+
+async def test_wrong_owner_at_final_confirmation_is_not_ready():
+    class Urban(FakeUrban):
+        reads = 0
+
+        async def get_project(self, token, project_id):
+            self.reads += 1
+            response = await super().get_project(token, project_id)
+            return {**response, "user_id": "alice" if self.reads == 1 else "bob"}
+
+    run = run_state("keep")
+    events, _ = await collect(ProjectCreator(Urban()), run, [], [])
+
+    assert not run["ready"]["done"]
+    assert "проект другого владельца" in run["ready"]["error"]
+    assert not any(event["type"] == "project_ready" for event in events)
 
 
 async def test_full_creation_replaces_same_types_inside_the_border():
@@ -288,8 +423,7 @@ async def test_full_creation_replaces_same_types_inside_the_border():
     )
 
     names = [call[0] for call in urban.calls]
-    # The owner is the user of the token: Urban API refuses an explicit one.
-    assert urban.calls[0] == ("create_project", "Сад", None)
+    assert urban.calls[0] == ("create_project", "Сад", "alice")
     assert ("copy_scenario", 11, 13) in urban.calls
     # Only the house of the same type inside the border, once; the locked one is
     # kept and counted.
@@ -486,7 +620,7 @@ async def test_scenario_and_objects_wait_then_ready_is_persisted():
     assert creation_summary(run, [], objects)["ready"] is True
     reads = urban.project_reads
     await collect(creator, run, [], objects)
-    assert urban.project_reads == reads
+    assert urban.project_reads == reads + 1  # recheck ownership before resuming
 
 
 async def test_never_ready_is_bounded_and_retry_only_rechecks():

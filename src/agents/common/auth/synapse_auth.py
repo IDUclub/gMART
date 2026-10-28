@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 
 from src.agents.common.exceptions.base_exceptions import AgentsUnauthorizedException
@@ -18,10 +20,13 @@ class SynapseCallerVerifier:
     ) -> None:
         issuer = f"{auth_server_url.rstrip('/')}/realms/{realm}"
         self.service_client_id = service_client_id
+        self.audience = audience
         self.verifier = JWTVerifier(
             jwks_uri=f"{issuer}/protocol/openid-connect/certs",
             issuer=issuer,
-            audience=audience,
+            # User tokens have different audiences. Share this JWKS cache with
+            # Synapse and enforce its optional audience on verify_claims only.
+            audience=None,
             algorithm="RS256",
         )
 
@@ -41,6 +46,11 @@ class SynapseCallerVerifier:
 
     async def verify_claims(self, token: str) -> dict:
         access_token = await self._verify(token)
+        if self.audience:
+            audience = access_token.claims.get("aud")
+            audiences = audience if isinstance(audience, list) else [audience]
+            if self.audience not in audiences:
+                raise AgentsUnauthorizedException("Invalid access token audience")
         return dict(access_token.claims)
 
     async def _verify(self, token: str):
@@ -50,4 +60,11 @@ class SynapseCallerVerifier:
             raise AgentsUnauthorizedException("Invalid access token") from exc
         if access_token is None:
             raise AgentsUnauthorizedException("Invalid access token")
+        expires = access_token.claims.get("exp")
+        if (
+            not isinstance(expires, (int, float))
+            or isinstance(expires, bool)
+            or not expires > time.time()
+        ):
+            raise AgentsUnauthorizedException("Invalid access token expiration")
         return access_token
