@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 from src.agents.common.middlewares.exception_handler import ExceptionHandlerMiddleware
 from src.agents.dependencies import dependencies
 from src.agents.routers.dvd_controller import dvd_router
-from src.common.service_auth import internal_user_context_jwt
 
 PNG = b"\x89PNG\r\n\x1a\nfigure"
 
@@ -53,7 +52,7 @@ def proxy(monkeypatch):
 
 def test_token_subject_and_scope_forwarded_with_service_token(proxy):
     client, calls, _, _ = proxy
-    token = internal_user_context_jwt("user-subject")
+    token = "e30.eyJzdWIiOiJ1c2VyLXN1YmplY3QifQ.sig"
     response = client.get(
         "/documents/figures/node-1?project_id=42&scenario_id=772",
         headers={"Authorization": f"Bearer {token}"},

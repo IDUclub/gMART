@@ -82,7 +82,12 @@ def init_dependencies() -> dict[str, object]:
         redis_client, ttl_seconds=app_config.SYNAPSE_RUN_TTL_SECONDS
     )
     synapse_gateway_service = None
-    synapse_caller_verifier = None
+    synapse_caller_verifier = SynapseCallerVerifier(
+        auth_server_url=os.environ["SERVICE_AUTH_SERVER_URL"],
+        realm=os.environ["SERVICE_AUTH_REALM"],
+        service_client_id=app_config.SYNAPSE_A2A_CLIENT_ID,
+        audience=app_config.SYNAPSE_AUTH_AUDIENCE,
+    )
     if app_config.SYNAPSE_ENABLED:
         synapse_client = SynapseApiClient(
             app_config.SYNAPSE_API_URL,
@@ -100,12 +105,6 @@ def init_dependencies() -> dict[str, object]:
             workflow_id=app_config.SYNAPSE_WORKFLOW_ID,
             run_config_id=app_config.SYNAPSE_RUN_CONFIG_ID,
             reconnect_max_seconds=app_config.SYNAPSE_SSE_RECONNECT_MAX_SECONDS,
-        )
-        synapse_caller_verifier = SynapseCallerVerifier(
-            auth_server_url=os.environ["SERVICE_AUTH_SERVER_URL"],
-            realm=os.environ["SERVICE_AUTH_REALM"],
-            service_client_id=app_config.SYNAPSE_A2A_CLIENT_ID,
-            audience=app_config.SYNAPSE_AUTH_AUDIENCE,
         )
     file_store = TemporaryFileStore()
     restriction_parser_service = RestrictionParserService(
@@ -156,7 +155,7 @@ def init_dependencies() -> dict[str, object]:
         urban_api_client,
         pipeline_state_store,
         ComplianceUploadService(pipeline_state_store),
-        user_urban_api_client=UrbanApiClient(JsonApiHandler(app_config.URBAN_API_URL)),
+        user_token_verifier=synapse_caller_verifier,
     )
     orchestrator_service = OrchestratorService(
         app_config.OLLAMA_URL,

@@ -25,6 +25,7 @@ from src.agents.common.exceptions.api_exceptions import DownstreamServiceError
 from src.agents.common.exceptions.base_exceptions import (
     AgentsBaseException,
     AgentsNotFound,
+    AgentsUnauthorizedException,
 )
 from src.agents.services.compilance.compliance_entity_mapping import (
     EntityTarget,
@@ -192,7 +193,7 @@ def _created_ids(response: Any) -> tuple[int | None, int | None, int | None]:
 
 
 class ProjectCreator:
-    """Runs the Urban API calls of a creation; resumable from its run state."""
+    """Creates with service auth and an explicit owner; resumable from run state."""
 
     def __init__(self, urban_api, sleep=asyncio.sleep) -> None:
         self.urban_api = urban_api
@@ -205,8 +206,19 @@ class ProjectCreator:
         zones: list[CreationItem],
         objects: list[CreationItem],
         save: Callable[[], Awaitable[None]],
+        *,
+        owner: str,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Yield status events; ``run`` holds the plan and every created id."""
+        if run.get("owner") and run["owner"] != owner:
+            raise AgentsUnauthorizedException(
+                "Этот запуск создания проекта принадлежит другому пользователю, "
+                "продолжить его нельзя."
+            )
+        if not run.get("owner"):
+            run["owner"] = owner
+            await save()
+        owner = run["owner"]
         if not run.get("project_id"):
             yield _status("project", "Создаю проект в Urban API…")
             project = await self.urban_api.create_project(
@@ -225,11 +237,13 @@ class ProjectCreator:
                         "properties": {},
                     },
                 },
+                user_id=owner,
             )
             run["project_id"] = int(project["project_id"])
             base = project.get("base_scenario") or {}
             run["base_scenario_id"] = base.get("id") or base.get("scenario_id")
             await save()
+            self._check_owner(project, owner)
             yield {
                 "type": "project_created",
                 "content": {
@@ -239,16 +253,17 @@ class ProjectCreator:
                     "base_scenario_id": run["base_scenario_id"],
                 },
             }
+
+        async def project_readable():
+            project = await self.urban_api.get_project(token, run["project_id"])
+            self._check_owner(project, owner)
+            if not run.get("base_scenario_id"):
+                run["base_scenario_id"] = await self._base_scenario(token, run)
+                await save()
+
+        async for event in self._wait(project_readable, "доступность проекта"):
+            yield event
         if not run.get("scenario_id"):
-
-            async def project_readable():
-                await self.urban_api.get_project(token, run["project_id"])
-                if not run.get("base_scenario_id"):
-                    run["base_scenario_id"] = await self._base_scenario(token, run)
-                    await save()
-
-            async for event in self._wait(project_readable, "доступность проекта"):
-                yield event
             yield _status("scenario", "Создаю сценарий проекта…")
             scenario = await self.urban_api.copy_scenario(
                 token,
@@ -330,7 +345,8 @@ class ProjectCreator:
 
             async def confirm():
                 ready["attempts"] += 1
-                await self.urban_api.get_project(token, run["project_id"])
+                project = await self.urban_api.get_project(token, run["project_id"])
+                self._check_owner(project, owner)
                 territory = await self.urban_api.get_project_territory(
                     token, run["project_id"]
                 )
@@ -372,6 +388,14 @@ class ProjectCreator:
                         "objects_confirmed": ready["objects_confirmed"],
                     },
                 }
+
+    @staticmethod
+    def _check_owner(project: dict[str, Any], owner: str) -> None:
+        if project.get("user_id") is not None and project["user_id"] != owner:
+            raise AgentsBaseException(
+                "Urban API вернул проект другого владельца. "
+                "Загрузка сценария и объектов остановлена."
+            )
 
     async def _wait(self, check, label: str) -> AsyncGenerator[dict[str, Any], None]:
         """Retry reads only; mutations must never be repeated here."""

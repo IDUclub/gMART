@@ -407,7 +407,18 @@ def files_client(tmp_path):
 
 
 def _auth(user):
-    return {"Authorization": f"Bearer {internal_user_context_jwt(user)}"}
+    payload = internal_user_context_jwt(user).split(".")[1]
+    # This transport fixture carries an external JWT shape, not an internal context.
+    return {"Authorization": f"Bearer e30.{payload}.sig"}
+
+
+def test_internal_context_is_rejected_by_file_http_edge(files_client):
+    _, client, stored = files_client
+    response = client.get(
+        stored.url,
+        headers={"Authorization": f"Bearer {internal_user_context_jwt('author')}"},
+    )
+    assert response.status_code == 401
 
 
 def test_author_can_view_and_download_report(files_client):

@@ -28,6 +28,7 @@ from src.agents.services.orchestrator.orchestrator_service import OrchestratorSe
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.project_files.project_a2a_service import ProjectA2AService
 from src.agents.services.service_entities.orchestrator_plan import OrchestratorAgent
+from src.common.service_auth import internal_user_context_jwt
 
 ALICE = "e30.eyJzdWIiOiJhbGljZSJ9.sig"  # {"sub": "alice"}
 CHAT = "550e8400-e29b-41d4-a716-446655440000"
@@ -176,7 +177,8 @@ def test_a2a_execution_reads_uploads_and_inputs():
         executor._prepare_execution(a2a_params({"inputs": {"territory_id": -1}}))
 
 
-async def test_a2a_question_needs_input_and_summary_is_an_artifact():
+@pytest.mark.parametrize("token", [ALICE, internal_user_context_jwt("alice")])
+async def test_a2a_question_needs_input_and_summary_is_an_artifact(token):
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     uploads = ComplianceUploadService(PipelineStateStore(redis))
     service = Service(
@@ -194,11 +196,12 @@ async def test_a2a_question_needs_input_and_summary_is_an_artifact():
     events = [
         event
         async for event in executor.stream(
-            a2a_params({"files": [{"name": "design", "geojson": GEOJSON}]}), ALICE
+            a2a_params({"files": [{"name": "design", "geojson": GEOJSON}]}), token
         )
     ]
 
     call = service.calls[-1]
+    assert call["token"] == token
     assert call["conversation_key"] == "a2a-project:ctx-1"
     assert call["persist_history"] is False
     assert len(call["upload_ids"]) == 1  # the inline layer became an upload
@@ -221,7 +224,8 @@ async def test_orchestrator_routes_an_answer_back_to_the_project_dialogue():
     assert await service._project_dialogue_plan("m", "2", None) is None
 
 
-def test_orchestrator_step_passes_uploads_and_the_chat():
+@pytest.mark.parametrize("token", [ALICE, internal_user_context_jwt("alice")])
+def test_orchestrator_step_passes_uploads_and_the_chat(token):
     service = object.__new__(OrchestratorService)
     project = Service(None)
     service.project_files_service = project
@@ -236,7 +240,7 @@ def test_orchestrator_step_passes_uploads_and_the_chat():
         dvd_mcp_client=None,
         normgraph_mcp_client=None,
         urban_mcp_client=None,
-        token=ALICE,
+        token=token,
         model="m",
         temperature=0,
         scenario_id=None,
@@ -250,6 +254,7 @@ def test_orchestrator_step_passes_uploads_and_the_chat():
 
     asyncio.run(drain())
     call = project.calls[-1]
+    assert call["token"] == token
     assert call["user_query"] == "Создай проект «Сад» из файлов"
     assert call["conversation_key"] == "chat-1"
     assert call["upload_ids"] == ["u1"]

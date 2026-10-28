@@ -1,3 +1,9 @@
+## v0.33.0 (2026-10-28)
+
+[feat/project-service-token](https://github.com/IDUclub/gMART/pull/263) (#263)
+
+- feat(agents): создавать проект из файлов сервисным токеном от имени проверенного пользователя
+
 ## v0.32.1 (2026-10-27)
 
 [fix/project-readiness-check](https://github.com/IDUclub/gMART/pull/261) (#261)
