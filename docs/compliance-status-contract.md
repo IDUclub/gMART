@@ -515,7 +515,7 @@ error/pipeline_suspended — FAILED. Итог task COMPLETED после пото
 Inventory с файлами не строится: сервис поясняет, что перечень работает по сценарию.
 Вызовы над пользовательскими геометриями в историю не записываются.
 
-### Повтор ChatStorage: phase 4 pending
+### Повтор ChatStorage
 
 История compliance сохраняет tool_call и обычный текст, включая финальную рекомендацию;
 объёмные result/summary/progress не сохраняются как структурированные части сообщения.
@@ -525,10 +525,10 @@ Inventory с файлами не строится: сервис поясняет
 Сценарная цепочка содержит `GetProjectTerritory → GetServicesByGeometry →
 CreateRestrictionZones → GetServicesByGeometry → Check*`.
 `GetServicesByGeometry` предоставляет слой по `layer_name` и читает ссылки `zones_layers`
-из накопленного `layers`. В phase 4 ChatStorage ещё должен добавить инструмент в
-`_LAYER_READING_TOOLS`, `_LAYER_TOOLS`, `_LAYER_REF_ARGUMENTS`, `_provided_refs` и
-проверить восстановление **norm_layer** Check*, а не старых корзин passed/violated.
-Поддержка этой цепочки в ChatStorage **pending**, не гарантия текущего replay.
+из накопленного `layers`. ChatStorage (с v0.7.0) строит по этим ссылкам цепочку
+зависимостей, при повторе передаёт накопленные слои в `layers` и MCP meta, а `layers`
+в историю не сохраняет. Если Check* возвращает `norm_layer`, результат шага содержит
+`{"norm_layer": FeatureCollection}`; для старых ответов без него формат прежний.
 Replay на изменившемся сценарии — новый расчёт, не исторический снимок; ZIP хранит снимок входов.
 
 ## Ошибки, переменные окружения и TODO
@@ -564,7 +564,7 @@ TODO из §8 спецификации: изохроны ObjectNat вместо 
 accessibility_within; physical_object_type_ids фильтр и by_geometry физических
 объектов после поддержки Urban API; spatial_predicate в CheckPlan schema 1.1
 после согласования NormGraph (`extra=forbid` сейчас); подробный LLM-комментарий
-к нарушению. Дополнительно pending phase 4: replay ChatStorage.
+к нарушению.
 
 ### Отличия реализации от спецификации
 

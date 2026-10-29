@@ -332,9 +332,9 @@ evidence. Для `partial + passed` используется формулиро�
 Redis-журнале запроса, но не сохраняются в истории чата. Старые сообщения могут
 содержать `compliance_result`, который UI отображает как структурированную
 карточку. Кнопка восстановления MCP-вызовов запускает новый расчёт на текущих
-данных сценария и не означает исторически идентичный replay. Поддержка новой
-цепочки GetServicesByGeometry → CreateRestrictionZones → Check* и восстановления
-norm_layer в ChatStorage ещё ожидается в phase 4.
+данных сценария и не означает исторически идентичный replay. ChatStorage повторяет
+цепочку GetServicesByGeometry → CreateRestrictionZones → Check* и для Check*
+возвращает norm_layer.
 
 #### Проверка файлов пользователя
 

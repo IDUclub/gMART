@@ -451,8 +451,7 @@ Inventory выдаёт `status` и `progress`, `restriction_zone` без гео�
 `not_checked`, `summary.md` и последним ZIP. Нет Check*, `compliance_result`
 и `compliance_summary`. Диск хранит `inventory.json`, завершённый ZIP переиспользуется.
 A2A выдаёт `compliance-restriction_inventory`, `compliance-layer-N`,
-`compliance-file` и `compliance-archive`. Новая цепочка replay ChatStorage —
-phase 4 pending. [Последовательность и поля](compliance-status-contract.md#последовательность-inventory).
+`compliance-file` и `compliance-archive`. [Последовательность и поля](compliance-status-contract.md#последовательность-inventory).
 
 ## CheckPlan v1
 
@@ -591,8 +590,8 @@ phase 4 pending. [Последовательность и поля](compliance-s
 
 Новая сценарная цепочка включает GetProjectTerritory, GetServicesByGeometry,
 CreateRestrictionZones и Check*. GetServicesByGeometry предоставляет layer_name
-и читает zones_layers из layers. Поддержка этой цепочки и norm_layer в ChatStorage
-ещё ожидается в phase 4; готовое восстановление нового формата пока не гарантируется.
+и читает zones_layers из layers. ChatStorage повторяет эту цепочку и для Check*
+показывает norm_layer.
 
 При восстановлении слоёв ChatStorage повторяет сохранённые стабильные MCP-вызовы и
 подставляет заново полученные слои в новые геометрические инструменты. Это
