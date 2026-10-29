@@ -7,6 +7,7 @@ from loguru import logger
 from src.idu_mcp.api_clients.urban_api_client import UrbanApiClient
 from src.idu_mcp.tools_services.entites.object_type_enum import ObjectTypeEnum
 from src.idu_mcp.tools_services.entity_names import resolve_catalog_names
+from src.idu_mcp.tools_services.services_by_geometry import ServicesByGeometry
 
 
 class UrbanApiTool:
@@ -23,6 +24,10 @@ class UrbanApiTool:
              urban_client (UrbanApiClient): urban api client with async methods for resolving urban api requests
         """
         self.client: UrbanApiClient = urban_client
+        self.services_by_geometry = ServicesByGeometry(urban_client)
+
+    async def get_services_by_geometry(self, **kwargs) -> dict[str, dict]:
+        return await self.services_by_geometry.query(**kwargs)
 
     async def get_entity_by_names(
         self,
@@ -55,6 +60,7 @@ class UrbanApiTool:
                     centers_only=centers_only,
                 )
             case ObjectTypeEnum.PHYSICAL_OBJECT:
+                # TODO: use by_geometry for physical objects when Urban API supports it.
                 object_name_id = await self.client.get_physical_objects_name_id(
                     names, token
                 )

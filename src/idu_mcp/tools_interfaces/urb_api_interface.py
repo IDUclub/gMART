@@ -1,16 +1,56 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
+from fastmcp.exceptions import ToolError
 from geojson_pydantic import FeatureCollection
 
 from src.idu_mcp.dependencies.auth_dependencies import extract_user_id
 from src.idu_mcp.dependencies.dependencies import get_urban_api_tools
+from src.idu_mcp.tools_descriptions.compliance_tools_desc import (
+    GET_SERVICES_BY_GEOMETRY,
+)
 from src.idu_mcp.tools_services.entites.object_type_enum import ObjectTypeEnum
 from src.idu_mcp.tools_services.urb_api_tools import UrbanApiTool
 
 urban_api_mcp = FastMCP("URBAN API MCP")
 tools_tags = {"data", "urban_api"}
+
+
+@urban_api_mcp.tool(
+    name="GetServicesByGeometry",
+    title="Получить сервисы по геометрии зон",
+    description=GET_SERVICES_BY_GEOMETRY,
+    tags=tools_tags,
+    annotations={"title": "Services by exact geometry", "readOnlyHint": True},
+    meta={"author": "ICII"},
+)
+async def get_services_by_geometry(
+    scenario_id: int,
+    services_names: list[str],
+    zones_layers: list[str],
+    layer_name: str,
+    layers: dict[str, dict],
+    buffer_m: float = 0,
+    intersection_type: Literal["intersects", "within"] = "intersects",
+    physical_object_type_ids: list[int] | None = None,
+    user_id: str = Depends(extract_user_id),
+    urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
+) -> dict[str, dict]:
+    try:
+        return await urban_api_tools.get_services_by_geometry(
+            scenario_id=scenario_id,
+            services_names=services_names,
+            zones_layers=zones_layers,
+            layer_name=layer_name,
+            layers=layers,
+            buffer_m=buffer_m,
+            intersection_type=intersection_type,
+            physical_object_type_ids=physical_object_type_ids,
+            token=user_id,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ToolError(f"Некорректные данные поиска сервисов: {exc}") from exc
 
 
 @urban_api_mcp.tool(
