@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 from shapely.geometry import Point
 
-from src.agents.services.compilance.compliance_report import build_compliance_report
+from src.agents.services.compilance.compliance_archive import build_norm_report
 from src.agents.services.compilance.compliance_result_harness import (
     ComplianceResultHarness,
 )
@@ -84,11 +84,22 @@ def _violated_result():
 
 
 def test_compliance_report_names_objects_without_their_keys():
-    report = build_compliance_report(
-        {"results": [_violated_result()], "skipped_without_plan": 0}
+    report = build_norm_report(
+        {**_violated_result(), "status": "violated"},
+        {
+            "features": [
+                {
+                    "properties": {
+                        "feature_kind": "violation",
+                        "object_name": "Жилой дом (без названия)",
+                        "explanation_ru": "Нарушен разрыв до Детский сад № 2",
+                    }
+                }
+            ]
+        },
     )
 
-    assert "| 1 | Жилой дом (без названия) |" in report
+    assert "| Жилой дом (без названия) |" in report
     assert "Детский сад № 2" in report
     assert "physical_object/" not in report and "service/" not in report
     assert "0a9f99117" not in report

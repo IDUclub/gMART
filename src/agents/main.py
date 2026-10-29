@@ -10,6 +10,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import StaticFiles
 
 from src.agents.__version__ import APP_DESCRIPTION, APP_TITLE, APP_VERSION
+from src.agents.common.files.layer_cache import LayerCache
 from src.agents.common.files.temporary_file_store import (
     FILES_MOUNT_PATH,
     OwnedFilesApp,
@@ -53,6 +54,7 @@ FILES_PURGE_INTERVAL_SECONDS = 5 * 60
 async def purge_expired_files(file_store) -> None:
     """Delete generated files once their TTL is over, even if nobody asks for them."""
 
+    layer_cache = LayerCache()
     while True:
         await asyncio.sleep(FILES_PURGE_INTERVAL_SECONDS)
         try:
@@ -61,6 +63,12 @@ async def purge_expired_files(file_store) -> None:
                 logger.info(f"Removed expired generated files: {removed}")
         except OSError as exc:
             logger.warning(f"Could not purge generated files: {exc}")
+        try:
+            removed = await asyncio.to_thread(layer_cache.purge_expired)
+            if removed:
+                logger.info(f"Removed expired layer caches: {removed}")
+        except OSError as exc:
+            logger.warning(f"Could not purge layer caches: {exc}")
 
 
 @asynccontextmanager

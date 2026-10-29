@@ -1,9 +1,9 @@
 """Norms with conditions: the strictest value is applied and the report says so."""
 
+from src.agents.services.compilance.compliance_archive import build_norm_report
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
 )
-from src.agents.services.compilance.compliance_report import build_compliance_report
 from src.agents.services.compilance.compliance_result_harness import (
     ComplianceResultHarness,
 )
@@ -42,10 +42,7 @@ async def test_executor_marks_a_strictest_norm():
 
 
 def test_report_states_the_strictest_norm_and_its_conditions():
-    report = build_compliance_report(
-        _summary([_strictest(_result("r1", "violated", violated=2))])
-    )
-    assert "| Проверены по самой строгой норме (проверьте условия) | 1 |" in report
+    report = build_norm_report(_strictest(_result("r1", "violated", violated=2)), None)
     assert "необходимо проверить на дополнительные условия" in report
     assert "- **Применена самая строгая норма:** 50 м." in report
     assert "Условия пункта: для городских поселений; для сельских поселений" in report
@@ -53,7 +50,7 @@ def test_report_states_the_strictest_norm_and_its_conditions():
 
 
 def test_report_without_strictest_norms_has_no_notice():
-    report = build_compliance_report(_summary([_result("r1", "violated", violated=2)]))
+    report = build_norm_report(_result("r1", "violated", violated=2), None)
     assert "самой строгой" not in report and "самая строгая" not in report
 
 
@@ -86,6 +83,6 @@ def test_report_names_the_population_source_of_a_provision_check():
         "population:residents=1013",
         "population_indicator_ignored: Urban API population 204314 ...",
     ]
-    report = build_compliance_report(_summary([result]))
+    report = build_norm_report(result, None)
     assert "- **Население сценария:** 1013 чел. — ёмкость жилого фонда" in report
     assert "индикатор Urban API не совпадает с жилым фондом" in report

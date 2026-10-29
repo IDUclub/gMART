@@ -89,55 +89,6 @@ async def test_unknown_entity_does_not_deduplicate():
     assert len(await group_checks([plan(), plan("b")], c, 772)) == 2
 
 
-async def test_pipeline_executes_duplicates_once_and_preserves_sources():
-    from src.agents.services.restriction.restriction_parser_service import (
-        RestrictionParserService,
-    )
-    from src.agents.services.service_entities.compliance import ComplianceResult
-
-    service = object.__new__(RestrictionParserService)
-    service._buf = AsyncMock(side_effect=lambda rid, event: event)
-    service.state_store = SimpleNamespace(
-        save_checkpoint=AsyncMock(), set_status=AsyncMock()
-    )
-    result = ComplianceResult(
-        restriction_id="a",
-        template="distance_from_source",
-        template_version=1,
-        verification_status="complete",
-        compliance_status="passed",
-        coverage=dict(
-            applicable_objects=1, checked_objects=1, unchecked_objects=0, fill_rate=1
-        ),
-        summary=dict(violated_objects=0, passed_objects=1),
-        source=dict(restriction_id="a"),
-    )
-    service.compliance_executor = SimpleNamespace(
-        execute=AsyncMock(
-            return_value=SimpleNamespace(result=result, tool_calls=[], timings_ms={})
-        )
-    )
-    events = [
-        event
-        async for event in service._run_executable_compliance(
-            mcp_client=client(),
-            request_id="request",
-            scenario_id=772,
-            restrictions=[{"check_plan": plan()}, {"check_plan": plan("b")}],
-            checkpoint={},
-        )
-    ]
-    service.compliance_executor.execute.assert_awaited_once()
-    assert sum(e["type"] == "check_plan" for e in events) == 1
-    assert not any(e["type"] == "feature_collection" for e in events)
-    summary = next(e["content"] for e in events if e["type"] == "compliance_summary")
-    assert summary["total_norms"] == 1 and summary["duplicate_checks"] == 1
-    assert [s["restriction_id"] for s in summary["equivalent_sources"]["a"]] == [
-        "a",
-        "b",
-    ]
-
-
 @pytest.mark.parametrize("change", ["field", "fill_rate", "candidate_order"])
 async def test_attribute_selection_and_coverage_policies_remain_distinct(change):
     a = plan()

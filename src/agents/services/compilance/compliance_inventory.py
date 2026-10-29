@@ -62,6 +62,9 @@ class RestrictionZone:
     zones: dict[str, Any] | None = None
     missing_requirements: list[str] = field(default_factory=list)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    norm_layer: dict[str, Any] | None = None
+    input_layers: dict[str, Any] = field(default_factory=dict)
+    layer_name: str | None = None
 
     @property
     def zone_count(self) -> int:
@@ -73,7 +76,9 @@ class RestrictionZone:
             "restriction_id": self.restriction_id,
             "template": self.template,
             "template_version": self.template_version,
-            "status": self.status,
+            "status": "not_checked" if self.status == "shown" else self.status,
+            "status_ru": "не проверялось",
+            "build_status": self.status,
             "zone_kind": self.zone_kind,
             "zone_count": self.zone_count,
             "skipped_objects": int(
@@ -99,7 +104,7 @@ def zone_kind(plan: CheckPlan, params) -> ZoneKind:
 
 
 def zone_layer_name(zone: RestrictionZone) -> str:
-    return f"{ZONE_KIND_TITLES[zone.zone_kind]} — {source_reference(zone.source)}"
+    return f"Норма — {source_reference(zone.source)}"
 
 
 class RestrictionZoneBuilder:
@@ -127,6 +132,10 @@ class RestrictionZoneBuilder:
         raw_plan: dict[str, Any],
         scenario_id: int,
         project_territory: dict[str, Any] | None = None,
+        layer_source=None,
+        layer_name: str | None = None,
+        *,
+        inventory: bool = True,
     ) -> RestrictionZone:
         registry = self.executor.registry
         source = dict(raw_plan.get("source") or {})
@@ -153,6 +162,7 @@ class RestrictionZoneBuilder:
             status="unverifiable",
             zone_kind=zone_kind(plan, params),
             source={**source, **plan.source.model_dump(mode="json")},
+            layer_name=layer_name,
         )
         if plan.planner_status == "unsupported":
             zone.status = "unsupported"
@@ -165,8 +175,26 @@ class RestrictionZoneBuilder:
         )
         entities = {item.role: item.entity for item in requirements.layers}
         zone.description = _describe(plan, params, entities)
+        attribute_role = getattr(params, "attribute_role", None)
+        attribute = next(
+            (item for item in requirements.attributes if item.role == attribute_role),
+            None,
+        )
+        zone.description["object_attribute"] = (
+            attribute.accepts[0].field
+            if attribute and attribute.accepts
+            else attribute_role
+        )
+        source_errors = getattr(layer_source, "errors", {}).get(zone.restriction_id)
+        if source_errors:
+            zone.missing_requirements = source_errors
+            return zone
         roles = _zone_roles(plan, params)
-        whole_territory = _covers_every_zone(plan, params, entities)
+        whole_territory = _covers_every_zone(
+            plan, params, entities, inventory=inventory
+        )
+        if plan.template == "service_provision":
+            zone.description["whole_territory"] = whole_territory
         if whole_territory:
             roles = set()
         # Targets the area is not drawn from may stay undeclared.
@@ -205,9 +233,20 @@ class RestrictionZoneBuilder:
             zone.missing_requirements = catalog.missing
             return zone
         requirements = catalog.requirements
-        layers, calls = await self.executor._retrieve_layers(
-            mcp_client, requirements, scenario_id
-        )
+        if layer_source is not None:
+            layers, calls = await layer_source.retrieve(plan, params, requirements)
+            if hasattr(layer_source, "replay_layers"):
+                requirements, layers = layer_source.replay_layers(
+                    plan, params, requirements, layers
+                )
+        else:
+            layers, calls = await self.executor._retrieve_layers(
+                mcp_client,
+                requirements,
+                scenario_id,
+                project_territory=project_territory,
+                buffer_m=source_radius(plan, params),
+            )
         resolution = self.executor.data_gate.resolve(plan, layers, requirements)
         if not resolution.executable:
             zone.missing_requirements = resolution.missing
@@ -218,6 +257,7 @@ class RestrictionZoneBuilder:
         if profile.get("object_count") == 0:
             # The complete scenario layer has nothing the norm draws around.
             zone.status = "no_objects"
+            zone.tool_calls = calls
             return zone
 
         source_layer = resolution.role_layers[source_role]
@@ -226,10 +266,13 @@ class RestrictionZoneBuilder:
             "source_layer": source_layer,
         }
         zone_layers = {source_layer: resolution.layers[source_layer]}
+        if project_territory is not None:
+            zone_layers[PROJECT_TERRITORY_LAYER] = project_territory
         if plan.template in {"distance_from_source", "presence_within"}:
             if getattr(params, "geometry_mode", "buffered") == "buffered":
                 arguments.update(geometry_mode="buffer", distance_m=params.distance_m)
         elif plan.template in {"accessibility_within", "service_provision"}:
+            # TODO: перейти на изохроны (ObjectNat) вместо буфера по прямой.
             radius = _accessibility_radius(plan, params)
             if radius is None:
                 # The Urban API normative is resolved only by ObjectEffects.
@@ -264,7 +307,7 @@ class RestrictionZoneBuilder:
         layers: dict[str, dict[str, Any]],
         calls: list[dict[str, Any]],
     ) -> RestrictionZone:
-        name = zone_layer_name(zone)
+        name = zone.layer_name or zone_layer_name(zone)
         arguments = {
             "layer_name": name,
             **arguments,
@@ -274,6 +317,8 @@ class RestrictionZoneBuilder:
             mcp_client, ZONE_TOOL, {**arguments, "layers": layers}
         )
         zone.zones = (response or {}).get(name)
+        zone.norm_layer = (response or {}).get("norm_layer")
+        zone.input_layers = layers
         zone.tool_calls = list(calls)
         if zone.zone_count:
             zone.status = "shown"
@@ -301,6 +346,16 @@ def _zone_roles(plan: CheckPlan, params) -> set[str]:
     return {params.zones_layer}
 
 
+def source_radius(plan: CheckPlan, params) -> float:
+    if plan.template == "distance_table":
+        return max((band.distance_m for band in params.bands), default=0)
+    if plan.template in {"accessibility_within", "service_provision"}:
+        return _accessibility_radius(plan, params) or 0
+    if getattr(params, "geometry_mode", "buffered") == "source_geometry":
+        return 0
+    return float(getattr(params, "distance_m", 0) or 0)
+
+
 def _accessibility_radius(plan: CheckPlan, params) -> float | None:
     """Straight-line radius of an accessibility area (``buffer_v1``)."""
     if plan.template == "accessibility_within":
@@ -315,8 +370,14 @@ def _accessibility_radius(plan: CheckPlan, params) -> float | None:
     ).radius_m()
 
 
-def _covers_every_zone(plan: CheckPlan, params, entities: dict[str, str]) -> bool:
+def _covers_every_zone(
+    plan: CheckPlan, params, entities: dict[str, str], *, inventory: bool = False
+) -> bool:
     """A zonal norm with one threshold for every zone acts on the whole project."""
+    if plan.template == "object_attribute_threshold":
+        return True
+    if plan.template == "service_provision":
+        return not inventory
     if plan.template not in ZONAL_TEMPLATES:
         return False
     if entities.get(params.zones_layer) != ALL_ZONES_ENTITY:
@@ -369,6 +430,7 @@ def _describe(plan: CheckPlan, params, entities: dict[str, str]) -> dict[str, An
     if plan.template == "service_provision":
         return {
             "around": entities.get(params.services_layer, params.services_layer),
+            "applies_to": names([params.services_layer]),
             "distance_m": _accessibility_radius(plan, params),
             "capacity_per_1000": params.capacity_per_1000,
             **(
@@ -402,11 +464,14 @@ def _zone_properties(zone: RestrictionZone, title: str) -> dict[str, Any]:
         "restriction_title": title,
         "restriction_description": text[:_MAX_DESCRIPTION] or None,
         "restriction_id": zone.restriction_id,
+        "template": zone.template,
+        "object_attribute": zone.description.get("object_attribute"),
         "zone_kind": zone.zone_kind,
         "applies_to": zone.description.get("applies_to") or [],
         "provenance": {
             "document_name": zone.source.get("document_name"),
             "clause_number": zone.source.get("clause_number"),
+            "extraction_text": zone.source.get("extraction_text"),
         },
     }
     for key in ("operator", "threshold", "unit"):
@@ -423,6 +488,17 @@ def describe_zone(payload: dict[str, Any]) -> str:
 
     description = payload.get("description") or {}
     applies = ", ".join(f"«{name}»" for name in description.get("applies_to") or [])
+    if payload.get("template") == "service_provision" and description.get(
+        "whole_territory"
+    ):
+        residents = description.get("residents_per_service")
+        capacity = description.get("capacity_per_1000")
+        normative = (
+            f"1 объект на {_number(residents)} жителей"
+            if residents
+            else f"{_number(capacity)} мест на 1000 жителей"
+        )
+        return f"вся территория проекта; обеспеченность {applies}: {normative}"
     if "around" in description:
         around = f"«{description['around']}»"
         if description.get("distance_by_attribute"):

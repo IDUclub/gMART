@@ -1,8 +1,6 @@
-import asyncio
 import json
 import time
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from copy import deepcopy
 
 import pytest
 from fastapi import FastAPI
@@ -13,20 +11,14 @@ from src.agents.common.files.temporary_file_store import (
     TemporaryFileStore,
 )
 from src.agents.schema.file_event import file_sse_event
-from src.agents.schema.restrictions_response import RestrictionsResponse
-from src.agents.services.compilance.compliance_report import (
-    MAX_VIOLATORS_PER_NORM,
-    build_compliance_report,
-)
+from src.agents.services.compilance.compliance_archive import ComplianceArchive
 from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
-from src.agents.services.service_entities.compliance import (
-    ComplianceResult,
-    ComplianceSummary,
-    VerificationCoverage,
-)
 from src.common.service_auth import internal_user_context_jwt
+from tests.unit.test_compliance_phase2 import IDS, Mcp, fc
+from tests.unit.test_compliance_phase2 import plan as executable_plan
+from tests.unit.test_compliance_phase2 import service as compliance_service
 
 
 def _source(rid, clause, text="Требование нормы"):
@@ -98,6 +90,17 @@ def _result(
         "template_version": 1,
         "verification_status": verification,
         "compliance_status": compliance,
+        "status": (
+            "violated"
+            if compliance == "violated"
+            else "partial" if verification == "partial" else "passed"
+        ),
+        "status_reason": "Нарушено объектов: 2" if compliance == "violated" else None,
+        "archive_path": f"{compliance}/{rid}",
+        "check_plan": source["check_plan"],
+        "check_type_en": "distance",
+        "check_type_ru": "расстояние",
+        "equivalent_sources": source["equivalent_sources"],
         "coverage": {
             "applicable_objects": 10,
             "checked_objects": 8 if verification == "partial" else 10,
@@ -122,89 +125,175 @@ def _summary(results, skipped=0):
     return {"results": results, "skipped_without_plan": skipped}
 
 
-def test_report_groups_failed_passed_and_equivalent_norms():
-    violations = [_evidence(index) for index in range(25)]
-    report = build_compliance_report(
-        _summary(
-            [
-                _result(
-                    "r1",
-                    "violated",
-                    violated=25,
-                    evidence=[*violations, _evidence(99, violated=False)],
-                    equivalent=[_source("r9", "5.5", "Равнозначное требование")],
-                ),
-                _result("r2", "passed", verification="partial", clause="8.2"),
-                _result("r3", "unknown", verification="unverifiable", clause="9.9"),
+async def _report_pipeline(
+    tmp_path, *, owner="author", with_store=True, plans=None, mcp=None
+):
+    service, _ = compliance_service(tmp_path)
+    if not with_store:
+        service.file_store = None
+    plans = plans if plans is not None else [executable_plan(0)]
+    events = [
+        event
+        async for event in service._run_executable_compliance(
+            mcp_client=mcp if mcp is not None else Mcp(),
+            request_id="report-run",
+            scenario_id=772,
+            restrictions=[
+                {"id": plan["source"]["restriction_id"], "check_plan": plan}
+                for plan in plans
             ],
-            skipped=4,
+            checkpoint={},
+            owner=owner,
+            model="mock",
         )
+    ]
+    return service, events
+
+
+@pytest.mark.parametrize(
+    "with_store,owner", [(False, "author"), (True, None), (True, "author")]
+)
+async def test_report_needs_a_store_and_an_owner(tmp_path, with_store, owner):
+    service, events = await _report_pipeline(
+        tmp_path, owner=owner, with_store=with_store
     )
-
-    failed, rest = report.split("## Прошли проверку")
-    passed, equivalent = rest.split("## Проверены как эквивалентные")
-    assert "| Норм проверено | 3 |" in report
-    assert "| Не прошли проверку | 1 |" in report
-    assert "| Прошли проверку | 1 |" in report
-    assert "| Проверены как эквивалентные | 1 |" in report
-    assert "| Не удалось проверить | 1 |" in report
-    assert "| Пропущено без исполнимого плана | 4 |" in report
-    # Unverified norms are counted but never listed.
-    assert "п. 9.9" not in report
-
-    assert "### 1. СП 42.13330.2016, п. 7.1" in failed
-    assert "**Требование:** Требование нормы" in failed
-    assert "Расстояние, м: 50" in failed
-    assert "Источник: школа" in failed and "Проверяемые объекты: дорога" in failed
-    assert "Данные «дорога»: Дорога" in failed
-    assert "с нарушением — 25" in failed
-    assert "Эквивалентные нормы:** СП 42.13330.2016, п. 5.5" in failed
-    assert failed.count("| Дорога \\| ") == MAX_VIOLATORS_PER_NORM
-    assert "…и ещё объектов с нарушением: 5" in failed
-    assert "Дорога \\| 99" not in failed
-
-    assert "### 2. СП 42.13330.2016, п. 8.2" in passed
-    assert "проверена частично" in passed and "не проверено — 2" in passed
-
-    assert "Группа нормы № 1: СП 42.13330.2016, п. 7.1" in equivalent
-    assert "СП 42.13330.2016, п. 5.5 — Равнозначное требование" in equivalent
-    assert "не прошла проверку" in equivalent
+    files = [event["content"] for event in events if event["type"] == "file"]
+    if not with_store or not owner:
+        assert files == []
+    else:
+        assert [item["mime_type"] for item in files] == [
+            "text/markdown",
+            "application/zip",
+        ]
+        for item in files:
+            metadata = service.file_store.metadata(
+                item["name"], item["url"].rsplit("/", 1)[1]
+            )
+            assert metadata["owner"] == owner
+    assert any(event["type"] == "compliance_summary" for event in events)
+    assert any(event["type"] == "feature_collection" for event in events)
 
 
-def test_merged_norms_with_the_same_label_are_counted_by_restriction_id():
-    # Two unnumbered clauses of one document share the label "СП 42.13330.2016";
-    # the merge happened and must be reported, not hidden as a duplicate label.
-    same_label = {**_source("r9", ""), "extraction_text": "Другая формулировка"}
-    result = _result("r1", "passed", clause="")
-    result["source"]["equivalent_sources"] = [_source("r1", ""), same_label]
-    report = build_compliance_report(_summary([result]))
+async def test_file_event_is_sent_as_a_flat_genbuilder_frame(tmp_path):
+    _, events = await _report_pipeline(tmp_path)
+    files = [event for event in events if event["type"] == "file"]
+    assert len(files) == 2
+    for item in files:
+        frame = file_sse_event(item)
+        assert frame.event == "file"
+        data = json.loads(frame.raw_data)
+        assert "type" not in data and "content" not in data
+        assert data == item["content"]
+        assert data["download_url"] == data["url"] + "?download=1"
+    assert files[0]["content"]["filename"] == "summary.md"
+    assert files[1]["content"]["filename"].startswith("compliance_772_")
+    assert files[1]["content"]["filename"].endswith(".zip")
+    assert events[-1] == files[-1]
+    assert file_sse_event({"type": "chunk", "content": {}}) is None
 
-    assert "| Норм проверено | 2 |" in report
-    assert "| Проверены как эквивалентные | 1 |" in report
-    assert "СП 42.13330.2016 — Другая формулировка" in report
-    assert "Всего норм в группе: 2." in report
+
+@pytest.mark.parametrize("same_reference", [False, True])
+async def test_summary_groups_failed_passed_and_equivalent_norms(
+    tmp_path, same_reference
+):
+    class MixedVerdicts(Mcp):
+        async def execute_tool(self, name, arguments, meta=None):
+            response = await super().execute_tool(name, arguments, meta)
+            if (
+                name == "CheckDistanceFromSource"
+                and arguments["restriction_id"] == IDS[0]
+            ):
+                response["summary"] = {"violated_objects": 0, "passed_objects": 1}
+                layer = response["norm_layer"]
+                layer["meta"].update(
+                    norm_status="passed",
+                    norm_status_ru="выполнено",
+                    norm_status_reason=None,
+                )
+                layer["features"] = [
+                    item
+                    for item in layer["features"]
+                    if item["properties"]["feature_kind"] != "violation"
+                ]
+                for item in layer["features"]:
+                    item["properties"].update(
+                        norm_status="passed",
+                        norm_status_ru="выполнено",
+                        norm_status_reason=None,
+                    )
+                    if item["properties"]["feature_kind"] == "zone":
+                        item["properties"].update(
+                            status="passed", status_ru="выполнено", status_reason=None
+                        )
+            return response
+
+    passed, failed = executable_plan(0), executable_plan(1, radius=300)
+    equivalent = deepcopy(failed)
+    equivalent["source"].update(
+        restriction_id="00000000-0000-4000-8000-000000000003",
+        clause_number=failed["source"]["clause_number"] if same_reference else "7.3",
+    )
+    _, events = await _report_pipeline(
+        tmp_path, plans=[passed, failed, equivalent], mcp=MixedVerdicts()
+    )
+    root = ComplianceArchive("report-run", 772).root
+    summary = json.loads((root / "summary.json").read_text("utf-8"))
+    report = (root / "summary.md").read_text("utf-8")
+    assert summary == next(
+        event["content"] for event in events if event["type"] == "compliance_summary"
+    )
+    assert summary["total_norms"] == summary["executed_norms"] == 2
+    assert summary["total_restrictions"] == 3
+    assert summary["counts"] == {"passed": 1, "violated": 1}
+    assert summary["duplicate_checks"] == 1
+    assert "Проверено: 2. Выполнено: 1. Не выполнено: 1." in report
+    assert "Эквивалентных: 1." in report
+    assert report.index("## Не выполнено") < report.index("## Выполнено")
+    equivalent_result = next(
+        item for item in summary["results"] if item.get("equivalent_to")
+    )
+    assert equivalent_result["restriction_id"] == equivalent["source"]["restriction_id"]
+    assert equivalent_result["equivalent_to"] == IDS[1]
+    assert equivalent_result["status"] == "violated"
+    assert equivalent_result["archive_path"] == f"violated/{IDS[1]}"
+    assert not list(root.glob(f"*/{equivalent['source']['restriction_id']}"))
+    executed = json.loads((root / f"violated/{IDS[1]}/result.json").read_text("utf-8"))
+    assert len(executed["equivalent_sources"]) == 2
 
 
-def test_norm_without_applicable_objects_is_a_formal_pass():
-    real = _result("r1", "passed")
-    empty = _result("r2", "passed", clause="8.2")
-    empty["warnings"] = ["no_applicable_objects"]
-    empty["coverage"] = {
-        "applicable_objects": 0,
-        "checked_objects": 0,
-        "unchecked_objects": 0,
-        "fill_rate": 1.0,
-    }
-    report = build_compliance_report(_summary([real, empty]))
+async def test_norm_without_applicable_objects_is_a_formal_pass(tmp_path):
+    class NoTargets(Mcp):
+        async def execute_tool(self, name, arguments, meta=None):
+            if name == "GetServicesByGeometry" and arguments["services_names"] == [
+                "Театр"
+            ]:
+                self.calls.append((name, deepcopy(arguments)))
+                return {arguments["layer_name"]: fc(complete=True)}
+            return await super().execute_tool(name, arguments, meta)
 
-    passed, vacuous = report.split("## Прошли без применимых объектов")
-    assert "| Прошли проверку | 2 |" in report
-    assert "| из них без применимых объектов | 1 |" in report
-    assert "п. 7.1" in passed and "п. 8.2" not in passed
-    assert "### 2. СП 42.13330.2016, п. 8.2" in vacuous
-    assert "прошла формально" in vacuous
-    # No "100% filled" claim for an empty object set.
-    assert "заполненность" not in vacuous
+    service, events = await _report_pipeline(tmp_path, mcp=NoTargets())
+    root = ComplianceArchive("report-run", 772).root
+    summary = json.loads((root / "summary.json").read_text("utf-8"))
+    report = (root / "summary.md").read_text("utf-8")
+    result = summary["results"][0]
+    assert result["status"] == "passed"
+    assert result["formal_pass"] is True
+    assert result["coverage"]["applicable_objects"] == 0
+    assert "no_applicable_objects" in result["warnings"]
+    assert summary["formal_passed_norms"] == 1
+    assert summary["counts"] == {"passed": 1}
+    assert "Из них формально, без применимых объектов: 1." in report
+    assert "отсутствие объектов не подтверждает соответствие проекта" in report
+    assert "Выполнено формально: применимых объектов нет" in report
+    detail = (root / result["archive_path"] / "report.md").read_text("utf-8")
+    assert "Норма выполнена формально" in detail
+    assert (
+        json.loads(service.llm_client.messages[-1]["content"])["summary"]["norms"][0][
+            "formal_pass"
+        ]
+        is True
+    )
+    assert any(event["type"] == "feature_collection" for event in events)
 
 
 def test_summary_text_separates_notes_and_formal_passes():
@@ -221,146 +310,6 @@ def test_summary_text_separates_notes_and_formal_passes():
     }
     text = RestrictionParserService._compliance_summary_text(summary)
     assert "Из них формально, без применимых объектов в сценарии: 1." in text
-
-
-def test_report_is_not_built_without_checked_norms():
-    assert build_compliance_report(_summary([])) is None
-    assert (
-        build_compliance_report(
-            _summary([_result("r1", "unknown", verification="unsupported")])
-        )
-        is None
-    )
-
-
-def _service(file_store, compliance="violated", passed_features=None):
-    service = object.__new__(RestrictionParserService)
-    service.file_store = file_store
-    service.state_store = SimpleNamespace(
-        buffer_event=AsyncMock(),
-        save_checkpoint=AsyncMock(),
-        set_status=AsyncMock(),
-    )
-    violated = compliance == "violated"
-    result = ComplianceResult(
-        restriction_id="r1",
-        template="distance_from_source",
-        template_version=1,
-        verification_status="complete",
-        compliance_status=compliance,
-        coverage=VerificationCoverage(
-            applicable_objects=1, checked_objects=1, unchecked_objects=0, fill_rate=1
-        ),
-        summary=ComplianceSummary(
-            violated_objects=int(violated), passed_objects=int(not violated)
-        ),
-        source=_source("r1", "7.1"),
-        evidence=[
-            {
-                "restriction_id": "r1",
-                "template": "distance_from_source",
-                "template_version": 1,
-                "object_ref": {"id": "physical_object/1", "name": "Дорога"},
-                "operation": "buffer+intersects",
-                "violated": violated,
-            }
-        ],
-        passed_features=passed_features,
-    )
-    service.compliance_executor = SimpleNamespace(
-        execute=AsyncMock(
-            return_value=SimpleNamespace(
-                result=result, tool_calls=[], effects_tool_calls=[], timings_ms={}
-            )
-        )
-    )
-    return service
-
-
-async def _run(service, owner="user-1"):
-    return [
-        event
-        async for event in service._run_executable_compliance(
-            mcp_client=object(),
-            request_id="request-1",
-            scenario_id=772,
-            restrictions=[{"id": "r1", "check_plan": _plan()}],
-            checkpoint={},
-            owner=owner,
-        )
-    ]
-
-
-async def test_pipeline_closes_stream_with_report_file_event(tmp_path):
-    store = TemporaryFileStore(tmp_path)
-    events = await _run(_service(store))
-    await asyncio.sleep(0)
-
-    for event in events:
-        RestrictionsResponse.model_validate(event)
-    assert [event["type"] for event in events][-2:] == ["chunk", "file"]
-    descriptor = events[-1]["content"]
-    assert descriptor["name"] == "compliance_report"
-    assert descriptor["role"] == "result"
-    assert descriptor["mime_type"] == "text/markdown"
-    assert descriptor["source_service"] == "gmart"
-    assert descriptor["filename"].startswith("compliance_report_772_")
-    assert descriptor["filename"].endswith(".md")
-    assert descriptor["url"].startswith("/files/compliance_report/")
-    assert descriptor["download_url"] == descriptor["url"] + "?download=1"
-
-    file_id = descriptor["url"].rsplit("/", 1)[1]
-    assert store.metadata("compliance_report", file_id)["owner"] == "user-1"
-    content = (store.data_dir / "compliance_report" / file_id).read_text("utf-8")
-    assert content.startswith("# Отчёт о проверке соответствия нормам")
-
-
-async def test_compliant_objects_layer_comes_right_before_the_report(tmp_path):
-    road = {
-        "type": "Feature",
-        "geometry": {"type": "Point", "coordinates": [30.0, 60.0]},
-        "properties": {
-            "name": "Дорога",
-            "object_ref": {"id": "physical_object/1", "name": "Дорога"},
-            "compliance_status": "passed",
-            "restriction_id": "r1",
-        },
-    }
-    service = _service(
-        TemporaryFileStore(tmp_path),
-        compliance="passed",
-        passed_features={"type": "FeatureCollection", "features": [road]},
-    )
-    events = await _run(service)
-
-    assert [event["type"] for event in events][-3:] == [
-        "chunk",
-        "feature_collection",
-        "file",
-    ]
-    layer = events[-2]["content"]
-    assert layer["name"] == "Объекты без нарушений"
-    (feature,) = layer["feature_collection"]["features"]
-    assert feature["properties"]["passed_norms"] == ["СП 42.13330.2016, п. 7.1"]
-    assert "restriction_id" not in feature["properties"]
-
-
-@pytest.mark.parametrize("with_store, owner", [(False, "user-1"), (True, None)])
-async def test_report_needs_a_store_and_an_owner(tmp_path, with_store, owner):
-    store = TemporaryFileStore(tmp_path) if with_store else None
-    events = await _run(_service(store), owner=owner)
-    assert "file" not in [event["type"] for event in events]
-
-
-async def test_file_event_is_sent_as_a_flat_genbuilder_frame(tmp_path):
-    events = await _run(_service(TemporaryFileStore(tmp_path)))
-    frame = file_sse_event(events[-1])
-    assert frame.event == "file"
-    data = json.loads(frame.raw_data)
-    assert "type" not in data and "content" not in data
-    assert data["title"] == "Отчёт о проверке соответствия нормам"
-    assert data["url"].startswith("/files/compliance_report/")
-    assert file_sse_event({"type": "chunk", "content": {}}) is None
 
 
 def test_history_keeps_file_link_without_role_and_download_url():

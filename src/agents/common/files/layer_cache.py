@@ -20,7 +20,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from src.agents.common.files.temporary_file_store import FILES_TTL_SECONDS
+
 LAYER_CACHE_TTL_SECONDS = 24 * 60 * 60
+COMPLIANCE_CACHE_TTL_SECONDS = FILES_TTL_SECONDS + 10 * 60
 
 _UPLOAD_ID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 _LAYER_FILE = re.compile(
@@ -46,9 +49,21 @@ class LayerCache:
         directory: Path | None = None,
         *,
         ttl_seconds: int = LAYER_CACHE_TTL_SECONDS,
+        compliance_ttl_seconds: int | None = None,
     ) -> None:
         self.root = (directory or default_cache_dir()) / "upload_layers"
         self.ttl_seconds = ttl_seconds
+        self.compliance_root = self.root.parent / "compliance"
+        self.compliance_ttl_seconds = (
+            compliance_ttl_seconds
+            if compliance_ttl_seconds is not None
+            else int(
+                os.getenv(
+                    "GMART_COMPLIANCE_CACHE_TTL_SECONDS",
+                    str(COMPLIANCE_CACHE_TTL_SECONDS),
+                )
+            )
+        )
         self.root.mkdir(parents=True, exist_ok=True)
 
     async def write(
@@ -80,17 +95,27 @@ class LayerCache:
             shutil.rmtree(self.root / upload_id, ignore_errors=True)
 
     def purge_expired(self) -> int:
-        """Drop upload directories older than the TTL; returns how many."""
+        """Drop expired uploads and compliance runs by their directory mtime."""
         removed = 0
-        deadline = time.time() - self.ttl_seconds
-        for directory in self.root.iterdir():
-            try:
-                expired = directory.is_dir() and directory.stat().st_mtime < deadline
-            except OSError:  # removed meanwhile by another worker
+        for root, ttl in (
+            (self.root, self.ttl_seconds),
+            (self.compliance_root, self.compliance_ttl_seconds),
+        ):
+            if not root.exists():
                 continue
-            if expired:
-                shutil.rmtree(directory, ignore_errors=True)
-                removed += 1
+            deadline = time.time() - ttl
+            for directory in root.iterdir():
+                try:
+                    if (
+                        directory.is_symlink()
+                        or not directory.is_dir()
+                        or directory.stat().st_mtime >= deadline
+                    ):
+                        continue
+                    shutil.rmtree(directory)
+                    removed += 1
+                except FileNotFoundError:  # removed meanwhile by another worker
+                    continue
         return removed
 
     def _path(self, file: str) -> Path:
