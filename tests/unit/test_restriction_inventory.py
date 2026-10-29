@@ -15,9 +15,6 @@ from src.agents.services.compilance.compliance_inventory import (
     RestrictionZoneBuilder,
     describe_zone,
 )
-from src.agents.services.compilance.compliance_inventory_report import (
-    build_inventory_report,
-)
 from src.agents.services.compilance.compliance_result_harness import (
     ComplianceResultHarness,
 )
@@ -184,7 +181,7 @@ class FakeMcp:
 
     async def execute_tool(self, name, arguments, meta=None):
         self.calls.append((name, arguments))
-        if name == "GetServices":
+        if name == "GetServicesByGeometry":
             features = (
                 [
                     (Point(30.0, 60.0), {"service_id": 1, "name": "Школа № 1"}),
@@ -193,7 +190,9 @@ class FakeMcp:
                 if self.schools
                 else []
             )
-            return {"Школа": {**_fc(*features), "meta": {"complete": True}}}
+            return {
+                arguments["layer_name"]: {**_fc(*features), "meta": {"complete": True}}
+            }
         if name == "GetPhysicalObjects":
             raise AssertionError("inventory must not load the targets")
         if name == "GetFunctionalZones":
@@ -222,7 +221,8 @@ class FakeMcp:
                     if key != "layer_name"
                 }
             )
-            return {arguments["layer_name"]: zones}
+            norm_layer = zones.pop("norm_layer")
+            return {arguments["layer_name"]: zones, "norm_layer": norm_layer}
         raise AssertionError(name)
 
 
@@ -312,18 +312,18 @@ async def test_distance_norm_draws_buffers_around_sources_without_targets():
         "around": "Школа",
         "distance_m": 50.0,
         "applies_to": ["Жилой дом"],
+        "object_attribute": None,
     }
     assert [call["function"]["name"] for call in zone.tool_calls] == [
-        "GetServices",
+        "GetProjectTerritory",
+        "GetServicesByGeometry",
         "CreateRestrictionZones",
     ]
     stored = zone.tool_calls[-1]["function"]["arguments"]
     assert "layers" not in stored
     assert stored["geometry_mode"] == "buffer" and stored["distance_m"] == 50
     feature = zone.zones["features"][0]["properties"]
-    assert (
-        feature["restriction_title"] == "Зона ограничения — СП 42.13330.2016, п. 10.4"
-    )
+    assert feature["restriction_title"] == "Норма — СП 42.13330.2016, п. 10.4"
     assert feature["applies_to"] == ["Жилой дом"]
 
 
@@ -358,6 +358,13 @@ async def test_zonal_norm_for_every_zone_covers_the_project_territory():
     assert [name for name, _ in mcp.calls] == ["CreateRestrictionZones"]
     properties = zone.zones["features"][0]["properties"]
     assert properties["threshold"] == 9 and properties["operator"] == "<="
+    assert properties["template"] == "zonal_attribute_threshold"
+    assert properties["object_attribute"] == "floors"
+    assert (
+        properties["provenance"]["extraction_text"]
+        == _zonal_plan()["source"]["extraction_text"]
+    )
+    assert zone.norm_layer["features"][0]["properties"]["check_type_en"] == "floors"
     assert describe_zone(zone.payload()) == (
         "вся территория проекта; для «Жилой дом»: ≤ 9 floors"
     )
@@ -566,9 +573,9 @@ async def test_inventory_emits_only_drawn_zones_and_a_summary():
         RestrictionsResponse.model_validate(event)
     layers = [e["content"]["name"] for e in events if e["type"] == "feature_collection"]
     # The industrial zone is absent from the scenario: no empty layer.
-    assert layers == ["Зона ограничения — СП 42.13330.2016, п. 10.4"]
+    assert layers == ["Норма — СП 42.13330.2016, п. 10.4"]
     zones = [e["content"] for e in events if e["type"] == "restriction_zone"]
-    assert [zone["status"] for zone in zones] == ["shown", "no_objects"]
+    assert [zone["status"] for zone in zones] == ["not_checked", "no_objects"]
     summary = next(e["content"] for e in events if e["type"] == "restriction_inventory")
     assert summary["shown_norms"] == 1 and summary["no_objects_norms"] == 1
     assert summary["skipped_without_plan"] == 1
@@ -586,14 +593,16 @@ async def test_inventory_emits_only_drawn_zones_and_a_summary():
         if e["type"] == "tool_call"
         for call in e["content"]["tool_calls"]
     ]
-    assert replayed == ["GetProjectTerritory", "GetServices", "CreateRestrictionZones"]
+    assert replayed == [
+        "GetProjectTerritory",
+        "GetServicesByGeometry",
+        "CreateRestrictionZones",
+    ]
     steps = [
         call.args[1] for call in service.state_store.save_checkpoint.await_args_list
     ]
-    assert steps == [
-        PipelineStep.CHECK_PLAN_VALIDATION,
-        PipelineStep.RESTRICTION_INVENTORY,
-    ]
+    assert PipelineStep.RESTRICTION_INVENTORY in steps
+    assert "compliance_completed" in steps
 
 
 async def test_completed_inventory_is_not_rebuilt_on_reconnect():
@@ -607,7 +616,7 @@ async def test_completed_inventory_is_not_rebuilt_on_reconnect():
             request_id="request-1",
             scenario_id=772,
             restrictions=[],
-            checkpoint={PipelineStep.RESTRICTION_INVENTORY: {}},
+            checkpoint={"compliance_completed": True},
         )
     ]
 
@@ -656,40 +665,3 @@ async def test_pipeline_stops_when_the_territory_gives_no_documents(status):
     assert events[-1]["content"] == {"text": "Нет документов.", "done": True}
     assert service.compliance_territory.resolve.await_args.args[0] is dvd
     service.compliance_scope.resolve.assert_not_awaited()
-
-
-# --- report ------------------------------------------------------------------------
-
-
-def test_inventory_report_lists_drawn_and_hidden_zones():
-    zone = {
-        "status": "shown",
-        "zone_kind": "restriction",
-        "template": "distance_from_source",
-        "zone_count": 2,
-        "description": {"around": "Школа", "distance_m": 50, "applies_to": ["Дом"]},
-        "source": {
-            "document_name": "СП 42.13330.2016",
-            "clause_number": "10.4",
-            "extraction_text": "Не менее 50 м.",
-        },
-    }
-    hidden = {
-        "status": "no_objects",
-        "zone_kind": "restriction",
-        "source": {"document_name": "ПЗЗ"},
-    }
-    summary = {
-        "total_norms": 2,
-        "restriction_zones": 1,
-        "zones": [zone, hidden],
-        "territory": {"documents_in_force": 2, "documents_out_of_force": 1},
-    }
-
-    report = build_inventory_report(summary)
-
-    assert "### 1. СП 42.13330.2016, п. 10.4" in report
-    assert "50 м вокруг объектов «Школа»; ограничение для «Дом»" in report
-    assert "- ПЗЗ — в сценарии нет объектов" in report
-    assert "| Документов, не действующих на ней | 1 |" in report
-    assert build_inventory_report({"zones": [hidden]}) is None

@@ -53,7 +53,9 @@ class AttributeClient(FakeMcpClient):
         self.calls.append((name, arguments, meta))
         if name == "GetPhysicalObjects":
             return {"Жилой дом": self.houses}
-        if name == "GetServices":
+        if name == "GetProjectTerritory":
+            return {"project_territory": _houses(_building(0.1, 1))}
+        if name == "GetServicesByGeometry":
             return {
                 "Школа": {
                     "type": "FeatureCollection",
@@ -393,11 +395,20 @@ async def test_inventory_draws_accessibility_areas_of_services():
 
     zone = await _builder().build(FakeMcp(), _provision_plan(), 772)
     assert zone.status == "shown" and zone.zone_kind == "required"
-    assert zone.description == {
-        "around": "Школа",
-        "distance_m": 500 / 1.3,
-        "capacity_per_1000": 124,
-    }
+    assert zone.description["around"] == "Школа"
+    assert zone.description["distance_m"] == 500 / 1.3
+    assert zone.description["capacity_per_1000"] == 124
+    assert zone.description["whole_territory"] is False
+    assert zone.zone_count == 2
+    assert all(
+        item["properties"]["buffer_size"] == pytest.approx(500 / 1.3)
+        for item in zone.zones["features"]
+    )
+    assert all(
+        item["properties"]["status"] == "not_checked"
+        and item["properties"]["feature_kind"] == "zone"
+        for item in zone.norm_layer["features"]
+    )
     assert "124 мест на 1000 жителей" in describe_zone(zone.payload())
 
     per_residents = _provision_plan(capacity_per_1000=None, residents_per_service=5000)
@@ -407,6 +418,62 @@ async def test_inventory_draws_accessibility_areas_of_services():
     urban_normative = _provision_plan(accessibility=None)
     zone = await _builder().build(FakeMcp(), urban_normative, 772)
     assert zone.missing_requirements == ["accessibility:urban_api_normative"]
+
+
+async def test_inventory_pipeline_draws_accessibility_areas_of_services():
+    from tests.unit.test_restriction_inventory import FakeMcp, _inventory_service
+
+    mcp = FakeMcp()
+    service = _inventory_service(mcp)
+    raw = _provision_plan()
+    events = [
+        event
+        async for event in service._run_restriction_inventory(
+            mcp_client=mcp,
+            request_id="provision-inventory",
+            scenario_id=772,
+            restrictions=[{"id": raw["source"]["restriction_id"], "check_plan": raw}],
+            checkpoint={},
+        )
+    ]
+    summary = next(
+        event["content"] for event in events if event["type"] == "restriction_inventory"
+    )
+    assert summary["shown_norms"] == 1
+    assert summary["zones"][0]["status"] == "not_checked"
+    layers = [
+        event["content"]["feature_collection"]
+        for event in events
+        if event["type"] == "feature_collection"
+    ]
+    assert len(layers) == 1 and len(layers[0]["features"]) == 2
+    assert all(
+        item["properties"]["status"] == "not_checked" for item in layers[0]["features"]
+    )
+    queries = [args for name, args in mcp.calls if name == "GetServicesByGeometry"]
+    assert len(queries) == 1
+    assert queries[0]["buffer_m"] == pytest.approx(500 / 1.3)
+    assert not any(name.startswith("Check") for name, _ in mcp.calls)
+
+
+async def test_provision_check_uses_project_territory_not_inventory_buffers():
+    from src.agents.services.compilance.compliance_inventory import describe_zone
+    from tests.unit.test_restriction_inventory import PROJECT, FakeMcp, _builder, _fc
+
+    zone = await _builder().build(
+        FakeMcp(),
+        _provision_plan(),
+        772,
+        project_territory=_fc((PROJECT, {})),
+        inventory=False,
+    )
+    assert zone.status == "shown" and zone.zone_kind == "required"
+    assert zone.description["whole_territory"] is True
+    assert zone.zone_count == 1
+    args = zone.tool_calls[-1]["function"]["arguments"]
+    assert args["geometry_mode"] == "geometry"
+    assert args["source_layer"] == "project_territory"
+    assert "вся территория проекта" in describe_zone(zone.payload())
 
 
 async def test_service_provision_reports_how_population_was_chosen():

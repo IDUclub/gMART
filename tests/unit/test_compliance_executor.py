@@ -52,8 +52,25 @@ class FakeMcpClient:
 
     async def execute_tool(self, name, arguments, meta=None):
         self.calls.append((name, arguments, meta))
-        if name == "GetServices":
-            assert arguments["centers_only"] is False
+        if name == "GetProjectTerritory":
+            return {
+                "project_territory": {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [
+                                    [[29, 59], [31, 59], [31, 61], [29, 61], [29, 59]]
+                                ],
+                            },
+                            "properties": {},
+                        }
+                    ],
+                }
+            }
+        if name == "GetServicesByGeometry":
             if self.unavailable_services:
                 return None
             if self.zero_services:
@@ -133,8 +150,9 @@ async def test_executor_dispatches_valid_plan_without_llm_geometry_planning():
     assert execution.result.summary.violated_objects == 1
     assert execution.result.summary.passed_objects == 1
     assert [call[0] for call in client.calls] == [
-        "GetServices",
         "GetPhysicalObjects",
+        "GetProjectTerritory",
+        "GetServicesByGeometry",
         "CheckDistanceFromSource",
     ]
 
@@ -187,7 +205,11 @@ async def test_executor_passes_when_complete_applicable_set_is_empty():
     assert execution.result.compliance_status == "passed"
     assert execution.result.coverage.applicable_objects == 0
     assert execution.result.warnings == ["no_applicable_objects"]
-    assert [call[0] for call in client.calls] == ["GetServices", "GetPhysicalObjects"]
+    assert [call[0] for call in client.calls] == [
+        "GetPhysicalObjects",
+        "GetProjectTerritory",
+        "GetServicesByGeometry",
+    ]
 
 
 async def test_executor_passes_prohibition_when_forbidden_source_is_absent():
@@ -234,8 +256,8 @@ async def test_executor_normalizes_stored_plan_via_catalog_tool(source, target):
     assert execution.result.verification_status == "complete"
     assert execution.result.summary.violated_objects == 1
     assert execution.result.summary.passed_objects == 1
-    assert client.calls[0][1]["services_names"] == ["Школа"]
-    assert client.calls[1][1]["physical_objects_names"] == ["Жилой дом"]
+    assert client.calls[2][1]["services_names"] == ["Школа"]
+    assert client.calls[0][1]["physical_objects_names"] == ["Жилой дом"]
     assert plan == original
     stored_layers = execution.result.source["check_plan"]["declared_requirements"][
         "layers"
@@ -243,14 +265,14 @@ async def test_executor_normalizes_stored_plan_via_catalog_tool(source, target):
     assert [layer["entity"] for layer in stored_layers] == [source, target]
 
 
-async def test_history_keeps_only_retrievals_that_found_objects():
+async def test_history_keeps_empty_by_geometry_retrievals_for_replay():
     # A client reopening the chat replays these calls into map layers; a call
     # that found nothing would come back as an empty layer.
     client = FakeMcpClient(zero_services=True)
     execution = await ComplianceTemplateExecutor().execute(client, _plan(), 772)
 
     recorded = [call["function"]["name"] for call in execution.tool_calls]
-    assert "GetServices" not in recorded
+    assert "GetServicesByGeometry" in recorded
     assert "GetPhysicalObjects" in recorded
     # The empty layer still reached the check itself.
     assert execution.layers["Школа"]["features"] == []
@@ -259,6 +281,8 @@ async def test_history_keeps_only_retrievals_that_found_objects():
 async def test_empty_functional_zones_are_not_recorded():
     class Tools:
         async def execute_named_tool(self, mcp_client, name, arguments):
+            if name == "GetProjectTerritory":
+                return {"project_territory": _fc(30.0)}
             if arguments["zone_type_names"] == ["Жилая зона"]:
                 return {"functional_zones": _fc(30.0)}
             return {
@@ -286,16 +310,18 @@ async def test_empty_functional_zones_are_not_recorded():
 
     layers, calls = await executor._retrieve_layers(object(), requirements, 772)
 
-    assert set(layers) == {"Жилая зона", "Зона"}
-    assert [call["function"]["arguments"]["zone_type_names"] for call in calls] == [
-        ["Жилая зона"]
-    ]
+    assert set(layers) == {"Жилая зона", "Зона", "project_territory"}
+    assert [
+        call["function"]["arguments"]["zone_type_names"]
+        for call in calls
+        if call["function"]["name"] == "GetFunctionalZones"
+    ] == [["Жилая зона"]]
 
 
 async def test_an_object_with_many_sources_keeps_its_result():
     class ManySchools(FakeMcpClient):
         async def execute_tool(self, name, arguments, meta=None):
-            if name == "GetServices":
+            if name == "GetServicesByGeometry":
                 self.calls.append((name, arguments, meta))
                 return {
                     "Школа": {

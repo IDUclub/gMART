@@ -289,6 +289,7 @@ export default function App() {
       [],
     ),
     [status, setStatus] = useState("Готов к работе"),
+    [normProgress, setNormProgress] = useState<{ percent: number; bar: string } | null>(null),
     [statusEntries, setStatusEntries] = useState<StatusEntry[]>([]),
     [pendingQuestion, setPendingQuestion] = useState(""),
     [restoreState, setRestoreState] = useState<Record<string, string>>({}),
@@ -553,6 +554,7 @@ export default function App() {
       setComplianceResults(extractStoredCompliance(cached.chat.messages));
       setComplianceSummary(null);
       setComplianceProgress(null);
+      setNormProgress(null);
       scrollChatToBottom();
       return;
     }
@@ -588,6 +590,7 @@ export default function App() {
       setComplianceResults(extractStoredCompliance(stored.messages));
       setComplianceSummary(null);
       setComplianceProgress(null);
+      setNormProgress(null);
       scrollChatToBottom();
     } catch (e) {
       setStatus(err(e));
@@ -613,6 +616,7 @@ export default function App() {
     setComplianceResults([]);
     setComplianceSummary(null);
     setComplianceProgress(null);
+    setNormProgress(null);
     setEvents([]);
     setStatus("Готов к работе");
     resultAutoOpened.current = false;
@@ -993,6 +997,15 @@ export default function App() {
     void loadChats();
   }
   function route(event: StreamEvent, nested = false) {
+    if (event.type === "pipeline_started") setNormProgress(null);
+    if (event.type === "progress" && typeof event.content?.percent === "number" && typeof event.content?.bar === "string") {
+      setNormProgress(event.content);
+      updateStatus(event.content.label);
+    }
+    if (event.type === "file") {
+      attachFile(event.content);
+      return;
+    }
     if (event.type === "pipeline_started") {
       activeRequestIdRef.current = event.content?.request_id;
       updateStatus("Агент начал работу");
@@ -1013,7 +1026,7 @@ export default function App() {
       );
       answerIteration.current = next.iteration;
       updateSseAnswer(next.answer);
-      if (event.content?.done && !nested) {
+      if (event.content?.done && !nested && agentId !== "compliance") {
         activeRequestIdRef.current = undefined;
         setBusy(false);
         updateStatus("Ответ готов", "done");
@@ -1369,6 +1382,7 @@ export default function App() {
     setComplianceResults([]);
     setComplianceSummary(null);
     setComplianceProgress(null);
+    setNormProgress(null);
     setEvents([]);
     setStatusEntries([]);
     stepBase.current = "";
@@ -1495,6 +1509,10 @@ export default function App() {
     try {
       await readSse(url, await freshToken(), abort.current.signal, handle);
       setBusy(false);
+      if (agentId === "compliance") {
+        activeRequestIdRef.current = undefined;
+        updateStatus("Ответ готов", "done");
+      }
       finalizeActiveExchange(
         "Поток завершился без отдельного финального сообщения.",
       );
@@ -1763,6 +1781,12 @@ export default function App() {
             )}
             <div className={`work-grid ${resultOpen ? "result-open" : ""}`}>
               <section className="conversation">
+                {normProgress && (
+                  <div className="norm-progress" role="status">
+                    <label htmlFor="norm-progress">{normProgress.bar}</label>
+                    <progress id="norm-progress" max={100} value={normProgress.percent} />
+                  </div>
+                )}
                 <div className="messages" ref={messagesScroller}>
                   {!history.length && !answer && !pendingQuestion ? (
                     <Welcome agent={agent} onExample={setQuery} />
@@ -1983,6 +2007,7 @@ export default function App() {
           setComplianceResults([]);
           setComplianceSummary(null);
           setComplianceProgress(null);
+          setNormProgress(null);
           setEvents([]);
           setHistoryOpen(false);
         }}
@@ -2530,10 +2555,18 @@ function StoredFilePart({
         <strong>{file.title || file.filename || "Файл"}</strong>
         <small>{state === "error" ? error : file.filename}</small>
       </div>
-      <button onClick={start} disabled={state === "loading"}>
+      <a
+        className="generated-download"
+        href={file.download_url || file.url}
+        aria-disabled={state === "loading"}
+        onClick={(event) => {
+          event.preventDefault();
+          if (state !== "loading") void start();
+        }}
+      >
         <DownloadSimple />{" "}
         {state === "loading" ? "Скачиваю…" : "Скачать"}
-      </button>
+      </a>
     </div>
   );
 }

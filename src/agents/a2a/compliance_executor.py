@@ -222,8 +222,11 @@ class ComplianceAgentExecutor:
             return self._artifact_update(task_id, context_id, artifact, append=False)
 
         if item_type in {"compliance_summary", "restriction_inventory", "file"}:
+            artifact_id = f"compliance-{item_type.removeprefix('compliance_')}"
+            if item_type == "file" and content.get("mime_type") == "application/zip":
+                artifact_id = "compliance-archive"
             artifact = self._data_artifact(
-                f"compliance-{item_type.removeprefix('compliance_')}",
+                artifact_id,
                 item_type,
                 content,
                 "application/json",

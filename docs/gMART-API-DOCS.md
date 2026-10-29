@@ -24,6 +24,11 @@ The Synapse gateway frontend contract is documented in
 [`integrations/synapse-front.md`](integrations/synapse-front.md).
 The executable-norm compliance REST/SSE contract, CheckPlan registry and review
 API are documented in [`compliance-agent.md`](compliance-agent.md). The compliance A2A
+outputs use per-norm layers (`compliance-layer-N`), summary (`compliance-summary`,
+or `compliance-restriction_inventory` for inventory), the summary.md descriptor
+(`compliance-file`) and ZIP descriptor (`compliance-archive`). Status and archive
+details: [contract](compliance-status-contract.md), [guide](compliance-status-guide.md).
+The compliance A2A
 agent can stop in `input-required` to let the caller choose a document; the next message
 with the same `contextId` answers it (see "Область проверки" there). It also checks the
 user's own files: `upload_ids` (from `POST /compliance/uploads`) or inline GeoJSON
@@ -308,6 +313,11 @@ gMART состоит из двух разворачиваемых приложе
 [`integrations/synapse-front.md`](integrations/synapse-front.md).
 Исполнение нормативных CheckPlan, compliance SSE и экспертное ревью описаны в
 [`compliance-agent.md`](compliance-agent.md). A2A-агент соответствия может остановиться в
+`input-required`. Формат статусов, слоёв и архива описан в
+[контракте](compliance-status-contract.md), объяснение — в [руководстве](compliance-status-guide.md).
+Артефакты: `compliance-layer-N`, `compliance-summary` (в inventory —
+`compliance-restriction_inventory`), `compliance-file` для summary.md и
+`compliance-archive` для дескриптора ZIP. Агент также переходит в
 `input-required`, чтобы вызывающая сторона выбрала документ; ответом служит следующее
 сообщение с тем же `contextId` (раздел «Область проверки» там же). Агент проверяет и
 файлы пользователя: `upload_ids` (из `POST /compliance/uploads`) или GeoJSON в DataPart
