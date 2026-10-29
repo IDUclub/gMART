@@ -1,3 +1,10 @@
+## v0.34.1 (2026-10-29)
+
+[docs/ICII-226-compliance-status-docs](https://github.com/IDUclub/gMART/pull/265) (#265)
+
+- docs: добавить контракт и руководство проверки норм по зонам со статусами
+- docs: убрать пометки о незавершённом повторе ChatStorage
+
 ## v0.34.0 (2026-10-29)
 
 [feat/ICII-226-compilance-vis-status](https://github.com/IDUclub/gMART/pull/264) (#264)
