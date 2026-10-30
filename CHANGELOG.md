@@ -1,3 +1,10 @@
+## v0.34.2 (2026-10-30)
+
+[fix/ICII-226-review-fixes](https://github.com/IDUclub/gMART/pull/266) (#266)
+
+- fix: исправить сводку проверки норм и названия чатов
+- test: обновить интеграционные проверки норм и восстановления из Redis
+
 ## v0.34.1 (2026-10-29)
 
 [docs/ICII-226-compliance-status-docs](https://github.com/IDUclub/gMART/pull/265) (#265)
