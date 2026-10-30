@@ -5,6 +5,7 @@ from src.agents.common.exceptions.base_exceptions import (
     AgentsInputException,
     AgentsUnauthorizedException,
 )
+from src.common.service_auth import is_internal_user_context_jwt
 
 http_bearer = HTTPBearer()
 optional_http_bearer = HTTPBearer(auto_error=False)
@@ -20,7 +21,7 @@ async def verify_bearer_token(
     Returns:
         str: Extracted Bearer token.
     Raises:
-        AgentsUnauthorizedException: If no credentials are provided (401).
+        AgentsUnauthorizedException: If credentials are missing or internal (401).
         AgentsInputException: If the token is missing from credentials (400).
     """
 
@@ -31,6 +32,9 @@ async def verify_bearer_token(
 
     if not token:
         raise AgentsInputException("Token is missing in the authorization header")
+
+    if is_internal_user_context_jwt(token):
+        raise AgentsUnauthorizedException("Internal user context is not a Bearer token")
 
     return token
 
@@ -48,6 +52,7 @@ async def optional_bearer_token(
     Returns:
         str | None: Extracted Bearer token, or None for an anonymous request.
     Raises:
+        AgentsUnauthorizedException: If the token is an internal user context (401).
         AgentsInputException: If the Authorization header carries an empty token.
     """
 
@@ -58,5 +63,8 @@ async def optional_bearer_token(
 
     if not token:
         raise AgentsInputException("Token is missing in the authorization header")
+
+    if is_internal_user_context_jwt(token):
+        raise AgentsUnauthorizedException("Internal user context is not a Bearer token")
 
     return token

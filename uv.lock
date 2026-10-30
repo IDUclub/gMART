@@ -1616,7 +1616,7 @@ wheels = [
 
 [[package]]
 name = "gmart"
-version = "0.28.3"
+version = "0.34.2"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohttp" },

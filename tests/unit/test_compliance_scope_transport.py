@@ -2,10 +2,10 @@
 
 import pytest
 
+from src.agents.services.compilance.compliance_archive import build_norm_report
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
 )
-from src.agents.services.compilance.compliance_report import build_compliance_report
 from src.agents.services.compilance.compliance_result_harness import (
     ComplianceResultHarness,
 )
@@ -141,11 +141,10 @@ def _transport_result():
 
 
 def test_report_names_the_condition_and_the_transport_estimate():
-    report = build_compliance_report(_summary([_scoped_result(), _transport_result()]))
-    assert (
-        "| Проверены только на объектах, подходящих под условие пункта | 1 |" in report
+    report = "\n".join(
+        build_norm_report(item, None)
+        for item in [_scoped_result(), _transport_result()]
     )
-    assert "| Транспортная доступность оценена приближённо | 1 |" in report
     assert (
         "- **Проверены только объекты, к которым относится значение:** "
         "многоэтажная, среднеэтажная жилая застройка — объекты этажностью от 5 и "

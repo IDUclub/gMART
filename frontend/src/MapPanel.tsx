@@ -61,18 +61,27 @@ export default function MapPanel({
         if (!layer.visible) return;
         m.addSource(source, { type: "geojson", data: layer.geojson });
         renderedSources.current.add(source);
+        const kind: maplibregl.ExpressionSpecification = ["get", "feature_kind"];
+        const color: maplibregl.ExpressionSpecification = [
+          "case", ["==", kind, "violation"], "#dc2626",
+          ["==", kind, "object"], "#2563eb",
+          ["==", kind, "zone"], ["match", ["get", "status"],
+            "passed", "#16a34a", "violated", "#dc2626",
+            "partial", "#d97706", "not_checked", "#6b7280", "#6b7280"],
+          layer.color,
+        ];
         m.addLayer({
           id: `${source}-fill`,
           type: "fill",
           source,
           filter: ["==", ["geometry-type"], "Polygon"],
-          paint: { "fill-color": layer.color, "fill-opacity": 0.24 },
+          paint: { "fill-color": color, "fill-opacity": ["case", ["==", kind, "violation"], 0.55, ["==", kind, "object"], 0.12, 0.24] },
         });
         m.addLayer({
           id: `${source}-line`,
           type: "line",
           source,
-          paint: { "line-color": layer.color, "line-width": 2 },
+          paint: { "line-color": color, "line-width": ["case", ["==", kind, "violation"], 4, ["==", kind, "object"], 1, 2] },
         });
         m.addLayer({
           id: `${source}-point`,
@@ -80,8 +89,8 @@ export default function MapPanel({
           source,
           filter: ["==", ["geometry-type"], "Point"],
           paint: {
-            "circle-color": layer.color,
-            "circle-radius": 6,
+            "circle-color": color,
+            "circle-radius": ["case", ["==", kind, "violation"], 8, ["==", kind, "object"], 4, 6],
             "circle-stroke-color": "#fff",
             "circle-stroke-width": 2,
           },
@@ -120,6 +129,16 @@ export default function MapPanel({
         </div>
       </div>
       <div ref={node} className="map" />
+      {layers.some((layer) => layer.visible && layer.geojson.features.some((f) => f.properties?.feature_kind === "zone")) && (
+        <div className="compliance-legend" aria-label="Легенда проверки норм">
+          <span><i style={{ background: "#16a34a" }} />Выполнено</span>
+          <span><i style={{ background: "#dc2626" }} />Не выполнено</span>
+          <span><i style={{ background: "#d97706" }} />Частично</span>
+          <span><i style={{ background: "#6b7280" }} />Не проверялось</span>
+          <span>Нарушение — насыщенная заливка, толстый контур / крупная точка</span>
+          <span><i style={{ background: "#2563eb" }} />Объект — тонкий контур / малая точка</span>
+        </div>
+      )}
       <div className="layer-list">
         {layers.length ? (
           layers.map((l) => (

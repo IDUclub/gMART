@@ -19,7 +19,11 @@ from loguru import logger
 from shapely.geometry import shape
 
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
-from src.agents.common.exceptions.base_exceptions import AgentsBaseException
+from src.agents.common.auth.synapse_auth import SynapseCallerVerifier
+from src.agents.common.exceptions.base_exceptions import (
+    AgentsBaseException,
+    AgentsUnauthorizedException,
+)
 from src.agents.common.exceptions.token_exceptions import TokenExpiredError
 from src.agents.dto.project_request_dto import ProjectInputs
 from src.agents.services.base_llm_service import BaseLlmService
@@ -62,10 +66,7 @@ from src.agents.services.project_files.project_types import (
     creation_specs,
     render_type_question,
 )
-from src.common.service_auth import (
-    is_internal_user_context_jwt,
-    user_id_from_jwt,
-)
+from src.common.service_auth import is_internal_user_context_jwt, user_id_from_jwt
 
 AGENT_ID = "project_files"
 _POLYGONS = {"Polygon", "MultiPolygon"}
@@ -81,15 +82,13 @@ class ProjectFilesService(BaseLlmService):
         urban_api_client,
         state_store: PipelineStateStore,
         uploads: ComplianceUploadService,
-        user_urban_api_client=None,
+        user_token_verifier: SynapseCallerVerifier,
     ) -> None:
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.state_store = state_store
         self.uploads = uploads
-        # Urban API makes the token's user the owner of a project and refuses a
-        # service account another owner, so the project is created — like in the
-        # frontend — with the user's own token.
-        self.urban = user_urban_api_client or urban_api_client
+        self.user_token_verifier = user_token_verifier
+        self.urban = urban_api_client
         self.entity_mapper = EntityMapper(self.llm_client, PROJECT_CLASSIFY_PROMPT)
         self.creator = ProjectCreator(self.urban)
 
@@ -139,6 +138,21 @@ class ProjectFilesService(BaseLlmService):
         upload_ids,
         inputs,
     ):
+        # Verify before reading/replaying state, fetching history or calling Urban
+        # API. Internal contexts are created only after resolve_a2a_caller verifies
+        # Synapse; HTTP dependencies reject them at the edge.
+        try:
+            owner = (
+                user_id_from_jwt(token)
+                if is_internal_user_context_jwt(token)
+                else await self.user_token_verifier.verify_user(token)
+            )
+        except (AgentsUnauthorizedException, ValueError):
+            yield self._text(
+                "Не удалось подтвердить токен пользователя, поэтому проект не создан. "
+                "Войдите заново и повторите запрос."
+            )
+            return
         if await self.state_store.exists(request_id):
             # A reconnect replays the stream; the dialogue goes on by chat.
             for event in await self.state_store.get_buffered_events(request_id):
@@ -204,7 +218,7 @@ class ProjectFilesService(BaseLlmService):
         answer: list[str] = []
         try:
             async for event in self._dialogue(
-                token, model, user_query, key, upload_ids, inputs, history
+                token, model, user_query, key, upload_ids, inputs, history, owner
             ):
                 if event["type"] == "chunk":
                     answer.append(event["content"].get("text", ""))
@@ -251,20 +265,25 @@ class ProjectFilesService(BaseLlmService):
         upload_ids: list[str] | None,
         inputs: ProjectInputs,
         history: list[dict],
+        owner: str,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        if is_internal_user_context_jwt(token):
-            yield self._text(
-                "Создать проект при вызове через Synapse нельзя: Urban API создаёт "
-                "проект только от имени пользователя по его токену, а у такого "
-                "вызова токена пользователя нет. Вызовите агента с токеном "
-                "пользователя (REST или A2A)."
-            )
-            return
-        owner = user_id_from_jwt(token)
         pending = await self.state_store.get_project_dialogue(key) if key else None
         context: dict[str, Any] | None = None
         if pending:
             context = pending["context"]
+            saved_owners = (
+                context.get("owner"),
+                (context.get("run") or {}).get("owner"),
+            )
+            if any(
+                saved_owner and saved_owner != owner for saved_owner in saved_owners
+            ):
+                yield self._text(
+                    "Этот запуск создания проекта принадлежит другому пользователю, "
+                    "продолжить его нельзя."
+                )
+                return
+            context["owner"] = owner
             # Parameters sent with the answer override the ones of the request.
             context["inputs"] = {
                 **(context.get("inputs") or {}),
@@ -287,6 +306,7 @@ class ProjectFilesService(BaseLlmService):
                 context = None
         if context is None:
             context = {
+                "owner": owner,
                 "user_query": user_query,
                 "requested_uploads": list(dict.fromkeys(upload_ids or [])),
                 "inputs": inputs.model_dump(mode="json"),
@@ -609,6 +629,7 @@ class ProjectFilesService(BaseLlmService):
         run = context.setdefault(
             "run",
             {
+                "owner": owner,
                 "project_name": project_name(
                     project_files, inputs.project_name or intent.project_name
                 ),
@@ -640,18 +661,21 @@ class ProjectFilesService(BaseLlmService):
                 )
 
         await save()
-        async for event in self.creator.create(token, run, zones, objects, save):
+        async for event in self.creator.create(
+            token, run, zones, objects, save, owner=owner
+        ):
             yield event
         summary = creation_summary(run, zones, objects)
         summary["not_created"] = self._not_created(mapping, specs, problems, rejected)
         yield {"type": "project_summary", "content": summary}
         yield self._text(self._summary_text(summary))
-        if summary["failed_total"] or summary["zones"]["error"]:
+        if summary["failed_total"] or summary["zones"]["error"] or not summary["ready"]:
             async for event in self._ask(
                 key,
                 context,
                 "retry",
-                "Повторить загрузку несохранённых объектов? Ответьте «да» или «нет».",
+                "Повторить загрузку несохранённых объектов и проверку доступности проекта? "
+                "Ответьте «да» или «нет».",
                 [
                     {"value": "yes", "label": "Да, повторить"},
                     {"value": "no", "label": "Нет"},
@@ -870,6 +894,15 @@ class ProjectFilesService(BaseLlmService):
             f"{summary['scenario_id']}, профиль — {summary['profile']}) создан из "
             f"базового сценария {summary['base_scenario_id']}."
         )
+        if summary.get("ready"):
+            lines.append(
+                "Проект готов: доступность территории, сценария и сохранённых объектов подтверждена."
+            )
+        else:
+            lines.append(
+                "Доступность созданного проекта не подтверждена за время ожидания. "
+                f"Причина: {summary.get('ready_error') or 'проверка не завершена'}."
+            )
         if summary["deleted_existing"]:
             lines.append(
                 "Удалено существующих объектов внутри границы: "

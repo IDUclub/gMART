@@ -199,6 +199,7 @@ class OrchestratorPlanBuilder:
         ]
         for attempt in range(_retries + 1):
             response = await self.llm_client.chat(
+                request_kind="orchestrator.plan",
                 model=model,
                 options={"temperature": 0, "num_predict": 2048},
                 think=False,

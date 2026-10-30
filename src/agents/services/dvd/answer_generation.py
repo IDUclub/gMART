@@ -1,8 +1,8 @@
 """Per-draft token budgets and bounded continuation of interrupted answers.
 
 Only visible text is carried into a continuation. Hidden reasoning cannot be
-resumed through the chat API. Nothing is released until a complete draft exists;
-the caller must still audit the assembled draft against the evidence.
+resumed through the chat API. Progress snapshots are unverified; the caller must
+still audit the assembled draft against the evidence before releasing an answer.
 """
 
 from __future__ import annotations
@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from contextlib import aclosing
 
 from loguru import logger
 
@@ -156,6 +157,20 @@ def append_continuation(prefix: str, addition: str) -> str:
     return prefix + addition
 
 
+def _visible_text(prefix: str, addition: str, *, partial: bool = False) -> str:
+    anchor = continuation_anchor(prefix)
+    if partial and prefix:
+        if prefix.startswith(addition):
+            return addition
+        if anchor and anchor.startswith(addition):
+            return prefix[: -len(anchor)] + addition
+    if prefix and addition.startswith(prefix):
+        return addition
+    if prefix and anchor and addition.startswith(anchor):
+        return prefix[: -len(anchor)] + addition
+    return append_continuation(prefix, addition)
+
+
 class DvdAnswerGenerator:
     def __init__(self, reducer: DvdContextReducer, *, llm_client=None):
         self.reducer = reducer
@@ -174,8 +189,15 @@ class DvdAnswerGenerator:
         build_messages: Callable[[str], list[dict]],
         *,
         iteration: int,
+        progress_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
+        """Generate a draft; async progress receives full, replaceable snapshots.
+
+        Continuation overlap removal may shrink a snapshot. Callback failures
+        are logged once and ignored; they cannot reject the generated answer.
+        """
         prefix = ""
+        callback_failed = False
         self.failed_parts.clear()
         for attempt in range(self.retries + 1):
             continuation = (
@@ -263,9 +285,10 @@ class DvdAnswerGenerator:
             pieces = []
             reason = None
             terminal = False
-            async for part in await self.llm_client.chat(
+            stream = await self.llm_client.chat(
                 model,
                 messages,
+                request_kind="dvd.answer",
                 think=False,
                 stream=True,
                 options={
@@ -273,12 +296,27 @@ class DvdAnswerGenerator:
                     "num_predict": budget,
                     "num_ctx": self.reducer.window,
                 },
-            ):
-                if part.message.content:
-                    pieces.append(part.message.content)
-                if getattr(part, "done_reason", None):
-                    reason = part.done_reason
-                terminal = terminal or bool(getattr(part, "done", False))
+            )
+            async with aclosing(stream):
+                async for part in stream:
+                    if part.message.content:
+                        pieces.append(part.message.content)
+                        if progress_callback is not None:
+                            addition = "".join(pieces)
+                            visible = _visible_text(prefix, addition, partial=True)
+                            try:
+                                await progress_callback(visible)
+                            except Exception as exc:
+                                if not callback_failed:
+                                    callback_failed = True
+                                    logger.warning(
+                                        "DVD answer progress callback failed iteration={} error_type={}",
+                                        iteration,
+                                        type(exc).__name__,
+                                    )
+                    if getattr(part, "done_reason", None):
+                        reason = part.done_reason
+                    terminal = terminal or bool(getattr(part, "done", False))
             addition = "".join(pieces)
             anchor = continuation_anchor(prefix)
             boundary_valid = (
@@ -287,12 +325,7 @@ class DvdAnswerGenerator:
                 or addition.startswith(anchor)
                 or addition.startswith(prefix)
             )
-            if prefix and addition.startswith(prefix):
-                assembled = addition
-            elif prefix and anchor and addition.startswith(anchor):
-                assembled = prefix[: -len(anchor)] + addition
-            else:
-                assembled = append_continuation(prefix, addition)
+            assembled = _visible_text(prefix, addition)
             progress = len(assembled) > len(prefix)
             logger.info(
                 "DVD answer model={} iteration={} attempt={} finish_reason={} "

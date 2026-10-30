@@ -7,6 +7,8 @@ from tests.helpers import FakeDvdMcpClient, answer_text, plan_json
 from tests.unit.test_dvd_answer_revision import ACCESS, SOURCE, audit
 from tests.unit.test_dvd_rag_service import _run
 
+pytestmark = pytest.mark.usefixtures("legacy_critic_quotes")
+
 HITS = [
     {
         "name": "СП 55.13330.2016",
@@ -51,6 +53,104 @@ def test_labels_follow_the_context_order():
         "[3]": ["СП 42.13330.2016, ред. от 31.05.2022", "таблица 7.1"],
         "[4]": ["СП 42.13330.2016, ред. от 31.05.2022", "раздел «Общие положения»"],
     }
+
+
+@pytest.mark.parametrize(
+    "name, version, expected",
+    [
+        ("Приказ N 111", "ред. от 06.12.2024", "Приказ N 111, ред. от 06.12.2024"),
+        ("Приказ N 111", "2016", "Приказ N 111, ред. 2016"),
+        (
+            "Приказ N 111",
+            "с изм. от 06.12.2024",
+            "Приказ N 111, ред. с изм. от 06.12.2024",
+        ),
+        (
+            "Приказ N 111",
+            "Приказ от 25.04.2016 N 111 (ред. от 06.12.2024)",
+            "Приказ от 25.04.2016 N 111 (ред. от 06.12.2024)",
+        ),
+        (
+            "ПРИКАЗ жилищно‑коммунального хозяйства N 111",
+            "Приказ  жилищно-коммунального хозяйства от 25.04.2016 N 111",
+            "Приказ жилищно-коммунального хозяйства от 25.04.2016 N 111",
+        ),
+        (
+            "Министерства строительства N 111",
+            "Приказ Министерства строительства от 25.04.2016 N 111",
+            "Приказ Министерства строительства от 25.04.2016 N 111",
+        ),
+        (
+            "СП 42.13330.2016 Планировка и застройка",
+            "Планировка и застройка (ред. от 06.12.2024)",
+            "СП 42.13330.2016 Планировка и застройка, ред. "
+            "Планировка и застройка (ред. от 06.12.2024)",
+        ),
+        (
+            "Приказ N 111 СП 42.13330.2016",
+            "Приказ N 111 (ред. от 06.12.2024)",
+            "Приказ N 111 СП 42.13330.2016, ред. Приказ N 111 (ред. от 06.12.2024)",
+        ),
+    ],
+)
+def test_document_title_preserves_name_information(name, version, expected):
+    assert citations([{"name": name, "version": version}]) == {"[1]": [expected, ""]}
+
+
+def test_regional_act_titles_from_production_share_one_reference():
+    issuer = (
+        "Приказ Министерства строительства, жилищно‑коммунального хозяйства "
+        "и энергетики Республики Карелия"
+    )
+    version_a = f"{issuer} от 25.04.2016 N 111 (ред. от 06.12.2024)"
+    version_b = f"{issuer} от 25 апреля 2016 г. N 111 (ред. от 06.12.2024)"
+    hits = [
+        {"name": f"{issuer} N 111", "version": version_a, "numbering": "1"},
+        {"name": issuer, "version": version_b, "numbering": "2"},
+    ]
+    refs = citations(hits)
+    assert refs == {"[1]": [version_a, "п. 1"], "[2]": [version_b, "п. 2"]}
+    assert readable("Требование [1], [2].", refs) == (
+        f"Требование ({version_b}, п. 1, п. 2)."
+    )
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "Приказ Министерства от 25.04.2016 N 112 (ред. от 06.12.2024)",
+        "Приказ Ведомства от 25.04.2016 N 111 (ред. от 06.12.2024)",
+        "Приказ Министерства от 26.04.2016 N 111 (ред. от 06.12.2024)",
+        "Приказ Министерства от 25.04.2016 N 111 (ред. от 07.12.2024)",
+        "Приказ Министерства от 25.04.2016 N 111",
+    ],
+)
+def test_different_acts_and_editions_stay_separate(other):
+    document = "Приказ Министерства от 25.04.2016 N 111 (ред. от 06.12.2024)"
+    refs = citations(
+        [{"name": document, "numbering": "1"}, {"name": other, "numbering": "2"}]
+    )
+    assert readable("Требование [1][2].", refs) == (
+        f"Требование ({document}, п. 1; {other}, п. 2)."
+    )
+
+
+@pytest.mark.parametrize("hyphen", ["‐", "‑", "–", "-"])
+@pytest.mark.parametrize("month", ["января", "апреля", "декабря"])
+def test_document_identity_normalises_typography_and_dates(hyphen, month):
+    number = {"января": "01", "апреля": "04", "декабря": "12"}[month]
+    document = f"Приказ «Жилищно‑коммунальное хозяйство» от 05.{number}.2016 N 111"
+    other = (
+        f'ПРИКАЗ  "Жилищно{hyphen}коммунальное хозяйство" '
+        f"от 5 {month} 2016 г. N 111"
+    )
+    refs = citations(
+        [{"name": document, "numbering": "1"}, {"name": other, "numbering": "2"}]
+    )
+    expected = max((" ".join(value.split()) for value in [document, other]), key=len)
+    assert readable("Требование [1][2][1].", refs) == (
+        f"Требование ({expected}, п. 1, п. 2)."
+    )
 
 
 @pytest.mark.parametrize(

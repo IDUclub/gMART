@@ -279,6 +279,7 @@ class ScenarioAnalytics:
                         selection_messages(query, facts),
                         IndicatorRequest,
                         "indicator selection",
+                        request_kind="scenario.mapping",
                         post_validate=lambda value: validate_request(
                             value, facts, query
                         ),

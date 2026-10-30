@@ -32,6 +32,16 @@ class StatusResponse(BaseModel):
         "compliance_scope",
         "restriction_zones",
         "user_files",
+        "norms_loading",
+        "dedup",
+        "source_layers",
+        "zones_building",
+        "objects_by_geometry",
+        "violation_geometry",
+        "cache",
+        "report_build",
+        "archive",
+        "llm_summary",
     ]
     text: str
 
@@ -75,9 +85,13 @@ class UserFilesEventContent(BaseModel):
     pending: list[str] = Field(default_factory=list)
 
 
+class FeatureCollectionWithMeta(FeatureCollection):
+    meta: dict[str, Any] | None = None
+
+
 class FeatureCollectionResponse(BaseModel):
     name: str
-    feature_collection: FeatureCollection
+    feature_collection: FeatureCollectionWithMeta
 
 
 class ChatCreatedEvent(BaseModel):
@@ -137,7 +151,17 @@ class ComplianceSummaryEventContent(BaseModel):
     unsupported_norms: int
     not_applicable_norms: int
     partial_norms: int
-    results: list[ComplianceResult]
+    results: list[ComplianceResult | dict[str, Any]]
+    counts: dict[str, int] = Field(default_factory=dict)
+    total_restrictions: int | None = None
+    executed_norms: int | None = None
+    formal_passed_norms: int = 0
+    scenario_id: int | str | None = None
+    created_at: str | None = None
+    duplicate_checks: int = 0
+    skipped_without_plan: int = 0
+    equivalent_sources: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    files: dict[str, str] = Field(default_factory=dict)
     # Topic entities and documents the norms were filtered by; absent for a full audit.
     scope: dict[str, Any] | None = None
     # How many graph documents are (not) in force on the scenario's territory.
@@ -152,7 +176,9 @@ class RestrictionZoneEventContent(BaseModel):
     restriction_id: str
     template: str
     template_version: int
-    status: Literal["shown", "no_objects", "unverifiable", "unsupported"]
+    status: Literal["shown", "not_checked", "no_objects", "unverifiable", "unsupported"]
+    status_ru: str | None = None
+    build_status: str | None = None
     zone_kind: Literal["restriction", "required"]
     zone_count: int
     skipped_objects: int = 0
@@ -190,6 +216,16 @@ class ComplianceProgressEventContent(BaseModel):
     unsupported_norms: int
 
 
+class ProgressEventContent(BaseModel):
+    stage: str
+    stage_ru: str
+    percent: int = Field(ge=0, le=100)
+    current: int = Field(ge=0)
+    total: int = Field(ge=0)
+    label: str
+    bar: str
+
+
 class RestrictionsResponse(BaseModel):
     type: Literal[
         "status",
@@ -206,6 +242,7 @@ class RestrictionsResponse(BaseModel):
         "requirement_resolution",
         "compliance_result",
         "compliance_progress",
+        "progress",
         "compliance_summary",
         "restriction_zone",
         "restriction_inventory",
@@ -226,6 +263,7 @@ class RestrictionsResponse(BaseModel):
         | RequirementResolutionEventContent
         | ComplianceResult
         | ComplianceProgressEventContent
+        | ProgressEventContent
         | ComplianceSummaryEventContent
         | RestrictionZoneEventContent
         | RestrictionInventoryEventContent

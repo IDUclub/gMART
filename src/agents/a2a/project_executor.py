@@ -21,7 +21,12 @@ from src.common.service_auth import user_id_from_jwt
 
 A2AData = dict[str, Any]
 A2AEventData = dict[str, Any]
-_ARTIFACT_EVENTS = {"project_created", "scenario_created", "project_summary"}
+_ARTIFACT_EVENTS = {
+    "project_created",
+    "scenario_created",
+    "project_ready",
+    "project_summary",
+}
 
 
 class ProjectAgentExecutor:

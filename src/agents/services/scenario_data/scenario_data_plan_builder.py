@@ -883,7 +883,7 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                 ]
             if attempt < MAX_PLANNER_RETRIES:
                 call["format"] = schema.model_json_schema()
-            response = await self.llm_client.chat(**call)
+            response = await self.llm_client.chat(request_kind="scenario.plan", **call)
             raw = (response.get("message") or {}).get("content") or ""
             if (
                 schema is ExecutionPlanRevision
@@ -1123,7 +1123,7 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                     }
                 ]
                 call["messages"] = messages
-            response = await self.llm_client.chat(**call)
+            response = await self.llm_client.chat(request_kind="scenario.plan", **call)
             raw = response["message"]["content"]
             if not (raw or "").strip():
                 # Name the real cause. "Empty answer" on its own sent a reader looking for a

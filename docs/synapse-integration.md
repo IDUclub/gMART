@@ -128,6 +128,10 @@ Synapse project/run. Остальные валидные A2A-клиенты со
 В gMART уже есть `KeycloakTokenClient`, автоматическое обновление сервисного токена и
 заголовок `X-User-Id` в [service_auth.py](../src/common/service_auth.py).
 
+Для создания проектов из файлов сервисному клиенту gMART необходима роль Urban API
+`projects:write`. Владелец проекта задаётся через `user_id`, равный `sub` пользователя
+запроса, в том числе при вызове через Synapse.
+
 Для фонового relay нельзя требовать исходный пользовательский access token. Нужно
 расширить `JsonApiHandler` и `ChatStorageApiClient`, чтобы они принимали явный `user_id`:
 

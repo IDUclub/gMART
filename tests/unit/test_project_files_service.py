@@ -1,10 +1,14 @@
 """Dialogue of the project creation from files: questions, answers, retry."""
 
 import json
+from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import fakeredis.aioredis
 import pytest
 
+from src.agents.common.exceptions.base_exceptions import AgentsUnauthorizedException
 from src.agents.services.compilance.compliance_entity_mapping import EntityMapper
 from src.agents.services.compilance.compliance_uploads import ComplianceUploadService
 from src.agents.services.pipeline_state import PipelineStateStore
@@ -14,7 +18,7 @@ from src.agents.services.project_files.project_files_service import (
 )
 from src.agents.services.project_files.project_types import PROJECT_CLASSIFY_PROMPT
 from src.common.service_auth import internal_user_context_jwt
-from tests.unit.test_project_creation import BORDER, FakeUrban, square
+from tests.unit.test_project_creation import BORDER, FakeUrban, no_sleep, square
 from tests.unit.test_project_types import PHYSICAL, SERVICES, ZONES
 
 ALICE = "e30.eyJzdWIiOiJhbGljZSJ9.sig"  # {"sub": "alice"}
@@ -106,7 +110,14 @@ def env():
 
     def build(urban=None, llm=None):
         service = ProjectFilesService(
-            "http://ollama", None, urban or Urban(), store, uploads
+            "http://ollama",
+            None,
+            urban or Urban(),
+            store,
+            uploads,
+            user_token_verifier=SimpleNamespace(
+                verify_user=AsyncMock(return_value="alice")
+            ),
         )
         service.llm_client = llm or Llm()
         service.entity_mapper = EntityMapper(
@@ -122,11 +133,11 @@ async def upload(uploads, *files) -> str:
     return (await uploads.create("alice", list(files)))["upload_id"]
 
 
-async def run(service, query, upload_ids=None, key=CHAT, inputs=None):
+async def run(service, query, upload_ids=None, key=CHAT, inputs=None, token=ALICE):
     return [
         event
         async for event in service.run_project_pipeline(
-            token=ALICE,
+            token=token,
             model="m",
             temperature=0,
             user_query=query,
@@ -150,6 +161,38 @@ async def test_without_files_asks_to_upload(env):
     assert "загрузите файлы проекта" in of_type(events, "chunk")[0]["text"]
 
 
+async def test_readiness_timeout_offers_retry_without_recreating_project(env):
+    class PendingUrban(Urban):
+        available = False
+
+        async def get_project_territory(self, token, project_id):
+            return {"geometry": BORDER if self.available else None}
+
+    store, uploads, build = env
+    upload_id = await upload(
+        uploads, ("design.geojson", DESIGN), ("border.geojson", BOUNDARY)
+    )
+    await store.add_chat_uploads(CHAT, [upload_id])
+    urban = PendingUrban()
+    service = build(urban)
+    service.creator = ProjectCreator(urban, sleep=no_sleep)
+    await run(service, "Создай проект")
+    events = await run(service, "да")
+    assert of_type(events, "project_summary")[0]["ready"] is False
+    text = of_type(events, "chunk")[0]["text"]
+    assert "не подтверждена за время ожидания" in text
+    assert "Геометрия территории" in text
+    assert "project_id 10" in text and "scenario_id 12" in text
+    assert of_type(events, "clarification")[0]["kind"] == "retry"
+    urban.available = True
+    urban.calls.clear()
+    events = await run(service, "да")
+    assert urban.calls == []
+    assert of_type(events, "project_summary")[0]["ready"] is True
+    assert "Проект готов" in of_type(events, "chunk")[0]["text"]
+    assert await store.get_project_dialogue(CHAT) is None
+
+
 async def test_chat_files_are_offered_and_used_after_yes(env):
     store, uploads, build = env
     upload_id = await upload(
@@ -167,6 +210,7 @@ async def test_chat_files_are_offered_and_used_after_yes(env):
 
     second = await run(service, "да")
 
+    assert urban.calls[0] == ("create_project", "Проект из файлов: design", "alice")
     summary = of_type(second, "project_summary")[0]
     assert summary["project_id"] == 10 and summary["scenario_id"] == 12
     assert summary["profile"] == "Многоэтажная жилая зона"
@@ -290,6 +334,8 @@ async def test_failed_objects_are_retried_after_yes(env):
 
     first = await run(service, "Создай проект", upload_ids=[upload_id])
     assert of_type(first, "project_summary")[0]["failed_total"] == 1
+    pending = await store.get_project_dialogue(CHAT)
+    assert pending["context"]["run"]["owner"] == "alice"
     assert "422" in of_type(first, "chunk")[0]["text"]
     assert of_type(first, "clarification")[0]["kind"] == "retry"
 
@@ -373,18 +419,26 @@ async def test_context_layers_are_not_created(env):
     assert of_type(events, "project_summary")[0]["objects"]["total"] == 2
 
 
-async def test_project_is_created_with_the_users_own_client(env):
+async def test_project_uses_the_service_client(env):
     store, uploads, _ = env
-    service_client, user_client = Urban(), Urban()
+    service_client = Urban()
 
     service = ProjectFilesService(
-        "http://ollama", None, service_client, store, uploads, user_client
+        "http://ollama",
+        None,
+        service_client,
+        store,
+        uploads,
+        user_token_verifier=SimpleNamespace(
+            verify_user=AsyncMock(return_value="alice")
+        ),
     )
 
-    assert service.urban is user_client and service.creator.urban_api is user_client
+    assert service.urban is service_client
+    assert service.creator.urban_api is service_client
 
 
-async def test_synapse_call_without_a_user_token_is_refused(env):
+async def test_synapse_call_creates_project_for_the_context_user(env):
     _, uploads, build = env
     upload_id = await upload(
         uploads, ("design.geojson", DESIGN), ("border.geojson", BOUNDARY)
@@ -405,5 +459,158 @@ async def test_synapse_call_without_a_user_token_is_refused(env):
         )
     ]
 
-    assert "через Synapse нельзя" in of_type(events, "chunk")[0]["text"]
-    assert not urban.calls
+    assert urban.calls[0] == ("create_project", "Проект из файлов: design", "alice")
+    assert of_type(events, "project_summary")[0]["ready"] is True
+    assert of_type(events, "project_ready")
+    service.user_token_verifier.verify_user.assert_not_awaited()
+
+
+@pytest.mark.parametrize("token", [ALICE, "e30.eyJzdWIiOiJhbGljZSJ9.", "invalid"])
+async def test_unverified_token_refused_before_any_urban_or_history_call(env, token):
+    _, uploads, build = env
+    upload_id = await upload(
+        uploads, ("design.geojson", DESIGN), ("border.geojson", BOUNDARY)
+    )
+    service = build()
+    service.user_token_verifier.verify_user.side_effect = AgentsUnauthorizedException(
+        "Invalid access token"
+    )
+    service.urban = AsyncMock()
+    service.creator.urban_api = service.urban
+    service.get_chat_messages = AsyncMock()
+    service.create_chat = AsyncMock()
+
+    events = [
+        event
+        async for event in service.run_project_pipeline(
+            token=token,
+            model="m",
+            temperature=0,
+            user_query="Создай проект",
+            chat_id=CHAT,
+            upload_ids=[upload_id],
+        )
+    ]
+
+    assert of_type(events, "chunk")[0]["text"] == (
+        "Не удалось подтвердить токен пользователя, поэтому проект не создан. "
+        "Войдите заново и повторите запрос."
+    )
+    service.user_token_verifier.verify_user.assert_awaited_once_with(token)
+    assert not service.urban.mock_calls
+    service.get_chat_messages.assert_not_awaited()
+    service.create_chat.assert_not_awaited()
+
+
+async def test_unverified_token_cannot_replay_an_existing_request(env):
+    _, _, build = env
+    service = build()
+    await service.state_store.create(
+        "existing-request",
+        chat_id=None,
+        user_query="Создай проект",
+        scenario_id=None,
+        model="m",
+        temperature=0,
+    )
+    service.user_token_verifier.verify_user.side_effect = AgentsUnauthorizedException(
+        "Invalid access token"
+    )
+    service.state_store.get_buffered_events = AsyncMock()
+    events = [
+        event
+        async for event in service.run_project_pipeline(
+            token="forged",
+            model="m",
+            temperature=0,
+            user_query="Создай проект",
+            request_id="existing-request",
+            persist_history=False,
+        )
+    ]
+    assert (
+        "Не удалось подтвердить токен пользователя"
+        in of_type(events, "chunk")[0]["text"]
+    )
+    service.state_store.get_buffered_events.assert_not_awaited()
+
+
+async def test_verified_subject_is_used_instead_of_unverified_payload(env):
+    _, uploads, build = env
+    upload_id = await upload(
+        uploads, ("design.geojson", DESIGN), ("border.geojson", BOUNDARY)
+    )
+    service = build()
+    # The mocked verifier returns alice, regardless of the token's readable sub.
+    token = "e30.eyJzdWIiOiJib2IifQ.sig"
+    events = await run(service, "Создай проект", [upload_id], token=token)
+
+    service.user_token_verifier.verify_user.assert_awaited_once_with(token)
+    assert service.urban.calls[0] == (
+        "create_project",
+        "Проект из файлов: design",
+        "alice",
+    )
+    assert of_type(events, "project_ready")
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_resumed_run_uses_saved_or_current_verified_owner(env, legacy):
+    store, uploads, build = env
+    upload_id = await upload(
+        uploads, ("design.geojson", DESIGN), ("border.geojson", BOUNDARY)
+    )
+    service = build(Urban(fail_keys={"h1"}))
+    await run(service, "Создай проект", [upload_id])
+    pending = await store.get_project_dialogue(CHAT)
+    saved_run = pending["context"]["run"]
+    if legacy:
+        saved_run.pop("owner")
+    await store.set_project_dialogue(CHAT, pending)
+    service.urban.calls.clear()
+
+    events = await run(service, "да", token="refreshed-token")
+
+    pending = await store.get_project_dialogue(CHAT)
+    assert pending["context"]["run"]["owner"] == "alice"
+    assert of_type(events, "project_summary")[0]["failed_total"] == 1
+    assert not any(call[0] == "create_project" for call in service.urban.calls)
+
+
+@pytest.mark.parametrize("owner_location", ["run", "context"])
+@pytest.mark.parametrize("reply", ["да", "нет", "Создай другой проект"])
+async def test_foreign_dialogue_refused_without_urban_calls_or_state_changes(
+    env, owner_location, reply
+):
+    store, uploads, build = env
+    upload_id = await upload(
+        uploads, ("design.geojson", DESIGN), ("border.geojson", BOUNDARY)
+    )
+    service = build(Urban(fail_keys={"h1"}))
+    await run(service, "Создай проект", [upload_id])
+    pending = await store.get_project_dialogue(CHAT)
+    if owner_location == "run":
+        pending["context"].pop("owner", None)
+    else:
+        pending["context"]["run"].pop("owner")
+    await store.set_project_dialogue(CHAT, pending)
+    before = deepcopy(pending)
+    service.user_token_verifier.verify_user.return_value = "bob"
+    urban = AsyncMock()
+    service.urban = urban
+    service.creator.urban_api = urban
+    service.state_store.set_project_dialogue = AsyncMock(
+        wraps=service.state_store.set_project_dialogue
+    )
+
+    events = await run(
+        service, reply, inputs={"project_name": "Чужое изменение"}, token="bob-token"
+    )
+
+    assert of_type(events, "chunk")[0]["text"] == (
+        "Этот запуск создания проекта принадлежит другому пользователю, "
+        "продолжить его нельзя."
+    )
+    assert not urban.mock_calls
+    service.state_store.set_project_dialogue.assert_not_awaited()
+    assert await store.get_project_dialogue(CHAT) == before

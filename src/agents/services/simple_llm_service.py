@@ -51,7 +51,9 @@ class SimpleLlmService(BaseLlmService):
         model = await self.resolve_model(model)
         await self.validate_model(model)
         messages = [{"role": "user", "content": user_request}]
-        return await self.llm_client.chat(model, messages, stream=False)
+        return await self.llm_client.chat(
+            model, messages, request_kind="simple_llm", stream=False
+        )
 
     async def generate_stream_message(
         self, user_request: str, model: str | None
@@ -67,7 +69,9 @@ class SimpleLlmService(BaseLlmService):
 
         model = await self.resolve_model(model)
         messages = [{"role": "user", "content": user_request}]
-        async for part in await self.llm_client.chat(model, messages, stream=True):
+        async for part in await self.llm_client.chat(
+            model, messages, request_kind="simple_llm", stream=True
+        ):
             part: LlmChatResponse
             if part.done:
                 yield {"type": "Text", "content": part.message.content}

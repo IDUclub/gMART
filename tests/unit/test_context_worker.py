@@ -67,6 +67,7 @@ async def test_document_summary_uses_remaining_window_and_retains_document_inten
         ],
     )
     call = fake_llm.chat_calls[-1]
+    assert call.request_kind == "context_summary"
     assert call.options["num_ctx"] == 32000
     assert 6000 < call.options["num_predict"] < 32000
     assert "исходный вопрос" in call.messages[0]["content"]

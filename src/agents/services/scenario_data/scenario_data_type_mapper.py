@@ -365,6 +365,7 @@ class UrbanTypeMapper:
             selection_messages(query, candidates),
             ScenarioEntitySelection,
             "scenario entity selection",
+            request_kind="scenario.mapping",
             post_validate=lambda selection: validate_selection(selection, candidates),
         )
 
@@ -411,6 +412,7 @@ class UrbanTypeMapper:
             entity_request_messages(query),
             ScenarioEntityRequest,
             "scenario entity request",
+            request_kind="scenario.mapping",
             post_validate=validate,
         )
 
@@ -452,6 +454,7 @@ Requests: {json.dumps(request_payload, ensure_ascii=False)}"""
                 [{"role": "system", "content": prompt}],
                 TypeSearchPlan,
                 "type search patterns",
+                request_kind="scenario.mapping",
                 post_validate=validate,
             )
         except ValueError as exc:
@@ -557,6 +560,7 @@ Candidates: {candidate_payload}"""
             [{"role": "system", "content": prompt}],
             TypeCandidateSelection,
             "type candidate selection",
+            request_kind="scenario.mapping",
             post_validate=validate,
         )
 
@@ -593,6 +597,7 @@ Candidates: {candidate_payload}"""
             [{"role": "system", "content": prompt}],
             TypeSelectionAssessment,
             "type candidate assessment",
+            request_kind="scenario.mapping",
             post_validate=validate,
         )
 
@@ -603,6 +608,7 @@ Candidates: {candidate_payload}"""
         schema,
         label: str,
         *,
+        request_kind: str,
         post_validate=None,
     ):
         error = ""
@@ -626,7 +632,7 @@ Candidates: {candidate_payload}"""
                         "content": (f"Исправь JSON: {error}. Верни только JSON."),
                     }
                 ]
-            response = await self.llm_client.chat(**call)
+            response = await self.llm_client.chat(request_kind=request_kind, **call)
             raw = (response.get("message") or {}).get("content") or ""
             if not raw.strip():
                 done_reason = response.get("done_reason") or "unknown"

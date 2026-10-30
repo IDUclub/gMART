@@ -1,3 +1,79 @@
+## v0.34.2 (2026-10-30)
+
+[fix/ICII-226-review-fixes](https://github.com/IDUclub/gMART/pull/266) (#266)
+
+- fix: исправить сводку проверки норм и названия чатов
+- test: обновить интеграционные проверки норм и восстановления из Redis
+
+## v0.34.1 (2026-10-29)
+
+[docs/ICII-226-compliance-status-docs](https://github.com/IDUclub/gMART/pull/265) (#265)
+
+- docs: добавить контракт и руководство проверки норм по зонам со статусами
+- docs: убрать пометки о незавершённом повторе ChatStorage
+
+## v0.34.0 (2026-10-29)
+
+[feat/ICII-226-compilance-vis-status](https://github.com/IDUclub/gMART/pull/264) (#264)
+
+- feat(idu_mcp): искать сервисы по геометрии зон и собирать слой нормы со статусами
+- feat(agents): проверять нормы по зонам со статусами, кешировать проверки и отдавать архив
+- feat(frontend): раскрашивать зоны норм по статусу и показывать прогресс и файлы проверки
+- docs: описать проверку норм по зонам со статусами
+
+## v0.33.0 (2026-10-28)
+
+[feat/project-service-token](https://github.com/IDUclub/gMART/pull/263) (#263)
+
+- feat(agents): создавать проект из файлов сервисным токеном от имени проверенного пользователя
+
+## v0.32.1 (2026-10-27)
+
+[fix/project-readiness-check](https://github.com/IDUclub/gMART/pull/261) (#261)
+
+- feat(agents): подтверждать доступность проекта из файлов перед ответом о готовности
+
+## v0.32.0 (2026-10-27)
+
+[feat/ICII-205-vllm-priority](https://github.com/IDUclub/gMART/pull/256) (#256)
+
+- feat(agents): приоритет запросов к vLLM через OPENAI_REQUEST_PRIORITY
+- feat(agents): приоритет vLLM для каждого вызова LLM по типу запроса
+
+## v0.31.0 (2026-10-27)
+
+[feat/ICII-205-critic-sentence-ids](https://github.com/IDUclub/gMART/pull/260) (#260)
+
+- feat(agents): подтверждать строки ответа номерами предложений в критике агента документов
+
+## v0.30.0 (2026-10-27)
+
+[feat/ICII-205-planner-bypass](https://github.com/IDUclub/gMART/pull/259) (#259)
+
+- feat(agents): искать по вопросу без планировщика для простых вопросов агента документов
+- ci: пушить bump-коммит токеном VERSION_STATUS_TOKEN, чтобы проверки шли без подтверждения
+- Revert "ci: пушить bump-коммит токеном VERSION_STATUS_TOKEN, чтобы проверки шли без подтверждения"
+
+## v0.29.0 (2026-10-27)
+
+[feat/ICII-205-answer-preview](https://github.com/IDUclub/gMART/pull/258) (#258)
+
+- feat(agents): показывать предварительный анализ при генерации ответа агента документов
+
+## v0.28.5 (2026-10-27)
+
+[fix/ICII-205-citation-names](https://github.com/IDUclub/gMART/pull/257) (#257)
+
+- fix(agents): не дублировать название документа в ссылках ответа
+
+## v0.28.4 (2026-10-26)
+
+[chore/sync-main](https://github.com/IDUclub/gMART/pull/255) (#255)
+
+- v0.22.0 (#245)
+- v0.27.0 (#249)
+- v0.28.3 (#254)
+
 ## v0.28.3 (2026-10-26)
 
 [chore/prod-synapse-vars](https://github.com/IDUclub/gMART/pull/253) (#253)

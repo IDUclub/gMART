@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Callable
 
 from src.idu_mcp.common.api_handlers.json_api_handler import JsonApiHandler
 
@@ -136,6 +137,28 @@ class UrbanApiClient:
             for physical_object_id in physical_objects
         ]
         return await asyncio.gather(*tasks)
+
+    async def get_services_by_geometry(
+        self,
+        scenario_id: int,
+        service_type_id: int,
+        geometry: dict,
+        token: str,
+        *,
+        intersection_type: str = "intersects",
+        on_attempt: Callable[[], None] | None = None,
+    ) -> dict:
+        """One type and an EPSG:4326 geometry; auth/retries match GetServices."""
+        return await self.json_handler.post(
+            f"v1/scenarios/{scenario_id}/services/by_geometry/geojson",
+            geometry,
+            auth_token=token,
+            params={
+                "service_type_id": service_type_id,
+                "intersection_type": intersection_type,
+            },
+            on_attempt=on_attempt,
+        )
 
     async def get_available_scenario_services(
         self, scenario_id: int, token: str

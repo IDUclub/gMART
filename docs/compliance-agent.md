@@ -131,7 +131,7 @@ LLM-разбор), выводится статусом `compliance_scope`, ст�
 документа завершает задачу в `input-required`: текст вопроса и DataPart с
 `options`. Ответ — следующее сообщение с тем же `contextId`. Слои нарушений
 отдаются артефактами `compliance-layer-N` (GeoJSON), сводка — `compliance-summary`,
-ссылка на отчёт — `compliance-file`.
+ссылка на `summary.md` — `compliance-file`, на ZIP — `compliance-archive`.
 
 ## Документы, действующие на территории
 
@@ -161,8 +161,9 @@ IDU_DVD, для старых синхронизаций — по имени бе
 Вместо объектов сценария можно проверить собственный проект пользователя —
 слои, выгруженные из генератора застройки или ГИС. Агент сам подбирает нормы по
 загруженным объектам и запросу, запускает те же детерминированные шаблоны и
-отдаёт результат в том же формате (`compliance_result`, слои нарушений, «Объекты
-без нарушений», Markdown-отчёт).
+отдаёт результат в общем формате: `compliance_result`, слои норм со статусами,
+`summary.md` и ZIP. Подробнее — [контракт](compliance-status-contract.md) и
+[руководство](compliance-status-guide.md).
 
 ### Загрузка
 
@@ -445,17 +446,12 @@ IDU MCP:
 (объекты, к которым относится норма), `provenance` (документ и пункт), для
 буферов — `buffer_size`, для зональных норм — `operator`, `threshold`, `unit`.
 
-События SSE: статус `restriction_zones`; `restriction_zone` на каждую норму (без
-геометрии); `feature_collection` «Зона ограничения — СП 42.13330.2016, п. 7.1» или
-«Зона требуемого размещения — …» только для непустых зон; итоговое
-`restriction_inventory` со счётчиками и списком зон; текст с перечнем зон на
-карте; ссылка на отчёт `restriction_inventory_report_<scenario_id>_<время>.md`.
-Checkpoint `restriction_inventory` защищает от повторного построения при
-переподключении. В историю записываются вызовы получения данных и
-`CreateRestrictionZones` только для показанных зон, поэтому ChatStorage
-восстанавливает их при открытии чата (ChatStorage подставляет накопленные слои в
-`layers` этого инструмента). A2A отдаёт сводку артефактом
-`compliance-restriction_inventory`.
+Inventory выдаёт `status` и `progress`, `restriction_zone` без геометрии, затем
+`restriction_inventory`, финальный `chunk`, слои «Норма — …» со статусом
+`not_checked`, `summary.md` и последним ZIP. Нет Check*, `compliance_result`
+и `compliance_summary`. Диск хранит `inventory.json`, завершённый ZIP переиспользуется.
+A2A выдаёт `compliance-restriction_inventory`, `compliance-layer-N`,
+`compliance-file` и `compliance-archive`. [Последовательность и поля](compliance-status-contract.md#последовательность-inventory).
 
 ## CheckPlan v1
 
@@ -552,6 +548,8 @@ Checkpoint `restriction_inventory` защищает от повторного п
 
 ## SSE и checkpoints
 
+Контракт статусов и архива: [compliance-status-contract.md](compliance-status-contract.md).
+
 К существующему потоку добавлены статусы:
 
 - `compliance_scope` — разбор тем и документов и применённая область;
@@ -568,28 +566,32 @@ Checkpoint `restriction_inventory` защищает от повторного п
 | `requirement_resolution` | effective/resolved/missing requirements |
 | `compliance_result` | полный результат одной нормы с coverage и evidence |
 | `compliance_summary` | итоговые счётчики всего запроса |
+| `progress` | stage, stage_ru, percent, current, total, label, bar |
+| `compliance_progress` | прежние счётчики выполненных и ожидающих норм |
+| `file` | summary.md, затем ZIP последним |
 
 После каждого этапа данные сохраняются в Redis. При повторном подключении с тем же
 `request_id` сервис сначала отдаёт сохранённый буфер событий; завершённый pipeline
 не запускает вычисления повторно.
 
-События `feature_collection`: для каждой нарушенной нормы отдельно отдаётся слой
-«Нарушение нормы — …», а перед ссылкой на отчёт — один общий слой «Объекты без
-нарушений» со всеми проверенными объектами, которые не нарушили ни одной нормы.
+После итогового LLM-текста приходят `feature_collection` «Норма — …» для доступных
+результатов, включая выполненные нормы. Внутри — `zone`, `violation`, `object`;
+зоны окрашиваются по status, общие атрибуты группируются по norm_id.
+Затем `file` summary.md и последним ZIP. [Карта и архив](compliance-status-guide.md).
 
 ## ChatStorage и повтор расчёта
 
-В историю записываются только вызовы инструментов (`tool_call`) и текстовый ответ
-(`text`), включая вопросы для уточнения. Статусы, `check_plan`,
+В историю записываются вызовы инструментов (`tool_call`), текстовый ответ
+(`text`), включая вопросы для уточнения, и дескрипторы `file` без role/download_url.
+Статусы, `check_plan`,
 `requirement_resolution`, `compliance_result` и `compliance_summary` не включаются
 в сообщение MongoDB, чтобы объёмные результаты проверки не превышали лимит BSON.
 Полные результаты остаются доступны в SSE-потоке и Redis-журнале текущего запроса.
 
-Из вызовов получения данных (`GetServices`, `GetPhysicalObjects`,
-`GetFunctionalZones`) в историю попадают только те, что вернули объекты. Клиент,
-открывающий чат заново, повторяет сохранённые вызовы через ChatStorage и показывает
-их результаты слоями; вызов без объектов (тип зоны, которого нет в сценарии)
-превращался бы в пустой слой с одним `meta`.
+Новая сценарная цепочка включает GetProjectTerritory, GetServicesByGeometry,
+CreateRestrictionZones и Check*. GetServicesByGeometry предоставляет layer_name
+и читает zones_layers из layers. ChatStorage повторяет эту цепочку и для Check*
+показывает norm_layer.
 
 При восстановлении слоёв ChatStorage повторяет сохранённые стабильные MCP-вызовы и
 подставляет заново полученные слои в новые геометрические инструменты. Это
@@ -673,30 +675,18 @@ Without NormGraph, or without accepted plans, compliance reports that the check
 was not performed instead of inventing plans or claiming compliance.
 
 
-### UI layers and final explanation
+### Слои и итоговая рекомендация
 
-Only non-empty violation layers are emitted, as `feature_collection` events named
-`Нарушение нормы — СП 42.13330.2016, п. 7.1` (without the clause when absent).
-If the document name is missing, the label is `Источник не указан`. A short SP
-designation is extracted from a full document title when available; other document
-names are retained. Repeated layer names receive a numeric suffix, never a UUID.
-Passed and non-executed checks emit no per-norm layers. Instead, right before the
-report `file` frame (after the final `chunk`), one `feature_collection` named
-`Объекты без нарушений` merges every checked object that passed at least one norm
-and violated none (`services/compilance/compliance_layers.py`). Each object appears
-once, keyed by `object_ref.id`; per-norm verdict fields are dropped and
-`passed_norms` lists the document/clause references it passed, equivalent norms
-included. The layer is omitted when no checked object is compliant. `compliance_result` and
-`compliance_summary.results` retain verdicts, coverage, source and evidence but
-omit `violated_features` and `passed_features`; geometry is not duplicated there.
-The final text lists each violated norm by document/clause, its requirement
-and the number of violating objects. Partial checks also state the unchecked count.
-Counts are per norm and must not be added as a count of unique objects.
-The same textual references, including equivalent sources, are supplied to the
-model for follow-up answers. Missing source names use `Источник не указан`;
-internal restriction IDs remain in structured results and evidence only. If an
-older plan lacks source labels, compliance fills them from the retrieved norm’s
-`provenance.name` and `provenance.numbering` without changing its internal ID.
+Слой «Норма — документ, п. пункт» содержит feature_kind=zone|violation|object.
+Группировка по norm_id, цвет зоны по status; norm_status описывает норму в целом.
+Слои есть и для выполненных норм, при формальном выполнении слой может быть пустым.
+Названия без UUID, при совпадении добавляется числовой суффикс.
+Геометрия исключена из compliance_result и compliance_summary.results.
+
+LLM формирует рекомендации по компактной сводке максимум 50 норм, без сырых
+геометрий и evidence; timeout 60 секунд. Ошибка или пустой ответ включают
+детерминированный fallback. Это лимит контекста рекомендации, не числа проверок.
+Финальный текст предшествует слоям. [Поля и примеры](compliance-status-contract.md).
 
 ### Equivalent checks
 
@@ -706,56 +696,30 @@ catalogue first. Different thresholds, directions, geometry constraints or attri
 candidate order are not merged. If catalogue resolution fails or is ambiguous, checks
 remain separate and the executor reports the missing requirement.
 
-One `check_plan`, result and (only when violated) `feature_collection` is emitted per
-group. `check_plan.content.equivalent_sources`, the result's `source.equivalent_sources`
+One `check_plan`, result and available per-norm `feature_collection` is emitted per
+group. The result's `source.equivalent_sources`
 and the summary's `equivalent_sources` preserve all source references. The summary
 includes `duplicate_checks`; its existing norm counts refer to executed unique checks.
 The final text names equivalent sources. Stored NormGraph norms are not deleted.
 
-### Markdown report
+### Сводка и архив
 
-When at least one norm was actually checked (`passed` or `violated`), the stream
-closes with an `event: file` frame after the final `chunk`: a link to a Markdown
-report (`compliance_report_<scenario_id>_<YYYYMMDD-HHMM>.md`). It is built
-deterministically from `compliance_summary` by
-`services/compilance/compliance_report.py`, without the LLM, and contains:
+summary.md и compliance_<scenario_id|files>_<YYYYMMDD-HHMM>.zip заменяют старый
+одиночный отчёт. Архив содержит summary.json со всеми нормами, manifest.json с
+SHA-256, общий layers.geojson; для запущенных проверок — папки violated/partial/passed
+с report.md, result.json, result.geojson и входными layers/. Эквивалентные нормы
+ссылаются на папку представителя. Inventory содержит общие файлы без папок проверок.
 
-- summary counters: checked norms, failed, passed, checked as equivalent, not
-  checked, skipped without an executable plan;
-- «Не прошли проверку» and «Прошли проверку»: per norm — requirement text,
-  coverage and fill-rate, violated/passed object counts, template parameters,
-  resolved layers/fields and up to 20 violating objects with measured value,
-  condition and related sources/zones; `partial + passed` is marked as partial;
-- «Прошли без применимых объектов»: norms that passed only because the scenario
-  has no object they apply to (warning `no_applicable_objects`). They are counted
-  in «Прошли проверку» with a separate «из них без применимых объектов» row and
-  are shown as a formal pass, without coverage or fill-rate. The final answer text
-  reports the same count;
-- «Проверены как эквивалентные»: each dedup group with the executed norm, its
-  inherited verdict and the equivalent sources. Merged norms are distinct by
-  `restriction_id`: unnumbered clauses of one document share a label yet are
-  counted separately (the label then shows «(2 нормы)»).
+/files требует Bearer и доступен только владельцу один час. Ссылки относительны
+к корню agents; используйте fetch с Authorization. Чужой/истёкший/неизвестный файл —
+404. Ошибка сохранения файла может оставить результат без ссылок. Кэш прогона
+очищается отдельно по mtime: 4200 секунд, GMART_COMPLIANCE_CACHE_TTL_SECONDS.
 
-`unverifiable`, `unsupported` and `not_applicable` norms appear only in the
-counters. Without a checked norm no report and no `file` event are produced.
+### Получение геометрии
 
-File links are always relative to the agents root (`/files/…`). The frontend
-must resolve them against its configured agents root, including any proxy prefix.
-
-The file is written to the container's temp directory (no volume) and served by
-`StaticFiles` mounted at `/files`, behind `OwnedFilesApp`: a Bearer token is
-required and only the author (`sub`) receives it; after one hour it is refused
-with `404` and deleted (lazily and by a 5-minute purge task). `url` opens it
-inline, `download_url` (`?download=1`) as an attachment; both are relative to the
-agents root. The link, without `role` and `download_url`, is stored in
-ChatStorage as a `kind: "file"` part. With several agents replicas the file lives
-only on the replica that produced it.
-
-### Geometry retrieval
-
-Compliance explicitly sends `centers_only=false` to `GetServices` and
-`GetPhysicalObjects`. Both tools forward the flag to the corresponding Urban API
-`*_with_geometry` query, and layer revisions distinguish centers from full geometry.
-Deploy the Agents API and IDU MCP together when introducing this tool parameter.
-The flag requests stored geometry; it cannot turn a stored Point into a polygon.
-Polygon requirements remain enforced when the returned source geometry is a Point.
+GetServicesByGeometry получает источники по территории с максимальным радиусом
+норм, затем цели по объединению нужных зон для каждого типа сервиса. Физические
+объекты — GetPhysicalObjects(centers_only=false), функциональные зоны — GetFunctionalZones.
+Provision использует ObjectEffects, пользовательские файлы — UserLayerSource.
+Точные свойства, split 413/размерных 422, checkpoint, ошибки и TODO —
+[compliance-status-contract.md](compliance-status-contract.md).

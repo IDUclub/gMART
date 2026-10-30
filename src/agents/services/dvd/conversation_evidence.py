@@ -296,6 +296,7 @@ clarify: предмет неоднозначен между нескольким
                 },
             ],
             ContextAssessment,
+            request_kind="dvd.conversation",
             retries=0,
             reasoning_effort="medium",
         )

@@ -33,6 +33,7 @@ class DvdRunMetrics:
     counters: dict[str, int] = field(default_factory=dict)
     decisions: dict[str, Any] = field(default_factory=dict)
     ttft_ms: float | None = None
+    first_preview_ms: float | None = None
     total_ms: float | None = None
     usage: llm_usage.LlmUsage = field(default_factory=llm_usage.meter)
 
@@ -60,11 +61,18 @@ class DvdRunMetrics:
         if self.ttft_ms is None:
             self.ttft_ms = self._elapsed_ms()
 
+    def preview(self) -> None:
+        """An unverified preview reached the event journal, before answer text."""
+        if self.first_preview_ms is None:
+            self.first_preview_ms = self._elapsed_ms()
+        self.add("preview_events")
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "request_id": self.request_id,
             "model": self.model,
             "ttft_ms": self.ttft_ms,
+            "first_preview_ms": self.first_preview_ms,
             "total_latency_ms": self.total_ms,
             "stages_ms": dict(self.stages_ms),
             "counters": dict(self.counters),

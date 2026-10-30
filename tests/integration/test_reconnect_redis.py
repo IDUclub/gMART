@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -93,17 +94,19 @@ async def test_reconnect_replays_against_real_redis(require_redis, monkeypatch):
 
 async def test_compliance_structured_events_and_checkpoints_survive_redis(
     require_redis,
+    tmp_path,
+    monkeypatch,
 ):
+    from src.agents.services.compilance.compliance_executor import (
+        ComplianceTemplateExecutor,
+    )
     from src.agents.services.pipeline_state import PipelineStateStore, PipelineStep
     from src.agents.services.restriction.restriction_parser_service import (
         RestrictionParserService,
     )
-    from src.agents.services.service_entities.compliance import (
-        ComplianceResult,
-        ComplianceSummary,
-        VerificationCoverage,
-    )
+    from tests.integration.test_executable_norm_t1 import InMemoryIduMcp
 
+    monkeypatch.setenv("GMART_CACHE_DIR", str(tmp_path / "cache"))
     request_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
     store = PipelineStateStore(require_redis)
     await _clear(require_redis, request_id)
@@ -115,31 +118,16 @@ async def test_compliance_structured_events_and_checkpoints_survive_redis(
         model="m",
         temperature=0,
     )
-    result = ComplianceResult(
-        restriction_id="r1",
-        template="distance_from_source",
-        template_version=1,
-        verification_status="complete",
-        compliance_status="passed",
-        coverage=VerificationCoverage(
-            applicable_objects=1,
-            checked_objects=1,
-            unchecked_objects=0,
-            fill_rate=1,
-        ),
-        summary=ComplianceSummary(violated_objects=0, passed_objects=1),
-    )
     service = object.__new__(RestrictionParserService)
     service.state_store = store
-    service.compliance_executor = SimpleNamespace(
-        execute=AsyncMock(
-            return_value=SimpleNamespace(
-                result=result,
-                tool_calls=[],
-                timings_ms={"template_execution": 1},
-            )
-        )
+    service.compliance_executor = ComplianceTemplateExecutor(
+        effects_client_factory=None
     )
+    service.compliance_executor.execute = AsyncMock(
+        wraps=service.compliance_executor.execute
+    )
+    service._compliance_final_text = AsyncMock(return_value="Проверка завершена.")
+    mcp = InMemoryIduMcp()
     raw_plan = {
         "schema_version": "1.0",
         "template": "distance_from_source",
@@ -170,7 +158,7 @@ async def test_compliance_structured_events_and_checkpoints_survive_redis(
     first = [
         event
         async for event in service._run_executable_compliance(
-            mcp_client=object(),
+            mcp_client=mcp,
             request_id=request_id,
             scenario_id=772,
             restrictions=[{"id": "r1", "check_plan": raw_plan}],
@@ -185,9 +173,19 @@ async def test_compliance_structured_events_and_checkpoints_survive_redis(
         "compliance_summary",
     }
     service.compliance_executor.execute.assert_awaited_once()
-    assert service.compliance_executor.execute.await_args.args[1] == raw_plan
+    assert (
+        service.compliance_executor.execute.await_args.args[1]["source"][
+            "restriction_id"
+        ]
+        == "r1"
+    )
+    result = next(
+        event["content"] for event in first if event["type"] == "compliance_result"
+    )
+    assert result["status"] == "violated"
+    assert result["summary"] == {"violated_objects": 1, "passed_objects": 1}
     replayed = await store.get_buffered_events(request_id)
-    assert replayed == first
+    assert replayed == json.loads(json.dumps(first))
     assert {event["type"] for event in replayed} >= {
         "compliance_result",
         "compliance_summary",
@@ -198,13 +196,15 @@ async def test_compliance_structured_events_and_checkpoints_survive_redis(
         PipelineStep.REQUIREMENTS_RESOLUTION,
         PipelineStep.TEMPLATE_EXECUTION,
         PipelineStep.VERDICT_AGGREGATION,
+        "compliance_completed",
     } <= set(checkpoints)
 
     service.compliance_executor.execute.reset_mock()
+    calls = list(mcp.calls)
     resumed = [
         event
         async for event in service._run_executable_compliance(
-            mcp_client=object(),
+            mcp_client=mcp,
             request_id=request_id,
             scenario_id=772,
             restrictions=[],
@@ -213,4 +213,5 @@ async def test_compliance_structured_events_and_checkpoints_survive_redis(
     ]
     assert resumed == []
     service.compliance_executor.execute.assert_not_awaited()
+    assert mcp.calls == calls
     await _clear(require_redis, request_id)

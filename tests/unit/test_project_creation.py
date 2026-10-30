@@ -1,9 +1,19 @@
 """Urban API calls that create the project, its scenario and the objects."""
 
+from copy import deepcopy
+from unittest.mock import AsyncMock
+
+import pytest
+
 from src.agents.common.exceptions.api_exceptions import DownstreamServiceError
-from src.agents.common.exceptions.base_exceptions import AgentsNotFound
+from src.agents.common.exceptions.base_exceptions import (
+    AgentsBaseException,
+    AgentsNotFound,
+    AgentsUnauthorizedException,
+)
 from src.agents.services.compilance.compliance_uploads import UploadedLayer, UserFiles
 from src.agents.services.project_files.project_creation import (
+    READINESS_RETRY_DELAYS,
     ProjectCreator,
     build_items,
     creation_summary,
@@ -177,8 +187,28 @@ class FakeUrban:
         )
         return {"scenario_id": 12}
 
+    async def get_project(self, token, project_id):
+        assert project_id == 10
+        return {"project_id": project_id}
+
+    async def get_project_territory(self, token, project_id):
+        assert project_id == 10
+        return {"geometry": BORDER}
+
+    async def get_project_scenarios(self, token, project_id):
+        assert project_id == 10
+        return [{"scenario_id": 11, "is_based": True}, {"scenario_id": 12}]
+
     async def get_scenario_physical_objects(self, token, scenario_id):
-        return self.existing
+        assert scenario_id == 12
+        return {
+            **self.existing,
+            "features": self.existing["features"]
+            + [
+                {"properties": {"physical_object_id": object_id}}
+                for object_id in range(101, self.next_id + 1)
+            ],
+        }
 
     async def delete_scenario_physical_object(
         self, token, scenario_id, physical_object_id, is_scenario_object
@@ -228,6 +258,7 @@ class FakeUrban:
 
 def run_state(policy="replace_same") -> dict:
     return {
+        "owner": "alice",
         "project_name": "Сад",
         "scenario_name": "Сценарий",
         "region_id": 3,
@@ -241,18 +272,145 @@ def run_state(policy="replace_same") -> dict:
     }
 
 
-async def collect(creator, run, zones, objects):
+async def collect(creator, run, zones, objects, token="t", owner="alice"):
     saves = []
 
     async def save():
         saves.append(dict(run))
 
-    events = [event async for event in creator.create("t", run, zones, objects, save)]
+    events = [
+        event
+        async for event in creator.create(token, run, zones, objects, save, owner=owner)
+    ]
     return events, saves
 
 
 async def no_sleep(_):
     return None
+
+
+async def test_legacy_run_persists_request_owner_before_creation():
+    urban = FakeUrban()
+    run = run_state("keep")
+    run.pop("owner")
+
+    _, saves = await collect(
+        ProjectCreator(urban), run, [], [], token="unreadable", owner="alice"
+    )
+
+    assert saves[0]["owner"] == "alice"
+    assert "project_id" not in saves[0]
+    assert urban.calls[0] == ("create_project", "Сад", "alice")
+
+
+async def test_resumed_run_keeps_owner_when_request_token_changes():
+    class Urban(FakeUrban):
+        unavailable = True
+
+        async def create_project(self, token, project, user_id=None):
+            if self.unavailable:
+                raise AgentsNotFound("later")
+            return await super().create_project(token, project, user_id=user_id)
+
+    urban = Urban()
+    run = run_state("keep")
+    run.pop("owner")
+    creator = ProjectCreator(urban)
+    with pytest.raises(AgentsNotFound):
+        await collect(creator, run, [], [], owner="alice")
+    assert run["owner"] == "alice"
+
+    urban.unavailable = False
+    await collect(creator, run, [], [], token="refreshed-token", owner="alice")
+
+    assert urban.calls[0] == ("create_project", "Сад", "alice")
+    assert run["owner"] == "alice"
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+async def test_foreign_owner_rejected_without_urban_calls_or_state_changes(resumed):
+    urban = AsyncMock()
+    save = AsyncMock()
+    run = run_state("keep")
+    if resumed:
+        run.update(project_id=10, base_scenario_id=11, scenario_id=12)
+    before = deepcopy(run)
+
+    with pytest.raises(AgentsUnauthorizedException):
+        async for _ in ProjectCreator(urban).create(
+            "token", run, [], [], save, owner="bob"
+        ):
+            pass
+
+    assert not urban.mock_calls
+    save.assert_not_awaited()
+    assert run == before
+
+
+@pytest.mark.parametrize("response_owner", [None, "alice"])
+async def test_matching_or_absent_response_owner_allows_creation(response_owner):
+    class Urban(FakeUrban):
+        async def create_project(self, token, project, user_id=None):
+            response = await super().create_project(token, project, user_id=user_id)
+            if response_owner is not None:
+                response["user_id"] = response_owner
+            return response
+
+        async def get_project(self, token, project_id):
+            response = await super().get_project(token, project_id)
+            if response_owner is not None:
+                response["user_id"] = response_owner
+            return response
+
+    run = run_state("keep")
+    events, _ = await collect(ProjectCreator(Urban()), run, [], [])
+
+    assert run["ready"]["done"]
+    assert events[-1]["type"] == "project_ready"
+
+
+@pytest.mark.parametrize("source", ["post", "get", "resume"])
+async def test_wrong_owner_stops_before_scenario_or_object_writes(source):
+    class Urban(FakeUrban):
+        async def create_project(self, token, project, user_id=None):
+            response = await super().create_project(token, project, user_id=user_id)
+            if source == "post":
+                response["user_id"] = "bob"
+            return response
+
+        async def get_project(self, token, project_id):
+            response = await super().get_project(token, project_id)
+            return {**response, "user_id": "bob"}
+
+    urban = Urban()
+    run = run_state()
+    if source == "resume":
+        run.update(project_id=10, base_scenario_id=11, scenario_id=12)
+    _, objects, _ = build_items(project_files(), SPECS)
+
+    with pytest.raises(AgentsBaseException, match="проект другого владельца"):
+        await collect(ProjectCreator(urban, sleep=no_sleep), run, [], objects)
+
+    assert all(call[0] == "create_project" for call in urban.calls)
+    assert run["project_id"] == 10  # keep the id so a retry cannot create a duplicate
+    assert "cleanup" not in run and "objects" not in run
+
+
+async def test_wrong_owner_at_final_confirmation_is_not_ready():
+    class Urban(FakeUrban):
+        reads = 0
+
+        async def get_project(self, token, project_id):
+            self.reads += 1
+            response = await super().get_project(token, project_id)
+            return {**response, "user_id": "alice" if self.reads == 1 else "bob"}
+
+    run = run_state("keep")
+    events, _ = await collect(ProjectCreator(Urban()), run, [], [])
+
+    assert not run["ready"]["done"]
+    assert "проект другого владельца" in run["ready"]["error"]
+    assert not any(event["type"] == "project_ready" for event in events)
 
 
 async def test_full_creation_replaces_same_types_inside_the_border():
@@ -265,8 +423,7 @@ async def test_full_creation_replaces_same_types_inside_the_border():
     )
 
     names = [call[0] for call in urban.calls]
-    # The owner is the user of the token: Urban API refuses an explicit one.
-    assert urban.calls[0] == ("create_project", "Сад", None)
+    assert urban.calls[0] == ("create_project", "Сад", "alice")
     assert ("copy_scenario", 11, 13) in urban.calls
     # Only the house of the same type inside the border, once; the locked one is
     # kept and counted.
@@ -354,6 +511,7 @@ async def test_base_scenario_found_when_the_response_has_none():
             return [
                 {"scenario_id": 20, "is_based": False},
                 {"scenario_id": 21, "is_based": True},
+                {"scenario_id": 12},
             ]
 
     urban = Urban()
@@ -363,3 +521,209 @@ async def test_base_scenario_found_when_the_response_has_none():
 
     assert run["base_scenario_id"] == 21
     assert ("copy_scenario", 21, 13) in urban.calls
+
+
+class DelayedUrban(FakeUrban):
+    def __init__(
+        self,
+        *,
+        project_errors=(),
+        scenario_waits=0,
+        object_waits=0,
+        base_waits=0,
+        territory_waits=0,
+    ):
+        super().__init__()
+        self.project_errors = list(project_errors)
+        self.scenario_waits = scenario_waits
+        self.object_waits = object_waits
+        self.base_waits = base_waits
+        self.territory_waits = territory_waits
+        self.copied = False
+        self.project_reads = 0
+
+    async def get_project(self, token, project_id):
+        assert token == "t"
+        self.project_reads += 1
+        if self.project_errors:
+            raise self.project_errors.pop(0)
+        return await super().get_project(token, project_id)
+
+    async def copy_scenario(self, token, scenario_id, scenario):
+        assert not self.project_errors
+        self.copied = True
+        return await super().copy_scenario(token, scenario_id, scenario)
+
+    async def get_project_scenarios(self, token, project_id):
+        assert token == "t"
+        if not self.copied and self.base_waits:
+            self.base_waits -= 1
+            return []
+        if self.copied and self.scenario_waits:
+            self.scenario_waits -= 1
+            return [{"scenario_id": 11, "is_based": True}]
+        return await super().get_project_scenarios(token, project_id)
+
+    async def get_project_territory(self, token, project_id):
+        assert token == "t"
+        if self.territory_waits:
+            self.territory_waits -= 1
+            return {"geometry": None}
+        return await super().get_project_territory(token, project_id)
+
+    async def get_scenario_physical_objects(self, token, scenario_id):
+        assert token == "t"
+        assert not self.scenario_waits  # cleanup/uploads must wait for visibility
+        if self.object_waits:
+            self.object_waits -= 1
+            return {"features": []}
+        return await super().get_scenario_physical_objects(token, scenario_id)
+
+
+async def test_project_reads_retry_404_with_exponential_delays():
+    urban = DelayedUrban(project_errors=[AgentsNotFound("later")] * 2)
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    run = run_state("keep")
+    await collect(ProjectCreator(urban, sleep=sleep), run, [], [])
+    assert delays == [0.5, 1.0]
+    assert run["ready"]["done"]
+    assert sum(call[0] == "copy_scenario" for call in urban.calls) == 1
+
+
+async def test_scenario_and_objects_wait_then_ready_is_persisted():
+    urban = DelayedUrban(scenario_waits=2, object_waits=2)
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    _, objects, _ = build_items(project_files(), SPECS)
+    run = run_state("keep")
+    creator = ProjectCreator(urban, sleep=sleep)
+    events, saves = await collect(creator, run, [], objects)
+    assert delays == [0.5, 1.0, 0.5, 1.0]
+    assert events[-1] == {
+        "type": "project_ready",
+        "content": {
+            "project_id": 10,
+            "scenario_id": 12,
+            "base_scenario_id": 11,
+            "objects_confirmed": 2,
+        },
+    }
+    assert run["ready"]["attempts"] == 3
+    assert saves[-1]["ready"]["checked_at"]
+    assert creation_summary(run, [], objects)["ready"] is True
+    reads = urban.project_reads
+    await collect(creator, run, [], objects)
+    assert urban.project_reads == reads + 1  # recheck ownership before resuming
+
+
+async def test_never_ready_is_bounded_and_retry_only_rechecks():
+    urban = DelayedUrban(territory_waits=100)
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    run = run_state("keep")
+    creator = ProjectCreator(urban, sleep=sleep)
+    events, _ = await collect(creator, run, [], [])
+    assert delays == list(READINESS_RETRY_DELAYS)
+    assert run["ready"]["attempts"] == len(READINESS_RETRY_DELAYS) + 1
+    assert not any(event["type"] == "project_ready" for event in events)
+    summary = creation_summary(run, [], [])
+    assert summary["ready"] is False
+    assert "Геометрия" in summary["ready_error"]
+    urban.territory_waits = 0
+    urban.calls.clear()
+    events, _ = await collect(creator, run, [], [])
+    assert urban.calls == []
+    assert run["ready"]["done"]
+    assert events[-1]["type"] == "project_ready"
+
+
+@pytest.mark.parametrize("status", [401, 403, 422])
+async def test_non_transient_read_errors_do_not_retry(status):
+    error = DownstreamServiceError("urban", status, "access denied")
+    urban = DelayedUrban(project_errors=[error])
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    with pytest.raises(DownstreamServiceError):
+        await collect(ProjectCreator(urban, sleep=sleep), run_state("keep"), [], [])
+    assert delays == []
+    assert not urban.copied
+
+
+@pytest.mark.parametrize("status", [None, 502, 503])
+async def test_transient_read_errors_retry(status):
+    urban = DelayedUrban(
+        project_errors=[DownstreamServiceError("urban", status, "later")]
+    )
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    await collect(ProjectCreator(urban, sleep=sleep), run_state("keep"), [], [])
+    assert delays == [0.5]
+
+
+async def test_base_scenario_resolution_waits_for_complete_data():
+    class Urban(DelayedUrban):
+        async def create_project(self, token, project, user_id=None):
+            return {"project_id": 10}
+
+    urban = Urban(base_waits=2)
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    run = run_state("keep")
+    await collect(ProjectCreator(urban, sleep=sleep), run, [], [])
+    assert delays == [0.5, 1.0]
+    assert run["base_scenario_id"] == 11
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_final_confirmation_denied_is_saved_without_retries(status):
+    class Urban(DelayedUrban):
+        async def get_project_territory(self, token, project_id):
+            raise DownstreamServiceError("urban", status, "access denied")
+
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    run = run_state("keep")
+    events, saves = await collect(ProjectCreator(Urban(), sleep=sleep), run, [], [])
+    assert delays == []
+    assert run["ready"]["attempts"] == 1
+    assert saves[-1]["ready"]["done"] is False
+    assert creation_summary(run, [], [])["ready_error"] == f"{status}: access denied"
+    assert not any(event["type"] == "project_ready" for event in events)
+
+
+async def test_missing_objects_never_confirmed():
+    urban = DelayedUrban(object_waits=100)
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    _, objects, _ = build_items(project_files(), SPECS)
+    run = run_state("keep")
+    events, _ = await collect(ProjectCreator(urban, sleep=sleep), run, [], objects)
+    assert delays == list(READINESS_RETRY_DELAYS)
+    assert creation_summary(run, [], objects)["ready"] is False
+    assert "Объекты сценария" in run["ready"]["error"]
+    assert not any(event["type"] == "project_ready" for event in events)

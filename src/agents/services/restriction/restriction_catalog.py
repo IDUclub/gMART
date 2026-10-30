@@ -252,6 +252,7 @@ class RestrictionPlanBuilder:
             if user_query:
                 messages.append({"role": "user", "content": user_query})
         response = await self.llm_client.chat(
+            request_kind="restriction.plan",
             model=model,
             think=False,
             format=RestrictionPlan.model_json_schema(),

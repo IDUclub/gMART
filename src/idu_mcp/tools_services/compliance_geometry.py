@@ -11,6 +11,7 @@ import pandas as pd
 
 from src.idu_mcp.tools_services.entites.buffer_type_enum import BufferTypeEnum
 from src.idu_mcp.tools_services.geometry_tools import GeometryTools
+from src.idu_mcp.tools_services.norm_layers import build_check_layer, build_norm_layer
 
 _OPERATORS: dict[str, Callable[[Any, Any], Any]] = {
     "<": operator_module.lt,
@@ -70,6 +71,51 @@ class ComplianceGeometryTools:
         if crs is None:
             raise ValueError("Cannot determine a local metric CRS")
         return crs
+
+    def _norm_result(
+        self,
+        result,
+        *,
+        zones,
+        objects,
+        template,
+        restriction_id,
+        provenance,
+        source_objects=None,
+        **kwargs,
+    ):
+        result["norm_layer"] = build_check_layer(
+            template=template,
+            restriction_id=restriction_id,
+            provenance=provenance,
+            zones=self._to_fc(zones),
+            objects=self._to_fc(objects),
+            source_objects=(
+                self._to_fc(source_objects) if source_objects is not None else None
+            ),
+            **kwargs,
+        )
+        return result
+
+    def _norm_zones(self, zones, layers, project_layer=None):
+        """Clip only the new layer; legacy check baskets retain their contract.
+
+        Explicit project_layer supports uploaded territories with arbitrary names.
+        Without one, phase 2 can supply the standard GetProjectTerritory layer.
+        """
+        name = project_layer or (
+            "project_territory" if "project_territory" in layers else None
+        )
+        if name is None:
+            return zones
+        boundary = self._layer(name, layers)
+        if boundary.empty:
+            return zones.iloc[0:0].copy()
+        clipped = zones.copy()
+        clipped["geometry"] = clipped.geometry.intersection(
+            boundary.geometry.union_all()
+        )
+        return clipped.loc[~clipped.geometry.is_empty & clipped.geometry.notna()].copy()
 
     @staticmethod
     def _prepare_right(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -203,7 +249,19 @@ class ComplianceGeometryTools:
             provenance=provenance,
             input_revision=input_revision,
         )
-        return self._result(annotated, evidence, result_mode)
+        return self._norm_result(
+            self._result(annotated, evidence, result_mode),
+            zones=generators,
+            objects=objects,
+            source_objects=source,
+            template="distance_from_source",
+            restriction_id=restriction_id,
+            provenance=provenance,
+            predicate=predicate,
+            violation_when=violation_when,
+            distance_m=distance_m,
+            applies_to=targets,
+        )
 
     def distance_table(
         self,
@@ -250,6 +308,7 @@ class ComplianceGeometryTools:
         )
         valid = metric.loc[valid_mask].copy()
         valid["_distance_m"] = [item for item in distances if item is not None]
+        valid["buffer_size"] = valid["_distance_m"]
         if not valid.empty:
             valid["geometry"] = [
                 geom.buffer(distance, cap_style=BufferTypeEnum.ROUND)
@@ -270,7 +329,7 @@ class ComplianceGeometryTools:
             input_revision=input_revision,
         )
         unchecked_source_count = int((~valid_mask).sum())
-        if unchecked_source_count:
+        if unchecked_source_count and not annotated.empty:
             stable_ids = set(matches)
             uncertain = ~annotated["_row_id"].astype(str).isin(stable_ids)
             annotated["_violated"] = annotated["_violated"].astype(object)
@@ -307,7 +366,27 @@ class ComplianceGeometryTools:
             "unchecked_objects": int((~valid_mask).sum()),
             "fill_rate": float(valid_mask.mean()) if len(valid_mask) else 1.0,
         }
-        return result
+        return self._norm_result(
+            result,
+            zones=generators,
+            objects=objects,
+            source_objects=source,
+            template="distance_table",
+            restriction_id=restriction_id,
+            provenance=provenance,
+            predicate=predicate,
+            violation_when=violation_when,
+            extra_unchecked=unchecked_source_count,
+            applies_to=targets,
+            extra_reason=(
+                (
+                    f"У {unchecked_source_count} из {len(source)} источников нет "
+                    f"числового значения {attribute_field} или подходящего диапазона."
+                )
+                if unchecked_source_count
+                else None
+            ),
+        )
 
     def presence_within(
         self,
@@ -322,6 +401,8 @@ class ComplianceGeometryTools:
         template_version: int = 1,
         provenance: dict[str, Any] | None = None,
         input_revision: str | None = None,
+        predicate: str = "intersects",
+        _template: str = "presence_within",
     ) -> dict[str, Any]:
         objects = self._layer(objects_layer, layers)
         neighbor_frames = {
@@ -334,10 +415,27 @@ class ComplianceGeometryTools:
             distance_m, cap_style=BufferTypeEnum.ROUND
         )
         wgs84_buffers = buffers.to_crs(4326)
-        matches_by_layer = {
-            name: self._matched_refs(wgs84_buffers, frame, "intersects")
-            for name, frame in neighbor_frames.items()
-        }
+        matches_by_layer = {}
+        object_rows_by_ref = {}
+        for _, obj in objects.iterrows():
+            key = json.dumps(obj["object_ref"], sort_keys=True)
+            object_rows_by_ref.setdefault(key, []).append(str(obj["_row_id"]))
+        for name, frame in neighbor_frames.items():
+            # Object-relative predicate: the neighbor must be within/intersect
+            # the buffer, not the other way around.
+            matches = self._matched_refs(frame, wgs84_buffers, predicate)
+            by_object = {}
+            refs = {
+                str(row["_row_id"]): row["object_ref"] for _, row in frame.iterrows()
+            }
+            for row_id, object_refs in matches.items():
+                for object_ref in object_refs:
+                    key = json.dumps(object_ref, sort_keys=True)
+                    for object_row in object_rows_by_ref.get(key, []):
+                        bucket = by_object.setdefault(object_row, [])
+                        if refs[row_id] not in bucket:
+                            bucket.append(refs[row_id])
+            matches_by_layer[name] = by_object
         annotated = objects.copy()
         evidence: list[dict[str, Any]] = []
         violated_values: list[bool] = []
@@ -387,7 +485,21 @@ class ComplianceGeometryTools:
         annotated["restriction_id"] = restriction_id
         annotated["compliance_evidence"] = evidence_values
         annotated["_violated"] = violated_values
-        return self._result(annotated, evidence, result_mode)
+        wgs84_buffers["buffer_size"] = distance_m
+        return self._norm_result(
+            self._result(annotated, evidence, result_mode),
+            zones=wgs84_buffers,
+            objects=neighbors,
+            source_objects=objects,
+            template=_template,
+            restriction_id=restriction_id,
+            provenance=provenance,
+            predicate=predicate,
+            required_neighbor_layers=required_neighbor_layers,
+            minimum_neighbors=minimum_neighbors,
+            distance_m=distance_m,
+            unit="count",
+        )
 
     def zonal_attribute_threshold(
         self,
@@ -405,6 +517,8 @@ class ComplianceGeometryTools:
         template_version: int = 1,
         provenance: dict[str, Any] | None = None,
         input_revision: str | None = None,
+        unit: str | None = None,
+        project_layer: str | None = None,
     ) -> dict[str, Any]:
         objects = self._layer(objects_layer, layers)
         zones = self._layer(zones_layer, layers)
@@ -512,7 +626,28 @@ class ComplianceGeometryTools:
         annotated["restriction_id"] = restriction_id
         annotated["compliance_evidence"] = evidence_values
         annotated["_violated"] = violation_values
-        return self._result(annotated, evidence, result_mode)
+        return self._norm_result(
+            self._result(annotated, evidence, result_mode),
+            zones=self._norm_zones(zones, layers, project_layer),
+            objects=objects,
+            template="zonal_attribute_threshold",
+            restriction_id=restriction_id,
+            provenance=provenance,
+            predicate=join_predicate,
+            applies_to=[objects_layer],
+            attribute=object_attribute,
+            operator=operator,
+            threshold=constant_threshold,
+            zone_threshold_attribute=(
+                zone_threshold_attribute if constant_threshold is None else None
+            ),
+            unit=unit
+            or (
+                "floors"
+                if "floors" in object_attribute
+                else "m" if "height" in object_attribute else None
+            ),
+        )
 
     def object_attribute_threshold(
         self,
@@ -528,6 +663,7 @@ class ComplianceGeometryTools:
         template_version: int = 1,
         provenance: dict[str, Any] | None = None,
         input_revision: str | None = None,
+        project_layer: str | None = None,
     ) -> dict[str, Any]:
         """Compare one numeric attribute of every object with a constant.
 
@@ -582,7 +718,25 @@ class ComplianceGeometryTools:
         annotated["restriction_id"] = restriction_id
         annotated["compliance_evidence"] = evidence_values
         annotated["_violated"] = violation_values
-        return self._result(annotated, evidence, result_mode)
+        name = project_layer or "project_territory"
+        territory = (
+            self._layer(name, layers)
+            if name in layers
+            else gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs=4326)
+        )
+        return self._norm_result(
+            self._result(annotated, evidence, result_mode),
+            zones=territory,
+            objects=objects,
+            template="object_attribute_threshold",
+            restriction_id=restriction_id,
+            provenance=provenance,
+            attribute=object_attribute,
+            operator=operator,
+            threshold=threshold,
+            unit=unit,
+            applies_to=[objects_layer],
+        )
 
     def accessibility_within(
         self,
@@ -598,11 +752,11 @@ class ComplianceGeometryTools:
         template_version: int = 1,
         provenance: dict[str, Any] | None = None,
         input_revision: str | None = None,
+        predicate: str = "intersects",
     ) -> dict[str, Any]:
         """Walking accessibility approximated by a straight-line buffer (``buffer_v1``).
 
-        TODO: measure the route on the street graph (e.g. ObjectNat isochrones) and
-        register it as a separate ``measurement``; ``radius_m`` is the stand-in.
+        TODO: replace with isochrones (ObjectNat).
         """
         result = self.presence_within(
             objects_layer=objects_layer,
@@ -615,6 +769,8 @@ class ComplianceGeometryTools:
             template_version=template_version,
             provenance=provenance,
             input_revision=input_revision,
+            predicate=predicate,
+            _template="accessibility_within",
         )
         bound = (
             f"{limit['minutes']:g} мин"
@@ -652,6 +808,7 @@ class ComplianceGeometryTools:
         template_version: int = 1,
         provenance: dict[str, Any] | None = None,
         input_revision: str | None = None,
+        project_layer: str | None = None,
     ) -> dict[str, Any]:
         zones = self._layer(zones_layer, layers)
         numerator = self._layer(numerator_layer, layers)
@@ -726,7 +883,18 @@ class ComplianceGeometryTools:
         zones["restriction_id"] = restriction_id
         zones["compliance_evidence"] = evidence_values
         zones["_violated"] = violation_values
-        return self._result(zones, evidence, result_mode)
+        return self._norm_result(
+            self._result(zones, evidence, result_mode),
+            zones=self._norm_zones(zones, layers, project_layer),
+            objects=numerator,
+            template="zonal_ratio",
+            restriction_id=restriction_id,
+            provenance=provenance,
+            operator=operator,
+            threshold=threshold,
+            unit="%",
+            applies_to=[numerator_layer],
+        )
 
     def restriction_zones(
         self,
@@ -838,6 +1006,52 @@ class ComplianceGeometryTools:
             "zones": len(zones),
             "skipped_objects": skipped,
         }
+        norm_properties = properties or {}
+        inventory_zones = []
+        for position, feature in enumerate(collection["features"]):
+            props = feature["properties"]
+            inventory_zones.append(
+                {
+                    **feature,
+                    "properties": {
+                        **props,
+                        "feature_kind": "zone",
+                        "status": "not_checked",
+                        "status_reason": None,
+                        "zone_ref": {
+                            "id": f"norm/{norm_properties.get('restriction_id', 'unknown')}/zone/{position}"
+                        },
+                        "zone_kind": props.get("zone_kind", geometry_mode),
+                        "applies_to": props.get("applies_to", []),
+                        "buffer_size": props.get("buffer_size"),
+                        "operator": props.get("operator"),
+                        "threshold": props.get("threshold"),
+                        "unit": props.get("unit"),
+                        "source_object_ref": props.get("object_ref"),
+                        "objects_inside": None,
+                        "objects_required": props.get("minimum_neighbors"),
+                    },
+                }
+            )
+        collection["norm_layer"] = build_norm_layer(
+            restriction_id=str(norm_properties.get("restriction_id") or "unknown"),
+            template=str(
+                norm_properties.get("template")
+                or norm_properties.get("zone_kind")
+                or "unknown"
+            ),
+            provenance={
+                **(norm_properties.get("provenance") or {}),
+                **{
+                    key: norm_properties[key]
+                    for key in ("document_name", "clause_number", "extraction_text")
+                    if key in norm_properties
+                },
+            },
+            zone_features=inventory_zones,
+            attribute=norm_properties.get("object_attribute") or attribute_field,
+            inventory=True,
+        )
         return collection
 
     def _result(

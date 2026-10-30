@@ -66,6 +66,60 @@ make build
 
 - `URBAN_API_URL` — URL Urban API.
 
+## Приоритеты LLM-запросов
+
+Для общего vLLM с `--scheduling-policy priority` каждый вызов передаёт ключ
+`request_kind`; адаптер OpenAI добавляет соответствующий `priority` в тело запроса.
+Меньшее значение обслуживается раньше. Приоритет меняет только порядок ожидающих
+запросов в очереди vLLM и не прерывает уже выполняющиеся запросы. Ollama ключ игнорирует.
+
+| Ключ | Назначение | По умолчанию |
+|---|---|---:|
+| `dvd.planner` | План поиска документов | -100 |
+| `dvd.conversation` | Проверка контекста диалога | -100 |
+| `dvd.context_reducer` | Отбор и сжатие доказательств | -100 |
+| `dvd.answer` | Ответ по документам, включая сравнение | -100 |
+| `dvd.critic` | Аудит ответа и поиск пропусков | -100 |
+| `dvd.revision` | Исправление и выбор частичного ответа | -100 |
+| `norms.planner` | План поиска NormGraph | -100 |
+| `norms.answer` | Ответ NormGraph | -100 |
+| `norms.review` | Проверка ответа NormGraph | -100 |
+| `restriction.plan` | План ограничений | -60 |
+| `restriction.explain` | Пояснение плана ограничений | -60 |
+| `restriction.answer` | Ответ и уточнение проверки соответствия | -60 |
+| `pzz.inputs` | Разбор входных параметров ПЗЗ | -60 |
+| `pzz.columns` | Определение столбцов ПЗЗ | -60 |
+| `pzz.answer` | Ответ ПЗЗ | -100 |
+| `provision.plan` | План расчёта обеспеченности | -60 |
+| `provision.answer` | Анализ обеспеченности | -100 |
+| `scenario.plan` | План и выбор действия городских данных | -60 |
+| `scenario.mapping` | Сопоставление типов и названия столбцов | -60 |
+| `scenario.answer` | Ответ и сводка сравнения сценариев | -100 |
+| `scenario.judge` | Проверка результата городских данных | -100 |
+| `orchestrator.plan` | План оркестратора | -100 |
+| `simple_llm` | Простой диалог и общий клиент | -100 |
+| `chat_title` | Название чата | -60 |
+| `context_summary` | Фоновая сводка контекста после хода | 20 |
+| `compliance.scope` | Разбор области и выбора проверки соответствия | -60 |
+| `compliance.mapping` | Классификация и сопоставление сущностей проверки | -60 |
+| `project.inputs` | Разбор параметров создаваемого проекта | -60 |
+
+`LLM_REQUEST_PRIORITIES=dvd.critic=-60,chat_title=0` переопределяет значения
+для указанных ключей. Приоритет: корректное переопределение ключа → таблица выше;
+вызов без ключа использует `OPENAI_REQUEST_PRIORITY` (по умолчанию пусто).
+Пустой fallback и значение `0` означают отсутствие поля `priority`, то есть
+приоритет сервера по умолчанию. Неизвестные ключи и некорректные записи игнорируются
+с однократным предупреждением; при повторении ключа побеждает последнее корректное значение.
+Окружение читается при каждом вызове.
+
+`LLM_REQUEST_PRIORITY_ENABLED=false` полностью отключает передачу приоритета,
+включая fallback и явные числовые значения. По умолчанию переключатель включён.
+Если сервер отвечает 400 о неподдерживаемом планировании приоритетов, адаптер
+один раз предупреждает, повторяет запрос без приоритета и отключает его до конца
+своей жизни. Это действует для обычных и потоковых ответов; `/tokenize` и список
+моделей приоритет не получают.
+
+
 ## Авторизация
 
 Эндпоинты, которым нужен доступ к Urban API через MCP, требуют заголовок:
@@ -239,8 +293,18 @@ Content-Type: application/json
 
 Параметры, авторизация, создание чата и переподключение совпадают с restrictions
 endpoint. Этот поток проверяет исполняемые планы NormGraph и дополнительно отдаёт
-`check_plan`, `requirement_resolution`, `compliance_result` и
-`compliance_summary`.
+`check_plan`, `requirement_resolution`, `compliance_result`, `compliance_progress`,
+`progress` и `compliance_summary`. Финальный текст предшествует слоям «Норма — …»;
+затем приходят summary.md и ZIP последним. `chunk.done` завершает только текст.
+Зоны имеют status `passed|violated|partial|not_checked`, геометрии разделены
+feature_kind `zone|violation|object`, группировка по norm_id. Полный контракт,
+JSON-примеры и порядок inventory — [compliance-status-contract.md](compliance-status-contract.md),
+объяснение карты и архива — [compliance-status-guide.md](compliance-status-guide.md).
+
+В inventory проверки не выполняются: `restriction_zone`, `restriction_inventory`
+и слои норм с not_checked, без compliance_result/compliance_summary. Сводка и ZIP
+выдаются в общем порядке. Новый progress содержит stage, stage_ru, percent,
+current, total, label, bar; compliance_progress сохраняет прежние счётчики.
 
 Запрос может сузить проверку темой («по школам») и документом («из СП 42.13330»).
 Если документ не определён однозначно, поток завершается событием `clarification`:
@@ -262,12 +326,15 @@ evidence. Для `partial + passed` используется формулиро�
 `approve`, `reject`, `replace`; для `replace` UI отправляет отредактированный JSON
 в поле `plan`, комментарий — в `reason`. Автор определяется сервером по токену.
 
-Новые сообщения compliance в ChatStorage содержат только `tool_call` и `text`.
+Новые сообщения compliance в ChatStorage содержат `tool_call`, `text` и
+дескрипторы `file` (без role/download_url).
 Статусы и структурированные результаты проверки доступны в SSE-потоке и
 Redis-журнале запроса, но не сохраняются в истории чата. Старые сообщения могут
 содержать `compliance_result`, который UI отображает как структурированную
 карточку. Кнопка восстановления MCP-вызовов запускает новый расчёт на текущих
-данных сценария и не означает исторически идентичный replay.
+данных сценария и не означает исторически идентичный replay. ChatStorage повторяет
+цепочку GetServicesByGeometry → CreateRestrictionZones → Check* и для Check*
+возвращает norm_layer.
 
 #### Проверка файлов пользователя
 
@@ -385,6 +452,8 @@ Markdown-отчёт (см. [`file`](#file)). Та же ссылка сохран
     "template_version": 1,
     "verification_status": "partial",
     "compliance_status": "passed",
+    "status": "partial",
+    "status_reason": "Не проверено объектов: 11.",
     "coverage": {
       "applicable_objects": 70,
       "checked_objects": 59,
@@ -403,7 +472,11 @@ Markdown-отчёт (см. [`file`](#file)). Та же ссылка сохран
 `check_plan.content.plan` содержит принятый план,
 `requirement_resolution.content` — effective/resolved/missing requirements,
 `compliance_summary.content` — агрегаты `total_norms`, `violated_norms`,
-`passed_norms` и `unchecked_norms`. Не вычисляйте compliance из текста `chunk`:
+`passed_norms`, `partial_norms`, `unverifiable_norms`, `unsupported_norms`,
+`not_applicable_norms`, а также новые `counts`, `executed_norms`,
+`total_restrictions`, `formal_passed_norms` и `files`. `unchecked_norms` отсутствует.
+`results` включает незапущенные и эквивалентные нормы (equivalent_to),
+`archive_path` указывает папку проверки в ZIP. Не вычисляйте compliance из текста `chunk`:
 источником истины является структурированное событие.
 
 ### `file`
@@ -413,8 +486,12 @@ Markdown-отчёт (см. [`file`](#file)). Та же ссылка сохран
 
 ```
 event: file
-data: {"name": "compliance_report", "title": "Отчёт о проверке соответствия нормам", "role": "result", "url": "/files/compliance_report/a1b2c3…", "download_url": "/files/compliance_report/a1b2c3…?download=1", "filename": "compliance_report_772_20260923-1415.md", "mime_type": "text/markdown", "source_service": "gmart"}
+data: {"name": "compliance_summary", "title": "Сводный отчёт о проверке норм", "role": "result", "url": "/files/compliance_summary/<file-id>", "download_url": "/files/compliance_summary/<file-id>?download=1", "filename": "summary.md", "mime_type": "text/markdown", "source_service": "gmart"}
 ```
+
+Для compliance следом идёт file с name `compliance_archive`, mime_type
+`application/zip`, filename `compliance_772_20261029-1200.zip`; это последний файл.
+При недоступном file store ссылки могут отсутствовать, хотя результат готов.
 
 - `url` — просмотр (`Content-Disposition: inline`), `download_url` — вложение
   (`attachment`). Обе ссылки относительные к корню agents, включая префикс
@@ -779,6 +856,11 @@ type ComplianceResultEvent = {
     verification_status:
       | "complete" | "partial" | "unverifiable" | "not_applicable" | "unsupported";
     compliance_status: "passed" | "violated" | "unknown";
+    status: "passed" | "violated" | "partial" | "not_checked" | null;
+    status_reason: string | null;
+    archive_path: string | null;
+    check_type_en: string | null;
+    check_type_ru: string | null;
     coverage: {
       applicable_objects: number;
       checked_objects: number;
