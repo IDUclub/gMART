@@ -34,10 +34,41 @@ class InMemoryIduMcp:
 
     async def execute_tool(self, name, arguments, meta=None):
         self.calls.append(name)
-        if name in {"GetServices", "GetPhysicalObjects"}:
+        if name in {
+            "GetProjectTerritory",
+            "GetServicesByGeometry",
+            "GetPhysicalObjects",
+        }:
             assert arguments["scenario_id"] == 772
-        if name == "GetServices":
-            return {"Школа": _fc(30.0, service_id=1)}
+        if name == "GetProjectTerritory":
+            return {
+                "project_territory": {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [
+                                    [
+                                        [29.9, 59.9],
+                                        [30.1, 59.9],
+                                        [30.1, 60.1],
+                                        [29.9, 60.1],
+                                        [29.9, 59.9],
+                                    ]
+                                ],
+                            },
+                            "properties": {},
+                        }
+                    ],
+                }
+            }
+        if name == "GetServicesByGeometry":
+            assert arguments["services_names"] == ["Школа"]
+            assert arguments["zones_layers"] == ["project_territory"]
+            assert "project_territory" in arguments["layers"]
+            return {arguments["layer_name"]: _fc(30.0, service_id=1)}
         if name == "GetPhysicalObjects":
             return {
                 "Жилой дом": {
@@ -55,6 +86,16 @@ class InMemoryIduMcp:
             }
         if name == "CheckDistanceFromSource":
             return ComplianceGeometryTools().distance_from_source(**arguments)
+        if name == "CreateRestrictionZones":
+            zones = ComplianceGeometryTools().restriction_zones(
+                **{
+                    key: value
+                    for key, value in arguments.items()
+                    if key != "layer_name"
+                }
+            )
+            norm_layer = zones.pop("norm_layer")
+            return {arguments["layer_name"]: zones, "norm_layer": norm_layer}
         raise AssertionError(name)
 
 
@@ -133,8 +174,9 @@ async def test_normgraph_plan_executes_as_structured_t1_result():
     assert result.evidence[0].input_revision.startswith("sha256:")
     assert client.calls == [
         "ResolveUrbanEntityTypes",
-        "GetServices",
         "GetPhysicalObjects",
+        "GetProjectTerritory",
+        "GetServicesByGeometry",
         "CheckDistanceFromSource",
     ]
     RestrictionsResponse.model_validate(
