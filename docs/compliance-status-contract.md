@@ -23,10 +23,9 @@
    а не успешное завершение проверки.
 3. `source_layers`, затем `zones_building` для норм,
    затем `objects_by_geometry` с уведомлениями по завершённым типам сервисов.
-   `tool_call` содержит вызовы источников, `CreateRestrictionZones`, получения целей.
 4. `requirements_resolution`; начальный `compliance_progress`.
 5. Для каждой нормы: `template_execution`, исполнение, `violation_geometry`, `cache`,
-   `tool_call` выполненной проверки, `requirement_resolution`, `compliance_result`,
+   `requirement_resolution`, `compliance_result`,
    `compliance_progress`, обновлённый `progress` этапа `template_execution`.
    При чтении checkpoint некоторые операции и их статусы пропускаются.
 6. `verdict_aggregation`, `report_build`, `archive`; `compliance_summary` уже содержит
@@ -40,6 +39,10 @@
 Файлы могут отсутствовать, если нет владельца / file store или сохранение файла завершилось
 `OSError`. Слои и результат при этом сохраняются, pipeline может завершиться успешно.
 Нельзя требовать строго по одному сообщению на каждый этап: статусы повторяются и ветвятся.
+
+Вызовы источников, `CreateRestrictionZones`, получения целей и `Check*` передаются
+во внутреннем потоке как `tool_call` и сохраняются в истории ChatStorage.
+Клиенту SSE события `tool_call` не отправляются: не ожидайте их при чтении потока.
 
 Пример последнего текстового чанка (полученные до него чанки нужно конкатенировать):
 
@@ -137,7 +140,7 @@ Evidence сохраняет измерение, порог, оператор, е
 ### Последовательность inventory
 
 Общие территория, область, загрузка, валидация, дедупликация → `source_layers` →
-`zones_building` с `tool_call` и `restriction_zone` → `cache` → `report_build` → `archive`
+`zones_building` с `restriction_zone` → `cache` → `report_build` → `archive`
 → `restriction_inventory` → `llm_summary` → `progress=100` → один `chunk(done=true)`
 → слои норм → `summary.md` → ZIP. Нет Check*, выборки целей, `requirement_resolution`,
 `compliance_result`, `compliance_progress` и `compliance_summary` этого прогона.

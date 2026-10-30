@@ -239,12 +239,19 @@ def llm_summary(summary):
 
 def build_summary_report(summary):
     results = summary.get("results", [])
+    territory = summary.get("territory")
+    territory_description = (
+        f"действуют — {territory.get('documents_in_force', 0)}; "
+        f"не действуют — {territory.get('documents_out_of_force', 0)}."
+        if territory
+        else "сведения отсутствуют."
+    )
     lines = [
         "# Сводный отчёт о проверке норм",
         "",
         f"Сценарий: {summary.get('scenario_id', 'files')}. Время: {summary.get('created_at', '')}.",
         f"Область: {(summary.get('scope') or {}).get('label', 'все применимые нормы')}.",
-        f"Документы на территории: {_json(summary.get('territory', {}))}",
+        f"Документы на территории: {territory_description}",
         "",
     ]
     counts = Counter(
