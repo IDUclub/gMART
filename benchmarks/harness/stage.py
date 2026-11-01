@@ -1,12 +1,10 @@
 """Stage registry: one benchmarked LLM step of a gMART agent.
 
-A stage takes a case's ``input`` and a :class:`StageContext`, runs gMART's own code
-for that step (prompt builder, structured call, parser) against the context's LLM,
-and returns a JSON-serialisable output that the case's checks are evaluated on.
+A stage takes a case's ``input`` and a :class:`StageContext` and runs gMART's own
+code for that step up to its model call; the export records that call's request.
 
-``kind="auto"`` stages are scored by their checks alone; ``kind="manual"`` stages
-produce free text that also needs a human look (their checks are formal ones such
-as language, length or citations, and the outputs land in ``review.md``).
+``kind="auto"`` stages answer with JSON scored by checks alone; ``kind="manual"``
+stages produce free text that also needs a human look in the runner's ``review.md``.
 """
 
 from __future__ import annotations
@@ -14,14 +12,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal
 
-from benchmarks.harness.llm import RecordingLlm
-
 StageKind = Literal["auto", "manual"]
 
 
 @dataclass
 class StageContext:
-    llm: RecordingLlm
+    llm: Any
     #: The served model id, passed to gMART code exactly as the agents would.
     model: str
     temperature: float

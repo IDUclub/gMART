@@ -1,30 +1,26 @@
-"""Command line: ``python -m benchmarks {run,report,list}``.
+"""Command line: ``python -m benchmarks {list,export}``.
 
-python -m benchmarks list
-python -m benchmarks run --config benchmarks/config.yaml --models qwen27b,gptoss
-python -m benchmarks run --config benchmarks/config.yaml --profiles mixed --stages "orchestrator.*"
-python -m benchmarks report benchmarks/results/<run>
+The benchmark itself lives in its own repository (gmart-llm-bench) and runs without
+gMART. This package only freezes the requests gMART's stages send to the model:
+
+python -m benchmarks list --bench ../gmart-llm-bench
+python -m benchmarks export --bench ../gmart-llm-bench
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
-import json
 import sys
 from collections import Counter
-from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
 
 from benchmarks.harness.cases import load_cases, select_cases
-from benchmarks.harness.config import load_config
-from benchmarks.harness.report import write_reports
-from benchmarks.harness.runner import Runner
+from benchmarks.harness.export import export
 from benchmarks.harness.stage import load_stages
 
-RESULTS_DIR = Path(__file__).resolve().parent / "results"
+GMART_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _split(value: str | None) -> list[str] | None:
@@ -33,9 +29,9 @@ def _split(value: str | None) -> list[str] | None:
     )
 
 
-def cmd_list(_: argparse.Namespace) -> int:
+def cmd_list(args: argparse.Namespace) -> int:
     stages = load_stages()
-    counts = Counter(case.stage for case in load_cases())
+    counts = Counter(case.stage for case in load_cases(Path(args.bench) / "cases"))
     for stage_id, stage in sorted(stages.items()):
         print(
             f"{stage_id:28} {stage.kind:6} {counts.get(stage_id, 0):3} кейсов  {stage.description}"
@@ -47,136 +43,63 @@ def cmd_list(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    if args.repeat:
-        config.repeat = args.repeat
-    if args.concurrency:
-        config.concurrency = args.concurrency
-    profile_names = _split(args.profiles) or []
-    if args.models:
-        profile_names += config.add_single_model_profiles(_split(args.models))
-    profiles = config.select_profiles(profile_names or None)
-    if not profiles:
-        logger.error("Нет профилей: задайте profiles в конфиге или --models")
-        return 2
-
+def cmd_export(args: argparse.Namespace) -> int:
+    bench = Path(args.bench)
     stages = load_stages()
-    cases = select_cases(
-        load_cases(),
-        stages=_split(args.stages) or config.stages,
-        ids=_split(args.cases),
-        tags=_split(args.tags) or config.tags or None,
-    )
+    cases = select_cases(load_cases(bench / "cases"), stages=_split(args.stages))
     unknown = sorted({case.stage for case in cases} - set(stages))
     if unknown:
         logger.error(f"Кейсы для незарегистрированных этапов: {unknown}")
         return 2
-    if not cases:
-        logger.error("Ни один кейс не подошёл под фильтры")
-        return 2
-
-    started = datetime.now()
-    out_dir = (
-        Path(args.out)
-        if args.out
-        else RESULTS_DIR
-        / (started.strftime("%Y%m%d-%H%M%S") + (f"-{args.label}" if args.label else ""))
-    )
-    out_dir.mkdir(parents=True, exist_ok=True)
-    meta = {
-        "started": started.isoformat(timespec="seconds"),
-        "config": str(args.config),
-        "profiles": [profile.name for profile in profiles],
-        "profile_models": {
-            profile.name: {"default": profile.default, "stages": profile.stages}
-            for profile in profiles
-        },
-        "models": {
-            name: {
-                "endpoint": model.endpoint,
-                "model": model.model,
-                "options": model.options,
-            }
-            for name, model in config.models.items()
-        },
-        "cases": len(cases),
-        "repeat": config.repeat,
-        "temperature": config.temperature,
-    }
-    (out_dir / "meta.json").write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    manifest = export(
+        stages,
+        cases,
+        bench / "data",
+        gmart_root=GMART_ROOT,
+        context_window=args.context_window,
     )
     logger.info(
-        f"{len(cases)} кейсов × {len(profiles)} профилей × {config.repeat} → {out_dir}"
+        f"Запросов: {manifest['requests']} из {len(cases)} кейсов → {bench / 'data'}"
     )
-    runner = Runner(
-        config,
-        stages,
-        save_prompts=args.save_prompts,
-        case_timeout_s=args.case_timeout,
-    )
-    asyncio.run(runner.run(cases, profiles, out_dir / "results.jsonl"))
-    summary = write_reports(out_dir, meta)
-    for name, data in summary["profiles"].items():
-        rate = data["auto_pass_rate"]
-        logger.info(
-            f"{name}: pass rate {'—' if rate is None else f'{rate:.0%}'}, "
-            f"ошибок {data['errors']}"
-        )
-    logger.info(f"Отчёт: {out_dir / 'report.md'}")
-    return 0
-
-
-def cmd_report(args: argparse.Namespace) -> int:
-    results_dir = Path(args.results_dir)
-    meta_path = results_dir / "meta.json"
-    meta = (
-        json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    )
-    write_reports(results_dir, meta)
-    logger.info(f"Отчёт обновлён: {results_dir / 'report.md'}")
-    return 0
+    for key in manifest["decided_by_code"]:
+        logger.warning(f"{key}: решено кодом без модели — кейс не войдёт в датасет")
+    for key, error in manifest["errors"].items():
+        logger.error(f"{key}: {error}")
+    if manifest["gmart"]["dirty"]:
+        logger.warning("В рабочей копии gMART есть незакоммиченные изменения")
+    return 1 if manifest["errors"] else 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m benchmarks")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("list", help="этапы и число кейсов").set_defaults(fn=cmd_list)
+    listing = sub.add_parser("list", help="этапы и число кейсов")
+    listing.add_argument("--bench", required=True, help="каталог gmart-llm-bench")
+    listing.set_defaults(fn=cmd_list)
 
-    run = sub.add_parser("run", help="прогнать кейсы")
-    run.add_argument("--config", required=True)
-    run.add_argument("--profiles", help="профили из конфига через запятую")
-    run.add_argument("--models", help="модели из конфига: по профилю на каждую")
-    run.add_argument("--stages", help="glob этапов через запятую (orchestrator.*)")
-    run.add_argument("--cases", help="glob id кейсов через запятую")
-    run.add_argument("--tags", help="теги кейсов через запятую")
-    run.add_argument("--repeat", type=int)
-    run.add_argument("--concurrency", type=int)
-    run.add_argument("--case-timeout", type=float, default=900.0)
-    run.add_argument(
-        "--save-prompts", action="store_true", help="сохранять промпты и схемы"
+    exporting = sub.add_parser("export", help="заморозить запросы этапов в датасет")
+    exporting.add_argument("--bench", required=True, help="каталог gmart-llm-bench")
+    exporting.add_argument("--stages", help="glob этапов через запятую")
+    exporting.add_argument(
+        "--context-window",
+        type=int,
+        default=32768,
+        help="окно модели, которым этапы считают бюджет ответа",
     )
-    run.add_argument("--label", help="суффикс каталога результатов")
-    run.add_argument("--out", help="каталог результатов")
-    run.set_defaults(fn=cmd_run)
-
-    report = sub.add_parser("report", help="пересобрать отчёт (с оценками grades.csv)")
-    report.add_argument("results_dir")
-    report.set_defaults(fn=cmd_report)
+    exporting.set_defaults(fn=cmd_export)
 
     args = parser.parse_args(argv)
-    # Windows consoles default to a legacy code page; the report text is Russian.
+    # Windows consoles default to a legacy code page; the output is Russian.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     logger.remove()
-    # The benchmark's own progress, and only warnings from the gMART code it drives.
+    # The exporter's own progress, and only warnings from the gMART code it drives.
     logger.add(
         sys.stderr,
         level="INFO",
-        filter=lambda record: record["name"].startswith("benchmarks")
+        filter=lambda record: record["name"].startswith(("benchmarks", "__main__"))
         or record["level"].no >= 30,
     )
     return args.fn(args)
