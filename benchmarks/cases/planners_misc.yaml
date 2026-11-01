@@ -1,0 +1,174 @@
+# Планировщики поиска (NormGraph, IDU_DVD) и извлечение параметров (ПЗЗ, проект из файлов).
+cases:
+  # ---------------- norms.planner ----------------
+  - id: applicable_food_industry
+    stage: norms.planner
+    tags: [smoke]
+    input: {user_query: "Какие ограничения действуют на объекты пищевой промышленности?"}
+    expect:
+      - {path: primary_tool, eq: applicable}
+      - {path: object, contains: ["пищев"]}
+      - {path: document_names, "null": true}
+
+  - id: applicable_near_school
+    stage: norms.planner
+    input: {user_query: "Что нельзя размещать рядом со школой?"}
+    expect:
+      - {path: primary_tool, eq: applicable}
+      - {path: object, contains: ["школ"]}
+
+  - id: search_open_question
+    stage: norms.planner
+    input: {user_query: "Какая минимальная ширина тротуара в жилой застройке?"}
+    expect:
+      - {path: primary_tool, eq: search}
+      - {path: search_query, contains: ["тротуар"]}
+      - {path: document_names, "null": true}
+      - {path: check_conflicts, eq: false}
+
+  - id: explicit_document_filter
+    stage: norms.planner
+    input: {user_query: "Какие требования к санитарно-защитным зонам по СанПиН 2.2.1/2.1.1.1200-03?"}
+    expect:
+      - {path: document_names, min_len: 1}
+      - {path: "document_names.0", contains: ["СанПиН"]}
+
+  - id: conflicts_requested
+    stage: norms.planner
+    input: {user_query: "Есть ли противоречия между нормами о расстоянии от гаражей до жилых домов?"}
+    expect:
+      - {path: check_conflicts, eq: true}
+
+  - id: placement_lexicon
+    stage: norms.planner
+    input: {user_query: "На каком расстоянии от автостоянки можно размещать детский сад?"}
+    expect:
+      - {path: search_query, contains_any: ["расстояни", "размещени"]}
+      - {path: search_query, not_contains: ["ограничения размещения"]}
+
+  # ---------------- dvd.planner ----------------
+  # Верх — план модели; final — после детерминированного clamp/apply_scope.
+  - id: semantic_topic
+    stage: dvd.planner
+    tags: [smoke]
+    input: {user_query: "Какие требования к инсоляции жилых помещений?"}
+    expect:
+      - {path: retrieval_mode, eq: semantic}
+      - {path: intent, eq: norm}
+      - {path: search_query, contains: ["инсоляц"]}
+      - {path: final.document_names, "null": true}
+
+  - id: document_list_intent
+    stage: dvd.planner
+    input: {user_query: "В каких документах есть требования к размещению детских садов?"}
+    expect:
+      - {path: intent, eq: document_list}
+      - {path: retrieval_mode, eq: semantic}
+      - {path: search_query, contains: ["детск"]}
+
+  - id: exact_clause_structure
+    stage: dvd.planner
+    input: {user_query: "Что сказано в пункте 3.3 СП 55?"}
+    expect:
+      - {path: retrieval_mode, eq: structure}
+      - {path: pattern, eq: "3.3"}
+      - {path: "final.document_names.0", contains: ["СП 55"]}
+
+  - id: editions_comparison
+    stage: dvd.planner
+    input: {user_query: "Чем отличаются редакции СП 42.13330 2011 и 2016 года по требованиям к парковкам?"}
+    expect:
+      - {path: intent, eq: document_comparison}
+      - {path: comparison_topic, contains: ["парков"]}
+      - {path: comparison_topic, not_regex: "2011|2016|различ|сравн"}
+
+  - id: own_documents_only
+    stage: dvd.planner
+    input: {user_query: "Найди в моих загруженных документах требования к озеленению дворов"}
+    expect:
+      - {path: include_shared, eq: false}
+      - {path: search_query, contains: ["озеленен"]}
+
+  # ---------------- pzz.inputs ----------------
+  - id: scenario_mode_with_year_and_source
+    stage: pzz.inputs
+    tags: [smoke]
+    input:
+      scenario_id: 1001
+      user_query: "Проверь здания сценария по зонам из OSM за 2026 год"
+    expect:
+      - {path: mode, eq: scenario}
+      - {path: year, eq: 2026}
+      - {path: source, eq: OSM}
+
+  - id: classify_only
+    stage: pzz.inputs
+    input: {user_query: "Только классифицируй участки по ВРИ, без проверки зон ПЗЗ"}
+    expect:
+      - {path: mode, eq: classify_only}
+
+  - id: scenario_mode_no_invented_year
+    stage: pzz.inputs
+    input:
+      scenario_id: 1001
+      user_query: "Проверь сценарий на соответствие ПЗЗ"
+    expect:
+      - {path: mode, eq: scenario}
+      - {path: year, "null": true}
+      - {path: source, "null": true}
+
+  - id: pzz_source_and_year
+    stage: pzz.inputs
+    input:
+      scenario_id: 1001
+      user_query: "Проверь объекты сценария по зонам за 2025 год, источник зон — ПЗЗ"
+    expect:
+      - {path: mode, eq: scenario}
+      - {path: year, eq: 2025}
+      - {path: source, eq: PZZ}
+
+  # ---------------- project.inputs ----------------
+  - id: all_fields_named
+    stage: project.inputs
+    tags: [smoke]
+    input:
+      profiles: &profiles
+        - {name: residential_multistorey, label: "Многоэтажная жилая застройка"}
+        - {name: residential_individual, label: "Индивидуальная жилая застройка"}
+        - {name: business, label: "Общественно-деловая застройка"}
+      user_query: "Создай проект «Город-сад» со сценарием «Вариант 1», многоэтажная жилая застройка, существующие объекты снеси"
+    expect:
+      - {path: project_name, eq: "Город-сад"}
+      - {path: scenario_name, eq: "Вариант 1"}
+      - {path: profile, eq: residential_multistorey}
+      - {path: existing_objects, eq: delete_all}
+
+  - id: nothing_named
+    stage: project.inputs
+    input:
+      profiles: *profiles
+      user_query: "Создай проект из загруженных файлов"
+    expect:
+      - {path: project_name, "null": true}
+      - {path: scenario_name, "null": true}
+      - {path: profile, "null": true}
+      - {path: existing_objects, "null": true}
+
+  - id: keep_existing_objects
+    stage: project.inputs
+    input:
+      profiles: *profiles
+      user_query: "Загрузи файлы как проект «Северный квартал», существующие здания оставь"
+    expect:
+      - {path: project_name, eq: "Северный квартал"}
+      - {path: existing_objects, eq: keep}
+      - {path: profile, "null": true}
+
+  - id: abbreviation_profile
+    stage: project.inputs
+    input:
+      profiles: *profiles
+      user_query: "Создай проект ИЖС «Сосновка» из этих слоёв"
+    expect:
+      - {path: project_name, eq: "Сосновка"}
+      - {path: profile, eq: residential_individual}

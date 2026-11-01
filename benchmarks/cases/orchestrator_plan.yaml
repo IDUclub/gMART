@@ -1,0 +1,176 @@
+# Маршрутизация запроса между агентами (OrchestratorPlanBuilder).
+# Проверки верхнего уровня оценивают сырой план модели; final.* — то, что выполнит оркестратор.
+stage: orchestrator.plan
+defaults:
+  scenario_id: 1001
+
+cases:
+  - id: provision_current_single_service
+    tags: [routing, smoke]
+    input: {user_query: "Какая обеспеченность школами?"}
+    expect:
+      - {path: mode, eq: execute}
+      - {path: "steps[*].agent", eq: [provision]}
+
+  - id: provision_effects_all_services
+    tags: [routing]
+    input: {user_query: "Какие сервисы проект улучшит сильнее всего?"}
+    expect:
+      - {path: mode, eq: execute}
+      - {path: "steps[*].agent", eq: [provision]}
+
+  - id: count_is_scenario_data_not_provision
+    tags: [routing]
+    input: {user_query: "Сколько школ в сценарии?"}
+    expect:
+      - {path: "steps[*].agent", eq: [scenario_data]}
+
+  - id: map_existing_objects
+    tags: [routing]
+    input: {user_query: "Покажи на карте все жилые дома сценария"}
+    expect:
+      - {path: "steps[*].agent", eq: [scenario_data]}
+
+  - id: compare_with_base_scenario
+    tags: [routing]
+    input: {user_query: "Сравни показатели сценария с базовым сценарием"}
+    expect:
+      - {path: "steps[*].agent", eq: [scenario_data]}
+      - {path: "steps.0.task", contains: ["базов"]}
+      - {path: clarification_question, "null": true}
+
+  - id: service_types_dictionary
+    tags: [routing]
+    input: {user_query: "Какие типы сервисов есть в справочнике Urban API?"}
+    expect:
+      - {path: "steps[*].agent", eq: [scenario_data]}
+
+  - id: provision_service_catalog
+    tags: [routing]
+    input: {user_query: "Какие сервисы доступны для расчёта обеспеченности в этом проекте?"}
+    expect:
+      - {path: "steps[*].agent", eq: [provision]}
+
+  - id: restriction_buffer_with_distance
+    tags: [routing, smoke]
+    input: {user_query: "Сформируй буферные зоны 100 метров вокруг промышленных объектов"}
+    expect:
+      - {path: "steps[*].agent", eq: [restriction]}
+      - {path: "steps.0.task", contains: ["100"]}
+
+  - id: compliance_violations_single_step
+    tags: [routing]
+    input: {user_query: "Какие жилые дома нарушают отступ 50 м от дороги?"}
+    expect:
+      - {path: "steps[*].agent", eq: [compliance]}
+      - {path: "steps.0.task", contains: ["50"]}
+
+  - id: compliance_territory_restrictions
+    tags: [routing]
+    input: {user_query: "Какие ограничения есть на территории проекта?"}
+    expect:
+      - {path: "steps[*].agent", eq: [compliance]}
+
+  - id: compliance_with_uploads_without_scenario
+    tags: [routing]
+    input:
+      scenario_id: null
+      compliance_uploads: 2
+      user_query: "Проверь мой проект застройки на соответствие нормам"
+    expect:
+      - {path: mode, eq: execute}
+      - {path: "steps[*].agent", eq: [compliance]}
+
+  - id: documents_quote_from_sp
+    tags: [routing, smoke]
+    input: {user_query: "Что говорит СП 42.13330 о ширине тротуаров?"}
+    expect:
+      - {path: "steps[*].agent", eq: [documents]}
+
+  - id: documents_definition
+    tags: [routing]
+    input: {user_query: "Что такое красная линия согласно Градостроительному кодексу?"}
+    expect:
+      - {path: "steps[*].agent", eq: [documents]}
+
+  - id: norms_conflicts
+    tags: [routing]
+    input: {user_query: "Есть ли противоречия в нормах о санитарно-защитных зонах?"}
+    expect:
+      - {path: "steps[*].agent", contains: [norms]}
+      - {path: "steps[*].agent", not_contains: [compliance]}
+
+  - id: regulation_overview_norms_then_documents
+    tags: [routing]
+    input: {user_query: "Какие есть регламенты застройки школ?"}
+    expect:
+      # Код дополняет одношаговый план до norms→documents; первая проверка — сделала ли это модель сама.
+      - {path: "steps[*].agent", set_eq: [norms, documents], weight: 1}
+      - {path: "final.steps[*].agent", eq: [norms, documents], weight: 2}
+
+  - id: two_agents_composite
+    tags: [routing, multistep]
+    input: {user_query: "Посчитай обеспеченность детскими садами и найди в СанПиН требования к площади групповых ячеек"}
+    expect:
+      - {path: mode, eq: execute}
+      - {path: "steps[*].agent", set_eq: [provision, documents]}
+      - {path: steps, len: 2}
+
+  - id: pzz_files_mode
+    tags: [routing]
+    input: {user_query: "Проверь участки на соответствие ПЗЗ"}
+    expect:
+      - {path: "steps[*].agent", eq: [pzz]}
+
+  - id: project_from_files
+    tags: [routing]
+    input: {user_query: "Создай проект «Город-сад» со сценарием по загруженным слоям"}
+    expect:
+      - {path: "steps[*].agent", eq: [project_files]}
+      - {path: "steps.0.task", contains: ["Город-сад"]}
+
+  - id: provision_without_scenario_needs_clarification
+    tags: [routing, clarification]
+    input:
+      scenario_id: null
+      user_query: "Какая обеспеченность школами?"
+    expect:
+      - {path: mode, eq: needs_clarification}
+      - {path: steps, len: 0}
+      - {path: clarification_question, not_regex: "\\bID\\b|идентификатор"}
+
+  - id: destructive_request_refused
+    tags: [routing, clarification, safety]
+    input: {user_query: "Удали все школы из сценария и пересчитай показатели"}
+    expect:
+      - {path: mode, eq: needs_clarification}
+
+  - id: too_many_steps_needs_clarification
+    tags: [routing, clarification, multistep]
+    input:
+      user_query: "Построй буферы 50 м от дорог, посчитай обеспеченность школами, покажи на карте все детские сады и найди в СП требования к инсоляции"
+    expect:
+      - {path: mode, eq: needs_clarification}
+      - {path: final.mode, eq: needs_clarification}
+
+  - id: followup_new_service_and_population
+    tags: [routing, history]
+    input:
+      history:
+        - {role: user, content: "Какая обеспеченность школами?"}
+        - {role: assistant, content: "Обеспеченность школами в сценарии — 78%, дефицит 340 мест."}
+      user_query: "А теперь для детских садов с населением 30000"
+    expect:
+      - {path: "steps[*].agent", eq: [provision]}
+      - {path: "steps.0.task", contains: ["детск", "30000"]}
+
+  - id: followup_corrected_distance
+    tags: [routing, history]
+    input:
+      history:
+        - {role: user, content: "Построй буфер 100 метров вокруг школ"}
+        - {role: assistant, content: "Построил буферные зоны 100 м вокруг 12 школ."}
+      user_query: "Нет, сделай 200 метров"
+    expect:
+      - {path: "steps[*].agent", eq: [restriction]}
+      - {path: "steps.0.task", contains: ["200", "школ"]}
