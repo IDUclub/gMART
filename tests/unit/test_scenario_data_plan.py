@@ -901,11 +901,15 @@ async def test_execution_shortlist_uses_intent_resolved_from_history():
 
     class InspectingLlm:
         async def chat(self, **kwargs):
-            prompt = kwargs["messages"][0]["content"]
-            assert "GetScenarioServiceTypes" in prompt
-            assert "Проект сценария: 604" in prompt
-            assert "service_type.id" in prompt
-            assert "scenario_id" in prompt and "project_id" in prompt
+            system, user = kwargs["messages"]
+            assert (system["role"], user["role"]) == ("system", "user")
+            assert "service_type.id" in system["content"]
+            assert "scenario_id" in system["content"]
+            assert "project_id" in system["content"]
+            assert "Да, оба" not in system["content"]
+            assert "Текущая реплика: Да, оба" in user["content"]
+            assert "GetScenarioServiceTypes" in user["content"]
+            assert "Проект сценария: 604" in user["content"]
             return {
                 "message": {
                     "content": json.dumps(
