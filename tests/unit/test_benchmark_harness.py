@@ -1,213 +1,155 @@
-"""The LLM benchmark harness (benchmarks/): checks, case files and a run on a fake model."""
+"""The benchmark exporter freezes the first model request of each stage."""
 
 from __future__ import annotations
 
 import json
 
-import pytest
-
-from benchmarks.harness.cases import load_cases
-from benchmarks.harness.checks import evaluate_check, resolve
-from benchmarks.harness.config import (
-    BenchConfig,
-    EndpointConfig,
-    ModelConfig,
-    ProfileConfig,
-)
-from benchmarks.harness.report import render_review, summarize
-from benchmarks.harness.runner import Runner
-from benchmarks.harness.stage import load_stages
-from src.agents.model_clients.llm_base import (
-    BaseLlmAdapter,
-    LlmChatResponse,
-    LlmMessage,
-)
-from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
+from benchmarks.harness.cases import Case
+from benchmarks.harness.export import export, export_case, input_sha
+from benchmarks.harness.stage import Stage, load_stages
 
 
-class FakeAdapter(BaseLlmAdapter):
-    """Answers each request kind with a canned reply and remembers what it got."""
-
-    def __init__(self, replies: dict[str, str]) -> None:
-        self.replies = replies
-        self.requests: list[dict] = []
-
-    async def chat(
-        self, model, messages=None, *, stream=False, request_kind=None, **kwargs
-    ):
-        self.requests.append({"model": model, "request_kind": request_kind, **kwargs})
-        content = self.replies[request_kind]
-        if not stream:
-            return LlmChatResponse(model=model, message=LlmMessage(content=content))
-
-        async def parts():
-            for piece in (content[:5], content[5:]):
-                yield LlmChatResponse(
-                    model=model, message=LlmMessage(content=piece), done=False
-                )
-
-        return parts()
-
-    async def generate(
-        self, model, prompt, *, stream=False, request_kind=None, **kwargs
-    ):
-        raise NotImplementedError
-
-    async def list(self):
-        return {"models": [{"model": "fake"}]}
-
-    async def ps(self):
-        return {"models": []}
+def _stage(fn, kind="auto") -> Stage:
+    return Stage(id="test.stage", kind=kind, description="test", fn=fn)
 
 
-def _config() -> BenchConfig:
-    return BenchConfig(
-        endpoints={"fake": EndpointConfig(name="fake")},
-        models={"m": ModelConfig(name="m", endpoint="fake", model="fake-model")},
-        profiles={"p": ProfileConfig(name="p", default="m")},
-    )
+def _case(stage_id="test.stage", case_input=None) -> Case:
+    return Case(id="case", stage=stage_id, input=case_input or {"q": "школы"})
 
 
-def _runner(adapter: FakeAdapter) -> Runner:
-    runner = Runner(_config(), load_stages())
-    runner._adapters["fake"] = adapter
-    return runner
+async def test_first_request_is_frozen_and_the_stage_stops_there():
+    after_call = []
 
+    async def fn(inp, ctx):
+        await ctx.llm.chat(
+            ctx.model,
+            [{"role": "user", "content": inp["q"]}],
+            think=False,
+            format={"type": "object"},
+            options={"temperature": 0, "num_predict": 100},
+            request_kind="test.kind",
+            reasoning_effort="medium",
+        )
+        after_call.append(True)
 
-class TestChecks:
-    OUTPUT = {
-        "mode": "execute",
-        "steps": [
-            {"agent": "norms", "task": "Найти ограничения для школ"},
-            {"agent": "documents", "task": "Найти документы"},
-        ],
-        "clarification_question": None,
-        "by_topic": {"жилой дом": ["Жилой дом"]},
+    record = await export_case(_stage(fn), _case(), context_window=None)
+
+    assert record["status"] == "ok"
+    assert after_call == []
+    assert record["request"] == {
+        "api": "chat",
+        "request_kind": "test.kind",
+        "messages": [{"role": "user", "content": "школы"}],
+        "format": {"type": "object"},
+        "options": {"temperature": 0, "num_predict": 100},
+        "think": False,
+        "stream": False,
+        "kwargs": {"reasoning_effort": "medium"},
     }
 
-    def test_wildcard_collects_field_across_list(self):
-        assert resolve(self.OUTPUT, "steps[*].agent") == ["norms", "documents"]
-        assert resolve(self.OUTPUT, "steps.1.agent") == "documents"
-        assert resolve(self.OUTPUT, "by_topic.жилой дом") == ["Жилой дом"]
 
-    @pytest.mark.parametrize(
-        ("check", "passed"),
-        [
-            ({"path": "mode", "eq": "EXECUTE"}, True),
-            ({"path": "steps[*].agent", "eq": ["documents", "norms"]}, False),
-            ({"path": "steps[*].agent", "set_eq": ["documents", "norms"]}, True),
-            ({"path": "steps.0.task", "contains": ["школ"]}, True),
-            ({"path": "steps[*].agent", "not_contains": ["compliance"]}, True),
-            ({"path": "clarification_question", "null": True}, True),
-            ({"path": "missing.path", "null": True}, True),
-            ({"path": "missing.path", "eq": None}, False),
-            ({"path": "steps", "len": 2}, True),
-            ({"path": "by_topic.жилой дом", "contains": ["жилой дом"]}, True),
-        ],
+async def test_a_broad_except_around_the_call_does_not_hide_the_capture():
+    async def fn(inp, ctx):
+        try:
+            await ctx.llm.chat(ctx.model, [{"role": "user", "content": "a"}])
+        except Exception:  # the services fall back like this
+            return "fallback"
+
+    record = await export_case(_stage(fn), _case(), context_window=None)
+
+    assert record["status"] == "ok"
+
+
+async def test_a_stage_decided_by_code_is_not_a_request():
+    async def fn(inp, ctx):
+        return "decided without the model"
+
+    record = await export_case(_stage(fn), _case(), context_window=None)
+
+    assert record["status"] == "code"
+    assert "request" not in record
+
+
+async def test_a_stage_error_is_reported():
+    async def fn(inp, ctx):
+        raise KeyError("user_query")
+
+    record = await export_case(_stage(fn), _case(), context_window=None)
+
+    assert record["status"] == "error"
+    assert "KeyError" in record["error"]
+
+
+async def test_generate_is_frozen_as_a_single_user_message():
+    async def fn(inp, ctx):
+        await ctx.llm.generate(ctx.model, "Придумай название", request_kind="title")
+
+    record = await export_case(_stage(fn, "manual"), _case(), context_window=None)
+
+    assert record["request"]["api"] == "generate"
+    assert record["request"]["messages"] == [
+        {"role": "user", "content": "Придумай название"}
+    ]
+
+
+def test_input_sha_ignores_key_order_and_tracks_the_stage():
+    assert input_sha("a", {"x": 1, "y": [1, 2]}) == input_sha(
+        "a", {"y": [1, 2], "x": 1}
     )
-    def test_operators(self, check, passed):
-        assert evaluate_check(self.OUTPUT, check).passed is passed
-
-    def test_number_comparison_ignores_int_float(self):
-        assert evaluate_check({"n": 30000}, {"path": "n", "eq": 30000.0}).passed
-        assert evaluate_check({"n": 0.5}, {"path": "n", "lte": 0.6}).passed
-        assert not evaluate_check({"n": None}, {"path": "n", "lte": 0.6}).passed
+    assert input_sha("a", {"x": 1}) != input_sha("b", {"x": 1})
+    assert input_sha("a", {"x": 1}) != input_sha("a", {"x": 2})
 
 
-def test_every_case_file_loads_and_targets_a_registered_stage():
+async def test_real_stages_reach_their_model_call():
     stages = load_stages()
-    cases = load_cases()
+    cases = [
+        _case(
+            "orchestrator.plan",
+            {"user_query": "Какая обеспеченность школами?", "scenario_id": 1},
+        ),
+        _case(
+            "provision.plan",
+            {
+                "user_query": "Какая обеспеченность школами?",
+                "services_catalog": ["Школа"],
+            },
+        ),
+        _case("chat_title", {"user_query": "Школы в зоне шума"}),
+        _case("compliance.scope", {"user_query": "Проверь нормы по школам"}),
+    ]
+    for case in cases:
+        record = await export_case(stages[case.stage], case, context_window=32768)
+        assert record["status"] == "ok", (case.stage, record)
+        text = json.dumps(record["request"]["messages"], ensure_ascii=False)
+        assert "Школ" in text or "школ" in text, case.stage
 
-    assert cases
-    assert {case.stage for case in cases} <= set(stages)
-    # Every auto stage is covered by at least one case.
-    assert {s for s, st in stages.items() if st.kind == "auto"} <= {
-        c.stage for c in cases
+
+def test_export_writes_requests_and_manifest(tmp_path):
+    async def asks(inp, ctx):
+        await ctx.llm.chat(ctx.model, [{"role": "user", "content": inp["q"]}])
+
+    async def decides(inp, ctx):
+        return None
+
+    stages = {
+        "s.asks": Stage(id="s.asks", kind="auto", description="d", fn=asks),
+        "s.code": Stage(id="s.code", kind="auto", description="d", fn=decides),
     }
+    cases = [_case("s.asks"), _case("s.code")]
 
+    manifest = export(stages, cases, tmp_path, gmart_root=tmp_path, context_window=4096)
 
-def test_recording_proxy_keeps_isinstance_for_reasoning_effort_choices():
-    from benchmarks.harness.llm import RecordingLlm
-
-    adapter = OpenAiCompatAdapter(base_url="http://localhost:1/v1")
-    llm = RecordingLlm(
-        adapter, ModelConfig(name="m", endpoint="e", model="gpt-oss-20b")
-    )
-
-    assert isinstance(llm, OpenAiCompatAdapter)
-
-
-async def test_structured_stage_is_scored_and_uses_profile_model(tmp_path):
-    plan = {
-        "mode": "execute",
-        "steps": [{"agent": "provision", "task": "Обеспеченность школами"}],
-        "clarification_question": None,
-    }
-    adapter = FakeAdapter({"orchestrator.plan": json.dumps(plan, ensure_ascii=False)})
-    case = next(
-        c
-        for c in load_cases()
-        if c.key == "orchestrator.plan/provision_current_single_service"
-    )
-
-    results = await _runner(adapter).run(
-        [case], [_config().profiles["p"]], tmp_path / "r.jsonl"
-    )
-
-    [result] = results
-    assert result["status"] == "pass", result
-    assert result["output"]["final"]["steps"][0]["agent"] == "provision"
-    assert result["llm_calls"] == 1
-    assert adapter.requests[0]["model"] == "fake-model"
-    assert (tmp_path / "r.jsonl").read_text(encoding="utf-8").count("\n") == 1
-
-
-async def test_wrong_plan_fails_with_the_failed_check(tmp_path):
-    plan = {"mode": "execute", "steps": [{"agent": "scenario_data", "task": "x"}]}
-    adapter = FakeAdapter({"orchestrator.plan": json.dumps(plan)})
-    case = next(
-        c
-        for c in load_cases()
-        if c.key == "orchestrator.plan/provision_current_single_service"
-    )
-
-    [result] = await _runner(adapter).run(
-        [case], [_config().profiles["p"]], tmp_path / "r.jsonl"
-    )
-
-    assert result["status"] == "fail"
-    failed = [c for c in result["checks"] if not c["passed"]]
-    assert failed and failed[0]["actual"] == ["scenario_data"]
-
-
-async def test_invalid_json_after_retries_is_an_error(tmp_path):
-    adapter = FakeAdapter({"provision.plan": "not json"})
-    case = next(
-        c for c in load_cases() if c.key == "provision.plan/current_provision_single"
-    )
-
-    [result] = await _runner(adapter).run(
-        [case], [_config().profiles["p"]], tmp_path / "r.jsonl"
-    )
-
-    assert result["status"] == "error"
-    assert result["llm_calls"] == 3  # the first try and two repair retries
-
-
-async def test_streamed_answer_is_recorded_for_manual_review(tmp_path):
-    text = "Не менее 50 м [1] (СП 42.13330.2016, п. 10.4) и 10 м [2]."
-    adapter = FakeAdapter({"norms.answer": text})
-    case = next(
-        c for c in load_cases() if c.key == "norms.answer/placement_with_two_sources"
-    )
-
-    results = await _runner(adapter).run(
-        [case], [_config().profiles["p"]], tmp_path / "r.jsonl"
-    )
-
-    [result] = results
-    assert result["output"]["text"] == text
-    assert result["needs_review"] is True
-    assert "[1] СП 42.13330.2016" in result["output"]["context"]
-    assert text in render_review(results)
-    assert summarize(results)["cells"][0]["kind"] == "manual"
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "requests.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [(row["stage"], row["case"]) for row in rows] == [("s.asks", "case")]
+    assert rows[0]["input_sha"] == input_sha("s.asks", {"q": "школы"})
+    saved = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert saved == manifest
+    assert manifest["requests"] == 1
+    assert manifest["decided_by_code"] == ["s.code/case"]
+    assert manifest["context_window"] == 4096
+    assert set(manifest["stages"]) == {"s.asks", "s.code"}

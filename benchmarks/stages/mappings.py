@@ -17,7 +17,6 @@ from src.agents.services.compilance.compliance_scope import ComplianceScopeResol
 from src.agents.services.pzz.pzz_columns import detect_columns
 from src.agents.services.scenario_data.scenario_data_type_mapper import (
     TypeMappingCandidate,
-    TypeMappingRequest,
     UrbanTypeMapper,
 )
 
@@ -33,10 +32,9 @@ def _targets(items: list[dict[str, Any]]) -> list[EntityTarget]:
     "иначе тип берётся кодом).",
 )
 async def scenario_request(inp: dict[str, Any], ctx: StageContext) -> Any:
-    request = await UrbanTypeMapper(ctx.llm).classify_scenario_entity_request(
+    return await UrbanTypeMapper(ctx.llm).classify_scenario_entity_request(
         ctx.model, inp["user_query"]
     )
-    return {**request.model_dump(mode="json"), "types": request.types()}
 
 
 @stage(
@@ -45,46 +43,48 @@ async def scenario_request(inp: dict[str, Any], ctx: StageContext) -> Any:
     scope="UrbanTypeMapper.select_scenario_entities; точное совпадение названия "
     "решается кодом без модели (поле llm_called).",
 )
-async def scenario_select(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
+async def scenario_select(inp: dict[str, Any], ctx: StageContext) -> Any:
     candidates = {
         key: {"domain": value["domain"], "name": value["name"]}
         for key, value in inp["candidates"].items()
     }
-    selection = await UrbanTypeMapper(ctx.llm).select_scenario_entities(
+    return await UrbanTypeMapper(ctx.llm).select_scenario_entities(
         ctx.model,
         inp["user_query"],
         candidates,
         requested_type=inp.get("requested_type"),
     )
-    chosen = selection.candidate
-    return {
-        "candidate": chosen,
-        "name": candidates[chosen]["name"] if chosen in candidates else None,
-        "llm_called": bool(ctx.llm.calls),
-    }
+
+
+def _type_candidates(inp: dict[str, Any]) -> list[TypeMappingCandidate]:
+    return [TypeMappingCandidate(**item) for item in inp["candidates"]]
+
+
+def _acquisition(inp: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(objective=inp.get("objective") or inp["user_query"])
 
 
 @stage(
-    "scenario.candidates",
-    description="Отбор и независимая проверка справочных типов (select + assess)",
-    scope="UrbanTypeMapper.resolve_candidates: два вызова модели.",
+    "scenario.candidates.select",
+    description="Отбор справочных типов из кандидатов под запрос",
+    scope="UrbanTypeMapper._select_candidates — первый из двух вызовов resolve_candidates.",
 )
-async def scenario_candidates(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
-    requests = [TypeMappingRequest(**item) for item in inp["requests"]]
-    candidates = [TypeMappingCandidate(**item) for item in inp["candidates"]]
-    resolution = await UrbanTypeMapper(ctx.llm).resolve_candidates(
-        ctx.model,
-        inp["user_query"],
-        SimpleNamespace(objective=inp.get("objective") or inp["user_query"]),
-        requests,
-        candidates,
+async def scenario_candidates_select(inp: dict[str, Any], ctx: StageContext) -> Any:
+    return await UrbanTypeMapper(ctx.llm)._select_candidates(
+        ctx.model, inp["user_query"], _acquisition(inp), _type_candidates(inp)
     )
-    return {
-        "accepted_ids": [item.candidate_id for item in resolution.accepted],
-        "accepted_names": [item.name for item in resolution.accepted],
-        "missing_values": resolution.missing_values,
-        "complete": resolution.complete,
-    }
+
+
+@stage(
+    "scenario.candidates.assess",
+    description="Независимая проверка выбранных справочных типов",
+    scope="UrbanTypeMapper._assess_candidates — второй вызов resolve_candidates; "
+    "на проверку подаются все кандидаты кейса, включая неверные.",
+)
+async def scenario_candidates_assess(inp: dict[str, Any], ctx: StageContext) -> Any:
+    return await UrbanTypeMapper(ctx.llm)._assess_candidates(
+        ctx.model, inp["user_query"], _acquisition(inp), _type_candidates(inp)
+    )
 
 
 @stage(
@@ -92,7 +92,7 @@ async def scenario_candidates(inp: dict[str, Any], ctx: StageContext) -> dict[st
     description="Сопоставление групп объектов файла (теги) с типами из норм",
     scope="EntityMapper._classify: только вызов модели, без табличных правил.",
 )
-async def compliance_mapping(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
+async def compliance_mapping(inp: dict[str, Any], ctx: StageContext) -> Any:
     groups = [
         TagGroup(
             signature=signature_of(item["tags"]),
@@ -103,19 +103,9 @@ async def compliance_mapping(inp: dict[str, Any], ctx: StageContext) -> dict[str
         )
         for item in inp["groups"]
     ]
-    classified = await EntityMapper(ctx.llm)._classify(
+    return await EntityMapper(ctx.llm)._classify(
         ctx.model, groups, _targets(inp["candidates"])
     )
-    result = {}
-    for item, group in zip(inp["groups"], groups):
-        target, confidence, reason = classified.get(group.signature, (None, 0.0, None))
-        result[str(item["id"])] = {
-            "entity": target.name if target else None,
-            "entity_type": target.entity_type if target else None,
-            "confidence": confidence,
-            "reason": reason,
-        }
-    return {"groups": result}
 
 
 @stage(
@@ -124,9 +114,7 @@ async def compliance_mapping(inp: dict[str, Any], ctx: StageContext) -> dict[str
     scope="EntityMapper.resolve_reply; короткие «да/нет/2 — школа» разбираются кодом "
     "(поле llm_called).",
 )
-async def compliance_mapping_reply(
-    inp: dict[str, Any], ctx: StageContext
-) -> dict[str, Any]:
+async def compliance_mapping_reply(inp: dict[str, Any], ctx: StageContext) -> Any:
     candidates = _targets(inp["candidates"])
     by_name = {target.name: target for target in candidates}
     pending = [
@@ -142,18 +130,9 @@ async def compliance_mapping_reply(
         )
         for number, item in enumerate(inp["pending"], start=1)
     ]
-    reply = await EntityMapper(ctx.llm).resolve_reply(
+    return await EntityMapper(ctx.llm).resolve_reply(
         ctx.model, inp["reply"], pending, candidates
     )
-    number_of = {item.signature: str(n) for n, item in enumerate(pending, start=1)}
-    return {
-        "kind": reply.kind,
-        "overrides": {
-            number_of[signature]: target.name if target else None
-            for signature, target in reply.overrides.items()
-        },
-        "llm_called": bool(ctx.llm.calls),
-    }
 
 
 @stage(
@@ -183,19 +162,15 @@ class _ResolutionsStub:
 @stage(
     "compliance.scope_entities",
     description="Выбор сущностей графа норм для темы проверки",
-    scope="ComplianceScopeResolver._topic_entities с кандидатами NormGraph из кейса; "
-    "если модель ничего не выбрала, код берёт кандидатов с совпадением имени.",
+    scope="ComplianceScopeResolver._topic_entities с кандидатами NormGraph из кейса.",
 )
-async def compliance_scope_entities(
-    inp: dict[str, Any], ctx: StageContext
-) -> dict[str, Any]:
-    by_topic = await ComplianceScopeResolver(ctx.llm)._topic_entities(
+async def compliance_scope_entities(inp: dict[str, Any], ctx: StageContext) -> Any:
+    return await ComplianceScopeResolver(ctx.llm)._topic_entities(
         _ResolutionsStub(inp["candidates"]),
         ctx.model,
         inp["user_query"],
         list(inp["topics"]),
     )
-    return {"by_topic": by_topic}
 
 
 @stage(
@@ -203,16 +178,15 @@ async def compliance_scope_entities(
     description="Определение колонок ВРИ/индекса/названия зоны по атрибутам слоя",
     scope="pzz_columns.detect_columns; точные алиасы колонок решаются кодом.",
 )
-async def pzz_columns(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
+async def pzz_columns(inp: dict[str, Any], ctx: StageContext) -> Any:
     features = [
         {"type": "Feature", "geometry": None, "properties": properties}
         for properties in inp["rows"]
     ]
-    resolved = await detect_columns(
+    return await detect_columns(
         ctx.llm,
         ctx.model,
         {"type": "FeatureCollection", "features": features},
         list(inp["targets"]),
         dict(inp.get("explicit") or {}),
     )
-    return {"columns": resolved, "llm_called": bool(ctx.llm.calls)}

@@ -1,4 +1,4 @@
-"""Benchmark cases: ``benchmarks/cases/*.yaml``.
+"""Benchmark cases: ``cases/*.yaml`` of the standalone benchmark checkout.
 
 One file per stage::
 
@@ -13,7 +13,8 @@ One file per stage::
           - {path: mode, eq: provision}
         review: "что проверить глазами (только для manual-этапов)"
 
-A case may set its own ``stage`` to override the file's.
+A case may set its own ``stage`` to override the file's. The export reads only
+``id``, ``stage`` and ``input``; ``expect`` and ``review`` are the runner's.
 """
 
 from __future__ import annotations
@@ -24,10 +25,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-from benchmarks.harness.checks import validate_checks
-
-CASES_DIR = Path(__file__).resolve().parent.parent / "cases"
 
 
 @dataclass(frozen=True)
@@ -55,7 +52,7 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def load_cases(directory: Path = CASES_DIR) -> list[Case]:
+def load_cases(directory: Path) -> list[Case]:
     cases: list[Case] = []
     seen: set[str] = set()
     for path in sorted(directory.glob("*.yaml")):
@@ -74,10 +71,6 @@ def load_cases(directory: Path = CASES_DIR) -> list[Case]:
                 review=item.get("review"),
                 source=path.name,
             )
-            try:
-                validate_checks(case.expect)
-            except ValueError as exc:
-                raise ValueError(f"{path.name}:{case.id}: {exc}") from exc
             if case.key in seen:
                 raise ValueError(f"{path.name}: duplicate case {case.key}")
             seen.add(case.key)

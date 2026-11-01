@@ -3,12 +3,11 @@
 The answer generators are methods of the agents' services. They are called on an
 instance built without ``__init__`` (no Redis, MCP or Urban API clients) that has only
 ``llm_client`` set — the generators use nothing else — so the prompt is exactly the
-one the agent sends. ``output.text`` is the raw model text; ``review.md`` shows it.
+one the agent sends.
 """
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -42,17 +41,13 @@ def _service(cls: type, ctx: StageContext):
     return service
 
 
-def _answer_text(ctx: StageContext) -> str:
-    return ctx.llm.calls[-1].content if ctx.llm.calls else ""
-
-
 @stage(
     "norms.answer",
     kind="manual",
     description="Ответ по найденным нормативным ограничениям (с цитатами и источниками)",
     scope="NormGraphRagService._generate_answer, контекст — NormGraphContextBuilder.",
 )
-async def norms_answer(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
+async def norms_answer(inp: dict[str, Any], ctx: StageContext) -> None:
     context = norms_context(inp)
     service = _service(NormGraphRagService, ctx)
     async for _ in service._generate_answer(
@@ -65,7 +60,6 @@ async def norms_answer(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]
         revision_note=inp.get("revision_note"),
     ):
         pass
-    return {"text": _answer_text(ctx), "context": context}
 
 
 @stage(
@@ -74,7 +68,7 @@ async def norms_answer(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]
     description="Объяснение пользователю выбранных параметров построения зон",
     scope="RestrictionParserService.generate_plan_explanation.",
 )
-async def restriction_explain(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
+async def restriction_explain(inp: dict[str, Any], ctx: StageContext) -> None:
     plan = RestrictionPlan.model_validate(
         {"original": inp["user_query"], **inp["plan"]}
     )
@@ -83,34 +77,24 @@ async def restriction_explain(inp: dict[str, Any], ctx: StageContext) -> dict[st
         ctx.model, inp["user_query"], plan, ctx.temperature, inp.get("history")
     ):
         pass
-    return {"text": _answer_text(ctx)}
-
-
-_FALLBACK = "__computed_summary__"
 
 
 @stage(
     "scenario.summary",
     kind="manual",
     description="Сводка сравнения показателей сценариев по посчитанным фактам",
-    scope="scenario_data_summary.summarize_comparison; fallback_used=true — текст "
-    "модели отброшен проверкой (числа не из фактов, обрыв, пусто).",
+    scope="scenario_data_summary.summarize_comparison без кодовой проверки чисел текста.",
 )
-async def scenario_summary(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
-    final = await summarize_comparison(
+async def scenario_summary(inp: dict[str, Any], ctx: StageContext) -> Any:
+    return await summarize_comparison(
         ctx.llm,
         ctx.model,
         rows=inp["rows"],
         column_labels=inp["column_labels"],
         counts=inp["counts"],
         missing=list(inp.get("missing") or []),
-        fallback=_FALLBACK,
+        fallback="",
     )
-    return {
-        "text": _answer_text(ctx),
-        "fallback_used": final == _FALLBACK,
-        "final": None if final == _FALLBACK else final,
-    }
 
 
 @stage(
@@ -119,7 +103,7 @@ async def scenario_summary(inp: dict[str, Any], ctx: StageContext) -> dict[str, 
     description="Название чата по первому запросу",
     scope="BaseLlmService.generate_chat_title (одна попытка).",
 )
-async def chat_title(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
+async def chat_title(inp: dict[str, Any], ctx: StageContext) -> Any:
     fake = SimpleNamespace(llm_client=ctx.llm)
 
     async def get_models():
@@ -131,7 +115,7 @@ async def chat_title(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
             fake, *args, **kwargs
         )
     )
-    title = await BaseLlmService.generate_chat_title(
+    return await BaseLlmService.generate_chat_title(
         fake,
         ctx.model,
         inp["user_query"],
@@ -139,7 +123,6 @@ async def chat_title(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
         list(inp.get("existing_names") or []),
         max_retries=1,
     )
-    return {"text": title}
 
 
 @stage(
@@ -148,8 +131,8 @@ async def chat_title(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
     description="Произвольный запрос с готовыми сообщениями (снимок промпта)",
     scope="Прямой вызов модели с messages/format/options из кейса.",
 )
-async def raw_chat(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
-    response = await ctx.llm.chat(
+async def raw_chat(inp: dict[str, Any], ctx: StageContext) -> Any:
+    return await ctx.llm.chat(
         ctx.model,
         inp["messages"],
         request_kind=inp.get("request_kind") or "benchmark.chat",
@@ -157,11 +140,3 @@ async def raw_chat(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
         format=inp.get("format"),
         options={"temperature": ctx.temperature, **(inp.get("options") or {})},
     )
-    text = response["message"]["content"] or ""
-    output: dict[str, Any] = {"text": text}
-    if inp.get("format") is not None:
-        try:
-            output["json"] = json.loads(text)
-        except json.JSONDecodeError:
-            output["json"] = None
-    return output

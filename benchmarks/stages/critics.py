@@ -46,15 +46,11 @@ async def norms_review(inp: dict[str, Any], ctx: StageContext) -> Any:
     description="Судья ответа по данным сценария: достаточен ли ответ",
     scope="ScenarioDataEvaluator._judge без детерминированных проверок перед ним.",
 )
-async def scenario_judge(inp: dict[str, Any], ctx: StageContext) -> dict[str, Any]:
-    verdict = await ScenarioDataEvaluator(ctx.llm)._judge(
+async def scenario_judge(inp: dict[str, Any], ctx: StageContext) -> Any:
+    return await ScenarioDataEvaluator(ctx.llm)._judge(
         ctx.model,
         inp["user_query"],
         inp["observations"],
         inp["answer"],
         required_output=inp.get("required_output"),
     )
-    if verdict is None:
-        return {"parsed": False, "sufficient": None, "missing_code": None}
-    sufficient, missing_code = verdict
-    return {"parsed": True, "sufficient": sufficient, "missing_code": missing_code}
