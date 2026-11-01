@@ -1,0 +1,259 @@
+# Критики (вердикт сверяется с эталоном) и ответы (ручная оценка + формальные проверки).
+# Общие фрагменты контекста NormGraph (структура как у restriction-хитов графа).
+x-hits:
+  school_road: &hit_school_road
+    id: "r-school-road"
+    subject: "Магистральная улица"
+    object: "Общеобразовательная организация"
+    kind: "минимальное расстояние"
+    value: {operator: ">=", number: 50, unit: "м"}
+    extraction_text: "Здания общеобразовательных организаций следует размещать на расстоянии не менее 50 м от красной линии магистральных улиц."
+    provenance: {name: "СП 42.13330.2016", version: "2016", numbering: "10.4", breadcrumb: "10 Зоны общественного назначения"}
+  school_housing: &hit_school_housing
+    id: "r-school-housing"
+    subject: "Общеобразовательная организация"
+    object: "Жилой дом"
+    kind: "минимальное расстояние"
+    value: {operator: ">=", number: 10, unit: "м"}
+    extraction_text: "Расстояние от стен зданий общеобразовательных организаций до жилых домов принимается не менее 10 м."
+    provenance: {name: "СП 251.1325800.2016", version: "2016", numbering: "4.5"}
+  school_classroom: &hit_school_classroom
+    id: "r-school-classroom"
+    subject: "Учебный кабинет"
+    object: "Обучающийся"
+    kind: "минимальная площадь"
+    value: {operator: ">=", number: 2.5, unit: "м²"}
+    extraction_text: "Площадь учебного кабинета принимается из расчёта не менее 2,5 м² на одного обучающегося."
+    provenance: {name: "СанПиН 2.4.3648-20", numbering: "2.4.6"}
+  school_road_regional: &hit_school_road_regional
+    id: "r-school-road-regional"
+    subject: "Магистральная улица"
+    object: "Общеобразовательная организация"
+    kind: "минимальное расстояние"
+    value: {operator: ">=", number: 30, unit: "м"}
+    extraction_text: "Расстояние от зданий общеобразовательных организаций до красной линии магистральных улиц — не менее 30 м."
+    provenance: {name: "Региональные нормативы градостроительного проектирования Ленинградской области", numbering: "3.2.7"}
+
+x-observations:
+  aggregate: &obs_aggregate
+    - tool: projects.GetScenarioPhysicalObjects
+      layer_count: 0
+      aggregate:
+        total_records: 924
+        breakdown:
+          physical_object_type.name:
+            distinct_values: 3
+            counts: {"Жилой дом": 900, "Банк": 20, "Школа": 4}
+
+cases:
+  # ---------------- norms.review ----------------
+  - id: grounded_answer_accepted
+    stage: norms.review
+    tags: [smoke]
+    input:
+      user_query: "На каком расстоянии от магистральных улиц и жилых домов размещают школы?"
+      hits: [*hit_school_road, *hit_school_housing]
+      answer: |-
+        - Не менее 50 м от красной линии магистральных улиц [1] (СП 42.13330.2016, п. 10.4): «Здания общеобразовательных организаций следует размещать на расстоянии не менее 50 м от красной линии магистральных улиц.»
+        - Не менее 10 м от стен здания школы до жилых домов [2] (СП 251.1325800.2016, п. 4.5): «Расстояние от стен зданий общеобразовательных организаций до жилых домов принимается не менее 10 м.»
+    expect:
+      - {path: satisfied, eq: true}
+
+  - id: invented_norm_rejected
+    stage: norms.review
+    input:
+      user_query: "На каком расстоянии от магистральных улиц размещают школы?"
+      hits: [*hit_school_road]
+      answer: |-
+        - Не менее 50 м от красной линии магистральных улиц [1] (СП 42.13330.2016, п. 10.4).
+        - Кроме того, от автозаправочных станций школа должна находиться на расстоянии не менее 50 м по СанПиН 2.2.1/2.1.1.1200-03.
+    expect:
+      - {path: satisfied, eq: false}
+
+  - id: missing_sources_rejected
+    stage: norms.review
+    input:
+      user_query: "На каком расстоянии от магистральных улиц и жилых домов размещают школы?"
+      hits: [*hit_school_road, *hit_school_housing]
+      answer: "Школы размещают не ближе 50 м от магистральных улиц и не ближе 10 м от жилых домов."
+    expect:
+      - {path: satisfied, eq: false}
+
+  - id: off_topic_rule_rejected
+    stage: norms.review
+    input:
+      user_query: "На каком расстоянии от магистральных улиц можно размещать школу?"
+      hits: [*hit_school_road, *hit_school_classroom]
+      answer: |-
+        - Не менее 50 м от красной линии магистральных улиц [1] (СП 42.13330.2016, п. 10.4).
+        - Площадь учебного кабинета — не менее 2,5 м² на одного обучающегося [2] (СанПиН 2.4.3648-20, п. 2.4.6).
+    expect:
+      - {path: satisfied, eq: false}
+
+  - id: ignored_conflict_rejected
+    stage: norms.review
+    input:
+      user_query: "Какое минимальное расстояние от школы до магистральной улицы?"
+      hits: [*hit_school_road, *hit_school_road_regional]
+      conflicts:
+        - restriction: *hit_school_road
+          other: *hit_school_road_regional
+          severity: likely
+          reason: "Разные минимальные расстояния (50 м и 30 м) для одной пары объектов"
+      answer: "Минимальное расстояние — 50 м от красной линии магистральных улиц [1] (СП 42.13330.2016, п. 10.4)."
+    expect:
+      - {path: satisfied, eq: false}
+
+  # ---------------- scenario.judge ----------------
+  - id: concrete_answer_sufficient
+    stage: scenario.judge
+    tags: [smoke]
+    input:
+      user_query: "Какие объекты есть в сценарии и сколько их по типам?"
+      observations: *obs_aggregate
+      answer: "Всего в сценарии 924 объекта: жилых домов — 900, банков — 20, школ — 4."
+    expect:
+      - {path: parsed, eq: true}
+      - {path: sufficient, eq: true}
+      - {path: missing_code, eq: none}
+
+  - id: counts_ignored_insufficient
+    stage: scenario.judge
+    input:
+      user_query: "Какие объекты есть в сценарии и сколько их по типам?"
+      observations: *obs_aggregate
+      answer: "В сценарии представлены жилые дома, банки и школы; жилых домов заметно больше остальных."
+    expect:
+      - {path: sufficient, eq: false}
+      - {path: missing_code, in: [counts_missing, answer_incomplete]}
+
+  - id: wrong_count_insufficient
+    stage: scenario.judge
+    input:
+      user_query: "Сколько школ в сценарии?"
+      observations: *obs_aggregate
+      answer: "В сценарии 40 школ."
+    expect:
+      - {path: sufficient, eq: false}
+
+  - id: table_already_shown_sufficient
+    stage: scenario.judge
+    input:
+      user_query: "Выведи таблицу школ сценария"
+      required_output: {tables: ["Школы сценария"]}
+      observations:
+        - tool: projects.GetScenarioServices
+          layer_count: 0
+          table_count: 1
+          table_complete: true
+          aggregate: {total_records: 4}
+      answer: "В сценарии 4 школы, их список приведён в таблице выше."
+    expect:
+      - {path: sufficient, eq: true}
+
+  # ---------------- norms.answer (ручная оценка) ----------------
+  - id: placement_with_two_sources
+    stage: norms.answer
+    tags: [smoke]
+    review: "Оба ограничения (50 м и 10 м) с документом и пунктом; цитаты только из «Текст пункта»; без таблиц и id; ничего сверх контекста."
+    input:
+      user_query: "На каком расстоянии от магистральных улиц и жилых домов можно размещать школу?"
+      hits: [*hit_school_road, *hit_school_housing]
+    expect:
+      - {path: text, regex: "50"}
+      - {path: text, regex: "10"}
+      - {path: text, contains: ["СП 42.13330"]}
+      - {path: text, not_regex: "^\\s*\\|.*\\|\\s*$"}
+      - {path: text, not_regex: "r-school|[0-9a-f]{8}-[0-9a-f]{4}-"}
+
+  - id: conflict_must_be_mentioned
+    stage: norms.answer
+    review: "Ответ обязан предупредить о расхождении 50 м (СП 42) и 30 м (региональные нормативы) и не выбирать одно молча."
+    input:
+      user_query: "Какое минимальное расстояние от школы до магистральной улицы?"
+      hits: [*hit_school_road, *hit_school_road_regional]
+      conflicts:
+        - restriction: *hit_school_road
+          other: *hit_school_road_regional
+          severity: likely
+          reason: "Разные минимальные расстояния (50 м и 30 м) для одной пары объектов"
+    expect:
+      - {path: text, contains_any: ["противореч", "расхожд", "различ"]}
+      - {path: text, regex: "50"}
+      - {path: text, regex: "30"}
+
+  - id: empty_context_admits_gap
+    stage: norms.answer
+    review: "Контекст пуст: ответ должен честно сказать, что данных нет, и не приводить ни одной нормы или числа."
+    input:
+      user_query: "Какой должна быть высота ограждения территории школы?"
+      hits: []
+    expect:
+      - {path: text, contains_any: ["недостаточно", "не найден", "нет данных", "отсутству", "не содерж"]}
+      - {path: text, not_regex: "\\d+[,.]?\\d*\\s*(м|см|метр)"}
+
+  - id: off_topic_rule_omitted
+    stage: norms.answer
+    review: "Вопрос о размещении: норма о площади кабинета (2,5 м²) не должна попасть в ответ."
+    input:
+      user_query: "На каком расстоянии от магистральных улиц можно размещать школу?"
+      hits: [*hit_school_road, *hit_school_classroom]
+    expect:
+      - {path: text, regex: "50"}
+      - {path: text, not_regex: "2[,.]5"}
+
+  # ---------------- restriction.explain (ручная оценка) ----------------
+  - id: explain_forest_buffer
+    stage: restriction.explain
+    review: "Простым языком: источник — лес, радиус 50 м из запроса, проверяются жилые дома. Без терминов (JSON, модель, пайплайн), без количества найденных объектов."
+    input:
+      user_query: "Какие жилые дома ближе 50 м к лесу?"
+      plan:
+        mode: restrictions
+        source_entities: [{name: "Лес", entity_type: physical_object}]
+        target_entities: [{name: "Жилой дом", entity_type: physical_object}]
+        buffer_rules: [{source_name: "Лес", buffer_size: 50, title: "Зона 50 м от леса"}]
+        restriction_rules: [{source_name: "Лес", target_names: ["Жилой дом"], title: "Жилые дома ближе 50 м к лесу", description: "Жилые дома, попадающие в зону 50 м от границы леса"}]
+        confidence: 0.9
+    expect:
+      - {path: text, regex: "50"}
+      - {path: text, contains_any: ["лес"]}
+      - {path: text, not_regex: "JSON|пайплайн|инструмент|схем[аеу]"}
+      - {path: text, not_regex: "найден[оы]?\\s+\\d+|\\d+\\s+(жилых\\s+)?дом(ов|а)\\b"}
+
+  # ---------------- scenario.summary (ручная оценка + проверка чисел кодом) ----------------
+  - id: indicators_comparison
+    stage: scenario.summary
+    review: "2–4 предложения: что выросло сильнее (обеспеченность школами +15,5 п. п., плотность +30), что не изменилось (озеленённость). Без новых вычисленных чисел, без списков."
+    input:
+      column_labels: {indicator: "Показатель", scenario_1: "Базовый сценарий", scenario_2: "Вариант 1", difference: "Разница"}
+      counts: {scenario_1: 3, scenario_2: 3}
+      rows:
+        - {indicator: "Обеспеченность школами, %", scenario_1: 72.5, scenario_2: 88.0, difference: 15.5}
+        - {indicator: "Плотность населения, чел/га", scenario_1: 180, scenario_2: 210, difference: 30}
+        - {indicator: "Озеленённость территории, %", scenario_1: 34, scenario_2: 34, difference: 0}
+    expect:
+      - {path: fallback_used, eq: false}
+
+  # ---------------- chat_title (ручная оценка) ----------------
+  - id: title_short_and_specific
+    stage: chat_title
+    review: "Короткое (до ~6 слов) название по сути запроса, без кавычек и точки, не совпадает с существующими."
+    input:
+      user_query: "Какая обеспеченность школами и детскими садами в проекте «Северный квартал»?"
+      existing_names: ["Обеспеченность школами"]
+    expect:
+      - {path: text, max_len: 80}
+      - {path: text, not_regex: "\\n"}
+      - {path: text, ne: "Обеспеченность школами"}
+
+  # ---------------- chat (снимок произвольного промпта) ----------------
+  - id: raw_prompt_example
+    stage: chat
+    review: "Пример снимка: подставьте сюда messages из лога gMART, чтобы сравнить модели на любом промпте."
+    input:
+      messages:
+        - {role: system, content: "Ты помощник градостроителя. Отвечай кратко по-русски."}
+        - {role: user, content: "Объясни в двух предложениях, чем красная линия отличается от линии регулирования застройки."}
+    expect:
+      - {path: text, max_len: 1200}

@@ -1,0 +1,56 @@
+# Скопируйте в benchmarks/config.yaml (он в .gitignore) и подставьте свои адреса.
+# ${VAR} и ${VAR:-по умолчанию} берутся из окружения — ключи в файл не пишем.
+
+endpoints:
+  # vLLM / любой OpenAI-совместимый сервер.
+  vllm-dev:
+    backend: openai
+    base_url: ${BENCH_VLLM_URL:-http://localhost:8002/v1}
+    api_key: ${BENCH_VLLM_API_KEY:-}
+    timeout: 300
+    # Как передаётся think=False: reasoning_effort | chat_template | off
+    # (qwen3 на vLLM отключает размышления только через chat_template).
+    think_mode: chat_template
+    think_chat_template_kwarg: enable_thinking
+  # gpt-oss на vLLM: Harmony принимает только low|medium|high.
+  vllm-gptoss:
+    backend: openai
+    base_url: ${BENCH_GPTOSS_URL:-http://localhost:8001/v1}
+    think_mode: reasoning_effort
+    think_effort: low
+  # Нативный клиент Ollama (только локальный адрес — политика gMART).
+  ollama-local:
+    backend: ollama
+    host: ${BENCH_OLLAMA_URL:-http://localhost:11434}
+
+models:
+  qwen27b:
+    endpoint: vllm-dev
+    model: qwen3.8-27b
+  gptoss20b:
+    endpoint: vllm-gptoss
+    model: gpt-oss-20b
+  qwen14b:
+    endpoint: ollama-local
+    model: qwen3:14b
+    options: {num_ctx: 16384}   # добавляется к options каждого вызова
+
+# Профиль = какая модель на каком этапе. default — для всех этапов,
+# stages — переопределения по id или glob. Сравниваются профили между собой.
+# Для матрицы «одна модель на всё» достаточно: --models qwen27b,qwen14b
+profiles:
+  qwen27b-all:
+    default: qwen27b
+  mixed:
+    default: qwen27b
+    stages:
+      "scenario.*": qwen14b
+      "compliance.mapping*": qwen14b
+      chat_title: qwen14b
+
+run:
+  repeat: 1          # >1 — оценка стабильности (доля кейсов с одинаковым исходом)
+  concurrency: 2     # параллельные кейсы внутри профиля
+  temperature: 0.0   # для этапов-ответов (планировщики gMART сами ставят 0)
+  stages: ["*"]      # glob этапов по умолчанию
+  # tags: [smoke]
