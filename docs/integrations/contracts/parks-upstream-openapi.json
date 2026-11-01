@@ -1,0 +1,791 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "API веб-сервиса генерации парков",
+    "version": "1.0.1"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8060",
+      "description": "Local development"
+    },
+    {
+      "url": "https://api.1.urban.actcognitive.org",
+      "description": "Production server on 1.urban.actcognitive.org"
+    }
+  ],
+  "tags": [
+    {
+      "name": "NLPController",
+      "description": "Вычленение типов пожеланий жителей из текстов с использованием NLP модели"
+    },
+    {
+      "name": "MapController",
+      "description": "Управление генерацией: запуск, получение статуса, получение результатов"
+    }
+  ],
+  "paths": {
+    "/nlp/parse": {
+      "post": {
+        "tags": [
+          "NLPController"
+        ],
+        "summary": "Получение типов объектов из текста запроса",
+        "description": "Принимает текст запроса пользователя на естественном языке и выдает обнаруженные в нем типы объектов благоустройства",
+        "operationId": "getObjectTags",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NLPRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/NLPResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/map/generate": {
+      "post": {
+        "tags": [
+          "MapController"
+        ],
+        "summary": "Запуск генерации",
+        "description": "Запускает генерацию парка, возвращает taskId по которому можно получать ее статус ",
+        "operationId": "generate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartGenerationResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/map/checkShape": {
+      "post": {
+        "tags": [
+          "MapController"
+        ],
+        "summary": "Проверка формы участка",
+        "description": "Вычисляет площадь участка и выдает попадающие в него пожелания жителей",
+        "operationId": "checkShape",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Feature"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckShapeResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/map/tbRecords": {
+      "get": {
+        "tags": [
+          "MapController"
+        ],
+        "summary": "Получение точек с пожеланиями пользователей проекта Твой бюджет",
+        "description": "Выдает FeatureCollection с точками, содержащими пожелания",
+        "operationId": "getTBRecords",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/TBRecordsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/map/getResult": {
+      "get": {
+        "tags": [
+          "MapController"
+        ],
+        "summary": "Получение результата генерации",
+        "description": "Получает результат процесса генерации (геометрию в GeoJSON) по taskId, либо 404 если генерация с таким id не найдена или еще не завершилась",
+        "operationId": "getResult",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/map/getResultStatus": {
+      "get": {
+        "tags": [
+          "MapController"
+        ],
+        "summary": "Получение статуса генерации",
+        "description": "Получает статус процесса генерации по taskId",
+        "operationId": "getStatus",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/map/getEconomyParams": {
+      "get": {
+        "tags": [
+          "MapController"
+        ],
+        "summary": "Получение ТЭП результата генерации",
+        "description": "Получает посчитанные ТЭП для результата генерации по данному taskId",
+        "operationId": "getEconomyParams",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/EconomyParamsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "NLPRequest": {
+        "type": "object",
+        "properties": {
+          "texts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "NLPItem": {
+        "type": "object",
+        "properties": {
+          "tag": {
+            "type": "string",
+            "enum": [
+              "ART",
+              "EXHIBITION",
+              "TRADE",
+              "FOOD",
+              "REST",
+              "CHILDREN",
+              "BICYCLE",
+              "SPORTS",
+              "PARKING",
+              "WATER",
+              "ANIMALS",
+              "AMUSEMENT",
+              "GREENERY"
+            ]
+          },
+          "from": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "to": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "NLPResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "description": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NLPResult"
+            }
+          }
+        }
+      },
+      "NLPResult": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NLPItem"
+            }
+          }
+        }
+      },
+      "GenerateRequest": {
+        "type": "object",
+        "properties": {
+          "parkGeoJson": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "locationRequests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocationRequest"
+            }
+          }
+        }
+      },
+      "LocationRequest": {
+        "type": "object",
+        "properties": {
+          "lat": {
+            "type": "number",
+            "format": "double"
+          },
+          "lon": {
+            "type": "number",
+            "format": "double"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "StartGenerationResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "description": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          }
+        }
+      },
+      "Coordinate": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number",
+            "format": "double"
+          },
+          "y": {
+            "type": "number",
+            "format": "double"
+          },
+          "z": {
+            "type": "number",
+            "format": "double"
+          },
+          "m": {
+            "type": "number",
+            "format": "double"
+          },
+          "coordinate": {
+            "$ref": "#/components/schemas/Coordinate"
+          }
+        }
+      },
+      "CoordinateSequence": {
+        "type": "object",
+        "properties": {
+          "measures": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "dimension": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "CoordinateSequenceFactory": {
+        "type": "object"
+      },
+      "Envelope": {
+        "type": "object",
+        "properties": {
+          "height": {
+            "type": "number",
+            "format": "double"
+          },
+          "width": {
+            "type": "number",
+            "format": "double"
+          },
+          "area": {
+            "type": "number",
+            "format": "double"
+          },
+          "diameter": {
+            "type": "number",
+            "format": "double"
+          },
+          "minX": {
+            "type": "number",
+            "format": "double"
+          },
+          "minY": {
+            "type": "number",
+            "format": "double"
+          },
+          "maxX": {
+            "type": "number",
+            "format": "double"
+          },
+          "maxY": {
+            "type": "number",
+            "format": "double"
+          },
+          "null": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Feature": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "geometry": {
+            "$ref": "#/components/schemas/Geometry"
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "Geometry": {
+        "type": "object",
+        "properties": {
+          "envelope": {
+            "$ref": "#/components/schemas/Geometry"
+          },
+          "factory": {
+            "$ref": "#/components/schemas/GeometryFactory"
+          },
+          "userData": {
+            "type": "object"
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "envelopeInternal": {
+            "$ref": "#/components/schemas/Envelope"
+          },
+          "coordinates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Coordinate"
+            }
+          },
+          "geometryType": {
+            "type": "string"
+          },
+          "srid": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "precisionModel": {
+            "$ref": "#/components/schemas/PrecisionModel"
+          },
+          "numPoints": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "rectangle": {
+            "type": "boolean"
+          },
+          "area": {
+            "type": "number",
+            "format": "double"
+          },
+          "centroid": {
+            "$ref": "#/components/schemas/Point"
+          },
+          "interiorPoint": {
+            "$ref": "#/components/schemas/Point"
+          },
+          "dimension": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "boundary": {
+            "$ref": "#/components/schemas/Geometry"
+          },
+          "boundaryDimension": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "simple": {
+            "type": "boolean"
+          },
+          "numGeometries": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "coordinate": {
+            "$ref": "#/components/schemas/Coordinate"
+          },
+          "length": {
+            "type": "number",
+            "format": "double"
+          },
+          "empty": {
+            "type": "boolean"
+          }
+        }
+      },
+      "GeometryFactory": {
+        "type": "object",
+        "properties": {
+          "precisionModel": {
+            "$ref": "#/components/schemas/PrecisionModel"
+          },
+          "coordinateSequenceFactory": {
+            "$ref": "#/components/schemas/CoordinateSequenceFactory"
+          },
+          "srid": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "Point": {
+        "type": "object",
+        "properties": {
+          "envelope": {
+            "$ref": "#/components/schemas/Geometry"
+          },
+          "factory": {
+            "$ref": "#/components/schemas/GeometryFactory"
+          },
+          "userData": {
+            "type": "object"
+          },
+          "coordinates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Coordinate"
+            }
+          },
+          "x": {
+            "type": "number",
+            "format": "double"
+          },
+          "y": {
+            "type": "number",
+            "format": "double"
+          },
+          "geometryType": {
+            "type": "string"
+          },
+          "numPoints": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "dimension": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "boundary": {
+            "$ref": "#/components/schemas/Geometry"
+          },
+          "boundaryDimension": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "simple": {
+            "type": "boolean"
+          },
+          "coordinateSequence": {
+            "$ref": "#/components/schemas/CoordinateSequence"
+          },
+          "coordinate": {
+            "$ref": "#/components/schemas/Coordinate"
+          },
+          "empty": {
+            "type": "boolean"
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "envelopeInternal": {
+            "$ref": "#/components/schemas/Envelope"
+          },
+          "srid": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "precisionModel": {
+            "$ref": "#/components/schemas/PrecisionModel"
+          },
+          "rectangle": {
+            "type": "boolean"
+          },
+          "area": {
+            "type": "number",
+            "format": "double"
+          },
+          "centroid": {
+            "$ref": "#/components/schemas/Point"
+          },
+          "interiorPoint": {
+            "$ref": "#/components/schemas/Point"
+          },
+          "numGeometries": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "length": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "PrecisionModel": {
+        "type": "object",
+        "properties": {
+          "scale": {
+            "type": "number",
+            "format": "double"
+          },
+          "floating": {
+            "type": "boolean"
+          },
+          "maximumSignificantDigits": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "offsetX": {
+            "type": "number",
+            "format": "double"
+          },
+          "offsetY": {
+            "type": "number",
+            "format": "double"
+          },
+          "type": {
+            "$ref": "#/components/schemas/Type"
+          }
+        }
+      },
+      "Type": {
+        "type": "object"
+      },
+      "CheckShapeResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "area": {
+            "type": "number",
+            "format": "double"
+          },
+          "tags": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        }
+      },
+      "FeatureCollection": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Feature"
+            }
+          }
+        }
+      },
+      "TBRecordsResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "description": {
+            "type": "string"
+          },
+          "records": {
+            "$ref": "#/components/schemas/FeatureCollection"
+          }
+        }
+      },
+      "GenerationStatusResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "description": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "EconomyParameter": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "primaryValue": {
+            "type": "number",
+            "format": "double"
+          },
+          "secondaryValue": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "EconomyParamsResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "description": {
+            "type": "string"
+          },
+          "economyParams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EconomyParameter"
+            }
+          }
+        }
+      }
+    }
+  }
+}

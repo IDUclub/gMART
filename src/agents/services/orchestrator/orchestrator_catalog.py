@@ -141,6 +141,21 @@ AGENT_CATALOG: dict[OrchestratorAgent, AgentCatalogEntry] = {
         ),
         requires_scenario_id=False,
     ),
+    OrchestratorAgent.PARKS: AgentCatalogEntry(
+        key=OrchestratorAgent.PARKS,
+        title="Агент генерации парков",
+        description=(
+            "Согласовывает параметры благоустройства парка из естественного языка, "
+            "принимает правки, после подтверждения запускает ParkPlanner, "
+            "возвращает GeoJSON парка, ТЭП, анализ и рекомендации. "
+            "Для генерации нужна граница парка, без неё попросит указать геометрию."
+        ),
+        examples=(
+            "Создай парк с двумя детскими площадками",
+            "Добавь в парк велодорожки",
+        ),
+        requires_scenario_id=False,
+    ),
     OrchestratorAgent.PZZ: AgentCatalogEntry(
         key=OrchestratorAgent.PZZ,
         title="Агент проверки ПЗЗ",
@@ -235,6 +250,10 @@ def available_agents(
             continue
         if entry.key == OrchestratorAgent.PZZ and not getattr(
             app_config, "PZZ_MCP_URL", None
+        ):
+            continue
+        if entry.key == OrchestratorAgent.PARKS and not getattr(
+            app_config, "PARKS_API_URL", None
         ):
             continue
         agents.append(entry)

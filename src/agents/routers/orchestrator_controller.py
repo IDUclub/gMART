@@ -1,8 +1,9 @@
 from collections.abc import AsyncIterable
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from pydantic import ValidationError
 
 from src.agents.common.auth.auth import verify_bearer_token
 from src.agents.common.executors.sse_executors import stream_with_error_handling
@@ -19,6 +20,7 @@ from src.agents.dto.orchestrator_request_dto import (
     OrchestratorBodyDTO,
     OrchestratorRequestDTO,
 )
+from src.agents.dto.parks_request_dto import ParksInputs
 from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
 from src.agents.mcp_clients.effects_mcp_client import EffectsMcpClient
 from src.agents.mcp_clients.idu_mcp_client import IduMcpClient
@@ -50,6 +52,7 @@ async def stream_orchestration(
     urban_mcp_client: UrbanMcpClient | None = Depends(get_optional_urban_mcp_client),
     orchestrator_service: OrchestratorService = Depends(get_orchestrator_service),
     pzz_mcp_client: PzzMcpClient | None = Depends(get_optional_pzz_mcp_client),
+    parks_inputs: str | None = Query(default=None, description="JSON ParksInputs"),
     compliance_upload_ids: list[str] | None = Query(
         default=None,
         description="Uploads (POST /compliance/uploads) for the compliance agent",
@@ -65,6 +68,12 @@ async def stream_orchestration(
     ``clarification`` event with a question for the user is emitted instead.
     """
 
+    try:
+        parsed_parks = (
+            ParksInputs.model_validate_json(parks_inputs) if parks_inputs else None
+        )
+    except ValidationError as exc:
+        raise HTTPException(422, "Invalid parks inputs") from exc
     async for chunk in stream_with_error_handling(
         orchestrator_service.run_orchestration_pipeline,
         request,
@@ -78,6 +87,7 @@ async def stream_orchestration(
         urban_mcp_client=urban_mcp_client,
         pzz_mcp_client=pzz_mcp_client,
         compliance_upload_ids=compliance_upload_ids,
+        parks_inputs=parsed_parks,
         token=token,
         user_query=user_request.request,
         scenario_id=user_request.scenario_id,
@@ -116,6 +126,7 @@ async def stream_orchestration_body(
         urban_mcp_client=urban_mcp_client,
         pzz_mcp_client=pzz_mcp_client,
         pzz_inputs=user_request.pzz_inputs,
+        parks_inputs=user_request.parks_inputs,
         compliance_upload_ids=user_request.compliance_upload_ids,
         token=token,
         user_query=user_request.request,
