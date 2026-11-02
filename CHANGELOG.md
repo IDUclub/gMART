@@ -1,3 +1,9 @@
+## v0.34.4 (2026-11-02)
+
+[fix/pzz-llm-prompts](https://github.com/IDUclub/gMART/pull/268) (#268)
+
+- fix(agents): описывать поля и допустимые значения в промптах ПЗЗ при структурированном выводе
+
 ## v0.34.3 (2026-11-01)
 
 [fix/vllm-llm-requests](https://github.com/IDUclub/gMART/pull/267) (#267)
