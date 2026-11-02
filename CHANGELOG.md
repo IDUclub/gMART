@@ -1,3 +1,10 @@
+## v0.35.0 (2026-11-02)
+
+[feat/llm-stage-exporter](https://github.com/IDUclub/gMART/pull/270) (#270)
+
+- feat(benchmarks): добавить поэтапный бенчмарк LLM-этапов агентов
+- refactor(benchmarks): заменить раннер экспортом замороженных запросов этапов
+
 ## v0.34.5 (2026-11-02)
 
 [fix/restriction-plan-provenance](https://github.com/IDUclub/gMART/pull/269) (#269)
