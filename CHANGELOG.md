@@ -1,3 +1,9 @@
+## v0.34.5 (2026-11-02)
+
+[fix/restriction-plan-provenance](https://github.com/IDUclub/gMART/pull/269) (#269)
+
+- fix(agents): не просить модель копировать provenance в плане ограничений и обрывать зацикленный структурированный вывод
+
 ## v0.34.4 (2026-11-02)
 
 [fix/pzz-llm-prompts](https://github.com/IDUclub/gMART/pull/268) (#268)

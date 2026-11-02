@@ -88,8 +88,23 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         think_chat_template_kwarg: str | None = None,
         think_effort: str | None = None,
         request_priority: int | str | None = None,
+        repetition_detection: dict | None = None,
     ):
         self.base_url = base_url
+        self.repetition_detection = repetition_detection
+        if repetition_detection is None:
+            configured = os.getenv("OPENAI_REPETITION_DETECTION", "").strip()
+            if configured:
+                try:
+                    parsed = json.loads(configured)
+                    if not isinstance(parsed, dict):
+                        raise ValueError("expected a JSON object")
+                    self.repetition_detection = parsed
+                except (ValueError, TypeError):
+                    _warn_once(
+                        "repetition_detection",
+                        "Invalid OPENAI_REPETITION_DETECTION; repetition detection is off",
+                    )
         self._request_priority_override = request_priority is not None
         priority = request_priority if request_priority is not None else ""
         self.request_priority = None
@@ -425,6 +440,10 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
         **kwargs: Any,
     ) -> LlmChatResponse | AsyncIterator[LlmChatResponse]:
         call = self._build(model, messages, stream, think, format, options, kwargs)
+        if not stream and call.get("response_format") and self.repetition_detection:
+            extra_body = dict(call.get("extra_body") or {})
+            extra_body["repetition_detection"] = self.repetition_detection
+            call["extra_body"] = extra_body
         priority = (
             self.request_priority
             if request_kind is None and self._request_priority_override
@@ -450,7 +469,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
             if not stream and call.get("response_format"):
                 response = self._as_response(result)
                 if (
-                    response.done_reason == "length"
+                    response.done_reason in {"length", "repetition"}
                     or not response.message.content.strip()
                 ):
                     # Retry only this read-only JSON completion, once. Discard a
@@ -458,7 +477,7 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                     budget = call.get("max_tokens") or 2048
                     retry_budget = max(budget, min(8192, max(4096, budget * 2)))
                     window = (options or {}).get("num_ctx")
-                    if window:
+                    if window and response.done_reason != "repetition":
                         # num_ctx cannot configure an OpenAI server, but it is
                         # still the caller's context limit. Bound retry growth
                         # conservatively, including schema/chat framing overhead.
@@ -481,24 +500,29 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                                     else "empty_completion"
                                 ),
                             )
-                    call["max_tokens"] = retry_budget
+                    if response.done_reason != "repetition":
+                        call["max_tokens"] = retry_budget
                     logger.warning(
                         "Retrying incomplete structured LLM response with max_tokens={}",
-                        call["max_tokens"],
+                        call.get("max_tokens"),
                     )
                     result = await self._create(call)
                     response = self._as_response(result)
                     if (
-                        response.done_reason == "length"
+                        response.done_reason in {"length", "repetition"}
                         or not response.message.content.strip()
                     ):
                         raise LlmResponseError(
                             "Model did not produce a complete structured answer after a bounded retry",
                             502,
                             reason=(
-                                "output_truncated"
-                                if response.done_reason == "length"
-                                else "empty_completion"
+                                "output_repetition"
+                                if response.done_reason == "repetition"
+                                else (
+                                    "output_truncated"
+                                    if response.done_reason == "length"
+                                    else "empty_completion"
+                                )
                             ),
                         )
                 return response
