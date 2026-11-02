@@ -30,6 +30,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     ModelResponsePart,
+    RetryFeedbackPart,
     RetryPromptPart,
     SystemPromptPart,
     TextPart,
@@ -41,6 +42,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai.usage import RequestUsage
 
 from src.agents.llm_agents import wire
 from src.agents.model_clients.llm_base import BaseLlmAdapter
@@ -69,6 +71,8 @@ class GmartModelSettings(ModelSettings, total=False):
     """Adapter ``format``: a JSON schema, ``"json"``, or ``None`` to derive it from the output type."""
     gmart_extra: dict[str, Any] | None
     """Further adapter keywords (``reasoning_effort``, ``keep_alive``, …)."""
+    gmart_retry_prompt: str | None
+    """What the model is told after an answer that did not validate (see :func:`retry_text`)."""
 
 
 class GmartChatModel(FunctionModel):
@@ -79,12 +83,18 @@ class GmartChatModel(FunctionModel):
     shared instance could not do safely under concurrency.
     """
 
+    # Retry feedback reaches the model in the stage's own words (Russian, like
+    # every gMART prompt) instead of pydantic-ai's fixed English framing.
+    _renders_retry_feedback = True
+
     def __init__(self, llm_client: BaseLlmAdapter, model_name: str) -> None:
         self.llm_client = llm_client
         self.served_model = model_name
         self.last_done_reason: str | None = None
         self.last_thinking: str | None = None
         self.last_text = ""
+        # Whether a streamed reply ended on a terminal (``done``) chunk.
+        self.saw_done = False
         self.calls = 0
         super().__init__(
             self._request,
@@ -112,7 +122,11 @@ class GmartChatModel(FunctionModel):
         params = info.model_request_parameters
         call: dict[str, Any] = {
             "model": self.served_model,
-            "messages": to_chat_messages(messages, info.instructions),
+            "messages": to_chat_messages(
+                messages,
+                info.instructions,
+                retry_prompt=settings.get("gmart_retry_prompt"),
+            ),
             "stream": stream,
         }
         options = dict(settings.get("gmart_options") or {})
@@ -168,6 +182,13 @@ class GmartChatModel(FunctionModel):
             parts.append(TextPart(content=""))
         return ModelResponse(
             parts=parts,
+            # A rough estimate (≈4 chars per token): the adapter keeps the exact
+            # counts for pacing, and FunctionModel's own estimator cannot read the
+            # retry feedback this model renders itself.
+            usage=RequestUsage(
+                input_tokens=max(1, _chars(call["messages"]) // 4),
+                output_tokens=len(content) // 4,
+            ),
             finish_reason=_finish_reason(self.last_done_reason),
             provider_details={"done_reason": self.last_done_reason},
         )
@@ -182,8 +203,10 @@ class GmartChatModel(FunctionModel):
         async for part in await self.llm_client.chat(**call):
             if piece := wire.thinking_of(part):
                 thinking.append(piece)
+            if reason := wire.done_reason_of(part):
+                self.last_done_reason = reason
             if wire.field(part, "done"):
-                self.last_done_reason = wire.done_reason_of(part)
+                self.saw_done = True
             if content := wire.content_of(part):
                 yielded = True
                 yield content
@@ -191,6 +214,10 @@ class GmartChatModel(FunctionModel):
         if not yielded:
             # FunctionModel requires at least one item from a stream.
             yield ""
+
+
+def _chars(messages: list[dict[str, Any]]) -> int:
+    return sum(len(str(message.get("content") or "")) for message in messages)
 
 
 def _finish_reason(done_reason: str | None) -> Any:
@@ -217,8 +244,31 @@ def _user_text(content: Any) -> str:
     return "\n".join(str(item) for item in content if isinstance(item, str))
 
 
+DEFAULT_RETRY_PROMPT = (
+    "Твой предыдущий ответ не прошёл проверку. "
+    "Верни только валидный JSON нужной структуры без markdown и пояснений."
+)
+
+
+def retry_text(part: RetryFeedbackPart, retry_prompt: str | None) -> str:
+    """The user message sent after an unusable answer.
+
+    A stage's ``retry_prompt`` is sent as written, as the services always did. A
+    ``ModelRetry`` raised by a stage validator carries its own explanation, which
+    is appended so the model learns what exactly to fix.
+    """
+
+    base = retry_prompt or DEFAULT_RETRY_PROMPT
+    if part.retry.cause == "model_retry" and isinstance(part.content, str):
+        return f"{base}\n{part.content}"
+    return base
+
+
 def to_chat_messages(
-    messages: list[ModelMessage], instructions: str | None = None
+    messages: list[ModelMessage],
+    instructions: str | None = None,
+    *,
+    retry_prompt: str | None = None,
 ) -> list[dict[str, Any]]:
     """pydantic-ai history -> the adapter's ``{"role", "content"}`` messages.
 
@@ -244,6 +294,10 @@ def to_chat_messages(
                             "content": part.model_response_str(),
                         }
                     )
+                elif isinstance(part, RetryFeedbackPart):
+                    result.append(
+                        {"role": "user", "content": retry_text(part, retry_prompt)}
+                    )
                 elif isinstance(part, RetryPromptPart):
                     if part.tool_name:
                         result.append(
@@ -254,7 +308,9 @@ def to_chat_messages(
                             }
                         )
                     else:
-                        result.append({"role": "user", "content": part.model_response()})
+                        result.append(
+                            {"role": "user", "content": part.model_response()}
+                        )
                 # Bookkeeping parts (instruction/availability deltas…) carry nothing
                 # for a chat-completions server.
         elif isinstance(message, ModelResponse):
@@ -263,7 +319,10 @@ def to_chat_messages(
                 {
                     "id": p.tool_call_id,
                     "type": "function",
-                    "function": {"name": p.tool_name, "arguments": p.args_as_json_str()},
+                    "function": {
+                        "name": p.tool_name,
+                        "arguments": p.args_as_json_str(),
+                    },
                 }
                 for p in message.parts
                 if isinstance(p, ToolCallPart)

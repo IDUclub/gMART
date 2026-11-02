@@ -38,7 +38,10 @@ class ScriptedAdapter:
 
 
 def reply(content, done_reason="stop", thinking=None):
-    return {"message": {"content": content, "thinking": thinking}, "done_reason": done_reason}
+    return {
+        "message": {"content": content, "thinking": thinking},
+        "done_reason": done_reason,
+    }
 
 
 MESSAGES = [
@@ -76,7 +79,7 @@ async def test_structured_stage_sends_messages_and_schema_unchanged():
 
 async def test_invalid_answer_is_sent_back_with_errors_then_validates():
     llm = ScriptedAdapter(reply('{"mode": 1}'), reply('{"mode": "x", "steps": []}'))
-    stage = LlmStage("s", output_type=Plan, retries=1)
+    stage = LlmStage("s", output_type=Plan, retries=1, retry_prompt="Исправь JSON.")
 
     result = await stage.run(llm, "m", MESSAGES)
 
@@ -84,8 +87,11 @@ async def test_invalid_answer_is_sent_back_with_errors_then_validates():
     assert result.model_calls == 2
     retry_messages = llm.calls[1]["messages"]
     assert retry_messages[: len(MESSAGES)] == MESSAGES
-    assert retry_messages[len(MESSAGES)] == {"role": "assistant", "content": '{"mode": 1}'}
-    assert "validation" in retry_messages[-1]["content"]
+    assert retry_messages[len(MESSAGES)] == {
+        "role": "assistant",
+        "content": '{"mode": 1}',
+    }
+    assert retry_messages[-1] == {"role": "user", "content": "Исправь JSON."}
 
 
 async def test_exhausted_retries_raise_stage_output_error_with_raw_text():
@@ -134,7 +140,9 @@ async def test_text_stage_returns_text_and_attribute_shaped_replies():
     )
     llm = ScriptedAdapter(answer)
 
-    result = await LlmStage("s").run(llm, "m", MESSAGES, request_kind="other", keep_alive=5)
+    result = await LlmStage("s").run(
+        llm, "m", MESSAGES, request_kind="other", keep_alive=5
+    )
 
     assert result.output == "Ответ"
     assert llm.calls[0]["request_kind"] == "other"
@@ -150,7 +158,12 @@ async def test_stream_yields_deltas_and_reports_done_reason():
     llm = ScriptedAdapter(chunks)
     finished = []
 
-    deltas = [d async for d in LlmStage("s", think=False).stream(llm, "m", MESSAGES, result=finished)]
+    deltas = [
+        d
+        async for d in LlmStage("s", think=False).stream(
+            llm, "m", MESSAGES, result=finished
+        )
+    ]
 
     assert "".join(deltas) == "Привет"
     assert finished[0].done_reason == "stop"
@@ -159,10 +172,14 @@ async def test_stream_yields_deltas_and_reports_done_reason():
 
 
 async def test_empty_stream_is_not_an_error():
-    llm = ScriptedAdapter([{"message": {"content": ""}, "done": True, "done_reason": "length"}])
+    llm = ScriptedAdapter(
+        [{"message": {"content": ""}, "done": True, "done_reason": "length"}]
+    )
     finished = []
 
-    deltas = [d async for d in LlmStage("s").stream(llm, "m", MESSAGES, result=finished)]
+    deltas = [
+        d async for d in LlmStage("s").stream(llm, "m", MESSAGES, result=finished)
+    ]
 
     assert deltas == []
     assert finished[0].done_reason == "length"
@@ -178,7 +195,9 @@ async def test_adapter_errors_and_base_exceptions_propagate_unwrapped():
     with pytest.raises(Captured):
         await LlmStage("s").run(ScriptedAdapter(Captured()), "m", MESSAGES)
     with pytest.raises(Transport):
-        await LlmStage("s", output_type=Plan).run(ScriptedAdapter(Transport()), "m", MESSAGES)
+        await LlmStage("s", output_type=Plan).run(
+            ScriptedAdapter(Transport()), "m", MESSAGES
+        )
 
 
 async def test_messages_without_trailing_user_prompt():
@@ -189,3 +208,24 @@ async def test_messages_without_trailing_user_prompt():
 
     assert result.output == "ok"
     assert llm.calls[0]["messages"] == messages
+
+
+async def test_parser_stage_returns_parsed_output_and_keeps_parse_error():
+    def parse(text: str) -> dict:
+        import json
+
+        data = json.loads(text)
+        if "ok" not in data:
+            raise ValueError("ok is required")
+        return data
+
+    llm = ScriptedAdapter(reply('{"ok": 1}'))
+    stage = LlmStage("s", parser=parse, schema={"type": "object"})
+    result = await stage.run(llm, "m", MESSAGES)
+    assert result.output == {"ok": 1}
+    assert llm.calls[0]["format"] == {"type": "object"}
+
+    with pytest.raises(StageOutputError) as caught:
+        await stage.run(ScriptedAdapter(reply('{"no": 1}')), "m", MESSAGES)
+    assert str(caught.value.error) == "ok is required"
+    assert caught.value.text == '{"no": 1}'

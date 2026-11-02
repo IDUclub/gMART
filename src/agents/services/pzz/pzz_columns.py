@@ -3,6 +3,7 @@
 import json
 import re
 
+from src.agents.llm_agents.stage import LlmStage
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 
 TARGETS = {
@@ -27,6 +28,15 @@ TARGETS = {
         ("Код_объекта", "zone_name", "name", "наименование", "Наименование_зоны"),
     ),
 }
+
+
+# Column detection: a JSON object of column names, parsed as-is and checked below.
+_COLUMNS_STAGE = LlmStage(
+    "pzz.columns",
+    parser=lambda raw: json.loads(strip_json_fence(raw)),
+    think=False,
+    options={"temperature": 0},
+)
 
 
 def normalize(value: str) -> str:
@@ -81,18 +91,10 @@ async def detect_columns(
             }
             for key in missing
         }
-        response = await llm.chat(
-            request_kind="pzz.columns",
-            model=model,
-            think=False,
-            options={"temperature": 0},
-            format={
-                "type": "object",
-                "properties": properties,
-                "required": missing,
-                "additionalProperties": False,
-            },
-            messages=[
+        result = await _COLUMNS_STAGE.run(
+            llm,
+            model,
+            [
                 {
                     "role": "system",
                     "content": (
@@ -105,8 +107,14 @@ async def detect_columns(
                 },
                 {"role": "user", "content": json.dumps(columns, ensure_ascii=False)},
             ],
+            schema={
+                "type": "object",
+                "properties": properties,
+                "required": missing,
+                "additionalProperties": False,
+            },
         )
-        answer = json.loads(strip_json_fence(response["message"]["content"]))
+        answer = result.output
         for key in missing:
             value = answer.get(key)
             resolved[key] = (

@@ -4,16 +4,15 @@ import json
 import re
 
 from loguru import logger
-from pydantic import ValidationError
 
 from src.agents.dto.pzz_request_dto import PzzInputs
+from src.agents.llm_agents.stage import FIX_JSON_PROMPT, LlmStage, StageOutputError
 from src.agents.services.dvd.document_reference import parse_reference
 from src.agents.services.dvd.query_terms import (
     is_document_comparison_question,
     is_document_list_question,
 )
 from src.agents.services.orchestrator.orchestrator_catalog import AgentCatalogEntry
-from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.orchestrator_plan import (
     MAX_PLAN_STEPS,
     OrchestratorAgent,
@@ -197,40 +196,21 @@ class OrchestratorPlanBuilder:
                 ),
             },
         ]
-        for attempt in range(_retries + 1):
-            response = await self.llm_client.chat(
-                request_kind="orchestrator.plan",
-                model=model,
-                options={"temperature": 0, "num_predict": 2048},
-                think=False,
-                format=OrchestratorPlan.model_json_schema(),
-                messages=messages,
-            )
-            content = response["message"]["content"]
-            logger.debug(f"LLM orchestration plan response [{model}]: {content}")
-            try:
-                return OrchestratorPlan.model_validate_json(strip_json_fence(content))
-            except (ValidationError, json.JSONDecodeError) as exc:
-                if attempt < _retries:
-                    logger.warning(
-                        f"LLM returned invalid orchestration plan JSON "
-                        f"(retries left: {_retries - attempt - 1}): {exc}"
-                    )
-                    messages.append({"role": "assistant", "content": content})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Твой предыдущий ответ содержит невалидный JSON. "
-                                "Верни только валидный JSON нужной структуры без markdown и пояснений."
-                            ),
-                        }
-                    )
-                else:
-                    raise ValueError(
-                        "Model returned invalid orchestration plan"
-                    ) from exc
-        raise AssertionError("unreachable")
+        stage = LlmStage(
+            "orchestrator.plan",
+            output_type=OrchestratorPlan,
+            retries=_retries,
+            think=False,
+            options={"temperature": 0, "num_predict": 2048},
+            retry_prompt=FIX_JSON_PROMPT,
+        )
+        try:
+            result = await stage.run(self.llm_client, model, messages)
+        except StageOutputError as exc:
+            logger.warning(f"LLM returned invalid orchestration plan JSON: {exc}")
+            raise ValueError("Model returned invalid orchestration plan") from exc
+        logger.debug(f"LLM orchestration plan response [{model}]: {result.text}")
+        return result.output
 
     @staticmethod
     def _build_prompt(

@@ -4,11 +4,10 @@ import json
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from pydantic import ValidationError
 
+from src.agents.llm_agents.stage import FIX_JSON_PROMPT, LlmStage, StageOutputError
 from src.agents.services.restriction.restriction_catalog import (
     parse_catalog_prompt,
-    strip_json_fence,
 )
 from src.agents.services.service_entities.provision_plan import (
     ProvisionPlan,
@@ -132,38 +131,22 @@ class ProvisionPlanBuilder:
         schema["properties"]["service_name"]["enum"] = [*services_catalog, None]
         for key in ("service_names", "layer_service_names"):
             schema["properties"][key]["items"]["enum"] = services_catalog
-        for attempt in range(_retries + 1):
-            response = await self.llm_client.chat(
-                request_kind="provision.plan",
-                model=model,
-                options={"temperature": 0, "num_predict": 1024},
-                think=False,
-                format=schema,
-                messages=messages,
-            )
-            content = response["message"]["content"]
-            logger.debug(f"LLM provision plan response [{model}]: {content}")
-            try:
-                return ProvisionPlan.model_validate_json(strip_json_fence(content))
-            except (ValidationError, json.JSONDecodeError) as exc:
-                if attempt < _retries:
-                    logger.warning(
-                        f"LLM returned invalid provision plan JSON "
-                        f"(retries left: {_retries - attempt - 1}): {exc}"
-                    )
-                    messages.append({"role": "assistant", "content": content})
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Твой предыдущий ответ содержит невалидный JSON. "
-                                "Верни только валидный JSON нужной структуры без markdown и пояснений."
-                            ),
-                        }
-                    )
-                else:
-                    raise ValueError("Model returned invalid provision plan") from exc
-        raise AssertionError("unreachable")
+        stage = LlmStage(
+            "provision.plan",
+            output_type=ProvisionPlan,
+            retries=_retries,
+            think=False,
+            options={"temperature": 0, "num_predict": 1024},
+            schema=schema,
+            retry_prompt=FIX_JSON_PROMPT,
+        )
+        try:
+            result = await stage.run(self.llm_client, model, messages)
+        except StageOutputError as exc:
+            logger.warning(f"LLM returned invalid provision plan JSON: {exc}")
+            raise ValueError("Model returned invalid provision plan") from exc
+        logger.debug(f"LLM provision plan response [{model}]: {result.text}")
+        return result.output
 
     @staticmethod
     def _build_prompt(services_catalog: list[str]) -> str:
