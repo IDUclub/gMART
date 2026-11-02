@@ -227,6 +227,43 @@ async def test_chatstorage_question_and_result(parks):
 
 
 @pytest.mark.asyncio
+async def test_generated_layer_persists_when_vision_is_unavailable(parks):
+    await collect(parks, inputs={"park_geojson": BOUNDARY})
+    parks.llm_client.chat.side_effect = RuntimeError("vision unavailable")
+    events = [
+        event
+        async for event in parks.run_parks_pipeline(
+            token=TOKEN,
+            model="vision",
+            temperature=0,
+            user_query="Подтверждаю",
+            conversation_key="conversation",
+            chat_id="chat-1",
+        )
+    ]
+    request_id = events[0]["content"]["request_id"]
+    assert any(event["type"] == "error" for event in events)
+    state = await parks.get_run(request_id, TOKEN)
+    assert state["history_result"] is True
+    assert not state.get("history_assistant")
+    parks.add_complex_message.assert_awaited_once()
+    assert (
+        parks.add_complex_message.call_args.args[3][1].payload["content"][
+            "feature_collection"
+        ]
+        == RESULT
+    )
+    parks.llm_client.chat.side_effect = None
+    parks.llm_client.chat.return_value = llm_response("Восстановленные рекомендации")
+    await collect(parks, request_id=request_id)
+    parks.add_complex_message.assert_awaited_once()
+    assert parks.add_single_message.call_args.args[3].endswith(
+        "Восстановленные рекомендации"
+    )
+    parks.api.generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_a2a_context_confirmation_and_task_ownership(parks):
     a2a = ParksA2AService(parks)
     payload = {
