@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
-from pydantic_ai import Agent, NativeOutput
+from pydantic_ai import Agent, NativeOutput, RunContext
 from pydantic_ai.exceptions import ModelRetry, UnexpectedModelBehavior
 
 from src.agents.llm_agents.pydantic_model import (
@@ -33,6 +33,12 @@ OutputT = TypeVar("OutputT")
 
 _AUTO: Any = object()
 
+# What the pipelines have always told a model whose JSON did not parse.
+FIX_JSON_PROMPT = (
+    "Твой предыдущий ответ содержит невалидный JSON. "
+    "Верни только валидный JSON нужной структуры без markdown и пояснений."
+)
+
 
 class StageOutputError(ValueError):
     """The model's answer never validated against the stage's output type.
@@ -42,12 +48,29 @@ class StageOutputError(ValueError):
     """
 
     def __init__(
-        self, stage: str, text: str, done_reason: str | None, cause: BaseException
+        self,
+        stage: str,
+        text: str,
+        done_reason: str | None,
+        cause: BaseException,
+        error: BaseException | None = None,
+        thinking: str | None = None,
     ) -> None:
-        super().__init__(f"{stage}: model output did not validate: {cause}")
+        super().__init__(f"{stage}: model output did not validate: {error or cause}")
         self.stage = stage
         self.text = text
         self.done_reason = done_reason
+        # The validator's or parser's own exception (a ValidationError, a
+        # ValueError…), when the failure came from one; pipelines quote it back.
+        self.error = error
+        self.thinking = thinking
+
+
+@dataclass
+class _RunState:
+    """Per-run deps: remembers the last validation failure for StageOutputError."""
+
+    error: BaseException | None = None
 
 
 @dataclass
@@ -59,6 +82,8 @@ class StageResult(Generic[OutputT]):
     done_reason: str | None = None
     thinking: str | None = None
     model_calls: int = 1
+    # A streamed reply ended on the server's terminal chunk (always true unstreamed).
+    terminal: bool = True
 
     @property
     def truncated(self) -> bool:
@@ -82,6 +107,13 @@ class LlmStage(Generic[OutputT]):
         extra: Further adapter keywords.
         validators: Extra checks on the parsed output; raise ``ModelRetry`` (or
             ``ValueError``) to send the answer back for another attempt.
+        retry_prompt: The user message that follows a non-validating answer;
+            a validator's explanation is appended to it.
+        parser: For answers that need more than validation against a type
+            (restoring ids, checking against request data): the raw text goes to
+            ``parser`` instead, whose return value is the output and whose
+            ``ValueError`` counts as a failed validation. Exclusive with
+            ``output_type``; send the JSON schema through ``schema``.
     """
 
     name: str
@@ -92,9 +124,13 @@ class LlmStage(Generic[OutputT]):
     schema: Any = _AUTO
     extra: dict[str, Any] | None = None
     validators: Sequence[Callable[[Any], Any]] = field(default_factory=tuple)
+    retry_prompt: str | None = None
+    parser: Callable[[str], Any] | None = None
 
     def __post_init__(self) -> None:
-        structured = self.output_type is not None
+        if self.parser is not None and self.output_type is not None:
+            raise TypeError(f"{self.name}: give either output_type or parser")
+        structured = self.output_type is not None or self.parser is not None
         if self.schema is _AUTO:
             self.schema = (
                 self.output_type.model_json_schema()
@@ -102,11 +138,17 @@ class LlmStage(Generic[OutputT]):
                 and issubclass(self.output_type, BaseModel)
                 else None
             )
-        self._agent: Agent[None, Any] = Agent(
-            output_type=NativeOutput(self.output_type) if structured else str,
+        self._structured = structured
+        self._agent: Agent[_RunState, Any] = Agent(
+            output_type=(
+                NativeOutput(self.output_type) if self.output_type is not None else str
+            ),
+            deps_type=_RunState,
             retries={"output": self.retries if structured else 0},
             name=self.name,
         )
+        if self.parser is not None:
+            self._agent.output_validator(_as_validator(self.parser, transform=True))
         for check in self.validators:
             self._agent.output_validator(_as_validator(check))
 
@@ -118,6 +160,7 @@ class LlmStage(Generic[OutputT]):
             "gmart_think": overrides.pop("think", self.think),
             "gmart_options": dict(options) if options is not None else None,
             "gmart_format": overrides.pop("schema", self.schema),
+            "gmart_retry_prompt": overrides.pop("retry_prompt", self.retry_prompt),
             "gmart_extra": {**(self.extra or {}), **overrides},
         }
         return settings
@@ -137,16 +180,18 @@ class LlmStage(Generic[OutputT]):
 
         history, prompt = from_chat_messages(messages)
         llm = GmartChatModel(llm_client, model)
+        state = _RunState()
         try:
             result = await self._agent.run(
                 prompt,
                 message_history=history,
                 model=llm,
+                deps=state,
                 model_settings=self._settings(dict(overrides)),
             )
         except UnexpectedModelBehavior as exc:
             text = llm.last_text
-            if self.output_type is None:
+            if not self._structured:
                 # An empty text answer is the pipeline's to handle, not an error.
                 return StageResult(
                     output="",  # type: ignore[arg-type]
@@ -155,7 +200,14 @@ class LlmStage(Generic[OutputT]):
                     thinking=llm.last_thinking,
                     model_calls=llm.calls,
                 )
-            raise StageOutputError(self.name, text, llm.last_done_reason, exc) from exc
+            raise StageOutputError(
+                self.name,
+                text,
+                llm.last_done_reason,
+                exc,
+                state.error,
+                llm.last_thinking,
+            ) from exc
         return StageResult(
             output=result.output,
             text=llm.last_text,
@@ -179,7 +231,7 @@ class LlmStage(Generic[OutputT]):
         it once the stream ends (``done_reason`` included).
         """
 
-        if self.output_type is not None:
+        if self._structured:
             raise TypeError(f"{self.name}: only text stages stream")
         history, prompt = from_chat_messages(messages)
         llm = GmartChatModel(llm_client, model)
@@ -189,6 +241,7 @@ class LlmStage(Generic[OutputT]):
                 prompt,
                 message_history=history,
                 model=llm,
+                deps=_RunState(),
                 model_settings=self._settings(dict(overrides)),
             ) as run:
                 async for delta in run.stream_text(delta=True, debounce_by=None):
@@ -206,19 +259,30 @@ class LlmStage(Generic[OutputT]):
                     done_reason=llm.last_done_reason,
                     thinking=llm.last_thinking,
                     model_calls=llm.calls,
+                    terminal=llm.saw_done,
                 )
             )
 
 
-def _as_validator(check: Callable[[Any], Any]) -> Callable[[Any], Any]:
-    def validate(output: Any) -> Any:
+def _as_validator(
+    check: Callable[[Any], Any], *, transform: bool = False
+) -> Callable[[RunContext[_RunState], Any], Any]:
+    """Wrap a check as a pydantic-ai output validator.
+
+    A parser (``transform``) always replaces the output with what it returns;
+    a plain validator replaces it only when it returns something.
+    """
+
+    def validate(ctx: RunContext[_RunState], output: Any) -> Any:
         try:
             checked = check(output)
-        except ModelRetry:
+        except ModelRetry as exc:
+            ctx.deps.error = exc
             raise
         except ValueError as exc:
+            ctx.deps.error = exc
             raise ModelRetry(str(exc)) from exc
-        return output if checked is None else checked
+        return checked if transform or checked is not None else output
 
     validate.__name__ = getattr(check, "__name__", "validate")
     return validate

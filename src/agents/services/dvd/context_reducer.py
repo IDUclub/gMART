@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
+from src.agents.llm_agents.stage import LlmStage, StageOutputError
 from src.agents.model_clients.context_budget import (
     EVIDENCE_OUTPUT,
     remaining_output_tokens,
@@ -113,6 +114,15 @@ class PreparedContext:
     reduction_rounds: int = 0
 
 
+# Evidence reduction requests, run as typed pydantic-ai stages.
+_SELECTION_STAGE = LlmStage(
+    "dvd.context_reducer", output_type=EvidenceSelection, think=False
+)
+_SUMMARY_STAGE = LlmStage(
+    "dvd.context_reducer", output_type=ContextSummary, think=False
+)
+
+
 class DvdContextReducer:
     def __init__(self, llm_client, *, window_tokens=None, concurrency=None, retries=2):
         self.llm_client = llm_client
@@ -127,6 +137,36 @@ class DvdContextReducer:
         return _MODEL_WINDOW.get() or min(
             self.configured_window, MAX_CONTEXT_WINDOW_TOKENS
         )
+
+    async def _reduce(self, stage, model, system, user, schema, available):
+        """One reduction request: a typed pydantic-ai stage, no repair retries.
+
+        A truncated reply fails as ``output_truncated`` even when its prefix
+        parses, and anything that does not validate as ``invalid_json``; the
+        reduction loop decides what to try next.
+        """
+        try:
+            result = await stage.run(
+                self.llm_client,
+                model,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                schema=schema,
+                options={
+                    "temperature": 0,
+                    "num_predict": available,
+                    "num_ctx": self.window,
+                },
+            )
+        except StageOutputError as exc:
+            if exc.done_reason in {"length", "max_tokens"}:
+                raise SummaryError("output_truncated") from exc
+            raise SummaryError("invalid_json") from exc
+        if result.done_reason in {"length", "max_tokens"}:
+            raise SummaryError("output_truncated")
+        return result.output
 
     @asynccontextmanager
     async def model_window(self, model: str):
@@ -450,29 +490,9 @@ class DvdContextReducer:
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")
-        response = await self.llm_client.chat(
-            request_kind="dvd.context_reducer",
-            model=model,
-            think=False,
-            format=schema,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            options={
-                "temperature": 0,
-                "num_predict": available,
-                "num_ctx": self.window,
-            },
+        selected = await self._reduce(
+            _SELECTION_STAGE, model, system, user, schema, available
         )
-        if response.get("done_reason") in {"length", "max_tokens"}:
-            raise SummaryError("output_truncated")
-        try:
-            selected = EvidenceSelection.model_validate_json(
-                response["message"]["content"]
-            )
-        except ValueError as exc:
-            raise SummaryError("invalid_json") from exc
         if not selected.complete:
             raise SummaryError("incomplete")
         if set(selected.selections) != set(records):
@@ -550,29 +570,9 @@ class DvdContextReducer:
         )
         if available < 256:
             raise SummaryError("context_budget_exhausted")
-        response = await self.llm_client.chat(
-            request_kind="dvd.context_reducer",
-            model=model,
-            think=False,
-            format=schema,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            options={
-                "temperature": 0,
-                "num_predict": available,
-                "num_ctx": self.window,
-            },
+        data = await self._reduce(
+            _SUMMARY_STAGE, model, system, user, schema, available
         )
-        if response.get("done_reason") in {"length", "max_tokens"}:
-            raise SummaryError("output_truncated")
-        raw = response["message"]["content"].strip()
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
-        try:
-            data = ContextSummary.model_validate_json(raw)
-        except ValueError as exc:
-            raise SummaryError("invalid_json") from exc
         if not data.complete:
             raise SummaryError("incomplete")
         ids = [entry.source_id for entry in data.evidence]

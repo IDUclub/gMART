@@ -5,8 +5,8 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
-from pydantic import ValidationError
 
+from src.agents.llm_agents.stage import LlmStage, StageOutputError
 from src.agents.services.service_entities.restriction_plan import (
     BufferRule,
     EntityRef,
@@ -257,11 +257,10 @@ class RestrictionPlanBuilder:
         _retries: int = 2,
         _messages: list[dict] | None = None,
     ) -> RestrictionPlan:
-        # On a repair retry ``_messages`` carries the full conversation so far
-        # (system prompt + history + user query + the model's invalid answer +
-        # the fix instruction). Rebuilding it from ``prompt`` alone — as the old
-        # code did — discarded the invalid answer, the fix instruction AND the
-        # user query, turning the "repair" into a blind re-roll.
+        # Repair retries run inside the pydantic-ai stage, which keeps the full
+        # conversation (system prompt + history + user query + the model's invalid
+        # answer + the fix instruction), so a repair is never a blind re-roll.
+        # ``_messages`` lets a caller supply that conversation itself.
         if _messages is not None:
             messages = _messages
         else:
@@ -270,46 +269,30 @@ class RestrictionPlanBuilder:
                 messages.extend(history)
             if user_query:
                 messages.append({"role": "user", "content": user_query})
-        response = await self.llm_client.chat(
-            request_kind="restriction.plan",
-            model=model,
+        stage = LlmStage(
+            "restriction.plan",
+            output_type=RestrictionPlan,
+            retries=_retries,
             think=False,
-            format=_llm_plan_schema(),
+            schema=_llm_plan_schema(),
             options={
                 "temperature": 0,
                 "num_predict": 4096,
                 "num_ctx": 16384,
             },
-            messages=messages,
+            retry_prompt=(
+                "Твой предыдущий ответ содержит невалидный или неполный JSON. "
+                "Верни тот же план целиком в виде валидного JSON без markdown и без пояснений. "
+                "Убедись, что JSON полный — все скобки и кавычки закрыты."
+            ),
         )
-        content = response["message"]["content"]
-        logger.debug(f"LLM plan response [{model}]: {content}")
         try:
-            return RestrictionPlan.model_validate_json(strip_json_fence(content))
-        except (ValidationError, json.JSONDecodeError) as e:
-            if _retries > 0:
-                logger.warning(
-                    f"LLM returned invalid plan JSON (retries left: {_retries}), asking model to fix it. Error: {e}"
-                )
-                messages.append({"role": "assistant", "content": content})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "Твой предыдущий ответ содержит невалидный или неполный JSON. "
-                            "Верни тот же план целиком в виде валидного JSON без markdown и без пояснений. "
-                            "Убедись, что JSON полный — все скобки и кавычки закрыты."
-                        ),
-                    }
-                )
-                return await self._request_plan(
-                    model=model,
-                    prompt=prompt,
-                    _retries=_retries - 1,
-                    _messages=messages,
-                )
+            result = await stage.run(self.llm_client, model, messages)
+        except StageOutputError as e:
             logger.exception(e)
             raise ValueError("Model returned invalid restriction plan") from e
+        logger.debug(f"LLM plan response [{model}]: {result.text}")
+        return result.output
 
     @staticmethod
     def _plan_cache_key(

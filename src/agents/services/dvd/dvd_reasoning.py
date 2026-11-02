@@ -16,6 +16,7 @@ from pydantic import (
     ValidationError,
 )
 
+from src.agents.llm_agents.stage import LlmStage, StageOutputError
 from src.agents.model_clients.context_budget import (
     AUDIT_OUTPUT,
     STRUCTURED_OUTPUT,
@@ -406,6 +407,30 @@ async def _request_json(
                     json.dumps(schema, ensure_ascii=False).encode("utf-8")
                 )
             )
+
+    def parse(content: str) -> Any:
+        if sentence_records is None:
+            result = adapter.validate_json(strip_json_fence(content))
+        else:
+            data = json.loads(strip_json_fence(content))
+            result = adapter.validate_python(restore_sentences(data, sentence_records))
+        if model_cls is CompactAudit:
+            allowed = set(claim_texts or [])
+            targets = schema["$defs"]["Correction"]["properties"]["target"]["enum"]
+            if (
+                any(c.line not in allowed for c in result.claims)
+                or any(c.target not in targets for c in result.corrections)
+                or any(line not in allowed for line in result.unsupported_claims)
+                or any(getattr(result, name) for name in empty_lists)
+            ):
+                raise ValueError("Audit must use only allowed line IDs and lists")
+        return result
+
+    # One pydantic-ai run per attempt: the output budget below is recomputed for
+    # every attempt (and widened after a truncated reply), which a single run's
+    # fixed settings could not express. The stage parses and validates; this loop
+    # owns the budget and the feedback that quotes the schema violations.
+    stage = LlmStage(request_kind, parser=parse, schema=schema, think=False)
     scale = 1.0
     for attempt in range(retries + 1):
         # Proportional to the input: a runaway reply stops here instead of
@@ -429,25 +454,30 @@ async def _request_json(
                 sum(len(m["content"].encode("utf-8")) for m in messages),
             )
         try:
-            response = await llm_client.chat(
-                request_kind=request_kind,
-                model=model,
-                think=False,
-                format=schema,
+            result = await stage.run(
+                llm_client,
+                model,
+                messages,
                 options={
                     "temperature": 0,
                     "num_predict": tokens,
                     "num_ctx": current_context_window(),
                 },
-                messages=messages,
                 **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
             )
         except LlmResponseError as exc:
             # The OpenAI adapter reports a truncated JSON reply as an error.
             if exc.reason not in {"output_truncated", "empty_completion"}:
                 raise
-            response = {"done_reason": "length"}
-        if response.get("done_reason") in {"length", "max_tokens"}:
+            result = None
+            done_reason, content, failure = "length", "", None
+        except StageOutputError as exc:
+            result = None
+            done_reason, content = exc.done_reason, exc.text
+            failure = exc.error or exc
+        else:
+            done_reason, content, failure = result.done_reason, result.text, None
+        if done_reason in {"length", "max_tokens"}:
             if max_tokens and tokens >= max_tokens:
                 raise OutputCapped(f"{model_name} reply reached its cap {tokens}")
             if not budget.limited or attempt >= retries:
@@ -459,54 +489,35 @@ async def _request_json(
             )
             scale *= 2
             continue
-        content = response["message"]["content"]
         logger.debug(f"LLM {model_name} response [{model}]: {content}")
-        try:
-            if sentence_records is None:
-                result = adapter.validate_json(strip_json_fence(content))
-            else:
-                data = json.loads(strip_json_fence(content))
-                result = adapter.validate_python(
-                    restore_sentences(data, sentence_records)
-                )
-            if model_cls is CompactAudit:
-                allowed = set(claim_texts or [])
-                targets = schema["$defs"]["Correction"]["properties"]["target"]["enum"]
-                if (
-                    any(c.line not in allowed for c in result.claims)
-                    or any(c.target not in targets for c in result.corrections)
-                    or any(line not in allowed for line in result.unsupported_claims)
-                    or any(getattr(result, name) for name in empty_lists)
-                ):
-                    raise ValueError("Audit must use only allowed line IDs and lists")
-            return result
-        except ValueError as exc:
-            validation_details = (
-                json.dumps(
-                    exc.errors(include_url=False), ensure_ascii=False, default=str
-                )
-                if isinstance(exc, ValidationError)
-                else str(exc)
+        if result is not None:
+            return result.output
+        validation_details = (
+            json.dumps(
+                failure.errors(include_url=False), ensure_ascii=False, default=str
             )
-            if attempt < retries:
-                logger.warning(
-                    f"LLM returned invalid {model_name} JSON "
-                    f"(retries left: {retries - attempt - 1}): {exc}"
-                )
-                messages = [
-                    *messages,
-                    {"role": "assistant", "content": content},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Твой предыдущий JSON нарушает схему: "
-                            f"{validation_details}. Исправь указанные поля и верни "
-                            "только валидный JSON нужной структуры без markdown и пояснений."
-                        ),
-                    },
-                ]
-            else:
-                raise ValueError(f"Model returned invalid {model_name} JSON") from exc
+            if isinstance(failure, ValidationError)
+            else str(failure)
+        )
+        if attempt < retries:
+            logger.warning(
+                f"LLM returned invalid {model_name} JSON "
+                f"(retries left: {retries - attempt - 1}): {failure}"
+            )
+            messages = [
+                *messages,
+                {"role": "assistant", "content": content},
+                {
+                    "role": "user",
+                    "content": (
+                        "Твой предыдущий JSON нарушает схему: "
+                        f"{validation_details}. Исправь указанные поля и верни "
+                        "только валидный JSON нужной структуры без markdown и пояснений."
+                    ),
+                },
+            ]
+        else:
+            raise ValueError(f"Model returned invalid {model_name} JSON") from failure
     raise AssertionError("unreachable")
 
 
