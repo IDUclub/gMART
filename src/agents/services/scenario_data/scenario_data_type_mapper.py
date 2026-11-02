@@ -12,10 +12,10 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationError,
     field_validator,
 )
 
-from src.agents.llm_agents.stage import LlmStage, StageOutputError
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.scenario_data.scenario_data_aggregate import extract_records
 from src.agents.services.scenario_data.scenario_data_mapping import (
@@ -617,43 +617,41 @@ Candidates: {candidate_payload}"""
         request_kind: str,
         post_validate=None,
     ):
-        def parse(raw: str):
-            parsed = schema.model_validate(json.loads(strip_json_fence(raw)))
-            return post_validate(parsed) if post_validate else parsed
-
-        # Each attempt is its own pydantic-ai run: the budget, the schema and the
-        # reasoning effort change between attempts.
-        stage = LlmStage(request_kind, parser=parse, think=False, schema=None)
         error = ""
         for attempt in range(MAPPING_LLM_RETRIES + 1):
             call: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "think": False,
                 "options": {
                     "temperature": 0,
                     "num_predict": 1800 if attempt == 0 else 3000,
                 },
             }
             if attempt < MAPPING_LLM_RETRIES:
-                call["schema"] = schema.model_json_schema()
-            attempt_messages = messages
+                call["format"] = schema.model_json_schema()
             if attempt:
                 call["reasoning_effort"] = "medium"
-                attempt_messages = messages + [
+                call["messages"] = messages + [
                     {
                         "role": "user",
                         "content": (f"Исправь JSON: {error}. Верни только JSON."),
                     }
                 ]
-            try:
-                result = await stage.run(
-                    self.llm_client, model, attempt_messages, **call
+            response = await self.llm_client.chat(request_kind=request_kind, **call)
+            raw = (response.get("message") or {}).get("content") or ""
+            if not raw.strip():
+                done_reason = response.get("done_reason") or "unknown"
+                error = f"empty model response (done_reason={done_reason})"
+                logger.warning(
+                    f"Invalid scenario-data {label}, attempt {attempt + 1}: {error}"
                 )
-                return result.output
-            except StageOutputError as exc:
-                if not exc.text.strip():
-                    done_reason = exc.done_reason or "unknown"
-                    error = f"empty model response (done_reason={done_reason})"
-                else:
-                    error = str(exc.error or exc)
+                continue
+            try:
+                parsed = schema.model_validate(json.loads(strip_json_fence(raw)))
+                return post_validate(parsed) if post_validate else parsed
+            except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+                error = str(exc)
                 logger.warning(
                     f"Invalid scenario-data {label}, attempt {attempt + 1}: {error}"
                 )

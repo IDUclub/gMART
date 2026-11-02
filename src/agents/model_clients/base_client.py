@@ -21,3 +21,13 @@ class BaseLlmClient:
 
         self.host = host
         self.llm_client: BaseLlmAdapter = build_llm_adapter(host)
+
+    async def execute_request(self, model: str, messages: list[dict]):
+
+        async for part in await self.llm_client.chat(
+            model, messages, request_kind="simple_llm", stream=True
+        ):
+            yield {
+                "type": "chunk",
+                "content": {"text": part.message.content, "done": part.done},
+            }

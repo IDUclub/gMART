@@ -360,34 +360,10 @@ class OpenAiCompatAdapter(BaseLlmAdapter):
                 role=getattr(message, "role", "assistant") or "assistant",
                 content=content,
                 thinking=reasoning,
-                tool_calls=cls._tool_calls(message),
             ),
             done=True,
             done_reason=finish_reason,
         )
-
-    @staticmethod
-    def _tool_calls(message: Any) -> list[dict[str, Any]] | None:
-        """Function calls of a completion, in the wire form the request used."""
-
-        calls = getattr(message, "tool_calls", None) or []
-        result = []
-        for call in calls:
-            function = getattr(call, "function", None)
-            name = getattr(function, "name", None)
-            if not name:
-                continue
-            result.append(
-                {
-                    "id": getattr(call, "id", None) or f"call_{len(result)}",
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": getattr(function, "arguments", None) or "{}",
-                    },
-                }
-            )
-        return result or None
 
     @classmethod
     async def _as_stream(

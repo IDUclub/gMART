@@ -23,7 +23,6 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPartRequest,
     ToolCallPayload,
 )
-from src.agents.llm_agents.stage import LlmStage
 from src.agents.mcp_clients.urban_mcp_client import UrbanMcpClient, UrbanMcpTool
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.pipeline_state import PipelineStateStore, PipelineStatus
@@ -135,13 +134,6 @@ def _is_transient_tool_error(error: Exception) -> bool:
         current = current.__cause__ or current.__context__
     text = " ".join(messages)
     return any(marker in text for marker in _TRANSIENT_TOOL_ERROR_MARKERS)
-
-
-# Text steps of the scenario-data agent, run as pydantic-ai stages.
-_ANSWER_STAGE = LlmStage("scenario.answer", think=False)
-_COLUMN_LABELS_STAGE = LlmStage(
-    "scenario.mapping", think=False, options={"temperature": 0, "num_predict": 400}
-)
 
 
 class ScenarioDataService(BaseLlmService):
@@ -1739,6 +1731,10 @@ class ScenarioDataService(BaseLlmService):
         messages = self._answer_messages(user_query, observations, history)
         for attempt in range(2):
             call: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "think": False,
+                "stream": False,
                 "options": {
                     "temperature": temperature if attempt == 0 else 0,
                     "num_predict": 1400 if attempt == 0 else 2200,
@@ -1746,9 +1742,11 @@ class ScenarioDataService(BaseLlmService):
             }
             if attempt:
                 call["reasoning_effort"] = "medium"
-            result = await _ANSWER_STAGE.run(self.llm_client, model, messages, **call)
-            answer = sanitize_public_answer(result.text or "")
-            done_reason = result.done_reason
+            response = await self.llm_client.chat(
+                request_kind="scenario.answer", **call
+            )
+            answer = sanitize_public_answer(response["message"]["content"] or "")
+            done_reason = response.get("done_reason")
             if answer and done_reason != "length":
                 return answer
             if answer and done_reason == "length":
@@ -2034,10 +2032,15 @@ table_rows и table_total_rows; не утверждай, что полный п�
         model = state.get("model") or await self.resolve_model(None)
         fields = {key: self._column_descriptions.get(key, "") for key in keys}
         try:
-            result = await _COLUMN_LABELS_STAGE.run(
-                self.llm_client, model, column_label_messages(fields)
+            response = await self.llm_client.chat(
+                request_kind="scenario.mapping",
+                model=model,
+                messages=column_label_messages(fields),
+                think=False,
+                stream=False,
+                options={"temperature": 0, "num_predict": 400},
             )
-            payload = json.loads(strip_json_fence(result.text or ""))
+            payload = json.loads(strip_json_fence(response["message"]["content"] or ""))
         except Exception as exc:
             # Labels are presentation only; a failed translation must not lose the table.
             logger.warning(

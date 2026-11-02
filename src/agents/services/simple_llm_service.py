@@ -1,15 +1,12 @@
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
-from src.agents.llm_agents.stage import LlmStage
-from src.agents.model_clients.llm_base import LlmChatResponse, LlmMessage
+from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
-
-# A bare chat turn: one user message, plain text back.
-_SIMPLE_STAGE = LlmStage("simple_llm")
 
 
 class SimpleLlmService(BaseLlmService):
@@ -41,26 +38,21 @@ class SimpleLlmService(BaseLlmService):
 
     async def generate_message(
         self, user_request: str, model: str | None
-    ) -> LlmChatResponse:
+    ) -> dict[str, Any]:
         """
         Generate a message from a user request.
         Args:
             user_request (str): User request.
             model (str | None): Model name; None resolves to the provider's default.
         Returns:
-            LlmChatResponse: Response message.
+            dict[str, Any]: Response message.
         """
 
         model = await self.resolve_model(model)
         await self.validate_model(model)
         messages = [{"role": "user", "content": user_request}]
-        result = await _SIMPLE_STAGE.run(self.llm_client, model, messages)
-        # The REST response keeps the chat-response shape it always had.
-        return LlmChatResponse(
-            model=model,
-            message=LlmMessage(content=result.text, thinking=result.thinking),
-            done=True,
-            done_reason=result.done_reason,
+        return await self.llm_client.chat(
+            model, messages, request_kind="simple_llm", stream=False
         )
 
     async def generate_stream_message(
@@ -77,7 +69,11 @@ class SimpleLlmService(BaseLlmService):
 
         model = await self.resolve_model(model)
         messages = [{"role": "user", "content": user_request}]
-        async for delta in _SIMPLE_STAGE.stream(self.llm_client, model, messages):
-            yield {"type": "Text", "content": delta}
-        # The closing chunk, as the backend's final ``done`` part was relayed.
-        yield {"type": "Text", "content": ""}
+        async for part in await self.llm_client.chat(
+            model, messages, request_kind="simple_llm", stream=True
+        ):
+            part: LlmChatResponse
+            if part.done:
+                yield {"type": "Text", "content": part.message.content}
+                return
+            yield {"type": "Text", "content": part.message.content}

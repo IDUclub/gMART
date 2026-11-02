@@ -9,7 +9,6 @@ exception type regardless of backend.
 
 from __future__ import annotations
 
-import json
 from typing import Any, AsyncIterator
 
 from loguru import logger
@@ -44,11 +43,7 @@ class OllamaAdapter(BaseLlmAdapter):
         request_kind: str | None = None,
         **kwargs: Any,
     ) -> LlmChatResponse | AsyncIterator[LlmChatResponse]:
-        call: dict[str, Any] = {
-            "model": model,
-            "messages": _ollama_messages(messages),
-            "stream": stream,
-        }
+        call: dict[str, Any] = {"model": model, "messages": messages, "stream": stream}
         logger.debug("LLM request priority: key={} value=None (Ollama)", request_kind)
         if think is not None:
             call["think"] = think
@@ -106,38 +101,3 @@ class OllamaAdapter(BaseLlmAdapter):
             return await self.client.ps()
         except ResponseError as exc:
             raise LlmResponseError(str(exc), getattr(exc, "status_code", None)) from exc
-
-
-def _ollama_messages(messages: list[dict] | None) -> list[dict] | None:
-    """Spell OpenAI-form tool calls the way Ollama's chat API expects them.
-
-    The agents write assistant tool calls with JSON-string ``arguments`` (the
-    OpenAI form); Ollama takes an object there. Everything else passes as is.
-    """
-
-    if not messages:
-        return messages
-    result = []
-    for message in messages:
-        if message.get("role") == "tool" and "tool_call_id" in message:
-            # Ollama pairs a result with its call by order, not by id.
-            result.append(
-                {key: value for key, value in message.items() if key != "tool_call_id"}
-            )
-            continue
-        calls = message.get("tool_calls")
-        if not calls:
-            result.append(message)
-            continue
-        spelled = []
-        for call in calls:
-            function = dict(call.get("function") or {})
-            arguments = function.get("arguments")
-            if isinstance(arguments, str):
-                try:
-                    function["arguments"] = json.loads(arguments or "{}")
-                except ValueError:
-                    function["arguments"] = {}
-            spelled.append({"function": function})
-        result.append({**message, "tool_calls": spelled})
-    return result

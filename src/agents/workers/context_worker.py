@@ -10,10 +10,9 @@ from typing import Any
 
 from idu_service_auth import KeycloakTokenClient
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
-from src.agents.llm_agents.stage import LlmStage, StageOutputError
 from src.agents.model_clients.context_budget import (
     OutputShare,
     remaining_output_tokens,
@@ -23,6 +22,7 @@ from src.agents.services.dvd.context_reducer import (
     DvdContextReducer,
     current_context_window,
 )
+from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.common.service_auth import build_service_auth, service_auth_lifespan
 
 # The prompt asks for about 6000 tokens; the floor adds room for medium reasoning.
@@ -32,10 +32,6 @@ _SUMMARY_OUTPUT = OutputShare(ratio=0.5, floor=8192)
 class ContextContent(BaseModel):
     summary: str = Field(max_length=14000)
     structured: dict[str, Any] = Field(default_factory=dict)
-
-
-# The chat-context summary: a typed pydantic-ai stage, validated once.
-_SUMMARY_STAGE = LlmStage("context_summary", output_type=ContextContent, think=False)
 
 
 class ContextWorker:
@@ -175,17 +171,20 @@ failed_attempts. Общий ответ не должен превышать пр
                     "num_ctx": window,
                     "num_predict": available,
                 }
+        response = await self.llm.chat(
+            request_kind="context_summary",
+            model=job["model"],
+            messages=messages,
+            think=False,
+            format=ContextContent.model_json_schema(),
+            options=options,
+            reasoning_effort="medium",
+        )
+        raw = (response.get("message") or {}).get("content") or ""
         try:
-            result = await _SUMMARY_STAGE.run(
-                self.llm,
-                job["model"],
-                messages,
-                options=options,
-                reasoning_effort="medium",
-            )
-        except StageOutputError as exc:
-            raise ValueError(f"invalid context summary: {exc.error or exc}") from exc
-        return result.output
+            return ContextContent.model_validate(json.loads(strip_json_fence(raw)))
+        except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid context summary: {exc}") from exc
 
     @staticmethod
     def _compact_tail(messages: list[dict]) -> list[dict]:

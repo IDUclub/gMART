@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from python_a2a.models.task import TaskState
+
 from src.agents.a2a.a2a_format import sanitized_user_message
-from src.agents.a2a.a2a_types import TaskState
 from src.agents.a2a.executor import RestrictionAgentExecutor
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
@@ -106,7 +107,7 @@ class ComplianceAgentExecutor:
 
         status = self.task_store.set_status(
             task_id,
-            TaskState.working,
+            TaskState.WAITING,
             self._agent_message(
                 context_id, task_id, "Запуск проверки нормативного соответствия."
             ),
@@ -150,7 +151,7 @@ class ComplianceAgentExecutor:
 
             status = self.task_store.set_status(
                 task_id,
-                TaskState.completed,
+                TaskState.COMPLETED,
                 self._agent_message(context_id, task_id, "Проверка завершена."),
             )
             yield self._status_update(task_id, context_id, status, final=True)
@@ -160,7 +161,7 @@ class ComplianceAgentExecutor:
         except Exception as exc:
             status = self.task_store.set_status(
                 task_id,
-                TaskState.failed,
+                TaskState.FAILED,
                 self._agent_message(
                     context_id,
                     task_id,
@@ -182,7 +183,7 @@ class ComplianceAgentExecutor:
         if item_type == "status":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.working,
+                TaskState.WAITING,
                 self._agent_message(context_id, task_id, content.get("text", "")),
             )
             return self._status_update(task_id, context_id, status, final=False)
@@ -199,7 +200,7 @@ class ComplianceAgentExecutor:
             question = content.get("question") or "Требуется уточнение"
             status = self.task_store.set_status(
                 task_id,
-                TaskState.input_required,
+                TaskState.INPUT_REQUIRED,
                 {
                     **self._agent_message(context_id, task_id, question),
                     "parts": [
@@ -236,7 +237,7 @@ class ComplianceAgentExecutor:
         if item_type in {"error", "pipeline_suspended"}:
             status = self.task_store.set_status(
                 task_id,
-                TaskState.failed,
+                TaskState.FAILED,
                 self._agent_message(
                     context_id,
                     task_id,

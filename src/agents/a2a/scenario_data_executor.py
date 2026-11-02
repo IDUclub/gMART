@@ -5,8 +5,9 @@ from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
 
+from python_a2a.models.task import TaskState
+
 from src.agents.a2a.a2a_format import sanitized_user_message
-from src.agents.a2a.a2a_types import TaskState
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
@@ -79,7 +80,7 @@ class ScenarioDataAgentExecutor:
 
         status = self.task_store.set_status(
             task_id,
-            TaskState.working,
+            TaskState.WAITING,
             self._agent_message(
                 context_id, task_id, "Starting the scenario-data pipeline."
             ),
@@ -113,7 +114,7 @@ class ScenarioDataAgentExecutor:
 
             status = self.task_store.set_status(
                 task_id,
-                TaskState.completed,
+                TaskState.COMPLETED,
                 self._agent_message(
                     context_id, task_id, "Scenario-data pipeline completed."
                 ),
@@ -124,7 +125,7 @@ class ScenarioDataAgentExecutor:
         except Exception as exc:
             status = self.task_store.set_status(
                 task_id,
-                TaskState.failed,
+                TaskState.FAILED,
                 self._agent_message(
                     context_id, task_id, f"Scenario-data pipeline failed: {exc}"
                 ),
@@ -146,7 +147,7 @@ class ScenarioDataAgentExecutor:
         if item_type == "status":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.working,
+                TaskState.WAITING,
                 self._agent_message(context_id, task_id, content.get("text", "")),
             )
             return self._status_update(task_id, context_id, status, final=False)
@@ -171,7 +172,7 @@ class ScenarioDataAgentExecutor:
         if item_type == "error":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.failed,
+                TaskState.FAILED,
                 self._agent_message(
                     context_id,
                     task_id,
@@ -182,7 +183,7 @@ class ScenarioDataAgentExecutor:
         if item_type == "token_expired":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.working,
+                TaskState.WAITING,
                 self._agent_message(
                     context_id,
                     task_id,
@@ -193,7 +194,7 @@ class ScenarioDataAgentExecutor:
         if item_type == "pipeline_suspended":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.failed,
+                TaskState.FAILED,
                 self._agent_message(
                     context_id,
                     task_id,

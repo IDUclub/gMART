@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
-from dataclasses import dataclass, field
-from functools import partial
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -29,12 +27,6 @@ from src.agents.services.compilance.compliance_user_files import pending_candida
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.layer_attributes import compact_layer_event
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
-from src.agents.services.orchestrator.orchestrator_adk import (
-    AdkOrchestration,
-    AdkUnavailableError,
-    adk_available,
-    mark_tools_unsupported,
-)
 from src.agents.services.orchestrator.orchestrator_catalog import (
     AGENT_CATALOG,
     AgentCatalogEntry,
@@ -81,19 +73,6 @@ _FAILED_STEP_CONTEXT = (
     "Шаг не выполнен, его результата нет. Не подставляй вместо него значения "
     "или предположения."
 )
-
-
-def _already_running(pipeline: AsyncGenerator) -> AsyncGenerator:
-    return pipeline
-
-
-@dataclass
-class StepOutcome:
-    """What one executed step left behind for the plan."""
-
-    status: str = "completed"
-    digest: str = ""
-    tables: list[TablePartRequest] = field(default_factory=list)
 
 
 def _run_ahead(pipeline: AsyncGenerator) -> tuple[AsyncGenerator, asyncio.Task]:
@@ -291,16 +270,25 @@ class OrchestratorService(BaseLlmService):
             scenario_id,
             user_files=bool(compliance_upload_ids or pending_mapping),
         )
-        # Replies to a question a step asked earlier go straight back to it.
-        routed = await self._project_dialogue_plan(
-            model, user_query, chat_id
-        ) or await self._compliance_choice_plan(
-            model,
-            user_query,
-            chat_id,
-            agents,
-            normgraph_mcp_client,
-            pending_mapping=pending_mapping,
+        plan = (
+            await self._project_dialogue_plan(model, user_query, chat_id)
+            or await self._compliance_choice_plan(
+                model,
+                user_query,
+                chat_id,
+                agents,
+                normgraph_mcp_client,
+                pending_mapping=pending_mapping,
+            )
+            or await self.plan_builder.build_plan(
+                model,
+                user_query,
+                agents,
+                history,
+                scenario_id=scenario_id,
+                pzz_inputs=pzz_inputs,
+                compliance_uploads=len(compliance_upload_ids or []),
+            )
         )
         # An answer to a pending mapping continues on the files it was asked about.
         if (
@@ -310,9 +298,22 @@ class OrchestratorService(BaseLlmService):
         ):
             compliance_upload_ids = list(pending_mapping.get("upload_ids") or [])
 
+        if plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION:
+            question = plan.clarification_question or ""
+            yield await self._buf(request_id, self._clarification_event(question))
+            if persist_history:
+                self._schedule_persist_text(token, chat_id, question, scenario_id)
+            await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
+
+        # ── Execution ──────────────────────────────────────────────────
+        yield await self._buf(request_id, self._plan_event(plan))
+
         summary_steps: list[dict[str, Any]] = []
+        digests: list[tuple[OrchestratorStep, str]] = []
         table_parts: list[TablePartRequest] = []
         file_events: list[dict[str, Any]] = []
+
         step_kwargs = dict(
             idu_mcp_client=idu_mcp_client,
             effects_mcp_client=effects_mcp_client,
@@ -329,104 +330,35 @@ class OrchestratorService(BaseLlmService):
             conversation_key=chat_id,
             compliance_upload_ids=compliance_upload_ids,
         )
-
-        # ── Autonomous execution (Google ADK) ──────────────────────────
-        handled = False
-        if routed is None and adk_available():
-            orchestration = AdkOrchestration(
-                self,
-                model=model,
-                user_query=user_query,
-                history=history,
-                agents=agents,
-                step_kwargs=step_kwargs,
-                scenario_id=scenario_id,
-                pzz_inputs=pzz_inputs,
-                compliance_uploads=len(compliance_upload_ids or []),
-            )
-            try:
-                async for event in orchestration.events():
-                    yield await self._buf(request_id, event)
-                handled = True
-            except AdkUnavailableError as exc:
-                mark_tools_unsupported(exc)
-                logger.warning(
-                    f"Orchestrator: ADK agent unavailable ({exc}); "
-                    "planning with the JSON planner"
-                )
-            if handled:
-                state = orchestration.state
-                if state.plan is None:
-                    question = state.clarification or ""
-                    yield await self._buf(
-                        request_id, self._clarification_event(question)
+        # Read-only QA steps that do not need each other's results start together;
+        # their events are still streamed step by step, in plan order.
+        ahead: dict[int, tuple[str, AsyncGenerator, asyncio.Task]] = {}
+        if self._runs_independently(plan):
+            for number, later in enumerate(plan.steps[1:], start=2):
+                ahead_id = self.state_store.new_request_id()
+                try:
+                    pipeline = self._build_step_pipeline(
+                        later, later.task, ahead_id, **step_kwargs
                     )
-                    if persist_history:
-                        self._schedule_persist_text(
-                            token, chat_id, question, scenario_id
-                        )
-                    await self.state_store.set_status(request_id, PipelineStatus.DONE)
-                    return
-                if state.clarification:
-                    yield await self._buf(
-                        request_id, self._clarification_event(state.clarification)
-                    )
-                summary_steps = state.ordered_summary()
-                table_parts = state.table_parts
-                file_events = state.file_events
+                except Exception:
+                    continue  # built again in order; the loop reports the error
+                ahead[number] = (ahead_id, *_run_ahead(pipeline))
 
-        # ── Planned execution (JSON planner) ───────────────────────────
-        if not handled:
-            plan = routed or await self.plan_builder.build_plan(
-                model,
-                user_query,
-                agents,
-                history,
-                scenario_id=scenario_id,
-                pzz_inputs=pzz_inputs,
-                compliance_uploads=len(compliance_upload_ids or []),
-            )
-            if plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION:
-                question = plan.clarification_question or ""
-                yield await self._buf(request_id, self._clarification_event(question))
-                if persist_history:
-                    self._schedule_persist_text(token, chat_id, question, scenario_id)
-                await self.state_store.set_status(request_id, PipelineStatus.DONE)
-                return
-
-            yield await self._buf(request_id, self._plan_event(plan))
-            digests: list[tuple[OrchestratorStep, str]] = []
-            # Read-only QA steps that do not need each other's results start together;
-            # their events are still streamed step by step, in plan order.
-            ahead: dict[int, tuple[str, AsyncGenerator, asyncio.Task]] = {}
-            if self._runs_independently(plan):
-                for number, later in enumerate(plan.steps[1:], start=2):
-                    ahead_id = self.state_store.new_request_id()
-                    try:
-                        pipeline = self._build_step_pipeline(
-                            later, later.task, ahead_id, **step_kwargs
-                        )
-                    except Exception:
-                        continue  # built again in order; the loop reports the error
-                    ahead[number] = (ahead_id, *_run_ahead(pipeline))
-
-            try:
-                async for event in self._run_steps(
-                    plan,
-                    request_id,
-                    ahead,
-                    step_kwargs,
-                    summary_steps,
-                    digests,
-                    table_parts,
-                    file_events,
-                ):
-                    yield event
-            finally:
-                for _, _, task in ahead.values():
-                    task.cancel()
-
-        # ── Final ──────────────────────────────────────────────────────
+        try:
+            async for event in self._run_steps(
+                plan,
+                request_id,
+                ahead,
+                step_kwargs,
+                summary_steps,
+                digests,
+                table_parts,
+                file_events,
+            ):
+                yield event
+        finally:
+            for _, _, task in ahead.values():
+                task.cancel()
         aborted = any(s["status"] != "completed" for s in summary_steps)
 
         yield await self._buf(request_id, self._final_event(summary_steps))
@@ -542,31 +474,85 @@ class OrchestratorService(BaseLlmService):
             if started:
                 effective_query = step.task
                 step_request_id = started[0]
-                make_pipeline = partial(_already_running, started[1])
             else:
                 effective_query = self._compose_step_query(step, digests)
                 step_request_id = self.state_store.new_request_id()
-                make_pipeline = partial(
-                    self._build_step_pipeline,
-                    step,
-                    effective_query,
-                    step_request_id,
-                    context_note=self._digest_lines(digests) or None,
-                    **step_kwargs,
+            yield await self._buf(
+                request_id,
+                self._step_started_event(
+                    step_number, step, step_request_id, effective_query
+                ),
+            )
+
+            status = "completed"
+            collected: dict[str, Any] = {"chunks": {}, "notes": []}
+            step_tables: list[TablePartRequest] = []
+            try:
+                pipeline = (
+                    started[1]
+                    if started
+                    else self._build_step_pipeline(
+                        step,
+                        effective_query,
+                        step_request_id,
+                        context_note=self._digest_lines(digests) or None,
+                        **step_kwargs,
+                    )
                 )
-            outcome = StepOutcome()
-            async for event in self._execute_step(
-                step_number,
-                step,
-                step_request_id,
-                effective_query,
-                make_pipeline,
-                outcome,
-                file_events,
-            ):
-                yield await self._buf(request_id, event)
-            status, digest = outcome.status, outcome.digest
-            step_tables = outcome.tables
+                async for item in pipeline:
+                    if item.get("type") in _SUPPRESSED_INNER_EVENTS:
+                        continue
+                    if item.get("type") == "file":
+                        # File links are top-level events that close the stream.
+                        file_events.append(item)
+                        continue
+                    self._collect_digest(collected, item)
+                    table_part = self._table_part(item)
+                    if table_part is not None:
+                        step_tables.append(table_part)
+                    yield await self._buf(
+                        request_id,
+                        self._step_event(step_number, step, item),
+                    )
+                    if item.get("type") in {"error", "pipeline_failed"}:
+                        status = "failed"
+                        break
+                    if item.get("type") == "clarification":
+                        status = "needs_clarification"
+                        content = item.get("content") or {}
+                        collected = {
+                            "chunks": {},
+                            "notes": [
+                                content.get("question")
+                                or content.get("text")
+                                or "Для выполнения шага требуется уточнение пользователя."
+                            ],
+                        }
+                        break
+                    if item.get("type") == "pipeline_suspended":
+                        status = "suspended"
+                        break
+            except PipelineSuspendedError:
+                status = "suspended"
+            except Exception as exc:
+                logger.opt(exception=exc).error(
+                    f"Orchestrator: step {step_number} ({step.agent}) failed"
+                )
+                status = "failed"
+
+            digest = self._digest_from_collected(collected)
+            if status in {"failed", "suspended"}:
+                # Streamed text can be an unverified draft. Never turn a failed
+                # draft into a saved answer or evidence for a later step.
+                digest = (
+                    "Шаг не выполнен: агент сообщил об ошибке. Результат не подтверждён."
+                    if status == "failed"
+                    else "Шаг приостановлен. Результат ещё не подтверждён."
+                )
+            yield await self._buf(
+                request_id,
+                self._step_finished_event(step_number, step, status, digest),
+            )
             summary_steps.append(self._summary_step(step_number, step, status, digest))
             if status == "completed":
                 digests.append((step, digest))
@@ -580,81 +566,6 @@ class OrchestratorService(BaseLlmService):
                 # A suspended step or a clarification waits for the user; later
                 # steps would run on an unfinished premise — stop the plan.
                 aborted = True
-
-    async def _execute_step(
-        self,
-        step_number: int,
-        step: OrchestratorStep,
-        step_request_id: str,
-        effective_query: str,
-        make_pipeline: Callable[[], AsyncGenerator[dict[str, Any], None]],
-        outcome: StepOutcome,
-        file_events: list[dict[str, Any]],
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        """Run one plan step, yielding its top-level events (not yet buffered).
-
-        Shared by the planned execution and the ADK agent's tools, so a step
-        behaves the same whoever decided to run it. The result — status, the text
-        digest handed to later steps, the tables to persist — lands in ``outcome``.
-        """
-        yield self._step_started_event(
-            step_number, step, step_request_id, effective_query
-        )
-
-        status = "completed"
-        collected: dict[str, Any] = {"chunks": {}, "notes": []}
-        step_tables: list[TablePartRequest] = []
-        try:
-            pipeline = make_pipeline()
-            async for item in pipeline:
-                if item.get("type") in _SUPPRESSED_INNER_EVENTS:
-                    continue
-                if item.get("type") == "file":
-                    # File links are top-level events that close the stream.
-                    file_events.append(item)
-                    continue
-                self._collect_digest(collected, item)
-                table_part = self._table_part(item)
-                if table_part is not None:
-                    step_tables.append(table_part)
-                yield self._step_event(step_number, step, item)
-                if item.get("type") in {"error", "pipeline_failed"}:
-                    status = "failed"
-                    break
-                if item.get("type") == "clarification":
-                    status = "needs_clarification"
-                    content = item.get("content") or {}
-                    collected = {
-                        "chunks": {},
-                        "notes": [
-                            content.get("question")
-                            or content.get("text")
-                            or "Для выполнения шага требуется уточнение пользователя."
-                        ],
-                    }
-                    break
-                if item.get("type") == "pipeline_suspended":
-                    status = "suspended"
-                    break
-        except PipelineSuspendedError:
-            status = "suspended"
-        except Exception as exc:
-            logger.opt(exception=exc).error(
-                f"Orchestrator: step {step_number} ({step.agent}) failed"
-            )
-            status = "failed"
-
-        digest = self._digest_from_collected(collected)
-        if status in {"failed", "suspended"}:
-            # Streamed text can be an unverified draft. Never turn a failed
-            # draft into a saved answer or evidence for a later step.
-            digest = (
-                "Шаг не выполнен: агент сообщил об ошибке. Результат не подтверждён."
-                if status == "failed"
-                else "Шаг приостановлен. Результат ещё не подтверждён."
-            )
-        yield self._step_finished_event(step_number, step, status, digest)
-        outcome.status, outcome.digest, outcome.tables = status, digest, step_tables
 
     # ------------------------------------------------------------------
     # Step dispatch (in-process pipeline invocation)

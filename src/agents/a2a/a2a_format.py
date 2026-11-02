@@ -112,8 +112,7 @@ def normalize_response(obj: Any) -> Any:
     """
     Function rewrites the legacy ``type`` part discriminator to the A2A 0.3 ``kind``.
 
-    Legacy A2A clients (and the python-a2a serializer gMART used to run on) write
-    message/artifact parts as ``{"type": ...}``; A2A 0.3 mandates
+    ``python_a2a`` serialises message/artifact parts as ``{"type": ...}``; A2A 0.3 mandates
     ``{"kind": ...}``. Only dict elements of a ``parts`` list are rewritten, so GeoJSON
     payloads nested under a part's ``data`` (which legitimately carry ``type``) stay intact.
     Args:

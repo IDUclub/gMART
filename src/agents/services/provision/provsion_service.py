@@ -27,7 +27,7 @@ from src.agents.common.exceptions.token_exceptions import (
     PipelineSuspendedError,
     TokenExpiredError,
 )
-from src.agents.llm_agents.stage import LlmStage
+from src.agents.model_clients.llm_base import LlmChatResponse
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.layer_attributes import compact_layer, compact_layer_event
 from src.agents.services.pipeline_state import (
@@ -97,10 +97,6 @@ POPULATION_HINT = (
     "При желании укажите целевую численность населения прямо в запросе — "
     "например: «…при населении 25 000 человек» — и расчёт будет выполнен с ней."
 )
-
-
-# The provision agent's commentary, streamed as a pydantic-ai text stage.
-_PROVISION_ANSWER_STAGE = LlmStage("provision.answer", think=False)
 
 
 class ProvisionService(BaseLlmService):
@@ -1263,14 +1259,22 @@ class ProvisionService(BaseLlmService):
             {"role": "user", "content": user_query},
         ]
         response_buffer: list[str] = []
-        async for delta in _PROVISION_ANSWER_STAGE.stream(
-            self.llm_client, model, messages, options={"temperature": temperature}
+        async for part in await self.llm_client.chat(
+            model,
+            messages,
+            request_kind="provision.answer",
+            think=False,
+            options={"temperature": temperature},
+            stream=True,
         ):
-            response_buffer.append(delta)
-            yield self._chunk(delta, done=False)
-        if trailing_note is None:
-            yield self._chunk("", done=True)
-        else:
+            part: LlmChatResponse
+            if part.message.content:
+                response_buffer.append(part.message.content)
+            yield self._chunk(
+                part.message.content or "",
+                done=part.done and trailing_note is None,
+            )
+        if trailing_note is not None:
             # Deterministic service note appended after the LLM commentary
             # (e.g. how to override the population used in the calculation).
             yield self._chunk(trailing_note, done=True)

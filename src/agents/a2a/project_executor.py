@@ -6,9 +6,9 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError
+from python_a2a.models.task import TaskState
 
 from src.agents.a2a.a2a_format import sanitized_user_message
-from src.agents.a2a.a2a_types import TaskState
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
 from src.agents.common.exceptions.base_exceptions import AgentsBaseException
@@ -72,7 +72,7 @@ class ProjectAgentExecutor:
         context_id = execution["context_id"]
         status = self.task_store.set_status(
             task_id,
-            TaskState.working,
+            TaskState.WAITING,
             self._agent_message("Запуск агента создания проекта из файлов."),
         )
         yield self._status_update(task_id, context_id, status, final=False)
@@ -103,13 +103,13 @@ class ProjectAgentExecutor:
                 if item.get("type") in {"error", "clarification"}:
                     return
             status = self.task_store.set_status(
-                task_id, TaskState.completed, self._agent_message("Готово.")
+                task_id, TaskState.COMPLETED, self._agent_message("Готово.")
             )
             yield self._status_update(task_id, context_id, status, final=True)
         except Exception as exc:
             status = self.task_store.set_status(
                 task_id,
-                TaskState.failed,
+                TaskState.FAILED,
                 self._agent_message(f"Сбой агента создания проекта: {exc}"),
             )
             yield self._status_update(task_id, context_id, status, final=True)
@@ -122,7 +122,7 @@ class ProjectAgentExecutor:
         if item_type in {"status", "warning"}:
             status = self.task_store.set_status(
                 task_id,
-                TaskState.working,
+                TaskState.WAITING,
                 self._agent_message(content.get("text") or content.get("message", "")),
             )
             return self._status_update(task_id, context_id, status, final=False)
@@ -142,7 +142,7 @@ class ProjectAgentExecutor:
         if item_type == "error":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.failed,
+                TaskState.FAILED,
                 self._agent_message(content.get("message", "Ошибка агента")),
             )
             return self._status_update(task_id, context_id, status, final=True)
@@ -150,7 +150,7 @@ class ProjectAgentExecutor:
             question = content.get("question") or "Требуется уточнение"
             status = self.task_store.set_status(
                 task_id,
-                TaskState.input_required,
+                TaskState.INPUT_REQUIRED,
                 {
                     **self._agent_message(question),
                     "parts": [

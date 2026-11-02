@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import pytest
+from python_a2a.models.task import TaskState
 
-from src.agents.a2a.a2a_types import TaskState
 from src.agents.a2a.compliance_agent import ComplianceA2AAgent
 from src.agents.a2a.compliance_executor import (
     ComplianceAgentExecutor,
@@ -107,7 +107,7 @@ async def test_document_choice_ends_the_task_in_input_required():
 
     final = events[-1]
     assert final["final"] is True
-    assert final["status"]["state"] == TaskState.input_required.value
+    assert final["status"]["state"] == TaskState.INPUT_REQUIRED.value
     assert final["status"]["message"]["parts"][1]["data"]["options"] == options
     call = service.calls[0]
     assert call["conversation_key"] == "a2a-compliance:ctx-1"
@@ -142,7 +142,7 @@ async def test_layers_and_summary_become_separate_artifacts():
         "compliance-layer-2",
         "compliance-summary",
     ]
-    assert task["status"]["state"] == TaskState.completed.value
+    assert task["status"]["state"] == TaskState.COMPLETED.value
 
 
 async def test_json_rpc_send_runs_the_executor():
@@ -162,5 +162,5 @@ async def test_json_rpc_send_runs_the_executor():
         "token",
     )
 
-    assert response["result"]["status"]["state"] == TaskState.completed.value
+    assert response["result"]["status"]["state"] == TaskState.COMPLETED.value
     assert service.calls[0]["normgraph_mcp_client"] is CLIENTS.normgraph

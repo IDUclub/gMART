@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import re
-from functools import lru_cache
 from typing import TypeVar
 
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from src.agents.llm_agents.stage import FIX_JSON_PROMPT, LlmStage, StageOutputError
+from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.service_entities.normgraph_plan import (
     NormGraphCriticVerdict,
     NormGraphPlan,
@@ -72,26 +71,6 @@ def _clean_str_list(values: list[str] | None) -> list[str] | None:
     return cleaned or None
 
 
-@lru_cache(maxsize=None)
-def _json_stage(
-    model_cls: type[BaseModel], request_kind: str, retries: int
-) -> LlmStage:
-    """The pydantic-ai stage for one structured request; built once per shape."""
-    return LlmStage(
-        request_kind,
-        output_type=model_cls,
-        retries=retries,
-        # Reasoning models such as gpt-oss may spend the entire prediction
-        # budget in ``message.thinking`` and leave ``message.content`` empty.
-        # Planning/critique need deterministic machine-readable output, not
-        # a reasoning trace, so explicitly disable thinking and let the server
-        # constrain the response with the Pydantic JSON schema.
-        think=False,
-        options={"temperature": 0, "num_predict": 1024},
-        retry_prompt=FIX_JSON_PROMPT,
-    )
-
-
 async def _request_json(
     llm_client,
     model: str,
@@ -103,20 +82,50 @@ async def _request_json(
     """
     Ask the LLM for a JSON object and parse it into ``model_cls``.
 
-    Runs as a pydantic-ai stage (:class:`LlmStage`): temperature 0, markdown fences
-    stripped, and an answer that does not validate is sent back to the model with
-    the fix instruction, up to ``retries`` times — the same convention the DVD RAG
-    agent's RetrievalPlanner/AnswerCritic use.
+    Mirrors the structured-output convention used by RetrievalPlanner/AnswerCritic (DVD RAG
+    agent): temperature 0, strip markdown fences, retry by feeding the invalid response back
+    to the model.
     """
-    try:
-        result = await _json_stage(model_cls, request_kind, retries).run(
-            llm_client, model, messages
+    for attempt in range(retries + 1):
+        response = await llm_client.chat(
+            request_kind=request_kind,
+            model=model,
+            messages=messages,
+            # Reasoning models such as gpt-oss may spend the entire prediction
+            # budget in ``message.thinking`` and leave ``message.content`` empty.
+            # Planning/critique need deterministic machine-readable output, not
+            # a reasoning trace, so explicitly disable thinking and let Ollama
+            # constrain the response with the Pydantic JSON schema.
+            think=False,
+            format=model_cls.model_json_schema(),
+            options={"temperature": 0, "num_predict": 1024},
         )
-    except StageOutputError as exc:
-        logger.warning(f"LLM returned invalid {model_cls.__name__} JSON: {exc}")
-        raise ValueError(f"Model returned invalid {model_cls.__name__} JSON") from exc
-    logger.debug(f"LLM {model_cls.__name__} response [{model}]: {result.text}")
-    return result.output
+        content = response["message"]["content"]
+        logger.debug(f"LLM {model_cls.__name__} response [{model}]: {content}")
+        try:
+            return model_cls.model_validate_json(strip_json_fence(content))
+        except (ValidationError, json.JSONDecodeError) as exc:
+            if attempt < retries:
+                logger.warning(
+                    f"LLM returned invalid {model_cls.__name__} JSON "
+                    f"(retries left: {retries - attempt - 1}): {exc}"
+                )
+                messages = [
+                    *messages,
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Твой предыдущий ответ содержит невалидный JSON. "
+                            "Верни только валидный JSON нужной структуры без markdown и пояснений."
+                        ),
+                    },
+                ]
+            else:
+                raise ValueError(
+                    f"Model returned invalid {model_cls.__name__} JSON"
+                ) from exc
+    raise AssertionError("unreachable")
 
 
 class NormGraphRetrievalPlanner:

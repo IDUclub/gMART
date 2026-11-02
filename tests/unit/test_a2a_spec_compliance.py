@@ -274,9 +274,9 @@ def test_task_store_status_timestamp_is_rfc3339():
     store = A2ATaskStore()
     task = store.create_task("t1", "c1", {"role": "user", "parts": []}, {})
     assert task["status"]["timestamp"].endswith("Z")
-    from src.agents.a2a.a2a_types import TaskState
+    from python_a2a.models.task import TaskState
 
-    status = store.set_status("t1", TaskState.completed)
+    status = store.set_status("t1", TaskState.COMPLETED)
     assert status["timestamp"].endswith("Z")
 
 

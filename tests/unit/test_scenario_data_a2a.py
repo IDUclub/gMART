@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from python_a2a.models.task import TaskState
 
 from src.agents.a2a.a2a_format import SCENARIO_CONTEXT_EXTENSION_URI
-from src.agents.a2a.a2a_types import TaskState
 from src.agents.a2a.scenario_data_agent import ScenarioDataA2AAgent
 from src.agents.a2a.scenario_data_executor import ScenarioDataAgentExecutor
 from src.agents.a2a.task_store import A2ATaskStore
@@ -140,7 +140,7 @@ async def test_json_rpc_returns_text_geojson_and_table_artifacts():
     )
 
     task = response["result"]
-    assert task["status"]["state"] == TaskState.completed.value
+    assert task["status"]["state"] == TaskState.COMPLETED.value
     artifact_ids = {artifact["artifactId"] for artifact in task["artifacts"]}
     assert artifact_ids == {
         "scenario-data-agent-text",
@@ -173,7 +173,7 @@ async def test_streaming_json_rpc_has_task_and_completed_terminal_event():
     assert any(
         frame.get("result", {}).get("kind") == "status-update"
         and frame["result"].get("final")
-        and frame["result"]["status"]["state"] == TaskState.completed.value
+        and frame["result"]["status"]["state"] == TaskState.COMPLETED.value
         for frame in frames
     )
 
@@ -213,6 +213,6 @@ async def test_get_list_and_cancel_task_methods():
         "token",
     )
 
-    assert cancel["result"]["status"]["state"] == TaskState.canceled.value
+    assert cancel["result"]["status"]["state"] == TaskState.CANCELED.value
     assert get_task["result"]["id"] == "task-1"
     assert [task["id"] for task in listed["result"]] == ["task-1"]

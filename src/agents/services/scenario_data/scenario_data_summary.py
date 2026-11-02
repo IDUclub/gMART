@@ -13,7 +13,6 @@ from typing import Any
 
 from loguru import logger
 
-from src.agents.llm_agents.stage import LlmStage
 from src.agents.services.scenario_data.scenario_data_columns import has_cyrillic
 from src.agents.services.scenario_data.scenario_data_indicators import (
     absent_notes,
@@ -130,16 +129,6 @@ def summary_messages(facts: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
-# The indicator comparison summary, a pydantic-ai text stage.
-_SUMMARY_STAGE = LlmStage(
-    "scenario.answer",
-    think=False,
-    # think=False is served as reasoning_effort="low" on gpt-oss, so the trace
-    # is generated inside this budget and a short summary needs room after it.
-    options={"temperature": 0, "num_predict": 1024},
-)
-
-
 async def summarize_comparison(
     llm_client,
     model: str,
@@ -153,7 +142,16 @@ async def summarize_comparison(
     """Return the model summary, or ``fallback`` if it cannot be trusted."""
     facts = comparison_facts(rows, column_labels, counts, missing)
     try:
-        result = await _SUMMARY_STAGE.run(llm_client, model, summary_messages(facts))
+        response = await llm_client.chat(
+            request_kind="scenario.answer",
+            model=model,
+            messages=summary_messages(facts),
+            think=False,
+            stream=False,
+            # think=False is served as reasoning_effort="low" on gpt-oss, so the trace
+            # is generated inside this budget and a short summary needs room after it.
+            options={"temperature": 0, "num_predict": 1024},
+        )
     except Exception as exc:
         # The computed summary is always correct; the model only rephrases it.
         logger.warning(
@@ -162,8 +160,8 @@ async def summarize_comparison(
             exc,
         )
         return fallback
-    text = (result.text or "").strip()
-    if result.done_reason == "length":
+    text = (response["message"]["content"] or "").strip()
+    if response.get("done_reason") == "length":
         reason = "the model output was truncated"
     elif not has_cyrillic(text):
         reason = "the model returned no text"

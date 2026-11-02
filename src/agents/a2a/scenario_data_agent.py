@@ -2,24 +2,27 @@ from __future__ import annotations
 
 from typing import Any
 
+from python_a2a.models.agent import AgentCard, AgentSkill
+from python_a2a.server.a2a_server import A2AServer
+
 from src.agents.__version__ import APP_VERSION
 from src.agents.a2a.a2a_format import (
     scenario_context_extension,
     synapse_compatible_agent_card,
 )
-from src.agents.a2a.a2a_types import AgentCard, AgentSkill, card_to_dict
 
 
-class ScenarioDataA2AAgent:
+class ScenarioDataA2AAgent(A2AServer):
     """A2A agent card for read-only Urban API data questions."""
 
     def __init__(self) -> None:
-        self.agent_card = self._build_agent_card("")
+        super().__init__(
+            agent_card=self._build_agent_card(""),
+            google_a2a_compatible=True,
+        )
 
     def get_agent_card(self, base_url: str) -> dict[str, Any]:
-        return synapse_compatible_agent_card(
-            card_to_dict(self._build_agent_card(base_url))
-        )
+        return synapse_compatible_agent_card(self._build_agent_card(base_url).to_dict())
 
     @staticmethod
     def _build_agent_card(base_url: str) -> AgentCard:
@@ -50,6 +53,8 @@ class ScenarioDataA2AAgent:
                 "streaming": True,
                 "pushNotifications": False,
                 "stateTransitionHistory": True,
+                "google_a2a_compatible": True,
+                "parts_array_format": True,
                 "extensions": [scenario_context_extension(required=False)],
             },
             default_input_modes=["text/plain", "application/json"],

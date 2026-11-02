@@ -27,7 +27,6 @@ DECFILE
 
 # Logs
 *.log
-*.log.lock
 
 # mongo
 /mongo

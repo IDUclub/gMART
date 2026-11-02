@@ -6,8 +6,8 @@ from collections.abc import Callable
 from typing import Any
 
 from loguru import logger
+from pydantic import ValidationError
 
-from src.agents.llm_agents.stage import LlmStage, StageOutputError
 from src.agents.mcp_clients.urban_mcp_client import (
     URBAN_MCP_GROUP_DESCRIPTIONS,
     URBAN_MCP_GROUPS,
@@ -860,19 +860,12 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
         post_validate: Callable[[Any], Any] | None = None,
         stop_after_first_error: bool = False,
     ):
-        def parse(raw: str):
-            payload = json.loads(strip_json_fence(raw))
-            if schema is ExecutionPlanRevision:
-                payload = self._normalize_execution_plan_payload(payload)
-            parsed = schema.model_validate(payload)
-            return post_validate(parsed) if post_validate else parsed
-
-        # One pydantic-ai run per attempt: budget, schema and reasoning effort
-        # change between attempts.
-        stage = LlmStage("scenario.plan", parser=parse, think=False, schema=None)
         error = ""
         for attempt in range(MAX_PLANNER_RETRIES + 1):
             call: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "think": False,
                 "options": {
                     "temperature": 0,
                     "num_predict": (
@@ -882,35 +875,37 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                     ),
                 },
             }
-            attempt_messages = messages
             if attempt:
                 call["reasoning_effort"] = PLANNER_RETRY_REASONING_EFFORT
-                attempt_messages = messages + [
+                call["messages"] = messages + [
                     {
                         "role": "user",
                         "content": f"Исправь JSON: {error}. Верни только JSON.",
                     }
                 ]
             if attempt < MAX_PLANNER_RETRIES:
-                call["schema"] = schema.model_json_schema()
-            try:
-                result = await stage.run(
-                    self.llm_client, model, attempt_messages, **call
+                call["format"] = schema.model_json_schema()
+            response = await self.llm_client.chat(request_kind="scenario.plan", **call)
+            raw = (response.get("message") or {}).get("content") or ""
+            if (
+                schema is ExecutionPlanRevision
+                and not raw.strip()
+                and response.get("done_reason") == "length"
+            ):
+                error = "empty execution plan after reasoning exhausted max_tokens"
+                logger.warning(
+                    "Scenario-data execution planner exhausted max_tokens; "
+                    "using deterministic fallback without redundant retries"
                 )
-                return result.output
-            except StageOutputError as exc:
-                if (
-                    schema is ExecutionPlanRevision
-                    and not exc.text.strip()
-                    and exc.done_reason == "length"
-                ):
-                    error = "empty execution plan after reasoning exhausted max_tokens"
-                    logger.warning(
-                        "Scenario-data execution planner exhausted max_tokens; "
-                        "using deterministic fallback without redundant retries"
-                    )
-                    break
-                error = str(exc.error or exc)
+                break
+            try:
+                payload = json.loads(strip_json_fence(raw))
+                if schema is ExecutionPlanRevision:
+                    payload = self._normalize_execution_plan_payload(payload)
+                parsed = schema.model_validate(payload)
+                return post_validate(parsed) if post_validate else parsed
+            except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+                error = str(exc)
                 logger.warning(
                     f"Invalid scenario-data {label}, attempt {attempt + 1}: {error}"
                 )
@@ -1083,15 +1078,6 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
             *(history or []),
             {"role": "user", "content": user_query},
         ]
-
-        def parse(raw: str) -> ScenarioDataAction:
-            payload = json.loads(strip_json_fence(raw))
-            payload = self._repair_ambiguous_action(payload, shortlist)
-            action = ScenarioDataAction.model_validate(payload)
-            return self._canonicalize(action, shortlist)
-
-        # One pydantic-ai run per attempt: each retry escalates effort and budget.
-        action_stage = LlmStage("scenario.plan", parser=parse, think=False, schema=None)
         error = ""
         for attempt in range(MAX_PLANNER_RETRIES + 1):
             if error:
@@ -1117,12 +1103,15 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
             # over the configured default because _apply_think uses setdefault.
             budget = PLANNER_NUM_PREDICT if attempt == 0 else PLANNER_NUM_PREDICT_RETRY
             call: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "think": False,
                 "options": {"temperature": 0, "num_predict": budget},
             }
             if attempt > 0:
                 call["reasoning_effort"] = PLANNER_RETRY_REASONING_EFFORT
             if attempt < MAX_PLANNER_RETRIES:
-                call["schema"] = ScenarioDataAction.model_json_schema()
+                call["format"] = ScenarioDataAction.model_json_schema()
             else:
                 # Last chance: no structured-output constraint at all, JSON asked for in
                 # words. A model that returns nothing under the schema usually answers here.
@@ -1135,22 +1124,14 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                         ),
                     }
                 ]
-            try:
-                result = await action_stage.run(
-                    self.llm_client, model, messages, **call
-                )
-                return result.output
-            except StageOutputError as exc:
-                if exc.text.strip():
-                    error = str(exc.error or exc)
-                    logger.warning(
-                        f"Invalid scenario-data action, attempt {attempt + 1}: {error}"
-                    )
-                    continue
+                call["messages"] = messages
+            response = await self.llm_client.chat(request_kind="scenario.plan", **call)
+            raw = response["message"]["content"]
+            if not (raw or "").strip():
                 # Name the real cause. "Empty answer" on its own sent a reader looking for a
                 # vague prompt, when the model had in fact reasoned to a conclusion and
                 # simply never emitted it.
-                trace = (exc.thinking or "").strip()
+                trace = (response["message"].get("thinking") or "").strip()
                 error = (
                     "модель не выдала финальный ответ"
                     + (
@@ -1162,9 +1143,20 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                 )
                 logger.warning(
                     f"Empty scenario-data action, attempt {attempt + 1} "
-                    f"(num_predict={budget}, format={'schema' in call}, "
+                    f"(num_predict={budget}, format={'format' in call}, "
                     f"reasoning_effort={call.get('reasoning_effort', 'configured')}, "
                     f"reasoning_trace_len={len(trace)})"
+                )
+                continue
+            try:
+                payload = json.loads(strip_json_fence(raw))
+                payload = self._repair_ambiguous_action(payload, shortlist)
+                action = ScenarioDataAction.model_validate(payload)
+                return self._canonicalize(action, shortlist)
+            except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+                error = str(exc)
+                logger.warning(
+                    f"Invalid scenario-data action, attempt {attempt + 1}: {error}"
                 )
         raise ValueError(f"invalid scenario-data action after retries: {error}")
 

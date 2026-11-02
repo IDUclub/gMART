@@ -8,7 +8,6 @@
 
 ## Documentation
 
-- [Agent frameworks: Google ADK and pydantic-ai](docs/agent-frameworks.md)
 - [Frontend integration guide](docs/frontend-service.md)
 - [Document QA, citations and document figures](docs/frontend-document-qa.md)
 - [Synapse frontend integration](docs/integrations/synapse-front.md)

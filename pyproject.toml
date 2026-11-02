@@ -18,6 +18,7 @@ dependencies = [
     "pandas>=3.0.5",
     "pymorphy3>=2.0.6,<3",
     "pyarrow>=23.0.0",
+    "python-a2a>=0.5.10",
     "redis>=8.1.0",
     "uvicorn>=0.52.4",
     "pydantic>=2.13.4",
@@ -27,8 +28,6 @@ dependencies = [
     "anyio>=4.14.2",
     "idu-service-auth @ https://github.com/IDUclub/idu-service-auth/archive/1b8a418d9b1ab702860eb7289a3b75244666a8d8.tar.gz",
     "py7zr>=1.0.0",
-    "google-adk[a2a]>=2.13.0,<3.0.0",
-    "pydantic-ai-slim[openai,mcp]>=2.64.0,<3.0.0",
 ]
 
 [dependency-groups]

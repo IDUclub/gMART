@@ -18,8 +18,7 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     ToolCallPayload,
 )
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
-from src.agents.llm_agents.stage import LlmStage
-from src.agents.model_clients.llm_base import LlmResponseError
+from src.agents.model_clients.llm_base import LlmChatResponse, LlmResponseError
 from src.agents.services.base_llm_service import BaseLlmService
 from src.agents.services.dvd.answer_generation import StreamingTableRewriter
 from src.agents.services.normgraph.normgraph_context import NormGraphContextBuilder
@@ -49,10 +48,6 @@ _CONFLICT_CHECK_TOP_N = 5
 _CONFLICTS_HEADER = "Обнаруженные противоречия:"
 # A grounded draft needs low variance; the request default suits free chat, not norms.
 _ANSWER_TEMPERATURE = 0.2
-
-
-# The norms agent's answer draft, streamed as a pydantic-ai text stage.
-_NORMS_ANSWER_STAGE = LlmStage("norms.answer", think=False)
 
 
 class NormGraphRagService(BaseLlmService):
@@ -660,13 +655,24 @@ class NormGraphRagService(BaseLlmService):
         # gpt-oss writes tables for overviews despite the rule; rows are released as a
         # list once the table ends, the rest of the draft streams unchanged.
         rewriter = StreamingTableRewriter()
-        async for delta in _NORMS_ANSWER_STAGE.stream(
-            self.llm_client, model, messages, options={"temperature": temperature}
+        async for part in await self.llm_client.chat(
+            model,
+            messages,
+            request_kind="norms.answer",
+            think=False,
+            options={"temperature": temperature},
+            stream=True,
         ):
-            response_buffer.append(delta)
+            part: LlmChatResponse
+            if part.message.content:
+                response_buffer.append(part.message.content)
             # ``done`` is forced False here; finality is decided by the loop after the
             # critic accepts a draft (a single done=True chunk is emitted at the end).
-            yield self._chunk(rewriter.feed(delta), done=False, iteration=iteration)
+            yield self._chunk(
+                rewriter.feed(part.message.content or ""),
+                done=False,
+                iteration=iteration,
+            )
         if tail := rewriter.flush():
             yield self._chunk(tail, done=False, iteration=iteration)
         logger.debug(
