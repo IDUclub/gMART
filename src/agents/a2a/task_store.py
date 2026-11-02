@@ -1,24 +1,47 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass, field
 from typing import Any
 
-from python_a2a.models.task import Task, TaskState, TaskStatus
-
 from src.agents.a2a.a2a_format import utc_now_rfc3339
-
-_WAITING_STATE = TaskState.WAITING.value
+from src.agents.a2a.a2a_types import TaskState
 
 A2ATaskData = dict[str, Any]
 A2AArtifactData = dict[str, Any]
 A2AMessageData = dict[str, Any]
 
 
+@dataclass
+class _TaskStatus:
+    state: TaskState
+    timestamp: str
+    message: A2AMessageData | None = None
+
+    def to_dict(self) -> A2ATaskData:
+        result: A2ATaskData = {"state": TaskState(self.state).value}
+        result["timestamp"] = self.timestamp
+        if self.message:
+            result["message"] = self.message
+        return result
+
+
+@dataclass
+class _Task:
+    id: str
+    context_id: str
+    status: _TaskStatus
+    message: A2AMessageData | None = None
+    history: list[A2AMessageData] = field(default_factory=list)
+    artifacts: list[A2AArtifactData] = field(default_factory=list)
+    metadata: A2ATaskData = field(default_factory=dict)
+
+
 class A2ATaskStore:
     """
     In-memory storage for A2A tasks.
     Attributes:
-        _tasks (dict[str, Task]): Internal mapping from task id to python-a2a Task.
+        _tasks (dict[str, _Task]): Internal mapping from task id to the task record.
     """
 
     def __init__(self) -> None:
@@ -26,7 +49,7 @@ class A2ATaskStore:
         A2ATaskStore initialization function.
         """
 
-        self._tasks: dict[str, Task] = {}
+        self._tasks: dict[str, _Task] = {}
 
     def create_task(
         self,
@@ -46,10 +69,10 @@ class A2ATaskStore:
             A2ATaskData: Serialized task.
         """
 
-        task = Task(
+        task = _Task(
             id=task_id,
-            session_id=context_id,
-            status=TaskStatus(state=TaskState.SUBMITTED, timestamp=utc_now_rfc3339()),
+            context_id=context_id,
+            status=_TaskStatus(state=TaskState.submitted, timestamp=utc_now_rfc3339()),
             message=copy.deepcopy(user_message),
             history=[copy.deepcopy(user_message)],
             artifacts=[],
@@ -104,17 +127,14 @@ class A2ATaskStore:
         """
 
         task = self._tasks[task_id]
-        task.status = TaskStatus(
+        task.status = _TaskStatus(
             state=state,
             message=copy.deepcopy(message),
             timestamp=utc_now_rfc3339(),
         )
         if message is not None:
             task.history.append(copy.deepcopy(message))
-        status_dict = task.status.to_dict()
-        if status_dict.get("state") == _WAITING_STATE:
-            status_dict["state"] = "working"
-        return status_dict
+        return task.status.to_dict()
 
     def add_or_append_artifact(
         self,
@@ -148,21 +168,28 @@ class A2ATaskStore:
         return copy.deepcopy(artifact)
 
     @staticmethod
-    def _to_dict(task: Task) -> A2ATaskData:
+    def _to_dict(task: _Task) -> A2ATaskData:
         """
-        Function serializes python-a2a task to A2A v0.3.0 format.
+        Function serializes a task to A2A v0.3.0 format.
         Args:
-            task (Task): A2A task instance.
+            task (_Task): Stored task.
         Returns:
-            A2ATaskData: Serialized task.
+            A2ATaskData: Serialized task (empty collections are left out).
         """
 
-        result = copy.deepcopy(task.to_dict())
+        result: A2ATaskData = {
+            "id": task.id,
+            "contextId": task.context_id,
+            "status": task.status.to_dict(),
+        }
+        if task.message:
+            result["message"] = task.message
+        if task.history:
+            result["history"] = task.history
+        if task.artifacts:
+            result["artifacts"] = task.artifacts
+        if task.metadata:
+            result["metadata"] = task.metadata
+        result = copy.deepcopy(result)
         result["kind"] = "task"
-        # python_a2a uses legacy "sessionId"; A2A v0.3.0 spec requires "contextId"
-        if "sessionId" in result:
-            result["contextId"] = result.pop("sessionId")
-        # python_a2a uses "waiting"; A2A v0.3.0 spec uses "working"
-        if result.get("status", {}).get("state") == _WAITING_STATE:
-            result["status"]["state"] = "working"
         return result
