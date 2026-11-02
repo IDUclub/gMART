@@ -29,6 +29,11 @@ _REGULATION_SUBJECT = re.compile(
 _OVERVIEW = re.compile(r"(?:\bкак\w+\b|перечень|перечисл|список|\bвсе\b)", re.I)
 
 
+# Section markers of the planner prompt, shared with the tool instruction.
+_JSON_FORMAT_MARKER = "Верни только валидный JSON без markdown и пояснений:"
+_STEP_RULES_MARKER = "Правила составления шагов:"
+
+
 class OrchestratorPlanBuilder:
     """
     LLM planner that maps a user request onto a sequential plan of agent steps.
@@ -61,6 +66,25 @@ class OrchestratorPlanBuilder:
             pzz_inputs=pzz_inputs,
             compliance_uploads=compliance_uploads,
         )
+        plan = self.refine_plan(plan, agents, user_query)
+        logger.info(
+            f"Built orchestration plan: {plan.model_dump_json(ensure_ascii=False)}"
+        )
+        return plan
+
+    def refine_plan(
+        self,
+        plan: OrchestratorPlan,
+        agents: list[AgentCatalogEntry],
+        user_query: str,
+    ) -> OrchestratorPlan:
+        """Deterministic corrections of a model-made plan, whoever made it.
+
+        Applied to the JSON planner's plan and to the ADK orchestrator's first
+        tool calls alike: document comparisons go to documents, a regulation
+        overview gets both sources, unavailable agents or too many steps turn
+        the plan into a clarification.
+        """
         if is_document_comparison_question(user_query) and any(
             entry.key == OrchestratorAgent.DOCUMENTS for entry in agents
         ):
@@ -92,9 +116,6 @@ class OrchestratorPlanBuilder:
             plan = plan.model_copy(
                 update={"clarification_question": self._clarification_text(agents)}
             )
-        logger.info(
-            f"Built orchestration plan: {plan.model_dump_json(ensure_ascii=False)}"
-        )
         return plan
 
     def _canonicalize_plan(
@@ -366,6 +387,37 @@ completed_dialogue_context — сообщения завершённого ди�
 расстояние заменяет старое; смена карты на таблицу заменяет формат; вопрос об эффекте
 проекта меняет режим текущей обеспеченности на эффекты. Передай именно новое условие
 в task. Не выполняй одновременно старую и новую версии задачи."""
+
+    @classmethod
+    def build_tool_instruction(
+        cls,
+        agents: list[AgentCatalogEntry],
+        scenario_id: int | None = None,
+        pzz_inputs: PzzInputs | dict | None = None,
+        compliance_uploads: int = 0,
+    ) -> str:
+        """The routing rules for the ADK orchestrator, which acts through tools.
+
+        The same catalogue, context and rules as the JSON planner, with the
+        answer format replaced: a plan step is a call of the agent's tool, a
+        clarification a call of ``ask_clarification``.
+        """
+        prompt = cls._build_prompt(agents, scenario_id, pzz_inputs, compliance_uploads)
+        head, rest = prompt.split(_JSON_FORMAT_MARKER, 1)
+        _, rules = rest.split(_STEP_RULES_MARKER, 1)
+        tools_block = f"""Как действовать:
+- Каждый шаг плана — вызов инструмента агента run_<ключ агента> с аргументом task. \
+Инструмент выполняет агента и возвращает статус шага и краткую выжимку результата.
+- Шаги, которые не зависят друг от друга, вызывай в одном ответе. Шаг, которому \
+нужен результат другого, вызывай после того, как получишь этот результат.
+- Не более {MAX_PLAN_STEPS} вызовов агентов на запрос.
+- Режим needs_clarification — это вызов инструмента ask_clarification с вопросом \
+пользователю (clarification_question). Агентов в этом случае не вызывай.
+- Когда все нужные шаги выполнены, ответь одним словом: ГОТОВО. Не пересказывай \
+результаты: пользователь уже видит ответы агентов.
+
+"""
+        return head + tools_block + _STEP_RULES_MARKER + rules
 
     @staticmethod
     def _clarification_text(agents: list[AgentCatalogEntry]) -> str:

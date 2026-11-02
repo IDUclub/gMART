@@ -51,6 +51,10 @@ class LlmMessage(_SubscriptableModel):
     role: str = "assistant"
     content: str = ""
     thinking: str | None = None
+    # Function calls the model asked for, in the OpenAI wire form
+    # ``{"id", "type": "function", "function": {"name", "arguments": <json str>}}``;
+    # only present when the request offered ``tools``.
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class LlmChatResponse(_SubscriptableModel):
