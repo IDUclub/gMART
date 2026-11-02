@@ -89,6 +89,9 @@ def answer(text: str) -> list[dict]:
 @pytest.fixture
 def make_orchestrator(monkeypatch, fake_urban, state_store):
     monkeypatch.setenv("ORCHESTRATOR_ENGINE", "adk")
+    monkeypatch.setattr(
+        "src.agents.services.orchestrator.orchestrator_adk._tools_unsupported", False
+    )
 
     def build(llm):
         monkeypatch.setattr(
@@ -358,6 +361,33 @@ async def test_server_without_tool_calling_falls_back_to_the_planner(
     )
     assert provision.calls
     assert any(c.get("request_kind") == "orchestrator.plan" for c in llm.calls)
+
+    # The next request goes to the planner without a failing tool call first.
+    llm.plans.append(plan)
+    calls_before = len(llm.tool_calls)
+    await run_pipeline(svc)
+    assert len(llm.tool_calls) == calls_before
+
+
+async def test_transient_failure_does_not_disable_the_agent(make_orchestrator):
+    from src.agents.services.orchestrator import orchestrator_adk
+
+    plan = json.dumps(
+        {
+            "mode": "execute",
+            "steps": [{"agent": "provision", "task": "Обеспеченность"}],
+            "clarification_question": None,
+        },
+        ensure_ascii=False,
+    )
+    llm = ToolScriptedLlm(LlmResponseError("timeout", 503), plans=[plan])
+    svc = make_orchestrator(llm)
+    svc.provision_service.run_provision_pipeline = FakePipeline(answer("82%"))
+
+    events = await run_pipeline(svc)
+
+    assert events_of_type(events, "plan")
+    assert orchestrator_adk.adk_available()
 
 
 async def test_model_failure_after_steps_keeps_their_results(make_orchestrator):
