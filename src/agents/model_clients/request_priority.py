@@ -28,6 +28,7 @@ DEFAULT_PRIORITIES = {
     "scenario.answer": -100,
     "scenario.judge": -100,
     "orchestrator.plan": -100,
+    "orchestrator.route": -100,
     "simple_llm": -100,
     "chat_title": -60,
     "context_summary": 20,

@@ -30,10 +30,10 @@ from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.layer_attributes import compact_layer_event
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 from src.agents.services.orchestrator.orchestrator_adk import (
-    ENGINE_ADK,
     AdkOrchestration,
     AdkUnavailableError,
-    orchestrator_engine,
+    adk_available,
+    mark_tools_unsupported,
 )
 from src.agents.services.orchestrator.orchestrator_catalog import (
     AGENT_CATALOG,
@@ -332,7 +332,7 @@ class OrchestratorService(BaseLlmService):
 
         # ── Autonomous execution (Google ADK) ──────────────────────────
         handled = False
-        if routed is None and orchestrator_engine() == ENGINE_ADK:
+        if routed is None and adk_available():
             orchestration = AdkOrchestration(
                 self,
                 model=model,
@@ -349,6 +349,7 @@ class OrchestratorService(BaseLlmService):
                     yield await self._buf(request_id, event)
                 handled = True
             except AdkUnavailableError as exc:
+                mark_tools_unsupported(exc)
                 logger.warning(
                     f"Orchestrator: ADK agent unavailable ({exc}); "
                     "planning with the JSON planner"

@@ -110,6 +110,36 @@ class AdkUnavailableError(Exception):
     server started without tool-call support keeps working.
     """
 
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+    @property
+    def tools_unsupported(self) -> bool:
+        """The server rejected the request itself, not a transient failure."""
+        return self.status_code in _UNSUPPORTED_STATUSES
+
+
+# Answers meaning "this server does not do tool calling" (vLLM without
+# --enable-auto-tool-choice answers 400). Remembered for the process, so the
+# requests that follow go to the planner without a failing call first.
+_UNSUPPORTED_STATUSES = {400, 422, 501}
+_tools_unsupported = False
+
+
+def adk_available() -> bool:
+    return orchestrator_engine() == ENGINE_ADK and not _tools_unsupported
+
+
+def mark_tools_unsupported(error: AdkUnavailableError) -> None:
+    global _tools_unsupported
+    if error.tools_unsupported and not _tools_unsupported:
+        _tools_unsupported = True
+        logger.warning(
+            "The model server does not support tool calling; the orchestrator "
+            "uses the JSON planner until restart"
+        )
+
 
 # ---------------------------------------------------------------------- #
 # Ordered event bus
@@ -300,7 +330,7 @@ class AdkOrchestration:
             exc = failure[0]
             if not self.state.steps_started:
                 if isinstance(exc, LlmResponseError) and not yielded:
-                    raise AdkUnavailableError(str(exc)) from exc
+                    raise AdkUnavailableError(str(exc), exc.status_code) from exc
                 raise exc
             # The steps' results are already streamed; a model failure while
             # deciding what to do next must not throw them away.

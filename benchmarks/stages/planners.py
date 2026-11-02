@@ -13,6 +13,7 @@ from benchmarks.harness.stage import StageContext, stage
 from src.agents.dto.pzz_request_dto import PzzInputs
 from src.agents.services.dvd.dvd_reasoning import RetrievalPlanner
 from src.agents.services.normgraph.normgraph_reasoning import NormGraphRetrievalPlanner
+from src.agents.services.orchestrator.orchestrator_adk import AdkOrchestration
 from src.agents.services.orchestrator.orchestrator_catalog import AGENT_CATALOG
 from src.agents.services.orchestrator.orchestrator_plan_builder import (
     OrchestratorPlanBuilder,
@@ -56,6 +57,32 @@ async def orchestrator_plan(inp: dict[str, Any], ctx: StageContext) -> Any:
         pzz_inputs=inp.get("pzz_inputs"),
         compliance_uploads=int(inp.get("compliance_uploads") or 0),
     )
+
+
+@stage(
+    "orchestrator.route",
+    description="Автономный оркестратор (Google ADK): первый ход — вызовы агентов",
+    scope="AdkOrchestration: первый запрос ADK-агента с инструментами run_<агент> и "
+    "ask_clarification, до детерминированных поправок плана.",
+)
+async def orchestrator_route(inp: dict[str, Any], ctx: StageContext) -> Any:
+    host = SimpleNamespace(
+        llm_client=ctx.llm, plan_builder=OrchestratorPlanBuilder(ctx.llm)
+    )
+    orchestration = AdkOrchestration(
+        host,
+        model=ctx.model,
+        user_query=inp["user_query"],
+        history=list(inp.get("history") or []),
+        agents=_orchestrator_agents(inp),
+        step_kwargs={},
+        scenario_id=inp.get("scenario_id"),
+        pzz_inputs=inp.get("pzz_inputs"),
+        compliance_uploads=int(inp.get("compliance_uploads") or 0),
+    )
+    async for _ in orchestration.events():
+        pass
+    return orchestration.state.plan
 
 
 @stage(

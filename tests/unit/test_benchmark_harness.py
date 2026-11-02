@@ -114,6 +114,10 @@ async def test_real_stages_reach_their_model_call():
                 "services_catalog": ["Школа"],
             },
         ),
+        _case(
+            "orchestrator.route",
+            {"user_query": "Какая обеспеченность школами?", "scenario_id": 1},
+        ),
         _case("chat_title", {"user_query": "Школы в зоне шума"}),
         _case("compliance.scope", {"user_query": "Проверь нормы по школам"}),
     ]
