@@ -6,9 +6,9 @@ from typing import Any
 from uuid import uuid4
 
 from loguru import logger
-from python_a2a.models.task import TaskState
 
 from src.agents.a2a.a2a_format import sanitized_user_message
+from src.agents.a2a.a2a_types import TaskState
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
 from src.agents.common.exceptions.token_exceptions import PipelineSuspendedError
@@ -91,7 +91,7 @@ class ProvisionAgentExecutor:
 
         status = self.task_store.set_status(
             task_id,
-            TaskState.WAITING,
+            TaskState.working,
             self._agent_message(
                 context_id, task_id, "Starting the provision effects pipeline."
             ),
@@ -125,7 +125,7 @@ class ProvisionAgentExecutor:
 
             status = self.task_store.set_status(
                 task_id,
-                TaskState.COMPLETED,
+                TaskState.completed,
                 self._agent_message(
                     context_id, task_id, "Provision effects pipeline completed."
                 ),
@@ -143,7 +143,7 @@ class ProvisionAgentExecutor:
             )
             status = self.task_store.set_status(
                 task_id,
-                TaskState.FAILED,
+                TaskState.failed,
                 self._agent_message(
                     context_id,
                     task_id,
@@ -167,7 +167,7 @@ class ProvisionAgentExecutor:
         if item_type == "status":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.WAITING,
+                TaskState.working,
                 self._agent_message(context_id, task_id, content.get("text", "")),
             )
             return self._status_update(task_id, context_id, status, final=False)
@@ -196,7 +196,7 @@ class ProvisionAgentExecutor:
         if item_type == "error":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.FAILED,
+                TaskState.failed,
                 self._agent_message(
                     context_id,
                     task_id,
@@ -208,7 +208,7 @@ class ProvisionAgentExecutor:
         if item_type == "token_expired":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.WAITING,
+                TaskState.working,
                 self._agent_message(
                     context_id,
                     task_id,
@@ -220,7 +220,7 @@ class ProvisionAgentExecutor:
         if item_type == "pipeline_suspended":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.FAILED,
+                TaskState.failed,
                 self._agent_message(
                     context_id,
                     task_id,

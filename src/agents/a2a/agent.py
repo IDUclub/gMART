@@ -2,21 +2,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from python_a2a.models.agent import AgentCard, AgentSkill
-from python_a2a.server.a2a_server import A2AServer
-
 from src.agents.__version__ import APP_DESCRIPTION, APP_VERSION
 from src.agents.a2a.a2a_format import (
     scenario_context_extension,
     synapse_compatible_agent_card,
 )
+from src.agents.a2a.a2a_types import AgentCard, AgentSkill, card_to_dict
 
 
-class RestrictionA2AAgent(A2AServer):
+class RestrictionA2AAgent:
     """
     A2A entity for restriction creation agent.
     Attributes:
-        agent_card (AgentCard): python-a2a agent card used for discovery.
+        agent_card (AgentCard): a2a-sdk agent card used for discovery.
     """
 
     def __init__(self) -> None:
@@ -24,10 +22,7 @@ class RestrictionA2AAgent(A2AServer):
         RestrictionA2AAgent initialization function.
         """
 
-        super().__init__(
-            agent_card=self._build_agent_card(""),
-            google_a2a_compatible=True,
-        )
+        self.agent_card = self._build_agent_card("")
 
     def get_agent_card(self, base_url: str) -> dict[str, Any]:
         """
@@ -38,12 +33,14 @@ class RestrictionA2AAgent(A2AServer):
             dict[str, Any]: A2A agent card representation.
         """
 
-        return synapse_compatible_agent_card(self._build_agent_card(base_url).to_dict())
+        return synapse_compatible_agent_card(
+            card_to_dict(self._build_agent_card(base_url))
+        )
 
     @staticmethod
     def _build_agent_card(base_url: str) -> AgentCard:
         """
-        Function creates python-a2a AgentCard instance.
+        Function creates the a2a-sdk AgentCard instance.
         Args:
             base_url (str): Public server base url.
         Returns:
@@ -62,8 +59,6 @@ class RestrictionA2AAgent(A2AServer):
                 "streaming": True,
                 "pushNotifications": False,
                 "stateTransitionHistory": True,
-                "google_a2a_compatible": True,
-                "parts_array_format": True,
                 "extensions": [scenario_context_extension()],
             },
             default_input_modes=["text/plain", "application/json"],

@@ -4,13 +4,12 @@ from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
 
-from python_a2a.models.task import TaskState
-
 from src.agents.a2a.a2a_format import (
     apply_history_length,
     normalize_response,
     utc_now_rfc3339,
 )
+from src.agents.a2a.a2a_types import TaskState
 from src.agents.a2a.project_agent import ProjectA2AAgent
 from src.agents.a2a.project_executor import ProjectAgentExecutor
 from src.agents.a2a.task_store import A2ATaskStore
@@ -166,11 +165,11 @@ class ProjectA2AService:
         if task is None:
             raise A2ATaskNotFoundError(task_id)
         if task["status"]["state"] not in {
-            TaskState.COMPLETED.value,
-            TaskState.FAILED.value,
-            TaskState.CANCELED.value,
+            TaskState.completed.value,
+            TaskState.failed.value,
+            TaskState.canceled.value,
         }:
-            self.task_store.set_status(task_id, TaskState.CANCELED)
+            self.task_store.set_status(task_id, TaskState.canceled)
         return self.task_store.get_task(task_id) or task
 
     @staticmethod
@@ -212,7 +211,7 @@ class ProjectA2AService:
             "taskId": task_id,
             "contextId": context_id,
             "status": {
-                "state": TaskState.FAILED.value,
+                "state": TaskState.failed.value,
                 "timestamp": utc_now_rfc3339(),
                 "message": {
                     "kind": "message",

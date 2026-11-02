@@ -4,9 +4,8 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from python_a2a.models.task import TaskState
-
 from src.agents.a2a.a2a_format import sanitized_user_message
+from src.agents.a2a.a2a_types import TaskState
 from src.agents.a2a.task_store import A2ATaskStore
 from src.agents.common.exceptions.a2a_exceptions import A2AInvalidParamsError
 from src.agents.dto.pzz_request_dto import PzzInputs
@@ -82,7 +81,7 @@ class PzzAgentExecutor:
 
         status = self.task_store.set_status(
             task_id,
-            TaskState.WAITING,
+            TaskState.working,
             self._agent_message(context_id, task_id, "Запуск агента по ПЗЗ."),
         )
         yield self._status_update(task_id, context_id, status, final=False)
@@ -119,7 +118,7 @@ class PzzAgentExecutor:
 
             status = self.task_store.set_status(
                 task_id,
-                TaskState.COMPLETED,
+                TaskState.completed,
                 self._agent_message(context_id, task_id, "Ответ сформирован."),
             )
             yield self._status_update(task_id, context_id, status, final=True)
@@ -127,7 +126,7 @@ class PzzAgentExecutor:
         except Exception as exc:
             status = self.task_store.set_status(
                 task_id,
-                TaskState.FAILED,
+                TaskState.failed,
                 self._agent_message(
                     context_id,
                     task_id,
@@ -145,7 +144,7 @@ class PzzAgentExecutor:
         if item_type == "status":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.WAITING,
+                TaskState.working,
                 self._agent_message(context_id, task_id, content.get("text", "")),
             )
             return self._status_update(task_id, context_id, status, final=False)
@@ -162,7 +161,7 @@ class PzzAgentExecutor:
         if item_type == "error":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.FAILED,
+                TaskState.failed,
                 self._agent_message(
                     context_id, task_id, content.get("message", "Ошибка агента")
                 ),
@@ -172,7 +171,7 @@ class PzzAgentExecutor:
         if item_type == "warning":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.WAITING,
+                TaskState.working,
                 self._agent_message(context_id, task_id, content.get("message", "")),
             )
             return self._status_update(task_id, context_id, status, final=False)
@@ -180,7 +179,7 @@ class PzzAgentExecutor:
         if item_type == "clarification":
             status = self.task_store.set_status(
                 task_id,
-                TaskState.INPUT_REQUIRED,
+                TaskState.input_required,
                 {
                     **self._agent_message(
                         context_id,
