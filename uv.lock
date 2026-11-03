@@ -1655,6 +1655,7 @@ name = "gmart"
 version = "0.35.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "a2a-sdk" },
     { name = "aiohttp" },
     { name = "anyio" },
     { name = "dotenv" },
@@ -1700,6 +1701,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "a2a-sdk", specifier = ">=1.0,<2" },
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "anyio", specifier = ">=4.14.2" },
     { name = "dotenv", specifier = ">=0.9.9" },
