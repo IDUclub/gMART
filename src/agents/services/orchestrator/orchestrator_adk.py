@@ -14,13 +14,17 @@ The SSE contract of ``/orchestrator`` does not change:
   announced as the ``plan`` event;
 * every tool call is one step with ``step_started`` / ``step_event`` /
   ``step_finished``, run by the same code as a planned step;
-* steps of the first plan run in order, each receiving the previous digests, and
-  only a plan made solely of norms/documents runs concurrently — exactly as
-  before. Concurrent steps still stream one after another, in step order;
-* a suspended step or one that needs the user's answer ends the run; a failed
-  step does not, as with the planner.
+* the steps of one turn run in order, each receiving the previous digests;
+  only a turn made solely of norms/documents runs concurrently, its steps seeing
+  the digests that existed before it — exactly as the planner did. Concurrent
+  steps still stream one after another, in step order;
+* a suspended step or one that needs the user's answer ends the run: later
+  steps are skipped, concurrent ones cancelled. A failed step does not, as with
+  the planner.
 
-Steps the agent adds after seeing results simply continue the numbering.
+Steps the agent adds after seeing results simply continue the numbering. Every
+call gets an id of the orchestrator's own: servers that send none (Ollama) or
+repeat them would otherwise mix up the steps.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from bisect import insort
 from collections.abc import AsyncGenerator
@@ -116,14 +121,31 @@ class AdkUnavailableError(Exception):
 
     @property
     def tools_unsupported(self) -> bool:
-        """The server rejected the request itself, not a transient failure."""
-        return self.status_code in _UNSUPPORTED_STATUSES
+        """The server cannot call tools at all, not just this one request.
+
+        A 400 is also what a too long context or a malformed request gets, so a
+        400/422 counts only when the server says it is about tools.
+        """
+        if self.status_code == 501:
+            return True
+        return self.status_code in _REJECTED_STATUSES and bool(
+            _TOOLS_UNSUPPORTED.search(str(self))
+        )
 
 
-# Answers meaning "this server does not do tool calling" (vLLM without
-# --enable-auto-tool-choice answers 400). Remembered for the process, so the
-# requests that follow go to the planner without a failing call first.
-_UNSUPPORTED_STATUSES = {400, 422, 501}
+# Answers meaning "this server does not do tool calling" — vLLM without
+# --enable-auto-tool-choice: '"auto" tool choice requires
+# --enable-auto-tool-choice and --tool-call-parser to be set' (400); Ollama: 'model
+# does not support tools' (400). Remembered for the process, so the requests that
+# follow go to the planner without a failing call first.
+_REJECTED_STATUSES = {400, 422}
+_TOOLS_UNSUPPORTED = re.compile(
+    r"tool[ _-]?choice"
+    r"|tool[ _-]?call[ _-]?parser"
+    r"|support(?:s|ed)?\s+(?:for\s+)?(?:tools|tool[ _-]?call|function[ _-]?call)"
+    r"|(?:tools?|(?:tool|function)[ _-]?call(?:ing|s)?)\s+(?:are|is)\s+not\s+supported",
+    re.IGNORECASE,
+)
 _tools_unsupported = False
 
 
@@ -160,23 +182,42 @@ class OrderedStepBus:
         self._pending: list[int] = []  # registered steps not yet fully streamed
         self._buffers: dict[int, list[dict[str, Any]]] = {}
         self._finished: set[int] = set()
+        self._discarded: set[int] = set()
 
     def put(self, event: dict[str, Any]) -> None:
         self.queue.put_nowait(event)
 
     def open(self, step: int) -> None:
-        if step not in self._buffers:
+        if step not in self._buffers and step not in self._discarded:
             insort(self._pending, step)
             self._buffers[step] = []
 
     def emit(self, step: int, event: dict[str, Any]) -> None:
+        if step in self._discarded:
+            return
         if self._pending and self._pending[0] == step:
             self.queue.put_nowait(event)
         else:
             self._buffers[step].append(event)
 
+    def discard(self, step: int) -> None:
+        """Drop a step that will not be reported: its held events never go out."""
+
+        self._discarded.add(step)
+        self._buffers.pop(step, None)
+        if step in self._pending:
+            head = self._pending[0] == step
+            self._pending.remove(step)
+            if head:
+                self._advance()
+
     def close(self, step: int) -> None:
+        if step in self._discarded:
+            return
         self._finished.add(step)
+        self._advance()
+
+    def _advance(self) -> None:
         while self._pending:
             head = self._pending[0]
             for event in self._buffers.pop(head, []):
@@ -195,25 +236,55 @@ class OrderedStepBus:
 # One orchestration run
 # ---------------------------------------------------------------------- #
 @dataclass
+class StepSlot:
+    """Where one tool call stands among the steps.
+
+    ``wait_for``: the step that must finish first (steps of a turn run in order).
+    ``context``: for concurrent steps, how many digests existed when their turn
+    was planned — they all see exactly those, whichever finishes first.
+    """
+
+    number: int
+    wait_for: int | None = None
+    context: int | None = None
+
+
+@dataclass
 class AdkRunState:
-    summary_steps: list[tuple[int, dict[str, Any]]] = field(default_factory=list)
+    summaries: dict[int, dict[str, Any]] = field(default_factory=dict)
     digests: list[tuple[OrchestratorStep, str]] = field(default_factory=list)
-    table_parts: list[Any] = field(default_factory=list)
-    file_events: list[dict[str, Any]] = field(default_factory=list)
+    step_tables: dict[int, list[Any]] = field(default_factory=dict)
+    step_files: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
     clarification: str | None = None
     final_text: str = ""
     plan: OrchestratorPlan | None = None
     aborted: bool = False
-    call_numbers: dict[str, int] = field(default_factory=dict)
+    slots: dict[str, StepSlot] = field(default_factory=dict)
     finished: dict[int, asyncio.Event] = field(default_factory=dict)
-    sequential: bool = True
+    running: dict[int, asyncio.Task] = field(default_factory=dict)
+    # Steps after one that waits for the user: reported as skipped.
+    cancelled: set[int] = field(default_factory=set)
     next_number: int = 1
     steps_started: int = 0
 
     def ordered_summary(self) -> list[dict[str, Any]]:
+        return [self.summaries[number] for number in sorted(self.summaries)]
+
+    def _reported(self, per_step: dict[int, list[Any]]) -> list[Any]:
         return [
-            summary for _, summary in sorted(self.summary_steps, key=lambda s: s[0])
+            item
+            for number in sorted(per_step)
+            if number not in self.cancelled
+            for item in per_step[number]
         ]
+
+    @property
+    def table_parts(self) -> list[Any]:
+        return self._reported(self.step_tables)
+
+    @property
+    def file_events(self) -> list[dict[str, Any]]:
+        return self._reported(self.step_files)
 
 
 class AdkOrchestration:
@@ -362,30 +433,70 @@ class AdkOrchestration:
         ]
         if not calls:
             return None
-        known = {agent_tool_name(entry.key) for entry in self.agents} | {CLARIFY_TOOL}
-        if self.state.plan is not None:
-            # Later turns: drop calls of tools the agent does not have.
-            if all(call.name in known for call in calls):
-                return None
-            parts = [
-                part
-                for part in content.parts
-                if part.function_call is None or part.function_call.name in known
-            ]
+        if self.state.plan is None:
+            plan = self._first_plan(calls)
+            if plan.mode == OrchestratorPlanMode.EXECUTE:
+                parts = self._schedule([(step.agent, step.task) for step in plan.steps])
+                self.state.plan = plan
+                self.bus.put(self.service._plan_event(plan))
+            else:
+                parts = [_clarify_call(plan.clarification_question or "")]
             llm_response.content = types.Content(role="model", parts=parts)
             return llm_response
-        plan = self._first_plan(calls)
+        # Later turns: the calls of tools the agent has, numbered on.
+        texts = [part for part in content.parts if part.function_call is None]
+        requested: list[tuple[OrchestratorAgent, str]] = []
+        clarify: list[types.Part] = []
+        known = {entry.key for entry in self.agents}
+        for call in calls:
+            args = call.args or {}
+            if call.name == CLARIFY_TOOL:
+                clarify.append(_clarify_call(str(args.get("question") or "")))
+                continue
+            agent = _agent_of(call.name)
+            if agent in known:
+                requested.append((agent, str(args.get("task") or "")))
         llm_response.content = types.Content(
-            role="model", parts=self._plan_calls(plan, calls)
+            role="model", parts=texts + self._schedule(requested) + clarify
         )
-        if plan.mode == OrchestratorPlanMode.EXECUTE:
-            self.state.plan = plan
-            self.state.sequential = not (
-                len(plan.steps) > 1
-                and all(step.agent in _INDEPENDENT_AGENTS for step in plan.steps)
-            )
-            self.bus.put(self.service._plan_event(plan))
         return llm_response
+
+    def _schedule(
+        self, requested: list[tuple[OrchestratorAgent, str]]
+    ) -> list[types.Part]:
+        """Number one turn's agent calls and decide how they run.
+
+        They run one after another, each seeing the earlier digests, unless
+        every one of them is norms/documents: those start together and see the
+        digests from before the turn (none in the first plan), as the planner's
+        concurrent plan did. Every call gets an id of its own.
+        """
+
+        valid = [(agent, task) for agent, task in requested if task.strip()]
+        concurrent = len(valid) > 1 and all(
+            agent in _INDEPENDENT_AGENTS for agent, _ in valid
+        )
+        context = len(self.state.digests) if concurrent else None
+        previous: int | None = None
+        parts = []
+        for agent, task in requested:
+            call_id = _new_call_id()
+            if task.strip():
+                number = self.state.next_number
+                self.state.next_number += 1
+                self.state.slots[call_id] = StepSlot(
+                    number, None if concurrent else previous, context
+                )
+                self.state.finished[number] = asyncio.Event()
+                previous = number
+            parts.append(
+                types.Part(
+                    function_call=types.FunctionCall(
+                        id=call_id, name=agent_tool_name(agent), args={"task": task}
+                    )
+                )
+            )
+        return parts
 
     def _first_plan(self, calls: list[types.FunctionCall]) -> OrchestratorPlan:
         steps: list[OrchestratorStep] = []
@@ -411,41 +522,6 @@ class AdkOrchestration:
                 clarification_question=None if unknown else question,
             )
         return self.service.plan_builder.refine_plan(plan, self.agents, self.user_query)
-
-    def _plan_calls(
-        self, plan: OrchestratorPlan, calls: list[types.FunctionCall]
-    ) -> list[types.Part]:
-        """The first turn's calls, rewritten to the refined plan, numbered."""
-
-        if plan.mode != OrchestratorPlanMode.EXECUTE:
-            return [
-                types.Part(
-                    function_call=types.FunctionCall(
-                        id=f"call_{uuid.uuid4().hex[:12]}",
-                        name=CLARIFY_TOOL,
-                        args={"question": plan.clarification_question or ""},
-                    )
-                )
-            ]
-        ids = [call.id for call in calls if _agent_of(call.name) is not None]
-        parts = []
-        for number, step in enumerate(plan.steps, start=1):
-            call_id = (ids[number - 1] if number <= len(ids) else None) or (
-                f"call_{uuid.uuid4().hex[:12]}"
-            )
-            self.state.call_numbers[call_id] = number
-            self.state.finished[number] = asyncio.Event()
-            parts.append(
-                types.Part(
-                    function_call=types.FunctionCall(
-                        id=call_id,
-                        name=agent_tool_name(step.agent),
-                        args={"task": step.task},
-                    )
-                )
-            )
-        self.state.next_number = len(plan.steps) + 1
-        return parts
 
     # ------------------------------------------------------------------ #
     # tools
@@ -485,50 +561,85 @@ class AdkOrchestration:
 
         return ask_clarification
 
-    def _number_for(self, tool_context: ToolContext) -> int:
+    def _slot_for(self, tool_context: ToolContext) -> StepSlot:
         call_id = tool_context.function_call_id or ""
-        if call_id in self.state.call_numbers:
-            return self.state.call_numbers[call_id]
-        number = self.state.next_number
-        self.state.next_number += 1
-        self.state.call_numbers[call_id] = number
-        return number
+        slot = self.state.slots.get(call_id)
+        if slot is None:
+            # A call the orchestrator did not number (should not happen): next.
+            slot = StepSlot(self.state.next_number)
+            self.state.next_number += 1
+            self.state.slots[call_id or _new_call_id()] = slot
+        return slot
 
     async def _run_step(
         self, agent: OrchestratorAgent, task: str, tool_context: ToolContext
     ) -> dict[str, Any]:
-        number = self._number_for(tool_context)
-        if number > MAX_PLAN_STEPS:
-            tool_context.actions.skip_summarization = True
-            return {"status": "skipped", "summary": _STEP_LIMIT_NOTE}
         try:
             step = OrchestratorStep(agent=agent, task=task)
         except ValidationError:
             return {"status": "failed", "summary": "Пустая формулировка task."}
-        previous = self.state.finished.get(number - 1)
-        if self.state.sequential and previous is not None:
-            # Planned steps run in order so each one gets the earlier digests.
-            await previous.wait()
+        slot = self._slot_for(tool_context)
+        number = slot.number
         try:
-            return await self._execute(number, step, tool_context)
+            if number > MAX_PLAN_STEPS:
+                tool_context.actions.skip_summarization = True
+                return {"status": "skipped", "summary": _STEP_LIMIT_NOTE}
+            if slot.wait_for is not None:
+                previous = self.state.finished.get(slot.wait_for)
+                if previous is not None:
+                    await previous.wait()
+            return await self._execute(slot, step, tool_context)
         finally:
-            done = self.state.finished.setdefault(number, asyncio.Event())
-            done.set()
+            self.state.finished.setdefault(number, asyncio.Event()).set()
+
+    def _skip(
+        self, number: int, step: OrchestratorStep, tool_context: ToolContext
+    ) -> dict[str, Any]:
+        self.state.summaries[number] = self.service._summary_step(
+            number, step, "skipped", ""
+        )
+        tool_context.actions.skip_summarization = True
+        return {"status": "skipped", "summary": ""}
+
+    def _abort_after(self, number: int) -> None:
+        """Step ``number`` waits for the user: nothing after it is reported.
+
+        Later steps that have not started are skipped when their turn comes; a
+        concurrent one already running is cancelled, and one that already
+        finished is reported as skipped — its held events never go out — just
+        as the planner discarded its run-ahead steps.
+        """
+
+        self.state.aborted = True
+        for later in range(number + 1, self.state.next_number):
+            self.state.cancelled.add(later)
+            self.bus.discard(later)
+            task = self.state.running.get(later)
+            if task is not None:
+                task.cancel()
+            summary = self.state.summaries.get(later)
+            if summary is not None:
+                self.state.summaries[later] = {
+                    **summary,
+                    "status": "skipped",
+                    "summary": "",
+                }
 
     async def _execute(
-        self, number: int, step: OrchestratorStep, tool_context: ToolContext
+        self, slot: StepSlot, step: OrchestratorStep, tool_context: ToolContext
     ) -> dict[str, Any]:
         from src.agents.services.orchestrator.orchestrator_service import StepOutcome
 
         service = self.service
-        if self.state.aborted:
-            self.state.summary_steps.append(
-                (number, service._summary_step(number, step, "skipped", ""))
-            )
-            tool_context.actions.skip_summarization = True
-            return {"status": "skipped", "summary": ""}
+        number = slot.number
+        if self.state.aborted or number in self.state.cancelled:
+            return self._skip(number, step, tool_context)
         self.state.steps_started += 1
-        digests = self.state.digests
+        digests = (
+            self.state.digests
+            if slot.context is None
+            else self.state.digests[: slot.context]
+        )
         effective_query = service._compose_step_query(step, digests)
         step_request_id = service.state_store.new_request_id()
         make_pipeline = partial(
@@ -540,33 +651,63 @@ class AdkOrchestration:
             **self.step_kwargs,
         )
         outcome = StepOutcome()
+        files = self.state.step_files.setdefault(number, [])
         self.bus.open(number)
+
+        async def stream() -> None:
+            try:
+                async for event in service._execute_step(
+                    number,
+                    step,
+                    step_request_id,
+                    effective_query,
+                    make_pipeline,
+                    outcome,
+                    files,
+                ):
+                    self.bus.emit(number, event)
+                if outcome.status not in {"completed", "failed"}:
+                    # Waiting for the user: later steps would run on an
+                    # unfinished premise. Decided before this step's close
+                    # releases the next step's held events.
+                    self._abort_after(number)
+            finally:
+                self.bus.close(number)
+
+        # Its own task, so a clarification of an earlier concurrent step can
+        # cancel it without cancelling ADK's tool call.
+        running = asyncio.create_task(stream())
+        self.state.running[number] = running
         try:
-            async for event in service._execute_step(
-                number,
-                step,
-                step_request_id,
-                effective_query,
-                make_pipeline,
-                outcome,
-                self.state.file_events,
-            ):
-                self.bus.emit(number, event)
+            await asyncio.wait([running])
+        except asyncio.CancelledError:
+            running.cancel()
+            raise
         finally:
-            self.bus.close(number)
-        self.state.summary_steps.append(
-            (
-                number,
-                service._summary_step(number, step, outcome.status, outcome.digest),
-            )
+            self.state.running.pop(number, None)
+        if running.cancelled() or number in self.state.cancelled:
+            return self._skip(number, step, tool_context)
+        running.result()
+        self.state.summaries[number] = service._summary_step(
+            number, step, outcome.status, outcome.digest
         )
         if outcome.status == "completed":
-            digests.append((step, outcome.digest))
-            self.state.table_parts.extend(outcome.tables)
+            self.state.digests.append((step, outcome.digest))
+            self.state.step_tables[number] = list(outcome.tables)
         elif outcome.status == "failed":
-            digests.append((step, _FAILED_STEP_CONTEXT))
+            self.state.digests.append((step, _FAILED_STEP_CONTEXT))
         else:
-            # Waiting for the user: later steps would run on an unfinished premise.
-            self.state.aborted = True
             tool_context.actions.skip_summarization = True
         return {"status": outcome.status, "summary": outcome.digest}
+
+
+def _new_call_id() -> str:
+    return f"call_{uuid.uuid4().hex[:12]}"
+
+
+def _clarify_call(question: str) -> types.Part:
+    return types.Part(
+        function_call=types.FunctionCall(
+            id=_new_call_id(), name=CLARIFY_TOOL, args={"question": question}
+        )
+    )
