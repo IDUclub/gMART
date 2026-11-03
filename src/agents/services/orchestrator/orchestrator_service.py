@@ -332,6 +332,8 @@ class OrchestratorService(BaseLlmService):
 
         # ── Autonomous execution (Google ADK) ──────────────────────────
         handled = False
+        # A question the agent asked after running steps: saved after them.
+        closing_question: str | None = None
         if routed is None and adk_available():
             orchestration = AdkOrchestration(
                 self,
@@ -368,6 +370,7 @@ class OrchestratorService(BaseLlmService):
                     await self.state_store.set_status(request_id, PipelineStatus.DONE)
                     return
                 if state.clarification:
+                    closing_question = state.clarification
                     yield await self._buf(
                         request_id, self._clarification_event(state.clarification)
                     )
@@ -441,6 +444,7 @@ class OrchestratorService(BaseLlmService):
                 chat_id,
                 summary_steps,
                 scenario_id,
+                closing_question=closing_question,
                 table_parts=table_parts,
                 file_parts=[
                     RestrictionParserService._pipeline_item_to_chat_part(item)
@@ -868,6 +872,7 @@ class OrchestratorService(BaseLlmService):
         summary_steps: list[dict[str, Any]],
         scenario_id: int | None,
         *,
+        closing_question: str | None = None,
         table_parts: list[TablePartRequest] | None = None,
         file_parts: list[FilePartRequest] | None = None,
     ) -> None:
@@ -877,6 +882,10 @@ class OrchestratorService(BaseLlmService):
             + (step["summary"] or f"(шаг не выполнен: {step['status']})")
             for step in summary_steps
         ]
+        if closing_question:
+            # The next request in the chat is likely its answer: the history the
+            # orchestrator reads back must show what was asked.
+            text_blocks.append(closing_question)
         if not text_blocks:
             return
         self._schedule_persist_parts(

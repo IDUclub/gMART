@@ -671,3 +671,28 @@ async def test_other_bad_requests_do_not_disable_the_agent(make_orchestrator):
 
     assert events_of_type(events, "plan")  # this request: the planner
     assert orchestrator_adk.adk_available()  # the next one: the agent again
+
+
+async def test_question_asked_after_steps_is_saved_with_them(make_orchestrator):
+    llm = ToolScriptedLlm(
+        turn(call("run_provision", "c1", task="Обеспеченность школами")),
+        turn(call("ask_clarification", "c2", question="Для какого района?")),
+    )
+    svc = make_orchestrator(llm)
+    svc.provision_service.run_provision_pipeline = FakePipeline(answer("82%"))
+
+    events = await run_pipeline(svc)
+    await asyncio.sleep(0)
+
+    assert events_of_type(events, "clarification")[0]["content"] == {
+        "question": "Для какого района?"
+    }
+    svc.add_complex_message.assert_awaited_once()
+    texts = [
+        part.payload.text
+        for part in svc.add_complex_message.await_args.args[3]
+        if part.kind == "text"
+    ]
+    assert len(texts) == 2
+    assert "82%" in texts[0]
+    assert texts[-1] == "Для какого района?"
