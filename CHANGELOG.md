@@ -1,3 +1,9 @@
+## v0.35.1 (2026-11-03)
+
+[fix/scenario-judge-prompt](https://github.com/IDUclub/gMART/pull/271) (#271)
+
+- fix(agents): перечислять коды missing_code и области source_scope в промпте проверки ответа по данным сценария
+
 ## v0.35.0 (2026-11-02)
 
 [feat/llm-stage-exporter](https://github.com/IDUclub/gMART/pull/270) (#270)
