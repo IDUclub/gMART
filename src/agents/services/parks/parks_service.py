@@ -224,14 +224,14 @@ class ParksService(BaseLlmService):
             event["content"]["event_id"] = state["event_seq"]
         await self.store.save(state, events)
 
-    async def _history(self, state, token, role, text):
+    async def _history(self, state, token, role, text, *, history_key=None):
         if not state["persist_history"] or not state.get("chat_id"):
             return
-        key = "history_" + role.value
+        key = "history_" + (history_key or role.value)
         if state.get(key):
             return
         try:
-            if role == RoleEnum.ASSISTANT and state.get("result") is not None:
+            if history_key == "result" and state.get("result") is not None:
                 await self.add_complex_message(
                     token,
                     state["chat_id"],
@@ -513,6 +513,15 @@ class ParksService(BaseLlmService):
                 )
 
         if state["phase"] == "analysis":
+            # The external result must survive an unavailable vision model.
+            # Persist it independently of the later recommendations.
+            await self._history(
+                state,
+                token,
+                RoleEnum.ASSISTANT,
+                "Парк сгенерирован. Готовлю анализ и рекомендации.",
+                history_key="result",
+            )
             await self._emit(
                 state,
                 "status",
