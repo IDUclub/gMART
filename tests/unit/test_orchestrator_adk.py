@@ -10,16 +10,21 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from src.agents.model_clients.llm_base import LlmResponseError
-from src.agents.services.orchestrator.orchestrator_adk import OrderedStepBus
+from src.agents.services.orchestrator.orchestrator_adk import (
+    AdkUnavailableError,
+    OrderedStepBus,
+)
 from tests.helpers import events_of_type, types_of
 
 
-def call(name: str, call_id: str, **args) -> dict:
-    return {
-        "id": call_id,
+def call(name: str, call_id: str | None, **args) -> dict:
+    spelled = {
         "type": "function",
         "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
     }
+    if call_id is not None:
+        spelled["id"] = call_id
+    return spelled
 
 
 def turn(*calls: dict, text: str = "") -> dict:
@@ -209,10 +214,12 @@ async def test_agent_requests_go_through_the_adapter_with_tools(make_orchestrato
     }
     names = {tool["function"]["name"] for tool in first["tools"]}
     assert {"run_provision", "run_documents", "ask_clarification"} <= names
-    # The second turn carries the call and its result, paired by id.
+    # The second turn carries the call and its result, paired by the
+    # orchestrator's own call id.
     assistant, result = second["messages"][-2:]
-    assert assistant["tool_calls"][0]["id"] == "c1"
-    assert result["role"] == "tool" and result["tool_call_id"] == "c1"
+    call_id = assistant["tool_calls"][0]["id"]
+    assert call_id.startswith("call_")
+    assert result["role"] == "tool" and result["tool_call_id"] == call_id
     assert json.loads(result["content"])["status"] == "completed"
 
 
@@ -417,3 +424,250 @@ def test_ordered_bus_holds_later_steps_until_earlier_finish():
     while not bus.queue.empty():
         out.append(bus.queue.get_nowait()["e"])
     assert out == ["1a", "1b", "2a"]
+
+
+def test_ordered_bus_drops_discarded_steps():
+    bus = OrderedStepBus()
+    for step in (1, 2, 3):
+        bus.open(step)
+    bus.emit(2, {"e": "2a"})
+    bus.emit(3, {"e": "3a"})
+    bus.close(3)
+    bus.discard(2)
+    bus.emit(2, {"e": "2b"})
+    bus.close(2)
+    bus.emit(1, {"e": "1a"})
+    bus.close(1)
+    out = []
+    while not bus.queue.empty():
+        out.append(bus.queue.get_nowait()["e"])
+    assert out == ["1a", "3a"]
+
+
+def step_numbers(events: list[dict], kind: str) -> list[tuple[int, str]]:
+    return [
+        (e["content"]["step"], e["content"]["agent"])
+        for e in events_of_type(events, kind)
+    ]
+
+
+async def test_calls_without_server_ids_get_steps_of_their_own(make_orchestrator):
+    # Ollama sends tool calls without ids: every turn would start at call_0.
+    llm = ToolScriptedLlm(
+        turn(call("run_provision", None, task="Обеспеченность школами")),
+        turn(call("run_documents", None, task="Норматив обеспеченности")),
+        turn(call("run_norms", None, task="Ограничения для школ")),
+        turn(call("run_documents", None, task="Ещё документы")),
+        turn(text="ГОТОВО"),
+    )
+    svc = make_orchestrator(llm)
+    svc.provision_service.run_provision_pipeline = FakePipeline(answer("82%"))
+    documents = FakePipeline(answer("120 мест"))
+    svc.dvd_service.run_document_qa_pipeline = documents
+    svc.normgraph_service.run_norms_qa_pipeline = FakePipeline(answer("граф"))
+
+    events = await run_pipeline(svc)
+
+    assert step_numbers(events, "step_started") == [
+        (1, "provision"),
+        (2, "documents"),
+        (3, "norms"),
+    ]
+    assert len(documents.calls) == 1  # the fourth call is over the step limit
+    final = events_of_type(events, "orchestrator_final")[0]["content"]["steps"]
+    assert [s["step"] for s in final] == [1, 2, 3]
+    # Every call and its result are paired by a unique id.
+    last = llm.tool_calls[-1]["messages"]
+    call_ids = [c["id"] for m in last for c in m.get("tool_calls") or []]
+    result_ids = [m["tool_call_id"] for m in last if m["role"] == "tool"]
+    # (the over-limit call ends the run, so the last request holds three)
+    assert len(call_ids) == len(set(call_ids)) == 3
+    assert result_ids == call_ids
+
+
+@pytest.mark.parametrize("documents_delay", [0.0, 0.3])
+async def test_clarification_in_a_concurrent_plan_skips_the_other_step(
+    make_orchestrator, documents_delay
+):
+    llm = ToolScriptedLlm(
+        turn(
+            call("run_norms", "c1", task="Ограничения для школ"),
+            call("run_documents", "c2", task="Документы о школах"),
+        )
+    )
+    svc = make_orchestrator(llm)
+    log: list[str] = []
+    svc.normgraph_service.run_norms_qa_pipeline = FakePipeline(
+        [{"type": "clarification", "content": {"question": "Какой регион?"}}],
+        0.1,
+        log,
+        "norms",
+    )
+    svc.dvd_service.run_document_qa_pipeline = FakePipeline(
+        answer("документы"), documents_delay, log, "documents"
+    )
+
+    events = await run_pipeline(svc, user_query="Какие регламенты школ?")
+
+    # Finished first or cancelled while running: either way not reported.
+    assert step_numbers(events, "step_started") == [(1, "norms")]
+    assert all(e["content"]["step"] == 1 for e in events_of_type(events, "step_event"))
+    final = events_of_type(events, "orchestrator_final")[0]["content"]["steps"]
+    assert [s["status"] for s in final] == ["needs_clarification", "skipped"]
+    if documents_delay:
+        assert "documents:end" not in log
+    assert len(llm.tool_calls) == 1
+
+
+async def test_steps_added_later_run_in_order_with_digests(make_orchestrator):
+    llm = ToolScriptedLlm(
+        turn(call("run_norms", "c1", task="Ограничения для школ")),
+        turn(
+            call("run_provision", "c1", task="Обеспеченность школами"),
+            call("run_documents", "c2", task="Объясни результат"),
+        ),
+        turn(text="ГОТОВО"),
+    )
+    svc = make_orchestrator(llm)
+    log: list[str] = []
+    svc.normgraph_service.run_norms_qa_pipeline = FakePipeline(answer("граф"))
+    svc.provision_service.run_provision_pipeline = FakePipeline(
+        answer("Обеспеченность 82%"), 0.2, log, "provision"
+    )
+    documents = FakePipeline(answer("документы"), 0.0, log, "documents")
+    svc.dvd_service.run_document_qa_pipeline = documents
+
+    events = await run_pipeline(svc)
+
+    assert log == ["provision:end", "documents:end"]
+    assert step_numbers(events, "step_started") == [
+        (1, "norms"),
+        (2, "provision"),
+        (3, "documents"),
+    ]
+    assert "Обеспеченность 82%" in documents.calls[0]["context_note"]
+
+
+async def test_later_step_waiting_for_the_user_skips_the_rest_of_its_turn(
+    make_orchestrator,
+):
+    llm = ToolScriptedLlm(
+        turn(call("run_norms", "c1", task="Ограничения для школ")),
+        turn(
+            call("run_provision", "c2", task="Обеспеченность школами"),
+            call("run_documents", "c3", task="Объясни результат"),
+        ),
+    )
+    svc = make_orchestrator(llm)
+    svc.normgraph_service.run_norms_qa_pipeline = FakePipeline(answer("граф"))
+    svc.provision_service.run_provision_pipeline = FakePipeline(
+        [{"type": "clarification", "content": {"question": "Какой сервис?"}}]
+    )
+    documents = FakePipeline(answer("x"))
+    svc.dvd_service.run_document_qa_pipeline = documents
+
+    events = await run_pipeline(svc)
+
+    final = events_of_type(events, "orchestrator_final")[0]["content"]["steps"]
+    assert [s["status"] for s in final] == [
+        "completed",
+        "needs_clarification",
+        "skipped",
+    ]
+    assert not documents.calls
+    assert len(llm.tool_calls) == 2
+
+
+async def test_concurrent_steps_see_only_the_digests_from_before_their_turn(
+    make_orchestrator,
+):
+    from src.agents.services.orchestrator.orchestrator_adk import AdkOrchestration
+    from src.agents.services.service_entities.orchestrator_plan import (
+        OrchestratorAgent,
+        OrchestratorStep,
+    )
+
+    svc = make_orchestrator(ToolScriptedLlm())
+    built: list[tuple[str, str | None]] = []
+
+    def build_step_pipeline(step, query, request_id, context_note=None, **kwargs):
+        built.append((query, context_note))
+        return FakePipeline(answer("документы"))()
+
+    svc._build_step_pipeline = build_step_pipeline
+    orchestration = AdkOrchestration(
+        svc,
+        model="m",
+        user_query="Какие регламенты школ?",
+        history=[],
+        agents=[],
+        step_kwargs={},
+        scenario_id=None,
+    )
+    orchestration._schedule(
+        [
+            (OrchestratorAgent.NORMS, "Ограничения для школ"),
+            (OrchestratorAgent.DOCUMENTS, "Документы о школах"),
+        ]
+    )
+    first, second = orchestration.state.slots.values()
+    assert (first.wait_for, second.wait_for) == (None, None)
+    # norms finished before documents started: documents still gets none of it.
+    orchestration.state.digests.append(
+        (OrchestratorStep(agent="norms", task="Ограничения для школ"), "граф")
+    )
+    tool_context = SimpleNamespace(
+        actions=SimpleNamespace(skip_summarization=False), function_call_id="x"
+    )
+
+    await orchestration._execute(
+        second,
+        OrchestratorStep(agent="documents", task="Документы о школах"),
+        tool_context,
+    )
+
+    assert built == [("Документы о школах", None)]
+
+
+@pytest.mark.parametrize(
+    ("message", "status", "unsupported"),
+    [
+        ('"auto" tool choice requires --enable-auto-tool-choice', 400, True),
+        ("registry.ollama.ai/library/gemma:2b does not support tools", 400, True),
+        ("Tool calling is not supported by this model", 422, True),
+        ("Not Implemented", 501, True),
+        (
+            "This model's maximum context length is 8192 tokens. However, you "
+            "requested 9000 tokens",
+            400,
+            False,
+        ),
+        ("Invalid JSON in request body", 400, False),
+        ("does not support tools", 503, False),
+    ],
+)
+def test_only_tool_rejections_count_as_unsupported(message, status, unsupported):
+    assert AdkUnavailableError(message, status).tools_unsupported is unsupported
+
+
+async def test_other_bad_requests_do_not_disable_the_agent(make_orchestrator):
+    from src.agents.services.orchestrator import orchestrator_adk
+
+    plan = json.dumps(
+        {
+            "mode": "execute",
+            "steps": [{"agent": "provision", "task": "Обеспеченность"}],
+            "clarification_question": None,
+        },
+        ensure_ascii=False,
+    )
+    llm = ToolScriptedLlm(
+        LlmResponseError("maximum context length is 8192 tokens", 400), plans=[plan]
+    )
+    svc = make_orchestrator(llm)
+    svc.provision_service.run_provision_pipeline = FakePipeline(answer("82%"))
+
+    events = await run_pipeline(svc)
+
+    assert events_of_type(events, "plan")  # this request: the planner
+    assert orchestrator_adk.adk_available()  # the next one: the agent again
