@@ -385,7 +385,13 @@ async def test_ollama_ignores_request_priority(monkeypatch):
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
     ("key", "expected"),
-    [("dvd.critic", -100), ("chat_title", -60), ("context_summary", 20)],
+    [
+        ("dvd.critic", -100),
+        ("chat_title", -60),
+        ("context_summary", 20),
+        ("parks_planning", -60),
+        ("parks_analysis", -100),
+    ],
 )
 async def test_keyed_priority(monkeypatch, priority_client, stream, key, expected):
     monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-1")

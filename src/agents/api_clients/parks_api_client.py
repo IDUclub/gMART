@@ -4,6 +4,8 @@ import json
 
 import httpx
 
+from src.agents.dto.parks_request_dto import ParksInputs
+
 
 class ParksApiClient:
     def __init__(self, base_url: str, *, transport=None):
@@ -20,6 +22,11 @@ class ParksApiClient:
         return data
 
     async def generate(self, inputs):
+        missing = ParksInputs.model_validate(inputs).missing_generation_requirements()
+        if missing:
+            raise ValueError(
+                "Missing park generation requirements: " + "; ".join(missing)
+            )
         data = await self._request(
             "POST",
             "/map/generate",

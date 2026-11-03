@@ -21,6 +21,8 @@ DEFAULT_PRIORITIES = {
     "pzz.inputs": -60,
     "pzz.columns": -60,
     "pzz.answer": -100,
+    "parks_planning": -60,
+    "parks_analysis": -100,
     "provision.plan": -60,
     "provision.answer": -100,
     "scenario.plan": -60,

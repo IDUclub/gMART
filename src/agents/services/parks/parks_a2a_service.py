@@ -78,14 +78,18 @@ class ParksA2AService:
             )
         return result
 
-    async def _task(self, request_id, token):
-        state = await self.service.get_run(request_id, token)
-        status = {
+    @staticmethod
+    def _task_status(status):
+        return {
             "awaiting_confirmation": "input-required",
             "done": "completed",
             "failed": "failed",
             "submission_unknown": "failed",
-        }.get(state["status"], "working")
+        }.get(status, "working")
+
+    async def _task(self, request_id, token):
+        state = await self.service.get_run(request_id, token)
+        status = self._task_status(state["status"])
         events = await self.service.store.events(request_id, 0)
         artifacts = [
             self._artifact(event)
@@ -183,7 +187,7 @@ class ParksA2AService:
                 stored = await self.service.get_run(request_id, token)
                 context = (stored["conversation"] or request_id).removeprefix("a2a:")
             inputs = ParksInputs.model_validate(metadata.get("inputs") or {})
-            task_id = None
+            task_id = request_id
             waiting = False
             failed = False
             async for event in self.service.run_parks_pipeline(
@@ -242,6 +246,7 @@ class ParksA2AService:
                         },
                     )
             if task_id:
+                stored = await self.service.get_run(task_id, token)
                 yield self._response(
                     rpc_id,
                     {
@@ -249,11 +254,7 @@ class ParksA2AService:
                         "taskId": task_id,
                         "contextId": context,
                         "status": {
-                            "state": (
-                                "input-required"
-                                if waiting
-                                else "failed" if failed else "completed"
-                            ),
+                            "state": self._task_status(stored["status"]),
                             "timestamp": utc_now_rfc3339(),
                         },
                         "final": True,

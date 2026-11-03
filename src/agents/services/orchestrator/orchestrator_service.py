@@ -12,6 +12,7 @@ from src.agents.api_clients.chat_storage_client.chat_storage_client import (
 from src.agents.api_clients.chat_storage_client.entities import RoleEnum
 from src.agents.api_clients.chat_storage_client.request_models import (
     FilePartRequest,
+    StructuredPartRequest,
     TablePartRequest,
     TablePayload,
     TextPartRequest,
@@ -233,6 +234,7 @@ class OrchestratorService(BaseLlmService):
                         conversation_key=chat_id,
                         original_query=user_query,
                     ),
+                    persist_history=persist_history,
                 ):
                     yield event
             return
@@ -356,6 +358,7 @@ class OrchestratorService(BaseLlmService):
         digests: list[tuple[OrchestratorStep, str]] = []
         table_parts: list[TablePartRequest] = []
         file_events: list[dict[str, Any]] = []
+        parks_results: dict[int, dict[str, Any]] = {}
 
         step_kwargs = dict(
             idu_mcp_client=idu_mcp_client,
@@ -398,6 +401,7 @@ class OrchestratorService(BaseLlmService):
                 digests,
                 table_parts,
                 file_events,
+                parks_results=parks_results,
             ):
                 yield event
         finally:
@@ -418,6 +422,7 @@ class OrchestratorService(BaseLlmService):
                 summary_steps,
                 scenario_id,
                 table_parts=table_parts,
+                parks_results=parks_results,
                 file_parts=[
                     RestrictionParserService._pipeline_item_to_chat_part(item)
                     for item in file_events
@@ -438,7 +443,7 @@ class OrchestratorService(BaseLlmService):
         return None
 
     async def _resume_parks_orchestration(
-        self, request_id, token, buffered, parked, step_kwargs
+        self, request_id, token, buffered, parked, step_kwargs, *, persist_history=True
     ):
         """Attach to the durable park run, then execute unstarted plan steps."""
         number = parked["step"]
@@ -469,6 +474,21 @@ class OrchestratorService(BaseLlmService):
             for item in finished
         ]
         digests = [(plan.steps[item["step"] - 1], item["summary"]) for item in finished]
+        # Earlier completed parks steps will not run again. Rebuild their durable
+        # answer from the original events, not the truncated step_finished digest.
+        parks_results = {
+            item["step"]: {"chunks": {}, "notes": []}
+            for item in finished
+            if item["status"] == "completed"
+            and plan.steps[item["step"] - 1].agent == OrchestratorAgent.PARKS
+        }
+        for event in buffered:
+            if event["type"] == "step_event":
+                content = event["content"]
+                if content["step"] in parks_results:
+                    self._collect_digest(
+                        parks_results[content["step"]], content["event"]
+                    )
         offsets = [
             event["content"]["event"]["content"].get("event_id", 0)
             for event in buffered
@@ -491,6 +511,12 @@ class OrchestratorService(BaseLlmService):
         async with self.parks_service.store.execution_lock(
             "orchestrator:" + request_id
         ):
+            # Another reconnect may have finished while we waited for the lease.
+            if any(
+                event["type"] == "orchestrator_final"
+                for event in await self.state_store.get_buffered_events(request_id)
+            ):
+                return
             async for event in self._run_steps(
                 plan,
                 request_id,
@@ -504,6 +530,7 @@ class OrchestratorService(BaseLlmService):
                 resume_id=parked["step_request_id"],
                 resume_after=max(offsets, default=0),
                 resume_events=previous_events,
+                parks_results=parks_results,
             ):
                 yield event
             yield await self._buf(request_id, self._final_event(summaries))
@@ -515,9 +542,14 @@ class OrchestratorService(BaseLlmService):
                     else PipelineStatus.FAILED
                 ),
             )
-            self._schedule_persist_summary(
-                token, outer.get("chat_id"), summaries, outer["scenario_id"]
-            )
+            if persist_history:
+                self._schedule_persist_summary(
+                    token,
+                    outer.get("chat_id"),
+                    summaries,
+                    outer["scenario_id"],
+                    parks_results=parks_results,
+                )
 
     async def _project_dialogue_plan(
         self, model: str, user_query: str, chat_id: str | None
@@ -604,6 +636,7 @@ class OrchestratorService(BaseLlmService):
         resume_id: str | None = None,
         resume_after: int = 0,
         resume_events: list[dict] | None = None,
+        parks_results: dict[int, dict[str, Any]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         aborted = False
         for step_number, step in enumerate(plan.steps, start=1):
@@ -713,6 +746,8 @@ class OrchestratorService(BaseLlmService):
             if status == "completed":
                 digests.append((step, digest))
                 table_parts.extend(step_tables)
+                if step.agent == OrchestratorAgent.PARKS and parks_results is not None:
+                    parks_results[step_number] = collected
             elif status == "failed":
                 # Agents fetch their own scenario data, so later steps still run.
                 # One that needed this result is told it is missing instead of
@@ -917,6 +952,20 @@ class OrchestratorService(BaseLlmService):
         content = item.get("content") or {}
         if not isinstance(content, dict):
             return
+        # Park events have durable sequence IDs. Re-seeding from the outer
+        # buffer and attaching to the inner stream must not repeat text or data.
+        event_id = content.get("event_id")
+        if event_id is not None:
+            seen = collected.setdefault("event_ids", set())
+            if event_id in seen:
+                return
+            seen.add(event_id)
+        if item.get("type") == "feature_collection":
+            collected["feature_collection"] = {
+                key: value for key, value in content.items() if key != "event_id"
+            }
+        elif item.get("type") == "status" and content.get("status") == "economy":
+            collected["parks_economy"] = content.get("economy") or {}
         if item.get("type") == "chunk":
             # DVD/norms tag chunks with the draft iteration; only the last
             # (accepted) draft belongs in the digest, so texts are keyed by it.
@@ -954,11 +1003,44 @@ class OrchestratorService(BaseLlmService):
         *,
         table_parts: list[TablePartRequest] | None = None,
         file_parts: list[FilePartRequest] | None = None,
+        parks_results: dict[int, dict[str, Any]] | None = None,
     ) -> None:
+        parks_results = parks_results or {}
+        # Digests stay bounded for downstream prompts and SSE summaries. Chat
+        # history retains the full accepted parks analysis instead.
+        parks_text = {}
+        structured_parts = []
+        for number, result in parks_results.items():
+            chunks = result["chunks"]
+            if chunks:
+                parks_text[number] = "".join(chunks[max(chunks)]).strip()
+            if "feature_collection" in result:
+                structured_parts.extend(
+                    [
+                        StructuredPartRequest(
+                            kind="data",
+                            payload={
+                                "type": "feature_collection",
+                                "content": result["feature_collection"],
+                            },
+                        ),
+                        StructuredPartRequest(
+                            kind="data",
+                            payload={
+                                "type": "parks_economy",
+                                "content": result.get("parks_economy") or {},
+                            },
+                        ),
+                    ]
+                )
         text_blocks = [
             f"Шаг {step['step']} — {self._agent_title(step['agent'])}: "
             f"{step['task']}\n\n"
-            + (step["summary"] or f"(шаг не выполнен: {step['status']})")
+            + (
+                parks_text.get(step["step"])
+                or step["summary"]
+                or f"(шаг не выполнен: {step['status']})"
+            )
             for step in summary_steps
         ]
         if not text_blocks:
@@ -971,6 +1053,7 @@ class OrchestratorService(BaseLlmService):
                 for block in text_blocks
             ]
             + list(table_parts or [])
+            + structured_parts
             + list(file_parts or []),
             scenario_id,
         )
@@ -995,7 +1078,9 @@ class OrchestratorService(BaseLlmService):
         self,
         token: str,
         chat_id: str | None,
-        parts: list[TextPartRequest | TablePartRequest | FilePartRequest],
+        parts: list[
+            TextPartRequest | TablePartRequest | FilePartRequest | StructuredPartRequest
+        ],
         scenario_id: int | None,
     ) -> None:
         if not chat_id:

@@ -23,7 +23,17 @@ BOUNDARY = {
                 "type": "Polygon",
                 "coordinates": [[[30, 60], [30.01, 60], [30.01, 60.01], [30, 60]]],
             },
-        }
+        },
+        {
+            "type": "Feature",
+            "properties": {"type": "entry"},
+            "geometry": {"type": "Point", "coordinates": [30.002, 60]},
+        },
+        {
+            "type": "Feature",
+            "properties": {"type": "entry"},
+            "geometry": {"type": "Point", "coordinates": [30.01, 60.005]},
+        },
     ],
 }
 RESULT = {"type": "FeatureCollection", "features": []}
@@ -121,6 +131,60 @@ async def test_missing_geometry_never_generates(parks):
     events = await collect(parks, user_query="Да, создай парк")
     assert clarification(events)["ready"] is False
     parks.api.generate.assert_not_called()
+
+
+@pytest.mark.parametrize("entry_count", [0, 1])
+async def test_missing_entries_require_clarification_before_confirmation(
+    parks, entry_count
+):
+    geometry = dict(BOUNDARY, features=BOUNDARY["features"][:1 + entry_count])
+    events = await collect(parks, inputs={"park_geojson": geometry})
+    assert clarification(events)["ready"] is False
+    assert "две разные точки входа" in clarification(events)["question"]
+    confirmed = await collect(
+        parks, user_query="Подтверждаю", inputs={"confirmed_revision": 1}
+    )
+    assert clarification(confirmed)["ready"] is False
+    parks.api.generate.assert_not_called()
+    updated = await collect(parks, inputs={"park_geojson": BOUNDARY})
+    assert clarification(updated)["ready"] is True
+
+
+async def test_duplicate_entries_do_not_allow_generation(parks):
+    geometry = dict(
+        BOUNDARY,
+        features=[BOUNDARY["features"][0], *[BOUNDARY["features"][1]] * 2],
+    )
+    events = await collect(parks, inputs={"park_geojson": geometry})
+    assert clarification(events)["ready"] is False
+    parks.api.generate.assert_not_called()
+
+
+async def test_legacy_ready_dialogue_without_entries_cannot_generate(parks):
+    geometry = dict(BOUNDARY, features=BOUNDARY["features"][:1])
+    await parks.store.put(
+        "dialogue:park-user:conversation",
+        {
+            "parameters": {"park_geojson": geometry, "tags": ["REST"]},
+            "revision": 1,
+            "ready": True,
+        },
+    )
+    events = await collect(
+        parks, user_query="Подтверждаю", inputs={"confirmed_revision": 1}
+    )
+    assert clarification(events)["ready"] is False
+    parks.api.generate.assert_not_called()
+
+
+async def test_upstream_client_rejects_missing_entries_without_http():
+    def handler(request):
+        pytest.fail("Invalid park input must never reach upstream")
+
+    api = ParksApiClient("https://parks.test", transport=httpx.MockTransport(handler))
+    geometry = dict(BOUNDARY, features=BOUNDARY["features"][:1])
+    with pytest.raises(ValueError, match="точки входа"):
+        await api.generate({"park_geojson": geometry, "tags": ["REST"]})
 
 
 @pytest.mark.asyncio
@@ -380,6 +444,8 @@ def test_get_sse_contract_and_recovery_validation(monkeypatch):
             }
 
         async def get_run(self, *args):
+            if args[0] == "id":
+                return {"status": "done", "conversation": "ctx"}
             raise LookupError()
 
     service = Service()

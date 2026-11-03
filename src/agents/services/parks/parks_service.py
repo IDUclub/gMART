@@ -325,6 +325,10 @@ class ParksService(BaseLlmService):
                 "parks-dialogue:" + state["owner"] + ":" + state["conversation"]
             ):
                 pending = await self.store.get(dialogue_key) or {}
+                if pending:
+                    pending["ready"] = not ParksInputs.model_validate(
+                        pending.get("parameters") or {}
+                    ).missing_generation_requirements()
                 inputs = ParksInputs.model_validate(state["inputs"])
                 if pending.get("active_request_id") not in (None, state["request_id"]):
                     await self._clarify(
@@ -396,27 +400,34 @@ class ParksService(BaseLlmService):
                             )
                     if inputs.park_geojson is not None:
                         parameters["park_geojson"] = inputs.park_geojson
-                    ParksInputs.model_validate(parameters)
+                    missing = ParksInputs.model_validate(
+                        parameters
+                    ).missing_generation_requirements()
                     pending = dict(
                         parameters=parameters,
                         design_brief=(
                             pending.get("design_brief", "") + "\n" + state["query"]
                         )[-12000:],
                         revision=int(pending.get("revision", 0)) + 1,
-                        ready=bool(
-                            parameters.get("park_geojson") and parameters.get("tags")
-                        ),
+                        ready=not missing,
                     )
                     await self.store.put(dialogue_key, pending)
                     question = (
                         "Проверьте параметры парка и подтвердите генерацию. Если нужны изменения, опишите их."
                         if pending["ready"]
-                        else "Укажите границу парка на карте и желаемые объекты благоустройства."
+                        else "Укажите: " + "; ".join(missing) + "."
                     )
                     await self._clarify(state, token, question, pending)
                     return
 
         if state["phase"] == "submitting":
+            missing = ParksInputs.model_validate(
+                state["parameters"]
+            ).missing_generation_requirements()
+            if missing:
+                raise ValueError(
+                    "Missing park generation requirements: " + "; ".join(missing)
+                )
             if state.get("submission_pending"):
                 await self._finish(
                     state,
@@ -516,21 +527,7 @@ class ParksService(BaseLlmService):
                 content = [
                     {
                         "type": "text",
-                        "text": json.dumps(
-                            {
-                                "request": state.get("design_brief") or state["query"],
-                                "parameters": {
-                                    k: v
-                                    for k, v in state["parameters"].items()
-                                    if k != "park_geojson"
-                                },
-                                "economy": state.get("economy"),
-                                "features": state["result"]["features"][:150],
-                                "total_features": len(state["result"]["features"]),
-                                "sample_limit": 150,
-                            },
-                            ensure_ascii=False,
-                        )[:60000],
+                        "text": self._analysis_context(state),
                     }
                 ]
                 for picture in (state["result"].get("images") or [])[:4]:
@@ -590,6 +587,51 @@ class ParksService(BaseLlmService):
                     }
                 ],
             )
+
+    @staticmethod
+    def _analysis_context(state, max_chars=60000):
+        """Bound context by dropping whole records, never by slicing JSON."""
+        features = state["result"]["features"]
+        data = {
+            "request": (state.get("design_brief") or state["query"])[-12000:],
+            "parameters": {
+                k: v for k, v in state["parameters"].items() if k != "park_geojson"
+            },
+            "economy": state.get("economy"),
+            "features": [],
+            "total_features": len(features),
+            "sample_limit": 150,
+            "included_features": 0,
+            "omitted_features": len(features),
+            "context_truncated": False,
+            "omitted_fields": [],
+        }
+
+        def encode():
+            return json.dumps(data, ensure_ascii=False)
+
+        # Very large location requests or upstream TEP must not exhaust the
+        # budget before sampling geometry. Omission is explicit to the model.
+        for field in ("parameters", "economy", "request"):
+            if len(encode()) <= max_chars:
+                break
+            data[field] = None
+            data["omitted_fields"].append(field)
+            data["context_truncated"] = True
+        for feature in features[:150]:
+            data["features"].append(feature)
+            data["included_features"] = len(data["features"])
+            data["omitted_features"] = len(features) - data["included_features"]
+            # Reserve room for false -> true if the next record exceeds budget.
+            if len(encode()) > max_chars - 1:
+                data["features"].pop()
+                continue
+        data["included_features"] = len(data["features"])
+        data["omitted_features"] = len(features) - data["included_features"]
+        data["context_truncated"] = bool(
+            data["omitted_fields"] or data["omitted_features"]
+        )
+        return encode()
 
     async def _clarify(self, state, token, question, pending, **extra):
         content = dict(

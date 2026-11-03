@@ -8,7 +8,7 @@
 
 ## Один пользовательский сценарий
 
-1. Пользователь описывает парк и выделяет границу на карте.
+1. Пользователь описывает парк, выделяет границу и отмечает минимум две разные точки входа на карте.
 2. Отправьте `GET /parks/generate/stream`. Текст — в `request`, геометрия —
    в JSON-параметре `inputs`. Передавайте `Authorization: Bearer …`.
 3. Сохраните `request_id` из `pipeline_started`, а после `chat_created` — `chat_id`.
@@ -48,19 +48,47 @@
           "type": "Polygon",
           "coordinates": [[[30,60],[30.01,60],[30.01,60.01],[30,60]]]
         }
+      }, {
+        "type": "Feature",
+        "properties": {"type": "entry"},
+        "geometry": {"type": "Point", "coordinates": [30.002, 60]}
+      }, {
+        "type": "Feature",
+        "properties": {"type": "entry"},
+        "geometry": {"type": "Point", "coordinates": [30.01, 60.005]}
       }]
     }
   }
 }
 ```
 
-Нужен один `boundary` типа Polygon/MultiPolygon, дополнительно можно передать точки
-входов Point с `properties.type=entry`. Координаты WGS84: `[longitude, latitude]`.
-Backend не выдумывает границу из текстового описания.
+Для генерации нужны один `boundary` типа Polygon/MultiPolygon и минимум две разные
+точки входа Point с `properties.type=entry`. Координаты WGS84: `[longitude, latitude]`.
+Без входов черновик принимается, но `ready=false`: backend просит отметить входы,
+а подтверждение не запускает генерацию. Backend не выдумывает границу или входы.
 
 Необязательные `tags` и `location_requests` можно передать явно. Без них пожелания
 извлекает LLM. Повторение тега задаёт количество объектов. Геометрию и все правки
 пользователь видит до запуска.
+
+## Отображение результата
+
+- `feature_collection.content.feature_collection` — полный GeoJSON, не картинка:
+  стилизуйте объекты по `properties.type` (`road`, `greenery`, `grass`, `playground`,
+  `calm_rest`, `multifunctional`, `fountain`, `border`, `entry_point` и другие).
+- В `properties.tags` может лежать JSON-строка с атрибутами; разбирайте её отдельно
+  и безопасно обрабатывайте некорректные значения.
+- `status=economy`: показатели находятся в `content.economy.economyParams`.
+  У каждого есть `name`, `primaryValue`, `secondaryValue` (может быть null).
+  Для площадей используются м²; единица `road_density` не документирована — не
+  добавляйте знак процента без уточнения контракта сервиса.
+- Число GeoJSON-объектов не обязано совпадать с `secondaryValue` в ТЭП.
+- Анализ приходит позже отдельными `chunk`. Слой показывайте сразу, не дожидаясь LLM.
+- Общий frontend репозитория умеет добавлять GeoJSON-слой; отдельные карточки ТЭП
+  и парковая легенда требуют реализации на фронте.
+- При открытии истории чата восстанавливайте карту из `data`-части
+  `payload.type=feature_collection`, а показатели — из `payload.type=parks_economy`.
+  Прямой парковый REST и успешный шаг оркестратора сохраняют одинаковые конверты.
 
 ## Переподключение
 

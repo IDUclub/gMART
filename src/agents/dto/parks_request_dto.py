@@ -55,7 +55,7 @@ class ParksInputs(BaseModel):
             ):
                 boundaries.append(geometry)
             elif kind != "entry" or not geometry or geometry.type != "Point":
-                raise ValueError("Use one polygon boundary and optional entry points")
+                raise ValueError("Use one polygon boundary and entry Point features")
         if len(boundaries) != 1:
             raise ValueError("Exactly one boundary is required")
         from shapely.geometry import shape
@@ -70,6 +70,21 @@ class ParksInputs(BaseModel):
             ):
                 raise ValueError("Coordinates must be WGS84 longitude/latitude")
         return self
+
+    def missing_generation_requirements(self) -> list[str]:
+        missing = []
+        if not self.park_geojson:
+            missing.append("границу парка")
+        entries = {
+            tuple(feature["geometry"]["coordinates"][:2])
+            for feature in (self.park_geojson or {}).get("features", [])
+            if feature["properties"].get("type") == "entry"
+        }
+        if len(entries) < 2:
+            missing.append("минимум две разные точки входа на карте")
+        if not self.tags:
+            missing.append("желаемые объекты благоустройства")
+        return missing
 
 
 def geometry_coordinates(geometry):
