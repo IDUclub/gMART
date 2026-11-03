@@ -1,3 +1,19 @@
+## v0.35.2 (2026-11-03)
+
+[fix/orchestrator-pzz-files](https://github.com/IDUclub/gMART/pull/274) (#274)
+
+- build(deps): добавить google-adk и pydantic-ai для агентного слоя
+- feat(agents): слой LLM-этапов на pydantic-ai поверх BaseLlmAdapter
+- refactor(agents): перевести LLM-этапы пайплайнов на pydantic-ai
+- feat(orchestrator): автономный оркестратор на Google ADK
+- refactor(a2a): перейти с python-a2a на официальный a2a-sdk
+- docs(agents): описать агентный слой на ADK и pydantic-ai
+- chore: игнорировать lock-файлы ротации логов
+- revert: откатить миграцию на google-adk/pydantic-ai, запушенную в dev без ревью
+- fix(agents): перечислять коды missing_code и области source_scope в промпте проверки ответа по данным сценария
+- v0.35.1 (fix/scenario-judge-prompt) (#271)
+- fix(agents): направлять запрос ПЗЗ по файлам агенту pzz и при отсутствии загрузок, не уточняя у пользователя
+
 ## v0.35.1 (2026-11-03)
 
 [fix/scenario-judge-prompt](https://github.com/IDUclub/gMART/pull/271) (#271)

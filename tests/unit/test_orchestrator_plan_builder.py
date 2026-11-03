@@ -209,6 +209,35 @@ async def test_pzz_attachment_manifest_reaches_planner_without_file_contents(
     assert "private-" not in prompt
 
 
+def test_empty_pzz_inputs_still_require_one_pzz_step():
+    prompt = OrchestratorPlanBuilder._build_prompt(ALL_AGENTS, pzz_inputs={})
+
+    for layer in (
+        "cadastral_layer",
+        "zones_layer",
+        "buildings_layer",
+        "zone_descriptions",
+        "classifier",
+    ):
+        assert f'"{layer}": false' in prompt
+    for rule in (
+        "Отсутствие входов (все false) — не повод для needs_clarification",
+        "всё равно составь\nодин шаг pzz",
+        "о недостающих файлах спросит сам агент pzz",
+        "не утверждай в task, что файлы переданы",
+        "передай его агенту pzz, сохранив файловый режим\nиз запроса",
+    ):
+        assert rule in prompt
+
+
+def test_compliance_uploads_rule_remains_in_prompt():
+    prompt = OrchestratorPlanBuilder._build_prompt(ALL_AGENTS)
+
+    assert (
+        "Без загрузок упоминание файла в тексте не означает,\nчто он передан." in prompt
+    )
+
+
 @pytest.mark.parametrize("routed", ["norms", "documents"])
 @pytest.mark.parametrize(
     "query",
