@@ -28,6 +28,9 @@ dependencies = [
     "idu-service-auth @ https://github.com/IDUclub/idu-service-auth/archive/1b8a418d9b1ab702860eb7289a3b75244666a8d8.tar.gz",
     "py7zr>=1.0.0",
     "google-adk[a2a]>=2.13.0,<3.0.0",
+    # A2A types (agent card, task states) come from the a2a.compat.v0_3 API of
+    # a2a-sdk 1.x: declared directly, not left to google-adk's extra.
+    "a2a-sdk>=1.0,<2",
     "pydantic-ai-slim[openai,mcp]>=2.64.0,<3.0.0",
 ]
 
