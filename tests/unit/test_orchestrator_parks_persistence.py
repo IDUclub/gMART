@@ -120,7 +120,7 @@ async def test_normal_parks_answer_matches_direct_history(
         "persist_history": True, "chat_id": "chat-xyz", "result": GEOMETRY,
         "economy": economy, "task_id": "park-task", "scenario_id": 772,
         "request_id": "park-run",
-    }, "tok", RoleEnum.ASSISTANT, ANALYSIS)
+    }, "tok", RoleEnum.ASSISTANT, ANALYSIS, history_key="result")
     expected = data_payloads(direct.add_complex_message.await_args.args[3])
     assert data_payloads(parts) == expected
 
