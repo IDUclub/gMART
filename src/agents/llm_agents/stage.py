@@ -14,6 +14,7 @@ build — and the requests the benchmarks freeze — are sent exactly as before.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
@@ -235,22 +236,47 @@ class LlmStage(Generic[OutputT]):
             raise TypeError(f"{self.name}: only text stages stream")
         history, prompt = from_chat_messages(messages)
         llm = GmartChatModel(llm_client, model)
+        settings = self._settings(dict(overrides))
+        # The run lives in a task of its own. pydantic-ai's streamed run holds a
+        # cancel scope and context variables that must be left in the task that
+        # entered them; a consumer that stops early (a closed client stream, an
+        # ``aclose`` from another task, a ``break``) would otherwise close them
+        # elsewhere and cancel its own caller. The queue keeps backpressure.
+        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(maxsize=1)
+
+        async def produce() -> None:
+            try:
+                async with self._agent.run_stream(
+                    prompt,
+                    message_history=history,
+                    model=llm,
+                    deps=_RunState(),
+                    model_settings=settings,
+                ) as run:
+                    async for delta in run.stream_text(delta=True, debounce_by=None):
+                        if delta:
+                            await queue.put((_DELTA, delta))
+            except Exception as exc:  # re-raised in the consumer
+                await queue.put((_ERROR, exc))
+            else:
+                await queue.put((_END, None))
+
+        producer = asyncio.create_task(produce())
         chunks: list[str] = []
         try:
-            async with self._agent.run_stream(
-                prompt,
-                message_history=history,
-                model=llm,
-                deps=_RunState(),
-                model_settings=self._settings(dict(overrides)),
-            ) as run:
-                async for delta in run.stream_text(delta=True, debounce_by=None):
-                    if delta:
-                        chunks.append(delta)
-                        yield delta
-        except UnexpectedModelBehavior:
-            if chunks:
-                raise
+            while True:
+                kind, value = await queue.get()
+                if kind == _DELTA:
+                    chunks.append(value)
+                    yield value
+                elif kind == _ERROR:
+                    if isinstance(value, UnexpectedModelBehavior) and not chunks:
+                        break  # an empty answer is the pipeline's to handle
+                    raise value
+                else:
+                    break
+        finally:
+            await _stop(producer)
         if result is not None:
             result.append(
                 StageResult(
@@ -262,6 +288,23 @@ class LlmStage(Generic[OutputT]):
                     terminal=llm.saw_done,
                 )
             )
+
+
+_DELTA, _ERROR, _END = "delta", "error", "end"
+
+
+async def _stop(task: asyncio.Task[None]) -> None:
+    """Cancel ``task`` if it still runs and wait for it to unwind.
+
+    Only the task's own cancellation is absorbed: if the caller is cancelled
+    while waiting, ``asyncio.wait`` raises and the cancellation propagates.
+    """
+
+    if not task.done():
+        task.cancel()
+    await asyncio.wait([task])
+    if not task.cancelled():
+        task.exception()  # retrieved: already delivered through the queue
 
 
 def _as_validator(

@@ -104,6 +104,10 @@ class GmartChatModel(FunctionModel):
                 supports_json_schema_output=True,
                 supports_json_object_output=True,
                 supports_tools=True,
+                # Chat servers take a system message anywhere: send it as one,
+                # untouched, instead of pydantic-ai's <system>-tagged user text
+                # (which also escapes "<system>" in what the user wrote).
+                supports_inline_system_prompts=True,
                 default_structured_output_mode="native",
             ),
         )

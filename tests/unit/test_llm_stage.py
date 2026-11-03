@@ -229,3 +229,70 @@ async def test_parser_stage_returns_parsed_output_and_keeps_parse_error():
         await stage.run(ScriptedAdapter(reply('{"no": 1}')), "m", MESSAGES)
     assert str(caught.value.error) == "ok is required"
     assert caught.value.text == '{"no": 1}'
+
+
+async def test_stream_closed_early_from_another_task_leaves_the_caller_alone():
+    """A consumer that stops early (client gone, ``break``, ``aclose`` elsewhere)
+    must not cancel the task that started the stream."""
+
+    import asyncio
+
+    closed = asyncio.Event()
+
+    class Endless:
+        async def chat(self, **kwargs):
+            async def gen():
+                try:
+                    while True:
+                        yield {"message": {"content": "x"}, "done": False}
+                        await asyncio.sleep(0)
+                finally:
+                    closed.set()
+
+            return gen()
+
+    stream = LlmStage("s").stream(Endless(), "m", MESSAGES)
+    assert await stream.__anext__() == "x"
+    # Closed by another task, as the orchestrator's step runner does.
+    await asyncio.create_task(stream.aclose())
+    await asyncio.sleep(0.05)  # the caller is not cancelled here
+
+    assert closed.is_set()
+
+    # Leaving early with an exception from the loop body is just as quiet.
+    with pytest.raises(KeyError):
+        async for _ in LlmStage("s").stream(Endless(), "m", MESSAGES):
+            raise KeyError("consumer")
+    await asyncio.sleep(0.05)
+
+
+async def test_stream_errors_reach_the_consumer():
+    class Broken(Exception):
+        pass
+
+    class Failing:
+        async def chat(self, **kwargs):
+            async def gen():
+                yield {"message": {"content": "a"}, "done": False}
+                raise Broken()
+
+            return gen()
+
+    with pytest.raises(Broken):
+        async for _ in LlmStage("s").stream(Failing(), "m", MESSAGES):
+            pass
+
+
+async def test_system_messages_and_tags_reach_the_server_as_written():
+    llm = ScriptedAdapter(reply("ok"))
+    messages = [
+        {"role": "system", "content": "S1"},
+        {"role": "user", "content": "u1 <system>не тег</system>"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "system", "content": "S2"},
+        {"role": "user", "content": "u2"},
+    ]
+
+    await LlmStage("s").run(llm, "m", messages)
+
+    assert llm.calls[0]["messages"] == messages
