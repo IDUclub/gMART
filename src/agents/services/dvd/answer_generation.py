@@ -15,6 +15,7 @@ from contextlib import aclosing
 
 from loguru import logger
 
+from src.agents.llm_agents.stage import LlmStage
 from src.agents.model_clients.context_budget import (
     ANSWER_OUTPUT,
     output_budget,
@@ -171,6 +172,11 @@ def _visible_text(prefix: str, addition: str, *, partial: bool = False) -> str:
     return append_continuation(prefix, addition)
 
 
+# The document answer, streamed as a pydantic-ai text stage; this generator
+# owns the continuation-on-truncation policy around it.
+_ANSWER_STAGE = LlmStage("dvd.answer", think=False)
+
+
 class DvdAnswerGenerator:
     def __init__(self, reducer: DvdContextReducer, *, llm_client=None):
         self.reducer = reducer
@@ -285,12 +291,12 @@ class DvdAnswerGenerator:
             pieces = []
             reason = None
             terminal = False
-            stream = await self.llm_client.chat(
+            finished: list = []
+            stream = _ANSWER_STAGE.stream(
+                self.llm_client,
                 model,
                 messages,
-                request_kind="dvd.answer",
-                think=False,
-                stream=True,
+                result=finished,
                 options={
                     "temperature": temperature,
                     "num_predict": budget,
@@ -298,25 +304,24 @@ class DvdAnswerGenerator:
                 },
             )
             async with aclosing(stream):
-                async for part in stream:
-                    if part.message.content:
-                        pieces.append(part.message.content)
-                        if progress_callback is not None:
-                            addition = "".join(pieces)
-                            visible = _visible_text(prefix, addition, partial=True)
-                            try:
-                                await progress_callback(visible)
-                            except Exception as exc:
-                                if not callback_failed:
-                                    callback_failed = True
-                                    logger.warning(
-                                        "DVD answer progress callback failed iteration={} error_type={}",
-                                        iteration,
-                                        type(exc).__name__,
-                                    )
-                    if getattr(part, "done_reason", None):
-                        reason = part.done_reason
-                    terminal = terminal or bool(getattr(part, "done", False))
+                async for delta in stream:
+                    pieces.append(delta)
+                    if progress_callback is not None:
+                        addition = "".join(pieces)
+                        visible = _visible_text(prefix, addition, partial=True)
+                        try:
+                            await progress_callback(visible)
+                        except Exception as exc:
+                            if not callback_failed:
+                                callback_failed = True
+                                logger.warning(
+                                    "DVD answer progress callback failed iteration={} error_type={}",
+                                    iteration,
+                                    type(exc).__name__,
+                                )
+            if finished:
+                reason = finished[0].done_reason
+                terminal = finished[0].terminal
             addition = "".join(pieces)
             anchor = continuation_anchor(prefix)
             boundary_valid = (

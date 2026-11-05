@@ -26,6 +26,7 @@ from typing import Any
 
 from loguru import logger
 
+from src.agents.llm_agents.stage import LlmStage
 from src.agents.services.restriction.restriction_catalog import strip_json_fence
 from src.agents.services.scenario_data.scenario_data_aggregate import (
     bounded_public_observation_context,
@@ -102,6 +103,16 @@ _JUDGE_REASONS = {
     "required_layer_not_emitted": "Требуемый географический слой не был сформирован.",
     "other": "Ответ не прошёл проверку полноты.",
 }
+
+
+# The answer judge: a JSON verdict, parsed as-is (its fields are checked by the caller).
+_JUDGE_STAGE = LlmStage(
+    "scenario.judge",
+    parser=lambda raw: json.loads(strip_json_fence(raw)),
+    schema=_JUDGE_SCHEMA,
+    think=False,
+    options={"temperature": 0, "num_predict": 400},
+)
 
 
 @dataclass
@@ -389,15 +400,7 @@ class ScenarioDataEvaluator:
             },
         ]
         try:
-            response = await self.llm_client.chat(
-                request_kind="scenario.judge",
-                model=model,
-                messages=messages,
-                think=False,
-                format=_JUDGE_SCHEMA,
-                options={"temperature": 0, "num_predict": 400},
-            )
-            payload = json.loads(strip_json_fence(response["message"]["content"]))
+            payload = (await _JUDGE_STAGE.run(self.llm_client, model, messages)).output
             verdict = payload.get("sufficient")
             if not isinstance(verdict, bool):
                 # No usable opinion. Treating that as a rejection would let a malformed judge

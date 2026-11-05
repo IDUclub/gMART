@@ -72,6 +72,8 @@ RESTRICTION_EVENTS = [
 
 @pytest.fixture
 def orchestrator(monkeypatch, fake_llm, fake_urban, state_store):
+    # These tests script the JSON planner's answer; the ADK engine has its own.
+    monkeypatch.setenv("ORCHESTRATOR_ENGINE", "planner")
     monkeypatch.setattr(
         "src.agents.model_clients.base_client.build_llm_adapter",
         lambda *a, **k: fake_llm,

@@ -48,6 +48,10 @@ services:
       NORM_GRAPH_MCP_SERVER: ${NORM_GRAPH_MCP_SERVER}
       URBAN_MCP_SERVER: ${URBAN_MCP_SERVER}
       LLM_BACKEND: ${LLM_BACKEND:-openai}
+      # adk: autonomous Google ADK orchestrator (needs tool calling on the model
+      # server, e.g. vLLM --enable-auto-tool-choice --tool-call-parser openai for
+      # gpt-oss; without it the JSON planner takes over); planner: JSON planner only.
+      ORCHESTRATOR_ENGINE: ${ORCHESTRATOR_ENGINE:-adk}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_THINK_MODE: ${OPENAI_THINK_MODE:-reasoning_effort}

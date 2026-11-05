@@ -35,6 +35,7 @@ def test_default_table():
         "scenario.answer",
         "scenario.judge",
         "orchestrator.plan",
+        "orchestrator.route",
         "simple_llm",
     }
     parsing = {
