@@ -6,6 +6,7 @@ from src.agents.services.compilance.compliance_uploads import UploadedLayer, Use
 from src.agents.services.project_files.project_params import (
     ProjectIntent,
     boundary_centre,
+    boundary_decision,
     extract_intent,
     guess_profile,
     match_option,
@@ -160,3 +161,92 @@ def test_centre_lies_inside_the_boundary():
 
     assert centre["type"] == "Point"
     assert 37.0 < centre["coordinates"][0] < 37.001
+
+
+def territory_layer(name="territory", role="project", count=1, **properties):
+    return UploadedLayer(
+        name=name,
+        role=role,
+        feature_collection={
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates": SQUARE},
+                    "properties": properties,
+                }
+                for _ in range(count)
+            ],
+        },
+    )
+
+
+def test_boundary_choice_precedes_border_and_uses_first_duplicate():
+    first = territory_layer("same")
+    second = territory_layer("same")
+    border = territory_layer("border", role="border")
+    user_files = UserFiles(("u",), [first, second, border])
+    assert boundary_decision(user_files, "same").layer is first
+    assert boundary_decision(user_files, "hull").hull
+    assert boundary_decision(user_files, "missing").error
+    assert boundary_decision(user_files).layer is None
+    assert not boundary_decision(user_files).options
+    assert first.role == "project"
+
+
+@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("tagged_objects", [False, True])
+def test_ambiguous_boundaries_offer_hull_only_with_other_tagged_objects(
+    count, tagged_objects
+):
+    layers = [territory_layer("one", count=count), territory_layer("two", count=count)]
+    if tagged_objects:
+        layers.append(territory_layer("houses", count=2, building="yes"))
+    decision = boundary_decision(UserFiles(("u",), layers))
+    assert [option["value"] for option in decision.options] == [
+        "one",
+        "two",
+        *(["hull"] if tagged_objects else []),
+        "none",
+    ]
+    assert "площадь ≈" in decision.options[0]["label"]
+
+
+def test_single_untagged_boundary_precedes_multiple_polygons_and_tagged_objects():
+    single = territory_layer()
+    user_files = UserFiles(
+        ("u",),
+        [
+            territory_layer("multiple", count=2),
+            single,
+            territory_layer("houses", count=2, building="yes"),
+        ],
+    )
+    assert boundary_decision(user_files).layer is single
+    assert all(layer.role == "project" for layer in user_files.layers)
+
+
+def test_context_candidates_only_when_no_project_objects():
+    context = territory_layer("osm_context", role="context")
+    user_files = UserFiles(("u",), [context])
+    assert [option["value"] for option in boundary_decision(user_files).options] == [
+        "osm_context",
+        "none",
+    ]
+    user_files.layers.append(territory_layer("houses", count=2, building="yes"))
+    assert boundary_decision(user_files).hull
+    assert boundary_decision(UserFiles(("u",), [])).error
+
+
+def test_layer_name_tags_prevent_automatic_boundary():
+    layer = territory_layer("formedland_poly")
+    assert boundary_decision(UserFiles(("u",), [layer])).options
+
+
+def test_boundary_area_failure_keeps_option(monkeypatch):
+    def fail(*args, **kwargs):
+        raise ValueError("area unavailable")
+
+    monkeypatch.setattr("src.agents.services.project_files.project_params.Geod", fail)
+    decision = boundary_decision(UserFiles(("u",), [territory_layer(count=2)]))
+    assert decision.options[0]["label"] == "«territory» — объектов: 2"

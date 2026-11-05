@@ -23,6 +23,7 @@ from src.agents.dependencies.dependencies import (
 from src.agents.routers.compliance_controller import compliance_router
 from src.agents.routers.project_a2a_controller import project_a2a_router
 from src.agents.routers.project_controller import project_router
+from src.agents.schema.project_response import ProjectResponse
 from src.agents.services.compilance.compliance_uploads import ComplianceUploadService
 from src.agents.services.orchestrator.orchestrator_service import OrchestratorService
 from src.agents.services.pipeline_state import PipelineStateStore
@@ -31,6 +32,8 @@ from src.agents.services.service_entities.orchestrator_plan import OrchestratorA
 from src.common.service_auth import internal_user_context_jwt
 
 ALICE = "e30.eyJzdWIiOiJhbGljZSJ9.sig"  # {"sub": "alice"}
+
+
 CHAT = "550e8400-e29b-41d4-a716-446655440000"
 GEOJSON = {
     "type": "FeatureCollection",
@@ -42,6 +45,10 @@ GEOJSON = {
         }
     ],
 }
+
+
+def test_project_ready_response_is_valid():
+    assert ProjectResponse(type="project_ready", content={}).type == "project_ready"
 
 
 class Service:
