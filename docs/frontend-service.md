@@ -366,10 +366,14 @@ GeoJSON, ZIP с GeoJSON/Shapefile, GeoPackage; до 50 МиБ; хранятся 
 `GET` с параметрами `request`, `upload_ids` (повторяющийся), `project_name`,
 `scenario_name`, `territory_id`, `functional_zone_type_id`, `existing_objects`.
 Вопросы приходят событием `clarification` с `content.kind` (`reuse_files`,
-`entity_mapping`, `region`, `profile`, `existing_objects`, `retry`) и `options`; ответ —
+`boundary`, `entity_mapping`, `region`, `profile`, `existing_objects`, `retry`) и `options`; ответ —
 следующий запрос в тот же `chat_id`. Идентификаторы созданного — в событиях
 `project_created`, `scenario_created` и `project_summary`. Во встроенном UI — агент
 «Проект из файлов». Подробнее — [`project-from-files.md`](project-from-files.md).
+
+Текст вопроса `existing_objects` не содержит вариантов ответа: показывайте три
+варианта из `content.options` в переданном порядке. Вопрос `boundary` содержит
+нумерованные варианты в тексте и в `options`; ответ можно передать номером или значением.
 
 Если проверена хотя бы одна норма, поток закрывается событием `file` со ссылкой на
 Markdown-отчёт (см. [`file`](#file)). Та же ссылка сохраняется в историю чата как

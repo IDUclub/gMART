@@ -1,17 +1,20 @@
 """Create a project and its scenario in Urban API from the user's files.
 
 The dialogue settles, in order: which uploads to use (the chat's earlier files are
-offered, never taken silently), the Urban API type of every group of objects, the
-region, the scenario profile and what to do with the objects already inside the
-boundary. Each answer is kept with the dialogue (by chat), so the next message
-continues where the question was asked. Then ``ProjectCreator`` makes the calls;
-objects that failed are reported and a «да» to the retry question saves only them.
+offered, never taken silently), the territory boundary, the Urban API type of every
+group of objects, the region, the scenario profile and what to do with the objects
+already inside the boundary. Each answer is kept with the dialogue (by chat),
+so the next message continues where the question was asked. Then ``ProjectCreator``
+makes the calls; objects that failed are reported and a «да» to the retry question
+saves only them.
+A single territory polygon is sufficient; its role changes only for this run.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -48,10 +51,13 @@ from src.agents.services.project_files.project_creation import (
     describe_error,
 )
 from src.agents.services.project_files.project_params import (
+    BOUNDARY_ERROR,
+    BOUNDARY_QUESTION,
     EXISTING_POLICIES,
     EXISTING_TITLES,
     ProjectIntent,
     all_regions,
+    boundary_decision,
     extract_intent,
     guess_profile,
     match_option,
@@ -367,6 +373,14 @@ class ProjectFilesService(BaseLlmService):
             except AgentsBaseException:
                 return "new_request"  # the uploads expired
             return "answered"
+        if stage == "boundary":
+            option = match_option(reply, options)
+            if option is None:
+                return "unresolved"
+            if option["value"] == "none":
+                return "declined"
+            context["boundary_choice"] = option["value"]
+            return "answered"
         if stage == "region":
             option = match_option(reply, options)
             if option is None:
@@ -477,9 +491,10 @@ class ProjectFilesService(BaseLlmService):
                 return
             if not requested:
                 yield self._text(
-                    "Для создания проекта загрузите файлы проекта (GeoJSON, ZIP с "
+                    "Для создания проекта загрузите хотя бы один файл с полигоном границы "
+                    "территории (GeoJSON, ZIP с "
                     "GeoJSON или Shapefile, GeoPackage) через POST /compliance/uploads "
-                    "и передайте их upload_ids."
+                    "и передайте его upload_ids."
                 )
                 return
             context["upload_ids"] = requested
@@ -490,25 +505,58 @@ class ProjectFilesService(BaseLlmService):
         files = await self.uploads.load(
             context["upload_ids"], owner, namespace="project"
         )
+        decision = boundary_decision(files, context.get("boundary_choice"))
+        if decision.options:
+            async for event in self._ask(
+                key,
+                context,
+                "boundary",
+                BOUNDARY_QUESTION
+                + " "
+                + "; ".join(
+                    f"{number}. {option['label']}"
+                    for number, option in enumerate(decision.options, start=1)
+                ),
+                decision.options,
+            ):
+                yield event
+            return
+        if decision.error:
+            yield self._text(BOUNDARY_ERROR)
+            return
+        # Other offered territory layers are alternatives, not design objects.
+        alternatives = (
+            {
+                option["value"]
+                for option in boundary_decision(files).options
+                if option["value"] not in {"hull", "none"}
+            }
+            if decision.layer is not None
+            else set()
+        )
+        layers = [
+            replace(layer, role="border") if layer is decision.layer else layer
+            for layer in files.layers
+            if layer is decision.layer or layer.name not in alternatives
+        ]
         project_files = UserFiles(
             upload_ids=files.upload_ids,
-            layers=[layer for layer in files.layers if layer.role != "context"],
+            layers=[layer for layer in layers if layer.role != "context"],
             confirmed_mapping=files.confirmed_mapping,
             classified=files.classified,
         )
-        if not project_files.has_project:
-            yield self._text(
-                "В файлах нет объектов проекта: все слои определены как окружение или "
-                "граница. Укажите роли слоёв (PATCH /compliance/uploads/{upload_id}) "
-                "и повторите запрос."
+        boundary_files = project_files
+        if decision.layer is not None:
+            boundary_files = replace(
+                project_files, layers=[replace(decision.layer, role="border")]
             )
-            return
-        boundary = boundary_geometry(project_files)
+        elif decision.hull:
+            boundary_files = replace(
+                project_files, layers=project_files.by_role("project")
+            )
+        boundary = boundary_geometry(boundary_files)
         if boundary is None or boundary.get("type") not in _POLYGONS:
-            yield self._text(
-                "Не удалось определить границу проекта: загрузите слой границы "
-                "(полигон) или объекты, охватывающие площадь."
-            )
+            yield self._text(BOUNDARY_ERROR)
             return
 
         # 3. The Urban API type of every group of objects.
@@ -548,7 +596,7 @@ class ProjectFilesService(BaseLlmService):
             return
         specs, problems = creation_specs(mapping, types)
         zones, objects, rejected = build_items(project_files, specs)
-        if not zones and not objects:
+        if project_files.has_project and not zones and not objects:
             yield self._text(
                 "Ни один объект файлов не сопоставлен с типами Urban API — проект не "
                 "создан. Сопоставление показано в событии user_files."
@@ -608,6 +656,8 @@ class ProjectFilesService(BaseLlmService):
         # 7. The objects already inside the boundary.
         if context.get("existing_policy") is None:
             policy = inputs.existing_objects or intent.existing_objects
+            if policy is None and not zones and not objects:
+                policy = "keep"
             if policy is None:
                 existing = await self._existing_objects(token, boundary)
                 if existing or zones:
@@ -816,12 +866,7 @@ class ProjectFilesService(BaseLlmService):
             if has_zones
             else ""
         )
-        return (
-            f"{head}{zones} Что с ними сделать в новом сценарии? "
-            "1. Заменить объекты тех же типов, что в файлах; 2. удалить все "
-            "существующие объекты внутри границы; 3. оставить, а объекты файлов "
-            "добавить поверх."
-        )
+        return f"{head}{zones} Что с ними сделать в новом сценарии?"
 
     async def _ask(
         self,
@@ -928,11 +973,12 @@ class ProjectFilesService(BaseLlmService):
                 objects["by_type"].items(), key=lambda item: -item[1]["total"]
             )
         )
-        lines.append(
-            f"Объекты: сохранено {objects['saved']} из {objects['total']}"
-            + (f" ({rows})" if rows else "")
-            + "."
-        )
+        if objects["total"]:
+            lines.append(
+                f"Объекты: сохранено {objects['saved']} из {objects['total']}"
+                + (f" ({rows})" if rows else "")
+                + "."
+            )
         if objects["services"]:
             lines.append(
                 "Сервисы: "
@@ -968,6 +1014,11 @@ class ProjectFilesService(BaseLlmService):
 
     @staticmethod
     def _declined_text(stage: str, context: dict[str, Any]) -> str:
+        if stage == "boundary":
+            return (
+                "Хорошо, проект не создан. Загрузите файл с полигоном границы территории "
+                "через POST /compliance/uploads и повторите запрос с его upload_ids."
+            )
         if stage == "reuse_files":
             return (
                 "Хорошо, прежние файлы не используются. Загрузите новые файлы через "

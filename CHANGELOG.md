@@ -1,3 +1,9 @@
+## v0.35.3 (2026-11-05)
+
+[fix/project-from-polygon](https://github.com/IDUclub/gMART/pull/275) (#275)
+
+- fix(agents): создавать проект из одного файла с полигоном территории и уточнять границу при неоднозначности
+
 ## v0.35.2 (2026-11-03)
 
 [fix/orchestrator-pzz-files](https://github.com/IDUclub/gMART/pull/274) (#274)
