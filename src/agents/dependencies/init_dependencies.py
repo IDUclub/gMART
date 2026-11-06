@@ -49,6 +49,9 @@ from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.synapse.synapse_gateway_service import SynapseGatewayService
 from src.agents.services.synapse.synapse_run_store import SynapseRunStore
 from src.agents.services.synapse.system_service import SystemService
+from src.agents.services.urban_analysis.urban_analysis_service import (
+    UrbanAnalysisService,
+)
 from src.common.service_auth import build_optional_service_auth, build_service_auth
 
 
@@ -157,6 +160,14 @@ def init_dependencies() -> dict[str, object]:
         ComplianceUploadService(pipeline_state_store),
         user_token_verifier=synapse_caller_verifier,
     )
+    urban_analysis_service = UrbanAnalysisService(
+        restriction_parser_service,
+        provision_service,
+        pzz_service,
+        urban_api_client,
+        pipeline_state_store,
+        file_store=file_store,
+    )
     orchestrator_service = OrchestratorService(
         app_config.OLLAMA_URL,
         chat_storage_client,
@@ -170,6 +181,7 @@ def init_dependencies() -> dict[str, object]:
         scenario_data_service=scenario_data_service,
         pzz_service=pzz_service,
         project_files_service=project_files_service,
+        urban_analysis_service=urban_analysis_service,
     )
     return {
         "app_config": app_config,
@@ -185,6 +197,7 @@ def init_dependencies() -> dict[str, object]:
         "dvd_rag_service": dvd_rag_service,
         "normgraph_rag_service": normgraph_rag_service,
         "orchestrator_service": orchestrator_service,
+        "urban_analysis_service": urban_analysis_service,
         "pzz_service": pzz_service,
         "pzz_a2a_service": PzzA2AService(pzz_service),
         "project_files_service": project_files_service,

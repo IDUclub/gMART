@@ -3441,6 +3441,7 @@ function labelAgent(key?: string) {
         scenario_data: "Данные сценария",
         documents: "Документы",
         norms: "Нормы",
+        urban_analysis_report: "Итоговый отчёт",
         orchestrator: "Оркестратор",
         synapse: "Synapse",
         llm: "Ассистент",

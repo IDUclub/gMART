@@ -17,7 +17,7 @@ StepStatus = Literal["completed", "failed", "suspended", "needs_clarification"]
 class OrchestratorStatusResponse(BaseModel):
     """Status update for an orchestrator-level stage."""
 
-    status: Literal["planning"]
+    status: Literal["planning", "urban_analysis"]
     text: str
 
 
