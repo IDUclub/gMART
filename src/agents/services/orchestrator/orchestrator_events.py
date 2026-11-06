@@ -136,6 +136,18 @@ def collect_digest(collected: dict[str, Any], item: dict) -> None:
     content = item.get("content") or {}
     if not isinstance(content, dict):
         return
+    event_id = content.get("event_id")
+    if event_id is not None:
+        seen = collected.setdefault("event_ids", set())
+        if event_id in seen:
+            return
+        seen.add(event_id)
+    if item.get("type") == "feature_collection":
+        collected["feature_collection"] = {
+            key: value for key, value in content.items() if key != "event_id"
+        }
+    elif item.get("type") == "status" and content.get("status") == "economy":
+        collected["parks_economy"] = content.get("economy") or {}
     if item.get("type") == "chunk":
         iteration = int(content.get("iteration") or 0)
         collected["chunks"].setdefault(iteration, []).append(content.get("text") or "")

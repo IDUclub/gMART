@@ -83,6 +83,7 @@ class AgentsAppConfig:
     NORM_GRAPH_MCP_URL: str | None
     PZZ_MCP_URL: str | None
     PZZ_API_URL: str | None
+    PARKS_API_URL: str | None
     URBAN_MCP_URL: str | None
     CHAT_STORAGE_URL: str
     URBAN_API_URL: str
@@ -136,6 +137,7 @@ class AgentsAppConfig:
         synapse_auth_audience: str | None = None,
         pzz_mcp_url: str | None = None,
         pzz_api_url: str | None = None,
+        parks_api_url: str | None = None,
     ) -> None:
 
         if not ollama_api_url:
@@ -167,6 +169,7 @@ class AgentsAppConfig:
         # so existing deployments without NORM_GRAPH_MCP_SERVER still start; the /norms
         # endpoints raise a clear error if it is unset (see dependencies.get_normgraph_mcp_client).
         self.NORM_GRAPH_MCP_URL = norm_graph_mcp_url or None
+        self.PARKS_API_URL = parks_api_url.rstrip("/") if parks_api_url else None
         self.PZZ_MCP_URL = pzz_mcp_url or None
         self.PZZ_API_URL = pzz_api_url.rstrip("/") if pzz_api_url else None
         # Optional so existing deployments keep starting. The scenario-data agent
@@ -239,6 +242,7 @@ class AgentsAppConfig:
             "DVD_API_URL": self.DVD_API_URL or "",
             "PZZ_MCP_URL": self.PZZ_MCP_URL or "",
             "PZZ_API_URL": self.PZZ_API_URL or "",
+            "PARKS_API_URL": self.PARKS_API_URL or "",
             "NORM_GRAPH_MCP_URL": self.NORM_GRAPH_MCP_URL or "",
             "URBAN_MCP_URL": self.URBAN_MCP_URL or "",
             "CHAT_STORAGE_URL": self.CHAT_STORAGE_URL,

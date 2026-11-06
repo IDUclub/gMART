@@ -1,6 +1,7 @@
 from pydantic import Field
 
 from src.agents.dto.llm_request_dto import SimpleRequestDTO
+from src.agents.dto.parks_request_dto import ParksInputs
 from src.agents.dto.pzz_request_dto import PzzInputs
 
 
@@ -52,6 +53,7 @@ class OrchestratorRequestDTO(SimpleRequestDTO):
 
 class OrchestratorBodyDTO(OrchestratorRequestDTO):
     pzz_inputs: PzzInputs | None = None
+    parks_inputs: ParksInputs | None = None
     compliance_upload_ids: list[str] | None = Field(
         default=None,
         examples=[["5b1f0c3e-6a77-4d0e-9e43-1f3b1d6b2c11"]],

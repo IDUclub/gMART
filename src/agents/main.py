@@ -30,6 +30,8 @@ from src.agents.routers.mcp_diagnostics_controller import mcp_diagnostics_router
 from src.agents.routers.norms_a2a_controller import norms_a2a_router
 from src.agents.routers.norms_controller import norms_router
 from src.agents.routers.orchestrator_controller import orchestrator_router
+from src.agents.routers.parks_a2a_controller import parks_a2a_router
+from src.agents.routers.parks_controller import parks_router
 from src.agents.routers.project_a2a_controller import project_a2a_router
 from src.agents.routers.project_controller import project_router
 from src.agents.routers.provision_a2a_controller import provision_a2a_router
@@ -88,6 +90,7 @@ async def lifespan(app: FastAPI):
             yield
         finally:
             purge_task.cancel()
+            await app_deps["parks_service"].close()
             if synapse_service is not None:
                 await synapse_service.close()
             for key in ("chat_storage_json_handler", "urban_api_json_handler"):
@@ -135,6 +138,8 @@ app.include_router(dvd_router)
 app.include_router(mcp_diagnostics_router)
 app.include_router(norms_router)
 app.include_router(pzz_router)
+app.include_router(parks_router)
+app.include_router(parks_a2a_router)
 app.include_router(pzz_a2a_router)
 app.include_router(project_router)
 app.include_router(project_a2a_router)
