@@ -76,3 +76,34 @@ async def test_generate_chat_title_returns_unique_title_on_success():
     title = await svc.generate_chat_title("m", "запрос", "", ["Другой чат"])
 
     assert title == "Анализ озеленения"
+
+
+@pytest.mark.parametrize(
+    "response", ["\n\nПроверка норм по школам", "  Проверка норм по школам\r\n\t"]
+)
+async def test_generate_chat_title_strips_surrounding_whitespace(response):
+    svc = _service()
+    svc.llm_client = _GenOk(response)
+
+    title = await svc.generate_chat_title("m", "запрос", "", [])
+
+    assert title == "Проверка норм по школам"
+
+
+async def test_generate_chat_title_checks_uniqueness_after_stripping():
+    svc = _service()
+    svc.llm_client = SimpleNamespace(
+        generate=AsyncMock(
+            side_effect=[
+                SimpleNamespace(response="\n\nПроверка норм по школам"),
+                SimpleNamespace(response="\nПроверка школьных участков\n"),
+            ]
+        )
+    )
+
+    title = await svc.generate_chat_title(
+        "m", "запрос", "", ["Проверка норм по школам"]
+    )
+
+    assert title == "Проверка школьных участков"
+    assert svc.llm_client.generate.await_count == 2

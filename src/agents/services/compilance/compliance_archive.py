@@ -239,12 +239,19 @@ def llm_summary(summary):
 
 def build_summary_report(summary):
     results = summary.get("results", [])
+    territory = summary.get("territory")
+    territory_description = (
+        f"действуют — {territory.get('documents_in_force', 0)}; "
+        f"не действуют — {territory.get('documents_out_of_force', 0)}."
+        if territory
+        else "сведения отсутствуют."
+    )
     lines = [
         "# Сводный отчёт о проверке норм",
         "",
         f"Сценарий: {summary.get('scenario_id', 'files')}. Время: {summary.get('created_at', '')}.",
         f"Область: {(summary.get('scope') or {}).get('label', 'все применимые нормы')}.",
-        f"Документы на территории: {_json(summary.get('territory', {}))}",
+        f"Документы на территории: {territory_description}",
         "",
     ]
     counts = Counter(
@@ -524,15 +531,28 @@ class ComplianceArchive:
             )
             if zone is not None and collection is zone.zones:
                 role = "zone"
-            filename = f"layers/{_component(role)}__{_component(name)}.geojson"
+            stem = _component(name)
+            if len(stem) > 48:
+                # Empty-zone aliases include a UUID; keep Windows cache paths
+                # short without changing the replay name or merging inputs.
+                digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+                stem = f"{stem[:24]}__{digest}"
+            filename = f"layers/{_component(role)}__{stem}.geojson"
             self._write(folder / filename, _json(collection))
             origins = []
             for call in record["tool_calls"]:
                 function = call["function"]
                 args = function["arguments"]
-                matches = name == args.get("layer_name") or (
-                    name == "project_territory"
-                    and function["name"] == "GetProjectTerritory"
+                matches = (
+                    name == args.get("layer_name")
+                    or (
+                        name == "project_territory"
+                        and function["name"] == "GetProjectTerritory"
+                    )
+                    or (
+                        function["name"] == "GetPhysicalObjects"
+                        and name in args.get("physical_objects_names", [])
+                    )
                 )
                 if matches:
                     origins.append(function["name"])
@@ -577,8 +597,18 @@ class ComplianceArchive:
             }
             refs = {}
             for name, layer in zone.input_layers.items():
-                if name in shared and shared[name] == layer:
-                    refs[name] = ["shared", name]
+                # Pool keys include entity types; replay aliases need not match
+                # those keys. Reference the shared collection under its own key.
+                shared_key = next(
+                    (
+                        key
+                        for key, collection in shared.items()
+                        if collection is layer or collection == layer
+                    ),
+                    None,
+                )
+                if shared_key is not None:
+                    refs[name] = ["shared", shared_key]
                 else:
                     key = hashlib.sha256(_json(layer).encode("utf-8")).hexdigest()
                     extra[key] = layer

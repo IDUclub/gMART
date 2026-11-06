@@ -1,3 +1,79 @@
+## v0.37.0 (2026-11-06)
+
+[feat/ICII-227-urban-planning-analysis](https://github.com/IDUclub/gMART/pull/277) (#277)
+
+- feat(agents): добавить в оркестратор режим градостроительного анализа сценария
+
+## v0.36.0 (2026-11-06)
+
+[feat/ICII-239-physical-objects-in-compilance](https://github.com/IDUclub/gMART/pull/276) (#276)
+
+- feat(idu_mcp): добавить GetPhysicalObjectsByGeometry для выборки физических объектов по геометрии зон
+- feat(agents): использовать by_geometry для физических объектов без атрибутных требований в compliance
+- test: возвращать физические объекты под layer_name в фейке IDU MCP
+
+## v0.35.3 (2026-11-05)
+
+[fix/project-from-polygon](https://github.com/IDUclub/gMART/pull/275) (#275)
+
+- fix(agents): создавать проект из одного файла с полигоном территории и уточнять границу при неоднозначности
+
+## v0.35.2 (2026-11-03)
+
+[fix/orchestrator-pzz-files](https://github.com/IDUclub/gMART/pull/274) (#274)
+
+- build(deps): добавить google-adk и pydantic-ai для агентного слоя
+- feat(agents): слой LLM-этапов на pydantic-ai поверх BaseLlmAdapter
+- refactor(agents): перевести LLM-этапы пайплайнов на pydantic-ai
+- feat(orchestrator): автономный оркестратор на Google ADK
+- refactor(a2a): перейти с python-a2a на официальный a2a-sdk
+- docs(agents): описать агентный слой на ADK и pydantic-ai
+- chore: игнорировать lock-файлы ротации логов
+- revert: откатить миграцию на google-adk/pydantic-ai, запушенную в dev без ревью
+- fix(agents): перечислять коды missing_code и области source_scope в промпте проверки ответа по данным сценария
+- v0.35.1 (fix/scenario-judge-prompt) (#271)
+- fix(agents): направлять запрос ПЗЗ по файлам агенту pzz и при отсутствии загрузок, не уточняя у пользователя
+
+## v0.35.1 (2026-11-03)
+
+[fix/scenario-judge-prompt](https://github.com/IDUclub/gMART/pull/271) (#271)
+
+- fix(agents): перечислять коды missing_code и области source_scope в промпте проверки ответа по данным сценария
+
+## v0.35.0 (2026-11-02)
+
+[feat/llm-stage-exporter](https://github.com/IDUclub/gMART/pull/270) (#270)
+
+- feat(benchmarks): добавить поэтапный бенчмарк LLM-этапов агентов
+- refactor(benchmarks): заменить раннер экспортом замороженных запросов этапов
+
+## v0.34.5 (2026-11-02)
+
+[fix/restriction-plan-provenance](https://github.com/IDUclub/gMART/pull/269) (#269)
+
+- fix(agents): не просить модель копировать provenance в плане ограничений и обрывать зацикленный структурированный вывод
+
+## v0.34.4 (2026-11-02)
+
+[fix/pzz-llm-prompts](https://github.com/IDUclub/gMART/pull/268) (#268)
+
+- fix(agents): описывать поля и допустимые значения в промптах ПЗЗ при структурированном выводе
+
+## v0.34.3 (2026-11-01)
+
+[fix/vllm-llm-requests](https://github.com/IDUclub/gMART/pull/267) (#267)
+
+- fix(agents): передавать запрос пользователя отдельным сообщением при сопоставлении типов данных сценария
+- fix(agents): заполнять план поиска по документам целиком при структурированном выводе vLLM
+- fix(agents): передавать данные отдельным сообщением в плане выполнения данных сценария и сжатии контекста
+
+## v0.34.2 (2026-10-30)
+
+[fix/ICII-226-review-fixes](https://github.com/IDUclub/gMART/pull/266) (#266)
+
+- fix: исправить сводку проверки норм и названия чатов
+- test: обновить интеграционные проверки норм и восстановления из Redis
+
 ## v0.34.1 (2026-10-29)
 
 [docs/ICII-226-compliance-status-docs](https://github.com/IDUclub/gMART/pull/265) (#265)

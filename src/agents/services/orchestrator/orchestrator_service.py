@@ -14,7 +14,6 @@ from src.agents.api_clients.chat_storage_client.request_models import (
     FilePartRequest,
     StructuredPartRequest,
     TablePartRequest,
-    TablePayload,
     TextPartRequest,
     TextPayload,
 )
@@ -28,8 +27,8 @@ from src.agents.services.compilance.compliance_user_files import pending_candida
 from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.layer_attributes import compact_layer_event
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
+from src.agents.services.orchestrator import orchestrator_events as events
 from src.agents.services.orchestrator.orchestrator_catalog import (
-    AGENT_CATALOG,
     AgentCatalogEntry,
     available_agents,
 )
@@ -49,6 +48,10 @@ from src.agents.services.service_entities.orchestrator_plan import (
     OrchestratorPlanMode,
     OrchestratorStep,
 )
+from src.agents.services.urban_analysis.urban_analysis_service import (
+    UrbanAnalysisResult,
+    UrbanAnalysisService,
+)
 
 if TYPE_CHECKING:
     from src.agents.mcp_clients.dvd_mcp_client import DvdMcpClient
@@ -60,11 +63,6 @@ if TYPE_CHECKING:
     from src.agents.services.project_files.project_files_service import (
         ProjectFilesService,
     )
-
-# Inner sub-agent event types that are never forwarded to the client: the outer
-# stream announces the step itself (step_started) and owns the chat lifecycle.
-_SUPPRESSED_INNER_EVENTS = {"pipeline_started", "service_event"}
-
 
 # Read-only QA agents whose steps never depend on another step's result.
 _INDEPENDENT_AGENTS = {OrchestratorAgent.NORMS, OrchestratorAgent.DOCUMENTS}
@@ -146,6 +144,7 @@ class OrchestratorService(BaseLlmService):
         pzz_service: PzzService | None = None,
         project_files_service: "ProjectFilesService | None" = None,
         parks_service=None,
+        urban_analysis_service: UrbanAnalysisService | None = None,
     ) -> None:
         super().__init__(ollama_host, chat_storage_client, urban_api_client)
         self.state_store = state_store
@@ -155,6 +154,7 @@ class OrchestratorService(BaseLlmService):
         self.pzz_service = pzz_service
         self.project_files_service = project_files_service
         self.parks_service = parks_service
+        self.urban_analysis_service = urban_analysis_service
         self.dvd_service = dvd_service
         self.normgraph_service = normgraph_service
         self.app_config = app_config
@@ -333,6 +333,7 @@ class OrchestratorService(BaseLlmService):
                 scenario_id=scenario_id,
                 pzz_inputs=pzz_inputs,
                 compliance_uploads=len(compliance_upload_ids or []),
+                urban_analysis_available=self.urban_analysis_service is not None,
             )
         )
         # An answer to a pending mapping continues on the files it was asked about.
@@ -349,6 +350,48 @@ class OrchestratorService(BaseLlmService):
             if persist_history:
                 self._schedule_persist_text(token, chat_id, question, scenario_id)
             await self.state_store.set_status(request_id, PipelineStatus.DONE)
+            return
+
+        if plan.mode == OrchestratorPlanMode.URBAN_ANALYSIS:
+            result = UrbanAnalysisResult()
+            file_events = []
+            pipeline = self.urban_analysis_service.run_urban_analysis_pipeline(
+                idu_mcp_client=idu_mcp_client,
+                effects_mcp_client=effects_mcp_client,
+                dvd_mcp_client=dvd_mcp_client,
+                normgraph_mcp_client=normgraph_mcp_client,
+                pzz_mcp_client=pzz_mcp_client,
+                token=token,
+                model=model,
+                temperature=temperature,
+                user_query=user_query,
+                scenario_id=scenario_id,
+                pzz_inputs=pzz_inputs,
+                request_id=request_id,
+                result=result,
+            )
+            try:
+                async for event in pipeline:
+                    if event.get("type") == "orchestrator_final":
+                        result.steps = event["content"]["steps"]
+                    elif event.get("type") == "file":
+                        file_events.append(event)
+                    yield await self._buf(request_id, event)
+            finally:
+                await pipeline.aclose()
+            await self.state_store.set_status(request_id, result.status)
+            if persist_history:
+                self._schedule_persist_summary(
+                    token,
+                    chat_id,
+                    result.steps,
+                    scenario_id,
+                    table_parts=result.table_parts,
+                    file_parts=[
+                        RestrictionParserService._pipeline_item_to_chat_part(item)
+                        for item in file_events
+                    ],
+                )
             return
 
         # ── Execution ──────────────────────────────────────────────────
@@ -665,16 +708,11 @@ class OrchestratorService(BaseLlmService):
             )
 
             status = "completed"
-            collected: dict[str, Any] = {"chunks": {}, "notes": []}
+            observation = events.StepObservation()
             if step_number == resume_step:
                 for item in resume_events or []:
-                    self._collect_digest(collected, item)
-                    if item["type"] == "clarification":
-                        status = "needs_clarification"
-                        collected["notes"].append(item["content"]["question"])
-                    elif item["type"] == "error":
-                        status = "failed"
-            step_tables: list[TablePartRequest] = []
+                    observation.observe(item)
+                status = observation.status
             try:
                 pipeline = (
                     started[1]
@@ -689,37 +727,14 @@ class OrchestratorService(BaseLlmService):
                     )
                 )
                 async for item in pipeline:
-                    if item.get("type") in _SUPPRESSED_INNER_EVENTS:
+                    if not observation.observe(item):
                         continue
-                    if item.get("type") == "file":
-                        # File links are top-level events that close the stream.
-                        file_events.append(item)
-                        continue
-                    self._collect_digest(collected, item)
-                    table_part = self._table_part(item)
-                    if table_part is not None:
-                        step_tables.append(table_part)
                     yield await self._buf(
                         request_id,
                         self._step_event(step_number, step, item),
                     )
-                    if item.get("type") in {"error", "pipeline_failed"}:
-                        status = "failed"
-                        break
-                    if item.get("type") == "clarification":
-                        status = "needs_clarification"
-                        content = item.get("content") or {}
-                        collected = {
-                            "chunks": {},
-                            "notes": [
-                                content.get("question")
-                                or content.get("text")
-                                or "Для выполнения шага требуется уточнение пользователя."
-                            ],
-                        }
-                        break
-                    if item.get("type") == "pipeline_suspended":
-                        status = "suspended"
+                    if item.get("type") in events.TERMINAL_STATUSES:
+                        status = observation.status
                         break
             except PipelineSuspendedError:
                 status = "suspended"
@@ -729,7 +744,8 @@ class OrchestratorService(BaseLlmService):
                 )
                 status = "failed"
 
-            digest = self._digest_from_collected(collected)
+            file_events.extend(observation.files)
+            digest = self._digest_from_collected(observation.collected)
             if status in {"failed", "suspended"}:
                 # Streamed text can be an unverified draft. Never turn a failed
                 # draft into a saved answer or evidence for a later step.
@@ -745,9 +761,9 @@ class OrchestratorService(BaseLlmService):
             summary_steps.append(self._summary_step(step_number, step, status, digest))
             if status == "completed":
                 digests.append((step, digest))
-                table_parts.extend(step_tables)
+                table_parts.extend(observation.tables)
                 if step.agent == OrchestratorAgent.PARKS and parks_results is not None:
-                    parks_results[step_number] = collected
+                    parks_results[step_number] = observation.collected
             elif status == "failed":
                 # Agents fetch their own scenario data, so later steps still run.
                 # One that needed this result is told it is missing instead of
@@ -949,46 +965,10 @@ class OrchestratorService(BaseLlmService):
 
     @staticmethod
     def _collect_digest(collected: dict[str, Any], item: dict[str, Any]) -> None:
-        content = item.get("content") or {}
-        if not isinstance(content, dict):
-            return
-        # Park events have durable sequence IDs. Re-seeding from the outer
-        # buffer and attaching to the inner stream must not repeat text or data.
-        event_id = content.get("event_id")
-        if event_id is not None:
-            seen = collected.setdefault("event_ids", set())
-            if event_id in seen:
-                return
-            seen.add(event_id)
-        if item.get("type") == "feature_collection":
-            collected["feature_collection"] = {
-                key: value for key, value in content.items() if key != "event_id"
-            }
-        elif item.get("type") == "status" and content.get("status") == "economy":
-            collected["parks_economy"] = content.get("economy") or {}
-        if item.get("type") == "chunk":
-            # DVD/norms tag chunks with the draft iteration; only the last
-            # (accepted) draft belongs in the digest, so texts are keyed by it.
-            iteration = int(content.get("iteration") or 0)
-            collected["chunks"].setdefault(iteration, []).append(
-                content.get("text") or ""
-            )
-        elif item.get("type") == "feature_collection" and content.get("name"):
-            collected["notes"].append(f"Построен слой «{content['name']}».")
-        elif item.get("type") == "table" and (
-            content.get("title") or content.get("name")
-        ):
-            title = content.get("title") or content.get("name")
-            collected["notes"].append(f"Сформирована таблица «{title}».")
+        events.collect_digest(collected, item)
 
     def _digest_from_collected(self, collected: dict[str, Any]) -> str:
-        chunks: dict[int, list[str]] = collected["chunks"]
-        text = "".join(chunks[max(chunks)]).strip() if chunks else ""
-        parts = [part for part in (text, " ".join(collected["notes"])) if part]
-        digest = "\n".join(parts)
-        if len(digest) > self.DIGEST_MAX_CHARS:
-            digest = digest[: self.DIGEST_MAX_CHARS - 1].rstrip() + "…"
-        return digest
+        return events.digest_from_collected(collected, self.DIGEST_MAX_CHARS)
 
     # ------------------------------------------------------------------
     # Chat storage persistence (combined assistant answer)
@@ -1094,15 +1074,7 @@ class OrchestratorService(BaseLlmService):
 
     @staticmethod
     def _table_part(item: dict[str, Any]) -> TablePartRequest | None:
-        if item.get("type") != "table" or not isinstance(item.get("content"), dict):
-            return None
-        try:
-            return TablePartRequest(
-                kind="table", payload=TablePayload.model_validate(item["content"])
-            )
-        except Exception as exc:
-            logger.warning(f"Orchestrator: could not persist table event: {exc}")
-            return None
+        return events.table_part(item)
 
     @staticmethod
     def _log_persist_result(task: asyncio.Task) -> None:
@@ -1122,32 +1094,18 @@ class OrchestratorService(BaseLlmService):
 
     @staticmethod
     def _agent_title(agent: OrchestratorAgent | str) -> str:
-        entry: AgentCatalogEntry | None = AGENT_CATALOG.get(OrchestratorAgent(agent))
-        return entry.title if entry else str(agent)
+        return events.agent_title(agent)
 
     @staticmethod
     def _pipeline_started_event(request_id: str) -> dict:
-        return {"type": "pipeline_started", "content": {"request_id": request_id}}
+        return events.pipeline_started_event(request_id)
 
     @staticmethod
     def _status(status: str, text: str) -> dict:
-        return {"type": "status", "content": {"status": status, "text": text}}
+        return events.status_event(status, text)
 
     def _plan_event(self, plan: OrchestratorPlan) -> dict:
-        return {
-            "type": "plan",
-            "content": {
-                "steps": [
-                    {
-                        "step": number,
-                        "agent": step.agent.value,
-                        "agent_title": self._agent_title(step.agent),
-                        "task": step.task,
-                    }
-                    for number, step in enumerate(plan.steps, start=1)
-                ]
-            },
-        }
+        return events.plan_event(plan)
 
     @staticmethod
     def _step_started_event(
@@ -1156,73 +1114,34 @@ class OrchestratorService(BaseLlmService):
         step_request_id: str,
         task: str,
     ) -> dict:
-        return {
-            "type": "step_started",
-            "content": {
-                "step": step_number,
-                "agent": step.agent.value,
-                "step_request_id": step_request_id,
-                "task": task,
-            },
-        }
+        return events.step_started_event(step_number, step, step_request_id, task)
 
     @staticmethod
     def _step_event(
         step_number: int, step: OrchestratorStep, item: dict[str, Any]
     ) -> dict:
-        return {
-            "type": "step_event",
-            "content": {
-                "step": step_number,
-                "agent": step.agent.value,
-                "event": item,
-            },
-        }
+        return events.step_event(step_number, step, item)
 
     @staticmethod
     def _step_finished_event(
         step_number: int, step: OrchestratorStep, status: str, summary: str
     ) -> dict:
-        return {
-            "type": "step_finished",
-            "content": {
-                "step": step_number,
-                "agent": step.agent.value,
-                "status": status,
-                "summary": summary,
-            },
-        }
+        return events.step_finished_event(step_number, step, status, summary)
 
     @staticmethod
     def _clarification_event(question: str) -> dict:
-        return {"type": "clarification", "content": {"question": question}}
+        return events.clarification_event(question)
 
     @staticmethod
     def _summary_step(
         step_number: int, step: OrchestratorStep, status: str, summary: str
     ) -> dict[str, Any]:
-        return {
-            "step": step_number,
-            "agent": step.agent.value,
-            "task": step.task,
-            "status": status,
-            "summary": summary,
-        }
+        return events.summary_step(step_number, step, status, summary)
 
     @staticmethod
     def _final_event(summary_steps: list[dict[str, Any]]) -> dict:
-        return {"type": "orchestrator_final", "content": {"steps": summary_steps}}
+        return events.final_event(summary_steps)
 
     @staticmethod
     def _chat_created_event(chat_id: str, chat_title: str) -> dict:
-        return {
-            "type": "service_event",
-            "content": {
-                "event_type": "storage_event",
-                "event": {
-                    "storage_event_type": "chat_created",
-                    "chat_id": chat_id,
-                    "chat_title": chat_title,
-                },
-            },
-        }
+        return events.chat_created_event(chat_id, chat_title)

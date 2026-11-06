@@ -1146,7 +1146,17 @@ export default function App() {
       );
     }
     if (event.type === "clarification") {
-      updateSseAnswer((current) => current + (event.content?.question || ""));
+      const options =
+        event.content?.kind === "existing_objects" && Array.isArray(event.content?.options)
+          ? event.content.options
+          : [];
+      const variants = options
+        .map((option: { label?: string }, index: number) => `\n${index + 1}. ${option.label}`)
+        .join("");
+      updateSseAnswer(
+        (current) =>
+          current + (event.content?.question || "") + (variants ? `\n${variants}` : ""),
+      );
       updateStatus("Нужно уточнение", "warning");
     }
     if (event.type === "orchestrator_final") {
@@ -3431,6 +3441,7 @@ function labelAgent(key?: string) {
         scenario_data: "Данные сценария",
         documents: "Документы",
         norms: "Нормы",
+        urban_analysis_report: "Итоговый отчёт",
         orchestrator: "Оркестратор",
         synapse: "Synapse",
         llm: "Ассистент",

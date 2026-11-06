@@ -71,6 +71,14 @@ class UrbanApiClient:
                 result[name] = int(type_id)
         return result
 
+    async def get_scenario_functional_zone_sources(
+        self, token: str, scenario_id: int
+    ) -> list[dict]:
+        """Available functional-zone source/year pairs for a scenario."""
+        return await self.json_handler.get(
+            f"/v1/scenarios/{scenario_id}/functional_zone_sources", auth_token=token
+        )
+
     # --- dictionaries and territories ------------------------------------------
 
     async def get_physical_object_types(self, token: str) -> list[dict]:

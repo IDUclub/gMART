@@ -76,8 +76,9 @@ class FakeMcpClient:
             if self.zero_services:
                 return {"Школа": {"type": "FeatureCollection", "features": []}}
             return {"Школа": _fc(30.0, service_id=1)}
-        if name == "GetPhysicalObjects":
-            assert arguments["centers_only"] is False
+        if name in {"GetPhysicalObjects", "GetPhysicalObjectsByGeometry"}:
+            if name == "GetPhysicalObjects":
+                assert arguments["centers_only"] is False
             if self.zero_physical_objects:
                 return {"Жилой дом": {"type": "FeatureCollection", "features": []}}
             return {
@@ -150,9 +151,9 @@ async def test_executor_dispatches_valid_plan_without_llm_geometry_planning():
     assert execution.result.summary.violated_objects == 1
     assert execution.result.summary.passed_objects == 1
     assert [call[0] for call in client.calls] == [
-        "GetPhysicalObjects",
         "GetProjectTerritory",
         "GetServicesByGeometry",
+        "GetPhysicalObjectsByGeometry",
         "CheckDistanceFromSource",
     ]
 
@@ -206,9 +207,9 @@ async def test_executor_passes_when_complete_applicable_set_is_empty():
     assert execution.result.coverage.applicable_objects == 0
     assert execution.result.warnings == ["no_applicable_objects"]
     assert [call[0] for call in client.calls] == [
-        "GetPhysicalObjects",
         "GetProjectTerritory",
         "GetServicesByGeometry",
+        "GetPhysicalObjectsByGeometry",
     ]
 
 
@@ -256,8 +257,15 @@ async def test_executor_normalizes_stored_plan_via_catalog_tool(source, target):
     assert execution.result.verification_status == "complete"
     assert execution.result.summary.violated_objects == 1
     assert execution.result.summary.passed_objects == 1
-    assert client.calls[2][1]["services_names"] == ["Школа"]
-    assert client.calls[0][1]["physical_objects_names"] == ["Жилой дом"]
+    service_calls = [
+        args for name, args, _ in client.calls if name == "GetServicesByGeometry"
+    ]
+    physical_calls = [
+        args for name, args, _ in client.calls if name == "GetPhysicalObjectsByGeometry"
+    ]
+    assert len(service_calls) == len(physical_calls) == 1
+    assert service_calls[0]["services_names"] == ["Школа"]
+    assert physical_calls[0]["physical_objects_names"] == ["Жилой дом"]
     assert plan == original
     stored_layers = execution.result.source["check_plan"]["declared_requirements"][
         "layers"
@@ -273,7 +281,7 @@ async def test_history_keeps_empty_by_geometry_retrievals_for_replay():
 
     recorded = [call["function"]["name"] for call in execution.tool_calls]
     assert "GetServicesByGeometry" in recorded
-    assert "GetPhysicalObjects" in recorded
+    assert "GetPhysicalObjectsByGeometry" in recorded
     # The empty layer still reached the check itself.
     assert execution.layers["Школа"]["features"] == []
 

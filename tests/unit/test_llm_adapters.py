@@ -79,10 +79,135 @@ def _adapter_with(result) -> tuple[OpenAiCompatAdapter, FakeCompletions]:
 
 @pytest.fixture(autouse=True)
 def _clear_request_priority(monkeypatch):
+    monkeypatch.delenv("OPENAI_REPETITION_DETECTION", raising=False)
     monkeypatch.delenv("OPENAI_REQUEST_PRIORITY", raising=False)
     monkeypatch.delenv("LLM_REQUEST_PRIORITIES", raising=False)
     monkeypatch.delenv("LLM_REQUEST_PRIORITY_ENABLED", raising=False)
     _warn_once.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("format", "stream", "expected"),
+    [("json", False, True), (None, False, False), ("json", True, False)],
+)
+@pytest.mark.asyncio
+async def test_repetition_detection_only_for_structured_non_stream(
+    monkeypatch, format, stream, expected
+):
+    monkeypatch.setenv(
+        "OPENAI_REPETITION_DETECTION",
+        '{"min_pattern_size": 1, "max_pattern_size": 8, "min_count": 32}',
+    )
+    result = _Completion([_Choice(message=_Delta("{}"), finish_reason="stop")])
+    adapter, completions = _adapter_with(_FakeStream([]) if stream else result)
+    response = await adapter.chat(
+        "m", [], format=format, stream=stream, extra_body={"custom": True}
+    )
+    if stream:
+        assert [part async for part in response]
+    body = completions.calls[0]["extra_body"]
+    assert body["custom"] is True
+    assert ("repetition_detection" in body) is expected
+    if expected:
+        assert body["repetition_detection"] == {
+            "min_pattern_size": 1,
+            "max_pattern_size": 8,
+            "min_count": 32,
+        }
+
+
+@pytest.mark.parametrize("configured", [None, "", "   "])
+@pytest.mark.asyncio
+async def test_repetition_detection_disabled_by_default(monkeypatch, configured):
+    if configured is not None:
+        monkeypatch.setenv("OPENAI_REPETITION_DETECTION", configured)
+    adapter, completions = _adapter_with(
+        _Completion([_Choice(message=_Delta("{}"), finish_reason="stop")])
+    )
+    await adapter.chat("m", [], format="json")
+    assert "repetition_detection" not in completions.calls[0].get("extra_body", {})
+
+
+@pytest.mark.parametrize("override", [{}, {"min_count": 64}])
+@pytest.mark.asyncio
+async def test_repetition_detection_constructor_overrides_environment(
+    monkeypatch, override
+):
+    monkeypatch.setenv("OPENAI_REPETITION_DETECTION", '{"min_count": 32}')
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1", repetition_detection=override)
+    assert adapter.repetition_detection == override
+    completions = FakeCompletions(
+        _Completion([_Choice(message=_Delta("{}"), finish_reason="stop")])
+    )
+    adapter.client.chat.completions = completions
+    await adapter.chat("m", [], format="json")
+    body = completions.calls[0].get("extra_body", {})
+    if override:
+        assert body["repetition_detection"] == override
+    else:
+        assert "repetition_detection" not in body
+
+
+@pytest.mark.parametrize("configured", ["{broken", "[]", "null", "32"])
+def test_invalid_repetition_detection_warns_once(monkeypatch, configured):
+    from src.agents.model_clients import openai_adapter
+
+    monkeypatch.setenv("OPENAI_REPETITION_DETECTION", configured)
+    monkeypatch.setattr(openai_adapter, "_warned", set())
+    warnings = []
+    sink = openai_adapter.logger.add(
+        lambda record: warnings.append(str(record)), level="WARNING"
+    )
+    try:
+        for _ in range(2):
+            adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+            assert adapter.repetition_detection is None
+    finally:
+        openai_adapter.logger.remove(sink)
+    assert sum("Invalid OPENAI_REPETITION_DETECTION" in w for w in warnings) == 1
+
+
+@pytest.mark.parametrize(
+    ("last_finish", "last_content", "reason"),
+    [
+        ("stop", '{"ok": true}', None),
+        ("repetition", " \r  ", "output_repetition"),
+        ("length", '{"partial":', "output_truncated"),
+        ("stop", "", "empty_completion"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_structured_repetition_retries_once_with_same_budget(
+    last_finish, last_content, reason
+):
+    from unittest.mock import AsyncMock
+
+    adapter, _ = _adapter_with(None)
+    create = AsyncMock(
+        side_effect=[
+            _Completion(
+                [_Choice(message=_Delta('{"broken":'), finish_reason="repetition")]
+            ),
+            _Completion(
+                [_Choice(message=_Delta(last_content), finish_reason=last_finish)]
+            ),
+        ]
+    )
+    adapter.client.chat.completions.create = create
+    kwargs = {
+        "format": "json",
+        "options": {"num_predict": 4096, "num_ctx": 4096},
+    }
+    if reason:
+        with pytest.raises(LlmResponseError) as exc:
+            await adapter.chat("m", [], **kwargs)
+        assert exc.value.reason == reason
+        assert exc.value.status_code == 502
+    else:
+        response = await adapter.chat("m", [], **kwargs)
+        assert response.message.content == last_content
+    assert create.await_count == 2
+    assert [call.kwargs["max_tokens"] for call in create.call_args_list] == [4096, 4096]
 
 
 @pytest.fixture

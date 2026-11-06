@@ -56,6 +56,154 @@ def _valid_plan_json() -> str:
 
 
 @pytest.mark.asyncio
+async def test_plan_schema_excludes_provenance_at_every_depth():
+    client = SimpleNamespace(
+        chat=AsyncMock(return_value={"message": {"content": _valid_plan_json()}})
+    )
+    await RestrictionPlanBuilder(client)._request_plan("m", "prompt")
+    call = client.chat.call_args.kwargs
+    assert call["request_kind"] == "restriction.plan"
+
+    def check(value):
+        if isinstance(value, dict):
+            assert "provenance" not in value
+            for nested in value.values():
+                check(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                check(nested)
+
+    check(call["format"])
+    assert "RestrictionProvenance" not in call["format"]["$defs"]
+    assert "provenance" in BufferRule.model_json_schema()["properties"]
+    assert "provenance" in RestrictionRule.model_json_schema()["properties"]
+
+
+def test_plan_prompts_keep_hit_provenance_but_exclude_it_from_plan_and_instructions():
+    plan = RestrictionPlan(
+        mode="buffers_only",
+        buffer_rules=[
+            BufferRule(
+                source_name="Лес",
+                buffer_size=50,
+                title="Правило",
+                provenance={"document_id": "doc-1"},
+            )
+        ],
+        restriction_rules=[
+            RestrictionRule(
+                source_name="Лес",
+                target_names=["Жилой дом"],
+                title="Правило",
+                description="Описание",
+                provenance={"document_id": "doc-1"},
+            )
+        ],
+        original="test",
+    )
+    hits = [
+        {
+            "id": "r-1",
+            "provenance": {
+                "doc_id": "doc-1",
+                "name": "СП 4.13130.2013",
+                "numbering": "4.14",
+            },
+            "extraction_text": "Не менее 50 м",
+        }
+    ]
+    prompts = [
+        RestrictionPlanBuilder._build_prompt([], ["Лес"], hits),
+        RestrictionPlanBuilder._build_semantic_repair_prompt(
+            "test", plan, ["issue"], [], ["Лес"], hits
+        ),
+        RestrictionPlanBuilder._build_repair_prompt(
+            "test", plan, ["name"], [], ["Лес"], hits
+        ),
+    ]
+    hits_json = json.dumps(hits, ensure_ascii=False)
+    for prompt in prompts:
+        hits_block = prompt.split("Релевантные канонические ограничения NormGraph:", 1)[
+            1
+        ].lstrip()
+        actual_hits, _ = json.JSONDecoder().raw_decode(hits_block)
+        assert actual_hits == hits
+        assert "СП 4.13130.2013" in hits_block
+        assert "4.14" in hits_block
+        assert "provenance" not in prompt.replace(hits_json, "")
+    for prompt in prompts[1:]:
+        plan_block = prompt.split("Текущий план:", 1)[1].lstrip()
+        actual_plan, _ = json.JSONDecoder().raw_decode(plan_block)
+        for rule in [*actual_plan["buffer_rules"], *actual_plan["restriction_rules"]]:
+            assert "provenance" not in rule
+    assert plan.buffer_rules[0].provenance.document_id == "doc-1"
+    assert plan.restriction_rules[0].provenance.document_id == "doc-1"
+    assert hits[0]["provenance"]["doc_id"] == "doc-1"
+
+
+@pytest.mark.asyncio
+async def test_model_plan_without_provenance_is_grounded_from_normgraph():
+    answer = {
+        "mode": "restrictions",
+        "source_entities": [{"name": "Лес", "entity_type": "physical_object"}],
+        "target_entities": [{"name": "Жилой дом", "entity_type": "physical_object"}],
+        "buffer_rules": [
+            {
+                "source_name": "Лес",
+                "buffer_size": 50,
+                "title": "Правило",
+                "origin": "normgraph",
+                "restriction_id": "r-1",
+            }
+        ],
+        "restriction_rules": [
+            {
+                "source_name": "Лес",
+                "target_names": ["Жилой дом"],
+                "title": "Правило",
+                "description": "Описание",
+                "origin": "normgraph",
+                "restriction_id": "r-1",
+            }
+        ],
+        "original": "test",
+    }
+    client = SimpleNamespace(
+        chat=AsyncMock(return_value={"message": {"content": json.dumps(answer)}})
+    )
+    hit = {
+        "id": "r-1",
+        "value": {"number": 50, "unit": "м"},
+        "extraction_text": "Не менее 50 м",
+        "provenance": {
+            "doc_id": "doc-1",
+            "name": "СП test",
+            "version": "2026",
+            "numbering": "5.2",
+        },
+    }
+    builder = RestrictionPlanBuilder(client)
+    raw = await builder._request_plan("m", "prompt")
+    assert raw.buffer_rules[0].provenance is None
+    assert raw.restriction_rules[0].provenance is None
+    plan = await builder.build_plan(
+        "m",
+        "Примени СП 4 пункт 5.2",
+        1,
+        [],
+        ["Лес", "Жилой дом"],
+        normgraph_restrictions=[hit],
+    )
+    for rule in [*plan.buffer_rules, *plan.restriction_rules]:
+        assert rule.provenance.document_id == "doc-1"
+        assert rule.provenance.document_name == "СП test"
+        assert rule.provenance.document_version == "2026"
+        assert rule.provenance.clause_number == "5.2"
+        assert rule.provenance.extraction_text == "Не менее 50 м"
+    assert plan.buffer_rules and plan.restriction_rules
+
+
+@pytest.mark.asyncio
 async def test_repair_retry_preserves_conversation():
     """A retry must resend the prior (invalid) answer + fix instruction, not a
     fresh system-prompt-only conversation."""

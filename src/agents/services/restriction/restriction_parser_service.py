@@ -2074,6 +2074,7 @@ class RestrictionParserService(BaseLlmService):
                 requirements,
                 scenario_id,
                 project_territory=scenario_territory,
+                preserve_physical_attributes=True,
             )
             return scenario_layers, [*territory_calls, *calls]
 

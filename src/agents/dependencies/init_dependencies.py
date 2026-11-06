@@ -52,6 +52,9 @@ from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.synapse.synapse_gateway_service import SynapseGatewayService
 from src.agents.services.synapse.synapse_run_store import SynapseRunStore
 from src.agents.services.synapse.system_service import SystemService
+from src.agents.services.urban_analysis.urban_analysis_service import (
+    UrbanAnalysisService,
+)
 from src.common.service_auth import build_optional_service_auth, build_service_auth
 
 
@@ -167,6 +170,14 @@ def init_dependencies() -> dict[str, object]:
         pipeline_state_store,
         ParksApiClient(app_config.PARKS_API_URL) if app_config.PARKS_API_URL else None,
     )
+    urban_analysis_service = UrbanAnalysisService(
+        restriction_parser_service,
+        provision_service,
+        pzz_service,
+        urban_api_client,
+        pipeline_state_store,
+        file_store=file_store,
+    )
     orchestrator_service = OrchestratorService(
         app_config.OLLAMA_URL,
         chat_storage_client,
@@ -181,6 +192,7 @@ def init_dependencies() -> dict[str, object]:
         pzz_service=pzz_service,
         project_files_service=project_files_service,
         parks_service=parks_service,
+        urban_analysis_service=urban_analysis_service,
     )
     return {
         "app_config": app_config,
@@ -196,6 +208,7 @@ def init_dependencies() -> dict[str, object]:
         "dvd_rag_service": dvd_rag_service,
         "normgraph_rag_service": normgraph_rag_service,
         "orchestrator_service": orchestrator_service,
+        "urban_analysis_service": urban_analysis_service,
         "pzz_service": pzz_service,
         "parks_service": parks_service,
         "parks_a2a_service": ParksA2AService(parks_service),

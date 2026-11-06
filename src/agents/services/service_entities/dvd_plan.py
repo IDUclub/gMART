@@ -66,19 +66,8 @@ class _BaseRetrievalPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    search_query: str = ""
-    kind: SearchKind = SearchKind.ALL
-    limit: int = Field(default=10, ge=1, le=20)
-    context_height: int = Field(default=1, ge=0, le=5)
-    document_names: list[str] | None = None
-    block: str | None = None
-    types: list[str] | None = None
-    alternative_queries: list[str] = Field(default_factory=list)
-    intent: Literal["norm", "document_list", "document_comparison"] = "norm"
-    comparison_left: ComparisonSide | None = None
-    comparison_right: ComparisonSide | None = None
-    comparison_topic: NonEmptyStr | None = None
-    tags: list[str] | None = None
+    # Structured decoding enforces this generation order; match RetrievalPlanner._prompt.
+    retrieval_mode: Literal["semantic", "structure", "name"]
     pattern: str | None = None
     name_query: str | None = None
     name_mode: Literal["strict", "expanded"] = "strict"
@@ -89,6 +78,19 @@ class _BaseRetrievalPlan(BaseModel):
     allow_multiple: bool = False
     rank_by_relevance: bool = False
     include_shared: bool = True
+    search_query: str = ""
+    alternative_queries: list[str] = Field(default_factory=list)
+    intent: Literal["norm", "document_list", "document_comparison"] = "norm"
+    comparison_left: ComparisonSide | None = None
+    comparison_right: ComparisonSide | None = None
+    comparison_topic: NonEmptyStr | None = None
+    tags: list[str] | None = None
+    kind: SearchKind = SearchKind.ALL
+    limit: int = Field(default=10, ge=1, le=20)
+    context_height: int = Field(default=1, ge=0, le=5)
+    document_names: list[str] | None = None
+    block: str | None = None
+    types: list[str] | None = None
 
     @field_validator(
         "pattern", "name_query", "doc_id", "version", "block", mode="before"

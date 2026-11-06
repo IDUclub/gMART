@@ -16,6 +16,7 @@ from src.agents.services.project_files.project_creation import ProjectCreator
 from src.agents.services.project_files.project_files_service import (
     ProjectFilesService,
 )
+from src.agents.services.project_files.project_params import BOUNDARY_QUESTION
 from src.agents.services.project_files.project_types import PROJECT_CLASSIFY_PROMPT
 from src.common.service_auth import internal_user_context_jwt
 from tests.unit.test_project_creation import BORDER, FakeUrban, no_sleep, square
@@ -86,10 +87,12 @@ class Llm:
 
     def __init__(self, classified: dict | None = None):
         self.classified = classified or {}
+        self.classification_calls = 0
 
     async def chat(self, **kwargs):
         system = kwargs["messages"][0]["content"]
         if "сопоставляешь объекты" in system:
+            self.classification_calls += 1
             groups = json.loads(kwargs["messages"][-1]["content"])["groups"]
             items = []
             for group in groups:
@@ -158,7 +161,273 @@ async def test_without_files_asks_to_upload(env):
 
     events = await run(build(), "Создай проект из файлов")
 
-    assert "загрузите файлы проекта" in of_type(events, "chunk")[0]["text"]
+    assert (
+        "загрузите хотя бы один файл с полигоном границы территории"
+        in of_type(events, "chunk")[0]["text"]
+    )
+
+
+@pytest.mark.parametrize("properties", [{}, {"type": "border"}])
+@pytest.mark.parametrize("with_profile", [False, True])
+async def test_territory_only_creates_empty_project(env, properties, with_profile):
+    store, uploads, build = env
+    upload_id = await upload(
+        uploads, ("territory.geojson", layer_bytes(feature(BORDER, **properties)))
+    )
+    before = deepcopy(await uploads.get(upload_id, "alice"))
+    urban = Urban(around=[{"physical_object_id": 9, "geometry": BORDER}])
+    urban.get_physical_objects_around = AsyncMock(return_value=urban.around)
+    llm = Llm()
+    service = build(urban, llm)
+    events = await run(
+        service,
+        "Создай проект",
+        [upload_id],
+        inputs={"functional_zone_type_id": 1} if with_profile else None,
+    )
+    if not with_profile:
+        question = of_type(events, "clarification")[0]
+        assert question["kind"] == "profile"
+        assert "в файлах нет зданий" in question["question"]
+        assert not urban.calls
+        events = await run(service, "1")
+    assert not of_type(events, "clarification")
+    summary = of_type(events, "project_summary")[0]
+    assert summary["project_id"] == 10 and summary["scenario_id"] == 12
+    assert summary["objects"]["total"] == 0
+    assert summary["existing_policy"] == "keep"
+    assert "Объекты:" not in of_type(events, "chunk")[0]["text"]
+    urban.get_physical_objects_around.assert_not_awaited()
+    assert llm.classification_calls == 0
+    assert await uploads.get(upload_id, "alice") == before
+    assert await store.get_project_dialogue(CHAT) is None
+
+
+async def test_untagged_polygon_is_boundary_next_to_objects(env):
+    _, uploads, build = env
+    upload_id = await upload(
+        uploads,
+        ("territory.geojson", layer_bytes(feature(BORDER))),
+        ("design.geojson", DESIGN),
+    )
+    service = build()
+    events = await run(service, "Создай проект", [upload_id])
+    assert not of_type(events, "clarification")
+    assert of_type(events, "project_summary")[0]["objects"]["saved"] == 2
+
+
+@pytest.mark.parametrize("with_objects", [False, True])
+async def test_two_territories_ask_repeat_and_accept_number(env, with_objects):
+    store, uploads, build = env
+    first_id = await upload(uploads, ("one.geojson", layer_bytes(feature(BORDER))))
+    second_id = await upload(
+        uploads, ("two.geojson", layer_bytes(feature(square(37.002, 55.002))))
+    )
+    upload_ids = [first_id, second_id]
+    if with_objects:
+        upload_ids.append(await upload(uploads, ("design.geojson", DESIGN)))
+    before = [
+        deepcopy(await uploads.get(uid, "alice")) for uid in (first_id, second_id)
+    ]
+    urban = Urban()
+    service = build(urban)
+    events = await run(
+        service,
+        "Создай проект",
+        upload_ids,
+        inputs={"functional_zone_type_id": 1},
+    )
+    question = of_type(events, "clarification")[0]
+    assert question["kind"] == "boundary"
+    assert [item["value"] for item in question["options"]] == (
+        ["one", "two", "hull", "none"] if with_objects else ["one", "two", "none"]
+    )
+    assert "объектов: 1, площадь ≈" in question["options"][0]["label"]
+    assert question["question"] == BOUNDARY_QUESTION + " " + "; ".join(
+        f"{number}. {option['label']}"
+        for number, option in enumerate(question["options"], start=1)
+    )
+    assert await service.answers_dialogue("m", CHAT, "1") is True
+    events = await run(service, "непонятно")
+    repeated = of_type(events, "clarification")[0]
+    assert repeated["question"] == "Не удалось разобрать ответ. " + question["question"]
+    assert repeated["kind"] == question["kind"]
+    assert repeated["options"] == question["options"]
+    assert not urban.calls
+    events = await run(service, "1")
+    assert of_type(events, "project_summary")[0]["objects"]["total"] == (
+        2 if with_objects else 0
+    )
+    assert not of_type(events, "clarification")
+    assert await store.get_project_dialogue(CHAT) is None
+    for uid, record in zip((first_id, second_id), before):
+        assert await uploads.get(uid, "alice") == record
+
+
+async def test_boundary_none_declines_without_urban_writes(env):
+    _, uploads, build = env
+    upload_id = await upload(
+        uploads,
+        ("one.geojson", layer_bytes(feature(BORDER))),
+        ("two.geojson", layer_bytes(feature(BORDER))),
+    )
+    urban = Urban()
+    service = build(urban)
+    await run(service, "Создай проект", [upload_id])
+    events = await run(service, "none")
+    assert "Хорошо, проект не создан." in of_type(events, "chunk")[0]["text"]
+    assert "POST /compliance/uploads" in of_type(events, "chunk")[0]["text"]
+    assert not urban.calls
+
+
+@pytest.mark.parametrize(
+    ("filename", "features"),
+    [
+        ("territory.geojson", [feature(BORDER, building="yes")]),
+        (
+            "territory.geojson",
+            [feature(square(37, 55)), feature(square(37.002, 55.002))],
+        ),
+        ("osm_context.geojson", [feature(BORDER)]),
+    ],
+)
+async def test_boundary_candidates_become_union_without_objects(
+    env, filename, features
+):
+    from shapely.geometry import shape
+    from shapely.ops import unary_union
+
+    _, uploads, build = env
+    upload_id = await upload(uploads, (filename, layer_bytes(*features)))
+    before = deepcopy(await uploads.get(upload_id, "alice"))
+    urban = Urban()
+    create = urban.create_project
+    urban.create_project = AsyncMock(side_effect=create)
+    service = build(urban)
+    events = await run(
+        service, "Создай проект", [upload_id], inputs={"functional_zone_type_id": 1}
+    )
+    question = of_type(events, "clarification")[0]
+    assert question["kind"] == "boundary"
+    assert len(question["options"]) == 2
+    events = await run(service, "1")
+    assert of_type(events, "project_summary")[0]["objects"]["total"] == 0
+    assert not of_type(events, "clarification")
+    payload = urban.create_project.call_args.args[1]
+    assert shape(payload["territory"]["geometry"]).equals(
+        unary_union([shape(item["geometry"]) for item in features])
+    )
+    assert await uploads.get(upload_id, "alice") == before
+
+
+async def test_tagged_objects_use_hull_without_boundary_question(env):
+    _, uploads, build = env
+    upload_id = await upload(uploads, ("design.geojson", DESIGN))
+    events = await run(build(), "Создай проект", [upload_id])
+    assert not of_type(events, "clarification")
+    assert of_type(events, "project_summary")[0]["objects"]["saved"] == 2
+
+
+async def test_single_point_cannot_define_territory(env):
+    _, uploads, build = env
+    upload_id = await upload(
+        uploads,
+        (
+            "point.geojson",
+            layer_bytes(feature({"type": "Point", "coordinates": [37, 55]})),
+        ),
+    )
+    urban = Urban()
+    events = await run(build(urban), "Создай проект", [upload_id])
+    assert (
+        of_type(events, "chunk")[0]["text"]
+        == "Не удалось определить территорию проекта: загрузите хотя бы один файл с полигоном границы территории."
+    )
+    assert not urban.calls
+
+
+async def test_existing_question_options_and_keep_by_number(env):
+    _, uploads, build = env
+    upload_id = await upload(
+        uploads, ("design.geojson", DESIGN), ("border.geojson", BOUNDARY)
+    )
+    service = build(
+        Urban(around=[{"physical_object_id": 9, "geometry": square(37.002, 55.002)}])
+    )
+    events = await run(service, "Создай проект", [upload_id])
+    question = of_type(events, "clarification")[0]
+    assert question["kind"] == "existing_objects"
+    assert question["question"].endswith("Что с ними сделать в новом сценарии?")
+    assert all(f"{number}." not in question["question"] for number in (1, 2, 3))
+    assert [item["value"] for item in question["options"]] == [
+        "replace_same",
+        "delete_all",
+        "keep",
+    ]
+    events = await run(service, "3")
+    assert of_type(events, "project_summary")[0]["existing_policy"] == "keep"
+
+
+async def test_boundary_choice_survives_profile_and_readiness_retry(env):
+    class PendingUrban(Urban):
+        available = False
+
+        async def get_project_territory(self, token, project_id):
+            return {"geometry": BORDER if self.available else None}
+
+    store, uploads, build = env
+    upload_id = await upload(
+        uploads, ("territory.geojson", layer_bytes(feature(BORDER, building="yes")))
+    )
+    urban = PendingUrban()
+    service = build(urban)
+    service.creator = ProjectCreator(urban, sleep=no_sleep)
+    events = await run(service, "Создай проект", [upload_id])
+    assert of_type(events, "clarification")[0]["kind"] == "boundary"
+    events = await run(service, "1")
+    assert of_type(events, "clarification")[0]["kind"] == "profile"
+    assert (await store.get_project_dialogue(CHAT))["context"][
+        "boundary_choice"
+    ] == "territory"
+    events = await run(service, "1")
+    assert of_type(events, "clarification")[0]["kind"] == "retry"
+    urban.available = True
+    urban.calls.clear()
+    events = await run(service, "да")
+    assert of_type(events, "project_summary")[0]["ready"]
+    assert not urban.calls
+    assert not of_type(events, "clarification")
+
+
+@pytest.mark.parametrize("source", ["inputs", "request"])
+async def test_empty_project_respects_explicit_cleanup_policy(env, source, monkeypatch):
+    from src.agents.services.project_files.project_params import ProjectIntent
+
+    _, uploads, build = env
+    upload_id = await upload(
+        uploads, ("territory.geojson", layer_bytes(feature(BORDER)))
+    )
+    intent = ProjectIntent(
+        existing_objects="delete_all" if source == "request" else None
+    )
+    monkeypatch.setattr(
+        "src.agents.services.project_files.project_files_service.extract_intent",
+        AsyncMock(return_value=intent),
+    )
+    service = build()
+    events = await run(
+        service,
+        "Создай проект и удали существующие объекты",
+        [upload_id],
+        inputs={
+            "functional_zone_type_id": 1,
+            **({"existing_objects": "delete_all"} if source == "inputs" else {}),
+        },
+    )
+    summary = of_type(events, "project_summary")[0]
+    assert summary["existing_policy"] == "delete_all"
+    assert summary["deleted_existing"] == 2
+    assert not of_type(events, "clarification")
 
 
 async def test_readiness_timeout_offers_retry_without_recreating_project(env):

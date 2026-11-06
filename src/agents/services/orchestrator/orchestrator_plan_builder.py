@@ -28,6 +28,37 @@ _REGULATION_SUBJECT = re.compile(
     re.I,
 )
 _OVERVIEW = re.compile(r"(?:\bкак\w+\b|перечень|перечисл|список|\bвсе\b)", re.I)
+_URBAN_SUBJECT = (
+    r"(?:градостроительн\w*\s+анализ\w*|град\.?\s*анализ\w*|градоанализ\w*)"
+)
+_URBAN_ACTION = r"\b(?:провед(?:и|ите)|провести|сдела(?:й|йте|ть)|выполн(?:и|ите|ить)|запуст(?:и|ите|ить)|подготов(?:ь|ьте|ить)|сформир(?:уй|уйте|овать)|нужен|нужно|хочу|требуется)\b"
+_URBAN_QUESTION = re.compile(
+    r"^\W*(?:что|как|каков\w*|как\w+|зачем|почему|где|куда|откуда|"
+    r"кто|кого|кому|кем|ком|чего|чему|чем|сколько|когда|чей|чья|чьё|чьи)\b",
+    re.I,
+)
+_URBAN_NEGATION = re.compile(
+    r"\bне\s+(?:нуж\w*|надо|дела\w*|сдела\w*|проводи\w*|провед\w*|провести|"
+    r"запуска\w*|запуст\w*|выполн\w*|подготов\w*|сформир\w*|хочу|требуется)\b",
+    re.I,
+)
+_URBAN_REQUEST = re.compile(
+    rf"(?:{_URBAN_ACTION}[^.!?;\n]{{0,70}}{_URBAN_SUBJECT}|"
+    rf"{_URBAN_SUBJECT}[^.!?;\n]{{0,70}}{_URBAN_ACTION})",
+    re.I,
+)
+_URBAN_EXTRA_TASK = re.compile(
+    rf"{_URBAN_SUBJECT}[\s\S]*?"
+    r"(?:\b(?:и|а\s+также|затем|потом|после\s+этого)\b|[,;.!?])\s*"
+    r"\b(?:построй(?:те)?|создай(?:те)?|сформир(?:уй|уйте)\s+слой|"
+    r"сравни(?:те)?|посчитай(?:те)?|рассчитай(?:те)?|найди(?:те)?|"
+    r"загрузи(?:те)?|удали(?:те)?|добавь(?:те)?|измени(?:те)?)\b",
+    re.I,
+)
+URBAN_SCENARIO_QUESTION = (
+    "Градостроительный анализ выполняется только для выбранного сценария. "
+    "Выберите сценарий и повторите запрос."
+)
 
 
 class OrchestratorPlanBuilder:
@@ -52,6 +83,7 @@ class OrchestratorPlanBuilder:
         scenario_id: int | None = None,
         pzz_inputs: PzzInputs | dict | None = None,
         compliance_uploads: int = 0,
+        urban_analysis_available: bool = False,
     ) -> OrchestratorPlan:
         plan = await self._request_plan(
             model,
@@ -84,6 +116,57 @@ class OrchestratorPlanBuilder:
                     OrchestratorStep(agent=OrchestratorAgent.DOCUMENTS, task=user_query)
                 )
             plan = OrchestratorPlan(mode=OrchestratorPlanMode.EXECUTE, steps=steps)
+        # Promote before availability filtering: missing individual checks are
+        # reported by the fixed analysis pipeline, without losing the other checks.
+        analysis_agents = {
+            OrchestratorAgent.COMPLIANCE,
+            OrchestratorAgent.PROVISION,
+            OrchestratorAgent.PZZ,
+            OrchestratorAgent.NORMS,
+        }
+        is_urban_request = (
+            _URBAN_REQUEST.search(user_query)
+            and not _URBAN_QUESTION.search(user_query)
+            and not _URBAN_NEGATION.search(user_query)
+            and not re.search(r"что\s+такое\s+" + _URBAN_SUBJECT, user_query, re.I)
+        )
+        if is_urban_request and (
+            _URBAN_EXTRA_TASK.search(user_query)
+            or (
+                plan.mode == OrchestratorPlanMode.EXECUTE
+                and any(step.agent not in analysis_agents for step in plan.steps)
+            )
+        ):
+            plan = OrchestratorPlan(
+                mode=OrchestratorPlanMode.NEEDS_CLARIFICATION,
+                clarification_question=(
+                    URBAN_SCENARIO_QUESTION
+                    if scenario_id is None
+                    else (
+                        "Градостроительный анализ запускается отдельным запросом. "
+                        "Отправьте анализ и остальные задачи отдельными сообщениями."
+                    )
+                ),
+            )
+        elif is_urban_request and (
+            plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION
+            or (
+                plan.mode == OrchestratorPlanMode.EXECUTE
+                and all(step.agent in analysis_agents for step in plan.steps)
+            )
+        ):
+            plan = OrchestratorPlan(mode=OrchestratorPlanMode.URBAN_ANALYSIS)
+        if plan.mode == OrchestratorPlanMode.URBAN_ANALYSIS:
+            plan = OrchestratorPlan(mode=OrchestratorPlanMode.URBAN_ANALYSIS)
+            if scenario_id is None or not urban_analysis_available:
+                plan = OrchestratorPlan(
+                    mode=OrchestratorPlanMode.NEEDS_CLARIFICATION,
+                    clarification_question=(
+                        URBAN_SCENARIO_QUESTION
+                        if scenario_id is None
+                        else "Сервис градостроительного анализа не настроен."
+                    ),
+                )
         plan = self._canonicalize_plan(plan, agents)
         plan = self._complement_regulation_steps(plan, agents, user_query)
         if (
@@ -260,7 +343,7 @@ class OrchestratorPlanBuilder:
             for entry in agents
         )
         response_structure = {
-            "mode": "execute | needs_clarification",
+            "mode": "execute | needs_clarification | urban_analysis",
             "steps": [
                 {
                     "agent": "ключ агента из списка доступных",
@@ -284,13 +367,16 @@ class OrchestratorPlanBuilder:
 объекты, нормы или числа результатов.
 Входы PZZ, реально переданные в API (true означает наличие слоя/ссылки,
 права и содержимое проверит агент): {json.dumps(pzz_context, ensure_ascii=False)}.
-Не считай упоминание файла в тексте его загрузкой. Для файловых режимов PZZ
+Не считай упоминание файла в тексте его загрузкой: не утверждай в task, что файлы переданы.
+Для файловых режимов PZZ
 год и источник зон не нужны, даже при выбранном scenario_id. Для pzz_check
 нужны участки и зоны, для classify_only — участки, для building_pzz_check —
 здания и зоны. Регламенты и собственный классификатор необязательны.
 Если запрос относится к PZZ, передай его агенту pzz, сохранив файловый режим
 из запроса: агент проверит комплектность и вернёт точный вопрос о недостающих
 входах. Не подменяй этот вопрос требованием года/источника для файлов.
+Отсутствие входов (все false) — не повод для needs_clarification: всё равно составь
+один шаг pzz; о недостающих файлах спросит сам агент pzz.
 Год и источник обязательны только для режима scenario, берущего данные из Urban API.
 Загрузки файлов проекта для проверки на соответствие нормам, реально переданные
 в API: {compliance_uploads}. Если загрузки есть и пользователь просит проверить
@@ -299,12 +385,26 @@ compliance: агент сам сопоставит объекты файлов �
 выбран, иначе без сценария). Без загрузок упоминание файла в тексте не означает,
 что он передан. Если пользователь просит создать проект или сценарий из
 файлов (загрузить их в Urban API), — это один шаг project_files, а не compliance;
-он работает и без загрузок в запросе, предложив файлы, ранее загруженные в чат.
+проект можно создать и из одного файла с полигоном территории.
+Шаг работает и без загрузок в запросе, предложив файлы, ранее загруженные в чат.
 
 Верни только валидный JSON без markdown и пояснений:
 {json.dumps(response_structure, ensure_ascii=False)}
 
 Режимы (mode):
+- "urban_analysis" — отдельный градостроительный анализ выбранного сценария:
+параллельно compliance (проверка норм NormGraph), provision (до/после по всем
+сервисам), pzz, затем общий отчёт. steps пустой: состав задаёт сервис.
+В этом режиме год и источник зон выбираются автоматически из зон сценария;
+не запрашивай их заранее. Загруженные файлы в этом режиме не используются.
+Примеры: «проведи градостроительный анализ проекта», «сделай градоанализ сценария»,
+«нужен град анализ». Без выбранного сценария требуется уточнение.
+Вопрос «что такое градостроительный анализ» — определение, а не этот режим.
+Составной запрос с дополнительной самостоятельной задачей (например, построить
+зоны ограничений) — mode needs_clarification с просьбой отправить анализ и остальные
+задачи отдельными сообщениями.
+Пример: «Проведи градостроительный анализ и построй буфер 100 метров от рек» —
+mode needs_clarification, даже если сам анализ доступен.
 - "execute" — запрос (или его части) подходит хотя бы одному доступному агенту. \
 Поле steps обязательно и содержит от 1 до {MAX_PLAN_STEPS} шагов.
 - "needs_clarification" — запрос не подходит ни одному доступному агенту, неоднозначен \
