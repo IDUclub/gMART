@@ -193,7 +193,7 @@ class FakeMcp:
             return {
                 arguments["layer_name"]: {**_fc(*features), "meta": {"complete": True}}
             }
-        if name == "GetPhysicalObjects":
+        if name in {"GetPhysicalObjects", "GetPhysicalObjectsByGeometry"}:
             raise AssertionError("inventory must not load the targets")
         if name == "GetFunctionalZones":
             wanted = arguments.get("zone_type_names")

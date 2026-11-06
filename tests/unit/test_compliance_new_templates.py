@@ -53,6 +53,8 @@ class AttributeClient(FakeMcpClient):
         self.calls.append((name, arguments, meta))
         if name == "GetPhysicalObjects":
             return {"Жилой дом": self.houses}
+        if name == "GetPhysicalObjectsByGeometry":
+            return {arguments["layer_name"]: self.houses}
         if name == "GetProjectTerritory":
             return {"project_territory": _houses(_building(0.1, 1))}
         if name == "GetServicesByGeometry":

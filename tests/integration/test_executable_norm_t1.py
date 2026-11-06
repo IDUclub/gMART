@@ -37,7 +37,7 @@ class InMemoryIduMcp:
         if name in {
             "GetProjectTerritory",
             "GetServicesByGeometry",
-            "GetPhysicalObjects",
+            "GetPhysicalObjectsByGeometry",
         }:
             assert arguments["scenario_id"] == 772
         if name == "GetProjectTerritory":
@@ -69,9 +69,10 @@ class InMemoryIduMcp:
             assert arguments["zones_layers"] == ["project_territory"]
             assert "project_territory" in arguments["layers"]
             return {arguments["layer_name"]: _fc(30.0, service_id=1)}
-        if name == "GetPhysicalObjects":
+        if name == "GetPhysicalObjectsByGeometry":
+            assert arguments["physical_objects_names"] == ["Жилой дом"]
             return {
-                "Жилой дом": {
+                arguments["layer_name"]: {
                     "type": "FeatureCollection",
                     "features": [
                         _feature(30.0001, physical_object_id=1),
@@ -174,9 +175,9 @@ async def test_normgraph_plan_executes_as_structured_t1_result():
     assert result.evidence[0].input_revision.startswith("sha256:")
     assert client.calls == [
         "ResolveUrbanEntityTypes",
-        "GetPhysicalObjects",
         "GetProjectTerritory",
         "GetServicesByGeometry",
+        "GetPhysicalObjectsByGeometry",
         "CheckDistanceFromSource",
     ]
     RestrictionsResponse.model_validate(

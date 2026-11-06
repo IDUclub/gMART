@@ -333,8 +333,13 @@ Redis-журнале запроса, но не сохраняются в ист�
 содержать `compliance_result`, который UI отображает как структурированную
 карточку. Кнопка восстановления MCP-вызовов запускает новый расчёт на текущих
 данных сценария и не означает исторически идентичный replay. ChatStorage повторяет
-цепочку GetServicesByGeometry → CreateRestrictionZones → Check* и для Check*
+цепочку GetServicesByGeometry / GetPhysicalObjectsByGeometry → CreateRestrictionZones → Check* и для Check*
 возвращает norm_layer.
+Для нового GetPhysicalObjectsByGeometry требуется соответствующая поддержка replay
+в ChatStorage и Urban API с методом physical_objects/by_geometry/geojson.
+Объекты без атрибутных требований получают компактные свойства: без building,
+вложенных properties и адреса; если атрибуты нужны любой норме запуска, вся сущность
+сохраняет полный GetPhysicalObjects.
 
 #### Проверка файлов пользователя
 
