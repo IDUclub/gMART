@@ -1,3 +1,11 @@
+## v0.36.0 (2026-11-06)
+
+[feat/ICII-239-physical-objects-in-compilance](https://github.com/IDUclub/gMART/pull/276) (#276)
+
+- feat(idu_mcp): добавить GetPhysicalObjectsByGeometry для выборки физических объектов по геометрии зон
+- feat(agents): использовать by_geometry для физических объектов без атрибутных требований в compliance
+- test: возвращать физические объекты под layer_name в фейке IDU MCP
+
 ## v0.35.3 (2026-11-05)
 
 [fix/project-from-polygon](https://github.com/IDUclub/gMART/pull/275) (#275)
