@@ -15,6 +15,47 @@
 - В конфигурации backend задаётся `PARKS_API_URL`. Без него REST отвечает 503,
   агент исключён из каталога оркестратора.
 
+### Настройка деплоя
+
+Для GitHub Actions `build_and_deploy_all.yaml` задайте в environment `production`
+переменную (Variables, не Secrets):
+
+```text
+PARKS_API_URL=https://api.1.urban.actcognitive.org
+```
+
+Workflow передаёт её в `docker-compose.actions.yaml`, оттуда она попадает в
+контейнер gMART. Без значения интеграция намеренно выключена. Для локального
+Python-запуска добавьте значение в `.env.agents`; основной `docker-compose.yaml`
+читает `env/.env.agents.example` — при таком запуске нужно настроить именно этот
+env-файл или переопределить окружение контейнера.
+
+Приоритеты LLM уже заданы в коде: `parks_planning=-60`,
+`parks_analysis=-100`. Они передаются в запрос как `priority`; текущий production
+сервер принял оба значения при проверке 2026-11-06 (HTTP 200).
+Для переопределения используйте, например,
+`LLM_REQUEST_PRIORITIES=parks_planning=-60,parks_analysis=-100`.
+`LLM_REQUEST_PRIORITY_ENABLED=false` отключает приоритеты целиком; по умолчанию
+они включены, поэтому добавлять эти переменные специально для парков не нужно.
+
+Отдельные переменные для A2A, heartbeat и polling не нужны. Парки используют
+общие `LLM_BACKEND`, `OPENAI_BASE_URL`, `DEFAULT_LLM_MODEL`, `CHAT_STORAGE`,
+`REDIS_URL` и `SERVICE_AUTH_*`. Модель должна поддерживать vision для анализа
+изображений; имя модели само по себе не подтверждает эту возможность.
+`OPENAI_API_KEY` нужен только если выбранный сервер требует авторизацию.
+
+На 2026-11-06 в GitHub environment `production` уже заданы
+`OPENAI_BASE_URL=http://10.32.11.27:8002/v1` и `DEFAULT_LLM_MODEL=qwen3.8-27b`.
+Старый локальный endpoint с портом 8001 к этому деплою не относится. При смене
+модели обновляйте общие настройки, а не добавляйте отдельные `PARKS_MODEL`.
+
+Production Compose использует внешний Redis из секрета `REDIS_URL`, а не Redis
+основного локального Compose. На внешнем Redis нужны постоянный диск и включённая
+персистентность; том `gmart_pipeline_storage` локального Compose не настраивает
+внешний сервер. SSE-прокси должен пропускать поток без буферизации и с таймаутом
+больше интервала heartbeat (10 секунд). Настройки внешнего Redis и прокси
+не проверяются самим добавлением переменной в GitHub.
+
 ## REST
 
 Все пользовательские endpoints требуют `Authorization: Bearer <token>`.

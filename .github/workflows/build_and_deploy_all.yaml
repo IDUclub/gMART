@@ -96,6 +96,7 @@ jobs:
           DVD_CRITIC_LINES_PER_CALL: ${{ vars.DVD_CRITIC_LINES_PER_CALL }}
           DVD_CRITIC_MAX_PARALLEL: ${{ vars.DVD_CRITIC_MAX_PARALLEL }}
           PZZ_MCP_SERVER: ${{ vars.PZZ_MCP_SERVER }}
+          PARKS_API_URL: ${{ vars.PARKS_API_URL }}
           PZZ_API_URL: ${{ vars.PZZ_API_URL }}
           NORM_GRAPH_MCP_SERVER: ${{ vars.NORM_GRAPH_MCP_SERVER }}
           URBAN_MCP_SERVER: ${{ vars.URBAN_MCP_SERVER }}
