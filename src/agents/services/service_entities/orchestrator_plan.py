@@ -14,12 +14,15 @@ class OrchestratorAgent(StrEnum):
     DOCUMENTS = "documents"
     NORMS = "norms"
     PZZ = "pzz"
+    PARKS = "parks"
     PROJECT_FILES = "project_files"
+    URBAN_ANALYSIS_REPORT = "urban_analysis_report"
 
 
 class OrchestratorPlanMode(StrEnum):
     EXECUTE = "execute"
     NEEDS_CLARIFICATION = "needs_clarification"
+    URBAN_ANALYSIS = "urban_analysis"
 
 
 class OrchestratorStep(BaseModel):

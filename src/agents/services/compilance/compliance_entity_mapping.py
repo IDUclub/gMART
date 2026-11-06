@@ -732,6 +732,7 @@ class EntityMapper:
                         },
                     ],
                     _Classification,
+                    request_kind="compliance.mapping",
                 )
             except Exception as exc:  # the groups stay unmapped, the check goes on
                 logger.warning(f"Entity classification failed: {exc}")
@@ -789,6 +790,7 @@ class EntityMapper:
                     },
                 ],
                 _MappingReply,
+                request_kind="compliance.mapping",
             )
         except Exception as exc:
             logger.warning(f"Mapping reply classification failed: {exc}")

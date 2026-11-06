@@ -30,7 +30,12 @@ _RESTRICTIONS = _fields(
     restriction_description | restriction_id | restriction_evidence |
     compliance_status | verification_status | compliance_evidence |
     origin | provenance | violated | generator_ref | generator_refs | passed_norms |
-    zone_kind | applies_to | threshold | operator | unit"""
+    zone_kind | applies_to | threshold | operator | unit |
+    feature_kind | norm_id | norm_status | norm_status_ru | norm_status_reason |
+    check_type_en | check_type_ru | norm_reference | document_name | clause_number |
+    norm_text | status | status_ru | status_reason | source_object_ref |
+    objects_inside | objects_required | measured_value | required_value | deficit |
+    explanation_ru | violation_geometry_mode | zone_ref | zone_refs"""
 )
 _PROVISION = _fields(
     """population | demand | demand_left | capacity | capacity_left | service_load |

@@ -208,6 +208,25 @@ async def test_unknown_column_uses_llm_but_numeric_companion_does_not_match_alia
     assert llm.chat.await_count == 1
 
 
+async def test_column_prompt_states_what_each_target_means():
+    # Structured output does not show the schema to the model: the prompt must.
+    llm = SimpleNamespace(
+        chat=AsyncMock(
+            return_value={"message": {"content": '{"cadastral_vri_col":"purpose"}'}}
+        )
+    )
+    await detect_columns(
+        llm,
+        "model",
+        collection({"cad_num": "47:07:1:1", "purpose": "Склады"}),
+        ["cadastral_vri_col"],
+        {},
+    )
+    system = llm.chat.await_args.kwargs["messages"][0]["content"]
+    assert "cadastral_vri_col" in system
+    assert "вида разрешённого использования" in system
+
+
 @pytest.mark.parametrize("action", ["confirm", "suggest_upload", "detection_failed"])
 async def test_building_review_requires_input_without_polling(pzz_service, action):
     mcp = Mcp(
@@ -496,6 +515,31 @@ async def test_file_intent_with_scenario_asks_for_files_not_year(pzz_service):
     )
     assert "кадастровый слой" in question
     assert not mcp.calls
+
+
+async def test_intent_prompt_lists_modes_and_zone_sources(pzz_service):
+    pzz_service.llm_client.chat = AsyncMock(
+        return_value={
+            "message": {
+                "content": json.dumps(
+                    {"mode": "scenario", "year": 2026, "source": "OSM"}
+                )
+            }
+        }
+    )
+    inputs = await pzz_service._resolve_inputs(
+        "model",
+        "Проверь здания сценария по зонам OSM за 2026 год",
+        843,
+        PzzInputs(),
+        [],
+    )
+    assert (inputs.mode, inputs.year, inputs.source) == ("scenario", 2026, "OSM")
+    system = pzz_service.llm_client.chat.await_args.kwargs["messages"][0]["content"]
+    for value in ("pzz_check", "classify_only", "building_pzz_check", "scenario"):
+        assert value in system
+    for value in ("User", "OSM", "PZZ"):
+        assert value in system
 
 
 def test_answer_context_uses_disjoint_verdicts_without_mutating_report():

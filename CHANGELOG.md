@@ -1,3 +1,148 @@
+## v0.37.0 (2026-11-06)
+
+[feat/ICII-227-urban-planning-analysis](https://github.com/IDUclub/gMART/pull/277) (#277)
+
+- feat(agents): добавить в оркестратор режим градостроительного анализа сценария
+
+## v0.36.0 (2026-11-06)
+
+[feat/ICII-239-physical-objects-in-compilance](https://github.com/IDUclub/gMART/pull/276) (#276)
+
+- feat(idu_mcp): добавить GetPhysicalObjectsByGeometry для выборки физических объектов по геометрии зон
+- feat(agents): использовать by_geometry для физических объектов без атрибутных требований в compliance
+- test: возвращать физические объекты под layer_name в фейке IDU MCP
+
+## v0.35.3 (2026-11-05)
+
+[fix/project-from-polygon](https://github.com/IDUclub/gMART/pull/275) (#275)
+
+- fix(agents): создавать проект из одного файла с полигоном территории и уточнять границу при неоднозначности
+
+## v0.35.2 (2026-11-03)
+
+[fix/orchestrator-pzz-files](https://github.com/IDUclub/gMART/pull/274) (#274)
+
+- build(deps): добавить google-adk и pydantic-ai для агентного слоя
+- feat(agents): слой LLM-этапов на pydantic-ai поверх BaseLlmAdapter
+- refactor(agents): перевести LLM-этапы пайплайнов на pydantic-ai
+- feat(orchestrator): автономный оркестратор на Google ADK
+- refactor(a2a): перейти с python-a2a на официальный a2a-sdk
+- docs(agents): описать агентный слой на ADK и pydantic-ai
+- chore: игнорировать lock-файлы ротации логов
+- revert: откатить миграцию на google-adk/pydantic-ai, запушенную в dev без ревью
+- fix(agents): перечислять коды missing_code и области source_scope в промпте проверки ответа по данным сценария
+- v0.35.1 (fix/scenario-judge-prompt) (#271)
+- fix(agents): направлять запрос ПЗЗ по файлам агенту pzz и при отсутствии загрузок, не уточняя у пользователя
+
+## v0.35.1 (2026-11-03)
+
+[fix/scenario-judge-prompt](https://github.com/IDUclub/gMART/pull/271) (#271)
+
+- fix(agents): перечислять коды missing_code и области source_scope в промпте проверки ответа по данным сценария
+
+## v0.35.0 (2026-11-02)
+
+[feat/llm-stage-exporter](https://github.com/IDUclub/gMART/pull/270) (#270)
+
+- feat(benchmarks): добавить поэтапный бенчмарк LLM-этапов агентов
+- refactor(benchmarks): заменить раннер экспортом замороженных запросов этапов
+
+## v0.34.5 (2026-11-02)
+
+[fix/restriction-plan-provenance](https://github.com/IDUclub/gMART/pull/269) (#269)
+
+- fix(agents): не просить модель копировать provenance в плане ограничений и обрывать зацикленный структурированный вывод
+
+## v0.34.4 (2026-11-02)
+
+[fix/pzz-llm-prompts](https://github.com/IDUclub/gMART/pull/268) (#268)
+
+- fix(agents): описывать поля и допустимые значения в промптах ПЗЗ при структурированном выводе
+
+## v0.34.3 (2026-11-01)
+
+[fix/vllm-llm-requests](https://github.com/IDUclub/gMART/pull/267) (#267)
+
+- fix(agents): передавать запрос пользователя отдельным сообщением при сопоставлении типов данных сценария
+- fix(agents): заполнять план поиска по документам целиком при структурированном выводе vLLM
+- fix(agents): передавать данные отдельным сообщением в плане выполнения данных сценария и сжатии контекста
+
+## v0.34.2 (2026-10-30)
+
+[fix/ICII-226-review-fixes](https://github.com/IDUclub/gMART/pull/266) (#266)
+
+- fix: исправить сводку проверки норм и названия чатов
+- test: обновить интеграционные проверки норм и восстановления из Redis
+
+## v0.34.1 (2026-10-29)
+
+[docs/ICII-226-compliance-status-docs](https://github.com/IDUclub/gMART/pull/265) (#265)
+
+- docs: добавить контракт и руководство проверки норм по зонам со статусами
+- docs: убрать пометки о незавершённом повторе ChatStorage
+
+## v0.34.0 (2026-10-29)
+
+[feat/ICII-226-compilance-vis-status](https://github.com/IDUclub/gMART/pull/264) (#264)
+
+- feat(idu_mcp): искать сервисы по геометрии зон и собирать слой нормы со статусами
+- feat(agents): проверять нормы по зонам со статусами, кешировать проверки и отдавать архив
+- feat(frontend): раскрашивать зоны норм по статусу и показывать прогресс и файлы проверки
+- docs: описать проверку норм по зонам со статусами
+
+## v0.33.0 (2026-10-28)
+
+[feat/project-service-token](https://github.com/IDUclub/gMART/pull/263) (#263)
+
+- feat(agents): создавать проект из файлов сервисным токеном от имени проверенного пользователя
+
+## v0.32.1 (2026-10-27)
+
+[fix/project-readiness-check](https://github.com/IDUclub/gMART/pull/261) (#261)
+
+- feat(agents): подтверждать доступность проекта из файлов перед ответом о готовности
+
+## v0.32.0 (2026-10-27)
+
+[feat/ICII-205-vllm-priority](https://github.com/IDUclub/gMART/pull/256) (#256)
+
+- feat(agents): приоритет запросов к vLLM через OPENAI_REQUEST_PRIORITY
+- feat(agents): приоритет vLLM для каждого вызова LLM по типу запроса
+
+## v0.31.0 (2026-10-27)
+
+[feat/ICII-205-critic-sentence-ids](https://github.com/IDUclub/gMART/pull/260) (#260)
+
+- feat(agents): подтверждать строки ответа номерами предложений в критике агента документов
+
+## v0.30.0 (2026-10-27)
+
+[feat/ICII-205-planner-bypass](https://github.com/IDUclub/gMART/pull/259) (#259)
+
+- feat(agents): искать по вопросу без планировщика для простых вопросов агента документов
+- ci: пушить bump-коммит токеном VERSION_STATUS_TOKEN, чтобы проверки шли без подтверждения
+- Revert "ci: пушить bump-коммит токеном VERSION_STATUS_TOKEN, чтобы проверки шли без подтверждения"
+
+## v0.29.0 (2026-10-27)
+
+[feat/ICII-205-answer-preview](https://github.com/IDUclub/gMART/pull/258) (#258)
+
+- feat(agents): показывать предварительный анализ при генерации ответа агента документов
+
+## v0.28.5 (2026-10-27)
+
+[fix/ICII-205-citation-names](https://github.com/IDUclub/gMART/pull/257) (#257)
+
+- fix(agents): не дублировать название документа в ссылках ответа
+
+## v0.28.4 (2026-10-26)
+
+[chore/sync-main](https://github.com/IDUclub/gMART/pull/255) (#255)
+
+- v0.22.0 (#245)
+- v0.27.0 (#249)
+- v0.28.3 (#254)
+
 ## v0.28.3 (2026-10-26)
 
 [chore/prod-synapse-vars](https://github.com/IDUclub/gMART/pull/253) (#253)

@@ -109,6 +109,18 @@ async def test_model_builds_one_safe_search_pattern_for_each_requested_type():
         "детские сады",
     ]
     assert len(llm.chat_calls) == 1
+    messages = llm.chat_calls[0].messages
+    assert [message["role"] for message in messages] == ["system", "user"]
+    assert "Сколько школ и детских садов?" not in messages[0]["content"]
+    assert messages[1]["content"] == (
+        "Запрос пользователя: Сколько школ и детских садов?\n"
+        f"Цель: {_acquisition([]).objective}\n"
+        "Requests: "
+        + json.dumps(
+            [request.model_dump(mode="json") for request in requests],
+            ensure_ascii=False,
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -257,6 +269,19 @@ async def test_selection_supports_multiple_types_and_independent_assessment():
     assert resolution.complete
     assert resolution.accepted == candidates
     assert len(llm.chat_calls) == 2
+    for call, label in zip(llm.chat_calls, ["Candidates", "Выбранные типы"]):
+        messages = call.messages
+        assert [message["role"] for message in messages] == ["system", "user"]
+        assert "Сколько школ и детских садов?" not in messages[0]["content"]
+        assert messages[1]["content"] == (
+            "Запрос пользователя: Сколько школ и детских садов?\n"
+            f"Цель: {_acquisition([]).objective}\n"
+            f"{label}: "
+            + json.dumps(
+                [candidate.prompt_entry() for candidate in candidates],
+                ensure_ascii=False,
+            )
+        )
 
 
 @pytest.mark.asyncio

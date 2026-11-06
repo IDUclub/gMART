@@ -486,6 +486,7 @@ class PzzService(BaseLlmService):
         await self._save(request_id, progress)
         context = self._answer_context(report, has_layer=not scenario)
         response = await self.llm_client.chat(
+            request_kind="pzz.answer",
             model=model,
             think=False,
             stream=True,
@@ -554,6 +555,12 @@ class PzzService(BaseLlmService):
             }
         return json.dumps(evidence, ensure_ascii=False)
 
+    async def resolve_inputs(self, model, query, scenario_id, inputs, history=None):
+        """Resolve missing PZZ intent fields without changing trusted API inputs."""
+        return await self._resolve_inputs(
+            model, query, scenario_id, inputs, history or []
+        )
+
     async def _resolve_inputs(self, model, query, scenario_id, inputs, history):
         updates = {}
         if inputs.mode is None:
@@ -566,6 +573,7 @@ class PzzService(BaseLlmService):
             inputs.mode == "scenario" and (inputs.year is None or inputs.source is None)
         ):
             response = await self.llm_client.chat(
+                request_kind="pzz.inputs",
                 model=model,
                 think=False,
                 format=PzzIntent.model_json_schema(),
@@ -575,10 +583,16 @@ class PzzService(BaseLlmService):
                         "role": "system",
                         "content": (
                             "Извлеки режим проверки ПЗЗ, год и источник зон из запроса. "
-                            "Загружаемые файлы участков и зон — pzz_check, классификация "
-                            "участков без ПЗЗ — classify_only, файлы зданий — building_pzz_check; "
-                            "данные из Urban API — scenario. Только явно указанные значения, "
-                            "иначе null. Не выбирай текущий год или источник по умолчанию. Только JSON."
+                            'Верни JSON {"mode": ..., "year": ..., "source": ...}.\n'
+                            "mode: pzz_check — загружаемые файлы участков и зон; "
+                            "classify_only — классификация участков без проверки зон ПЗЗ; "
+                            "building_pzz_check — загружаемые файлы зданий; scenario — "
+                            "объекты или здания сценария из Urban API.\n"
+                            "year — год зон, целое число.\n"
+                            "source — источник зон: User (зоны пользователя), OSM или PZZ "
+                            "(зоны правил землепользования и застройки).\n"
+                            "Только явно указанные значения, иначе null. Не выбирай "
+                            "текущий год или источник по умолчанию. Только JSON."
                         ),
                     },
                     *history,

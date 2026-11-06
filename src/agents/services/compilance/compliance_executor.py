@@ -21,6 +21,7 @@ from src.agents.services.compilance.compliance_requirements import (
     ComplianceDataGate,
     RequirementsResolution,
     _nested_get,
+    attribute_entities,
 )
 from src.agents.services.restriction.restriction_tool_executor import (
     RestrictionToolExecutor,
@@ -51,6 +52,7 @@ class ComplianceExecution:
     timings_ms: dict[str, float]
     # Calls made on the ObjectEffects MCP (replayed against that server, not idu_mcp).
     effects_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    norm_layer: dict[str, Any] | None = None
 
 
 def _population_warnings(population: dict[str, Any]) -> list[str]:
@@ -125,7 +127,8 @@ def _has_features(*layers: Any) -> bool:
     Retrieval calls go to the chat history, and a client that reopens the chat
     replays them into map layers. A call that found nothing (a zone type absent
     from the scenario, an entity no catalogue name matches) would reappear as an
-    empty layer, so only calls that returned objects are recorded.
+    empty layer, so only calls that returned objects are recorded on the legacy
+    GET paths. Geometry queries are always recorded, including empty results.
     """
     return any(
         isinstance(layer, dict) and bool(layer.get("features")) for layer in layers
@@ -352,6 +355,10 @@ class ComplianceTemplateExecutor:
             layers, retrieval_calls = await layer_source.retrieve(
                 plan, params, requirements
             )
+            if hasattr(layer_source, "replay_layers"):
+                requirements, layers = layer_source.replay_layers(
+                    plan, params, requirements, layers
+                )
         else:
             layers, retrieval_calls = await self._retrieve_layers(
                 mcp_client, requirements, scenario_id
@@ -450,6 +457,9 @@ class ComplianceTemplateExecutor:
             )
 
         tool_name, arguments = self._tool_call(plan, params, resolution)
+        # Check* discovers this layer by its stable name, including buffer checks.
+        if "project_territory" in layers:
+            resolution.layers["project_territory"] = layers["project_territory"]
         execution_started = perf_counter()
         raw_result = await self.tools.execute_named_tool(
             mcp_client,
@@ -523,10 +533,11 @@ class ComplianceTemplateExecutor:
             tool_calls=tool_calls,
             layers=layers,
             timings_ms=timings_ms,
+            norm_layer=raw_result.get("norm_layer"),
         )
 
     async def canonical_requirements(
-        self, mcp_client, raw_plan: dict[str, Any]
+        self, mcp_client, raw_plan: dict[str, Any], *, source_only: bool = False
     ) -> tuple[CheckPlan, Any, DeclaredRequirements] | None:
         """A valid plan with catalogue entity names, or ``None`` when it is not.
 
@@ -542,11 +553,31 @@ class ComplianceTemplateExecutor:
             ValueError,
         ):
             return None
-        if effective["missing_registry_roles"]:
+        if effective["missing_registry_roles"] and not source_only:
             return None
         requirements = DeclaredRequirements(
             layers=effective["layers"], attributes=effective["attributes"]
         )
+        if source_only:
+            from src.agents.services.compilance.compliance_inventory import (
+                _covers_every_zone,
+                _zone_roles,
+            )
+
+            roles = _zone_roles(plan, params)
+            if _covers_every_zone(
+                plan,
+                params,
+                {item.role: item.entity for item in requirements.layers},
+                inventory=True,
+            ):
+                roles = set()
+            requirements = DeclaredRequirements(
+                layers=[item for item in requirements.layers if item.role in roles],
+                attributes=[
+                    item for item in requirements.attributes if item.on in roles
+                ],
+            )
         resolution = await self.catalog_resolver.resolve(mcp_client, None, requirements)
         if not resolution.executable:
             return None
@@ -709,11 +740,11 @@ class ComplianceTemplateExecutor:
             evidence=evidence,
             violated_features={
                 "type": "FeatureCollection",
-                "features": violated_features if params.result_mode != "passed" else [],
+                "features": violated_features,
             },
             passed_features={
                 "type": "FeatureCollection",
-                "features": passed_features if params.result_mode != "violated" else [],
+                "features": passed_features,
             },
         )
         return ComplianceExecution(
@@ -761,12 +792,28 @@ class ComplianceTemplateExecutor:
         )
 
     async def _retrieve_layers(
-        self, mcp_client, requirements: DeclaredRequirements, scenario_id: int
+        self,
+        mcp_client,
+        requirements: DeclaredRequirements,
+        scenario_id: int,
+        *,
+        project_territory: dict | None = None,
+        buffer_m: float = 0,
+        full_physical_entities: set[str] | None = None,
+        preserve_physical_attributes: bool = False,
     ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
         layers: dict[str, dict[str, Any]] = {}
         calls: list[dict[str, Any]] = []
+        full_entities = attribute_entities(requirements) | (
+            full_physical_entities or set()
+        )
+        if preserve_physical_attributes:
+            full_entities.update(
+                item.entity
+                for item in requirements.layers
+                if item.entity_type.value == "physical_object"
+            )
         for entity_type, tool_name, argument_name in (
-            ("service", "GetServices", "services_names"),
             ("physical_object", "GetPhysicalObjects", "physical_objects_names"),
         ):
             names = list(
@@ -774,6 +821,7 @@ class ComplianceTemplateExecutor:
                     item.entity
                     for item in requirements.layers
                     if item.entity_type.value == entity_type
+                    and item.entity in full_entities
                 )
             )
             if not names:
@@ -789,6 +837,60 @@ class ComplianceTemplateExecutor:
             layers.update(response or {})
             if _has_features(*(response or {}).values()):
                 calls.append({"function": {"name": tool_name, "arguments": arguments}})
+
+        spatial_entities = list(
+            dict.fromkeys(
+                (item.entity_type.value, item.entity)
+                for item in requirements.layers
+                if item.entity_type.value == "service"
+                or (
+                    item.entity_type.value == "physical_object"
+                    and item.entity not in full_entities
+                )
+            )
+        )
+        if project_territory is None:
+            arguments = {"scenario_id": scenario_id}
+            response = await self.tools.execute_named_tool(
+                mcp_client, "GetProjectTerritory", arguments
+            )
+            project_territory = (response or {}).get("project_territory")
+            calls.append(
+                {"function": {"name": "GetProjectTerritory", "arguments": arguments}}
+            )
+        if project_territory is not None:
+            layers["project_territory"] = project_territory
+        for entity_type, entity in spatial_entities:
+            tool_name = (
+                "GetServicesByGeometry"
+                if entity_type == "service"
+                else "GetPhysicalObjectsByGeometry"
+            )
+            argument_name = (
+                "services_names"
+                if entity_type == "service"
+                else "physical_objects_names"
+            )
+            arguments = {
+                "scenario_id": scenario_id,
+                argument_name: [entity],
+                "zones_layers": ["project_territory"],
+                "buffer_m": buffer_m,
+                "intersection_type": "intersects",
+                "layer_name": entity,
+            }
+            response = await self.tools.execute_named_tool(
+                mcp_client,
+                tool_name,
+                {
+                    **arguments,
+                    "layers": {
+                        name: layers[name] for name in arguments["zones_layers"]
+                    },
+                },
+            )
+            layers.update(response or {})
+            calls.append({"function": {"name": tool_name, "arguments": arguments}})
 
         for requirement in (
             item

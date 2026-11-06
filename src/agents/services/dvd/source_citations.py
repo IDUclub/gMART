@@ -42,6 +42,32 @@ _NUMBERED_TITLE = re.compile(rf"^({_NUMBER})\.?(?=\s|$)")
 _DATE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}")
 _NOT_SECTIONS = {"содержание", "изменения к документу"}
 _MAX_TITLE = 60
+_MONTHS = {
+    month: f"{index:02d}"
+    for index, month in enumerate(
+        (
+            "января февраля марта апреля мая июня июля августа "
+            "сентября октября ноября декабря"
+        ).split(),
+        1,
+    )
+}
+_WORD_DATE = re.compile(r"\b(\d{1,2})\s+(" + "|".join(_MONTHS) + r")\s+(\d{4})\b")
+_NUMERIC_DATE = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")
+_TITLE_TRANSLATION = str.maketrans(
+    {**dict.fromkeys("‐‑–", "-"), **dict.fromkeys("«»“”„‟‘’\"'", '"')}
+)
+
+
+def _document_key(document: str) -> str:
+    document = " ".join(document.lower().translate(_TITLE_TRANSLATION).split())
+    document = _WORD_DATE.sub(
+        lambda m: f"{int(m[1]):02d}.{_MONTHS[m[2]]}.{m[3]}", document
+    )
+    document = _NUMERIC_DATE.sub(
+        lambda m: f"{int(m[1]):02d}.{int(m[2]):02d}.{m[3]}", document
+    )
+    return re.sub(r"(\b\d{2}\.\d{2}\.\d{4})\s+г\.?(?=\W|$)", r"\1", document)
 
 
 def enabled() -> bool:
@@ -51,6 +77,16 @@ def enabled() -> bool:
 def _document(hit: dict[str, Any]) -> str:
     name = " ".join(str(hit.get("name") or "").split())
     version = str(hit.get("version") or "").strip()
+    name_tokens = re.findall(r"\w+(?:[.-]\w+)*", _document_key(name))
+    version_tokens = re.findall(r"\w+(?:[.-]\w+)*", _document_key(version))
+    # A full title must retain every name token, including act designations.
+    if (
+        name_tokens
+        and version_tokens
+        and not name_tokens[0].isdigit()
+        and set(name_tokens).issubset(version_tokens)
+    ):
+        return " ".join(version.split())
     if version and version not in name:
         name += f", {version}" if version.startswith("ред") else f", ред. {version}"
     return name
@@ -98,16 +134,19 @@ def citations(hits: list[dict[str, Any]]) -> dict[str, list[str]]:
 
 
 def _render(labels: list[str], refs: dict[str, list[str]]) -> str:
-    groups: dict[str, list[str]] = {}
+    groups: dict[str, tuple[str, list[str]]] = {}
     for label in dict.fromkeys(labels):
         if label not in refs:
             continue
         document, address = refs[label]
-        addresses = groups.setdefault(document, [])
+        key = _document_key(document)
+        previous, addresses = groups.setdefault(key, (document, []))
+        if len(document) > len(previous):
+            groups[key] = (document, addresses)
         if address and address not in addresses:
             addresses.append(address)
     parts = [
-        ", ".join(filter(None, [doc, *addresses])) for doc, addresses in groups.items()
+        ", ".join(filter(None, [doc, *addresses])) for doc, addresses in groups.values()
     ]
     parts = [p for p in parts if p]
     return f" ({'; '.join(parts)})" if parts else ""

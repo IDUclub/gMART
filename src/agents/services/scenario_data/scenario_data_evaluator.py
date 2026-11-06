@@ -61,21 +61,33 @@ _LAYER_REQUEST_MARKERS = (
     "геометри",
 )
 
+_JUDGE_CODE_DESCRIPTIONS = {
+    "none": "ответ достаточен; только при sufficient=true",
+    "answer_incomplete": (
+        "ответ не отвечает на вопрос, подменяет конкретику общими словами, обещает "
+        "данные без их приведения или утверждает то, что наблюдения не подтверждают "
+        "(например, ноль или отсутствие объектов без успешной выборки)"
+    ),
+    "counts_missing": (
+        "в наблюдениях есть посчитанные количества (aggregate), а в ответе их нет, "
+        "они неполны или расходятся с aggregate"
+    ),
+    "wrong_scope": (
+        "количество взято не из той области или источника: справочник вместо "
+        "сущностей, общие данные или окружение вместо выбранного сценария"
+    ),
+    "required_table_not_emitted": "обязательная таблица из required_output не сформирована",
+    "required_layer_not_emitted": "обязательный слой из required_output не сформирован",
+    "other": "иная причина",
+}
+
 _JUDGE_SCHEMA = {
     "type": "object",
     "properties": {
         "sufficient": {"type": "boolean"},
         "missing_code": {
             "type": "string",
-            "enum": [
-                "none",
-                "answer_incomplete",
-                "counts_missing",
-                "wrong_scope",
-                "required_table_not_emitted",
-                "required_layer_not_emitted",
-                "other",
-            ],
+            "enum": list(_JUDGE_CODE_DESCRIPTIONS),
         },
         "details": {"type": "string"},
     },
@@ -339,6 +351,10 @@ class ScenarioDataEvaluator:
             "tables": _required_items(required_output, "tables"),
             "layers": _required_items(required_output, "layers"),
         }
+        missing_codes = "\n".join(
+            f"- {code}: {description}"
+            for code, description in _JUDGE_CODE_DESCRIPTIONS.items()
+        )
         prompt = (
             "Ты проверяешь ответ агента по городским данным. Верни строгий JSON "
             '{"sufficient": bool, "missing_code": str, "details": str}.\n'
@@ -350,11 +366,17 @@ class ScenarioDataEvaluator:
             "записей справочника с числом сущностей. Сверяй каждое количество с "
             "aggregate соответствующего источника; source_role и source_scope "
             "определяют смысл выборки.\n"
+            "source_scope «выбранный сценарий» — данные сценария; «окружение сценария» "
+            "— территория вокруг; «общие данные» — данные без привязки к сценарию. "
+            "Если вопрос о сценарии, а количество получено только из «общие данные» "
+            "или «окружение сценария», ответ недостаточен (wrong_scope).\n"
             "Наличие обязательной таблицы или слоя проверяет backend. Не отклоняй ответ "
             "из-за формата представления и не требуй таблицу, если это не указано в "
             "required_output. Если table_count > 0 и table_complete=true, таблица уже "
             "показана пользователю. Не требуй перепечатывать её строки.\n"
-            "missing_code выбери только из JSON Schema. details используется лишь в "
+            f"missing_code выбери из следующих кодов:\n{missing_codes}\n"
+            "При sufficient=true missing_code=none, при sufficient=false — один из "
+            "остальных кодов, никогда не none. details используется лишь в "
             "диагностических логах и не управляет выполнением.\n"
             f"required_output: {json.dumps(required, ensure_ascii=False)}\n\n"
             f"Наблюдения:\n{context}"
@@ -368,6 +390,7 @@ class ScenarioDataEvaluator:
         ]
         try:
             response = await self.llm_client.chat(
+                request_kind="scenario.judge",
                 model=model,
                 messages=messages,
                 think=False,

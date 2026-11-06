@@ -21,7 +21,7 @@ from starlette.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 from starlette.types import Message, Receive, Scope, Send
 
-from src.common.service_auth import user_id_from_jwt
+from src.common.service_auth import is_internal_user_context_jwt, user_id_from_jwt
 
 FILES_MOUNT_PATH = "/files"
 FILES_TTL_SECONDS = 60 * 60
@@ -178,6 +178,8 @@ class OwnedFilesApp:
         authorization = dict(scope.get("headers") or []).get(b"authorization", b"")
         scheme, _, token = authorization.decode("latin-1").partition(" ")
         if scheme.lower() != "bearer" or not token.strip():
+            return None
+        if is_internal_user_context_jwt(token.strip()):
             return None
         try:
             return user_id_from_jwt(token.strip())

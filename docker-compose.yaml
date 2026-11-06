@@ -78,7 +78,9 @@ services:
       - "6379:6379"
     environment:
       REDIS_PASSWORD: example_password
-    command: redis-server --save "" --appendonly no --requirepass example_password
+    command: redis-server --save "" --appendonly yes --requirepass example_password
+    volumes:
+      - gmart_pipeline_storage:/data
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a example_password --no-auth-warning ping"]
       interval: 5s
@@ -89,6 +91,7 @@ services:
 
 volumes:
   gmart_cache:
+  gmart_pipeline_storage:
 
 networks:
   localnet:

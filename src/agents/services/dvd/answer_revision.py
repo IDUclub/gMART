@@ -125,6 +125,7 @@ class AnswerReviser:
                 },
             ],
             AnswerRevision,
+            request_kind="dvd.revision",
             schema_enums={
                 "LineEdit": {"target": lines},
                 "LineAddition": {"after": [*lines, ""]},

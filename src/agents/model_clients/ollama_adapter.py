@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
+from loguru import logger
 from ollama import AsyncClient as AsyncOllamaClient
 from ollama import ResponseError
 
@@ -39,9 +40,11 @@ class OllamaAdapter(BaseLlmAdapter):
         think: bool | None = None,
         format: Any = None,  # noqa: A002
         options: dict[str, Any] | None = None,
+        request_kind: str | None = None,
         **kwargs: Any,
     ) -> LlmChatResponse | AsyncIterator[LlmChatResponse]:
         call: dict[str, Any] = {"model": model, "messages": messages, "stream": stream}
+        logger.debug("LLM request priority: key={} value=None (Ollama)", request_kind)
         if think is not None:
             call["think"] = think
         if format is not None:
@@ -71,8 +74,15 @@ class OllamaAdapter(BaseLlmAdapter):
             )
 
     async def generate(
-        self, model: str, prompt: str, *, stream: bool = False, **kwargs: Any
+        self,
+        model: str,
+        prompt: str,
+        *,
+        stream: bool = False,
+        request_kind: str | None = None,
+        **kwargs: Any,
     ) -> LlmGenerateResponse:
+        logger.debug("LLM request priority: key={} value=None (Ollama)", request_kind)
         try:
             return await self.client.generate(
                 model=model, prompt=prompt, stream=stream, **kwargs

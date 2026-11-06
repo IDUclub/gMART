@@ -12,6 +12,7 @@ from src.agents.services.compilance.compliance_entity_mapping import EntityMappe
 from src.agents.services.compilance.compliance_executor import (
     ComplianceTemplateExecutor,
 )
+from src.agents.services.compilance.compliance_inventory import RestrictionZoneBuilder
 from src.agents.services.compilance.compliance_scope import (
     ComplianceScope,
     ScopeOutcome,
@@ -157,6 +158,16 @@ class InProcessMcp:
         self.calls.append(name)
         if name == "CheckDistanceFromSource":
             return self.geometry.distance_from_source(**arguments)
+        if name == "CreateRestrictionZones":
+            zones = self.geometry.restriction_zones(
+                **{
+                    key: value
+                    for key, value in arguments.items()
+                    if key != "layer_name"
+                }
+            )
+            norm_layer = zones.pop("norm_layer")
+            return {arguments["layer_name"]: zones, "norm_layer": norm_layer}
         raise AssertionError(f"unexpected tool {name}")
 
 
@@ -184,6 +195,7 @@ def service_for(store, llm=None):
     service.compliance_executor = ComplianceTemplateExecutor(
         effects_client_factory=None
     )
+    service.zone_builder = RestrictionZoneBuilder(service.compliance_executor)
     service.compliance_uploads = ComplianceUploadService(store)
     service.entity_mapper = EntityMapper(llm or FakeLlm())
     return service
@@ -238,14 +250,15 @@ async def test_design_objects_are_checked_against_the_surroundings(store):
         for e in events
         if e["type"] == "feature_collection"
     }
-    violated = layers["Нарушение нормы — СП 42.13330.2016, п. 7.1"]["features"]
+    norm_features = layers["Норма — СП 42.13330.2016, п. 7.1"]["features"]
+    violated = [
+        f for f in norm_features if f["properties"]["feature_kind"] == "violation"
+    ]
     assert [f["properties"]["object_ref"]["entity_id"] for f in violated] == [
         "user/336195_map_objects/near"
     ]
-    passed = layers["Объекты без нарушений"]["features"]
-    assert [f["properties"]["name"] for f in passed] == [
-        "Жилой дом — 336195_map_objects, №far"
-    ]
+    assert all(f["properties"]["norm_id"] == "r1" for f in norm_features)
+    assert all(name.startswith("Норма — ") for name in layers)
     # Calls over uploaded layers are not replayable from the chat history.
     assert not [e for e in events if e["type"] == "tool_call"]
 
@@ -433,46 +446,85 @@ async def test_answer_to_a_pending_mapping_reruns_the_original_request(store):
 
 
 def test_report_explains_norms_the_files_could_not_serve():
-    from src.agents.services.compilance.compliance_report import (
-        build_compliance_report,
+    from src.agents.services.compilance.compliance_archive import (
+        build_summary_report,
+        complete_summary,
     )
 
-    report = build_compliance_report(
-        {
-            "results": [],
-            "user_files": {
-                "mode": "standalone",
-                "layers": [
-                    {"name": "map_objects", "role": "project", "feature_count": 3}
-                ],
-                "mapping": [
-                    {
-                        "label": "type=calm_rest",
-                        "count": 2,
-                        "entity": "Детская площадка",
-                        "source": "llm",
-                        "confidence": 0.9,
-                    }
-                ],
-                "not_checked": [
-                    {
-                        "label": "СП 42.13330.2016, п. 7.1",
-                        "reasons": [
-                            "в файлах проекта нет объектов, к которым относится норма (Детский сад)"
-                        ],
-                        "requirement": "Расстояние от детских садов",
-                    }
-                ],
-            },
-        }
-    )
+    raw = distance_plan("r1", "Детский сад", "service")
+    summary = {
+        "request_id": "req",
+        "results": [],
+        "user_files": {
+            "layers": [{"name": "map_objects", "role": "project", "feature_count": 3}],
+            "mapping": [
+                {
+                    "label": "type=calm_rest",
+                    "count": 2,
+                    "entity": "Детская площадка",
+                    "source": "llm",
+                    "confidence": 0.9,
+                }
+            ],
+            "not_checked": [
+                {
+                    "restriction_id": "r1",
+                    "label": "СП 42.13330.2016, п. 7.1",
+                    "missing": ["user_files:no_project_objects:Детский сад"],
+                    "reasons": ["В файлах нет объектов Детский сад"],
+                }
+            ],
+        },
+    }
+    complete_summary(summary, [raw], {})
+    report = build_summary_report(summary)
+    assert "Не запущено норм: 1." in report
+    assert "В файлах нет объектов Детский сад" in report
     assert "## Загруженные файлы" in report
     assert "| map_objects | проект | 3 |" in report
+    assert "### Сопоставление с объектами норм" in report
     assert (
         "| type=calm_rest | 2 | Детская площадка | моделью, уверенность 90% |" in report
     )
-    assert "## Не проверено: нет данных в файлах" in report
-    assert "**СП 42.13330.2016, п. 7.1**" in report
+    assert (
+        report.index("## Не запущено")
+        < report.index("В файлах нет объектов Детский сад")
+        < report.index("## Загруженные файлы")
+        < report.index("## Где смотреть подробно")
+    )
+    assert summary["results"][0]["status"] == "not_checked"
+    assert "Полный список находится в summary.json" in report
+
+
+def test_report_missing_file_entities_are_deduplicated_and_bounded():
+    from src.agents.services.compilance.compliance_archive import build_summary_report
+
+    names = [f"Тип {index}" for index in range(12)]
+    report = build_summary_report(
+        {
+            "results": [],
+            "user_files": {
+                "not_checked": [
+                    {
+                        "label": "Норма",
+                        "missing": [
+                            "user_files:no_project_objects:" + ", ".join(names[:6]),
+                            *[f"user_files:no_objects:{name}" for name in names[6:]],
+                            "user_files:no_objects:Тип 0",
+                            "catalog:Свободный текст",
+                        ],
+                        "reasons": ["Свободное пояснение с объектом Скрытый объект"],
+                    }
+                ]
+            },
+        }
+    )
+    sentence = next(
+        line
+        for line in report.splitlines()
+        if line.startswith("В файлах нет объектов ")
+    )
+    assert sentence == "В файлах нет объектов " + ", ".join(names[:10]) + " и ещё 2."
 
 
 async def test_chat_message_without_scenario_files_or_question_checks_nothing(store):

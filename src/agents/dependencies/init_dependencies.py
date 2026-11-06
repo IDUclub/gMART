@@ -6,6 +6,7 @@ from redis.backoff import NoBackoff
 from src.agents.api_clients.chat_storage_client.chat_storage_client import (
     ChatStorageApiClient,
 )
+from src.agents.api_clients.parks_api_client import ParksApiClient
 from src.agents.api_clients.synapse_client import SynapseApiClient
 from src.agents.api_clients.urban_api_client.urban_api_client import UrbanApiClient
 from src.agents.common.api_handlers.json_api_handler import JsonApiHandler
@@ -27,6 +28,8 @@ from src.agents.services.dvd.dvd_rag_service import DvdRagService
 from src.agents.services.normgraph.normgraph_a2a_service import NormGraphA2AService
 from src.agents.services.normgraph.normgraph_rag_service import NormGraphRagService
 from src.agents.services.orchestrator.orchestrator_service import OrchestratorService
+from src.agents.services.parks.parks_a2a_service import ParksA2AService
+from src.agents.services.parks.parks_service import ParksService
 from src.agents.services.pipeline_state import PipelineStateStore
 from src.agents.services.project_files.project_a2a_service import (
     ProjectA2AService,
@@ -49,6 +52,9 @@ from src.agents.services.simple_llm_service import SimpleLlmService
 from src.agents.services.synapse.synapse_gateway_service import SynapseGatewayService
 from src.agents.services.synapse.synapse_run_store import SynapseRunStore
 from src.agents.services.synapse.system_service import SystemService
+from src.agents.services.urban_analysis.urban_analysis_service import (
+    UrbanAnalysisService,
+)
 from src.common.service_auth import build_optional_service_auth, build_service_auth
 
 
@@ -82,7 +88,12 @@ def init_dependencies() -> dict[str, object]:
         redis_client, ttl_seconds=app_config.SYNAPSE_RUN_TTL_SECONDS
     )
     synapse_gateway_service = None
-    synapse_caller_verifier = None
+    synapse_caller_verifier = SynapseCallerVerifier(
+        auth_server_url=os.environ["SERVICE_AUTH_SERVER_URL"],
+        realm=os.environ["SERVICE_AUTH_REALM"],
+        service_client_id=app_config.SYNAPSE_A2A_CLIENT_ID,
+        audience=app_config.SYNAPSE_AUTH_AUDIENCE,
+    )
     if app_config.SYNAPSE_ENABLED:
         synapse_client = SynapseApiClient(
             app_config.SYNAPSE_API_URL,
@@ -100,12 +111,6 @@ def init_dependencies() -> dict[str, object]:
             workflow_id=app_config.SYNAPSE_WORKFLOW_ID,
             run_config_id=app_config.SYNAPSE_RUN_CONFIG_ID,
             reconnect_max_seconds=app_config.SYNAPSE_SSE_RECONNECT_MAX_SECONDS,
-        )
-        synapse_caller_verifier = SynapseCallerVerifier(
-            auth_server_url=os.environ["SERVICE_AUTH_SERVER_URL"],
-            realm=os.environ["SERVICE_AUTH_REALM"],
-            service_client_id=app_config.SYNAPSE_A2A_CLIENT_ID,
-            audience=app_config.SYNAPSE_AUTH_AUDIENCE,
         )
     file_store = TemporaryFileStore()
     restriction_parser_service = RestrictionParserService(
@@ -156,7 +161,22 @@ def init_dependencies() -> dict[str, object]:
         urban_api_client,
         pipeline_state_store,
         ComplianceUploadService(pipeline_state_store),
-        user_urban_api_client=UrbanApiClient(JsonApiHandler(app_config.URBAN_API_URL)),
+        user_token_verifier=synapse_caller_verifier,
+    )
+    parks_service = ParksService(
+        app_config.OLLAMA_URL,
+        chat_storage_client,
+        urban_api_client,
+        pipeline_state_store,
+        ParksApiClient(app_config.PARKS_API_URL) if app_config.PARKS_API_URL else None,
+    )
+    urban_analysis_service = UrbanAnalysisService(
+        restriction_parser_service,
+        provision_service,
+        pzz_service,
+        urban_api_client,
+        pipeline_state_store,
+        file_store=file_store,
     )
     orchestrator_service = OrchestratorService(
         app_config.OLLAMA_URL,
@@ -171,6 +191,8 @@ def init_dependencies() -> dict[str, object]:
         scenario_data_service=scenario_data_service,
         pzz_service=pzz_service,
         project_files_service=project_files_service,
+        parks_service=parks_service,
+        urban_analysis_service=urban_analysis_service,
     )
     return {
         "app_config": app_config,
@@ -186,7 +208,10 @@ def init_dependencies() -> dict[str, object]:
         "dvd_rag_service": dvd_rag_service,
         "normgraph_rag_service": normgraph_rag_service,
         "orchestrator_service": orchestrator_service,
+        "urban_analysis_service": urban_analysis_service,
         "pzz_service": pzz_service,
+        "parks_service": parks_service,
+        "parks_a2a_service": ParksA2AService(parks_service),
         "pzz_a2a_service": PzzA2AService(pzz_service),
         "project_files_service": project_files_service,
         "project_a2a_service": ProjectA2AService(project_files_service),

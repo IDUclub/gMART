@@ -121,11 +121,11 @@ async def test_layers_and_summary_become_separate_artifacts():
         [
             {
                 "type": "feature_collection",
-                "content": {"name": "Нарушение нормы — А", "feature_collection": layer},
+                "content": {"name": "Норма — А", "feature_collection": layer},
             },
             {
                 "type": "feature_collection",
-                "content": {"name": "Нарушение нормы — Б", "feature_collection": layer},
+                "content": {"name": "Норма — Б", "feature_collection": layer},
             },
             {"type": "compliance_summary", "content": {"total_norms": 2}},
             {"type": "chunk", "content": {"text": "Готово", "done": True}},

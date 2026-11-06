@@ -11,6 +11,7 @@ from src.idu_mcp.dependencies.dependencies import (
     get_geom_tools,
 )
 from src.idu_mcp.tools_descriptions import geometry_validation_messages as messages
+from src.idu_mcp.tools_descriptions.compliance_tools_desc import NORM_LAYER
 from src.idu_mcp.tools_services.compliance_geometry import ComplianceGeometryTools
 from src.idu_mcp.tools_services.geometry_tools import GeometryTools
 from src.idu_mcp.tools_services.geometry_validator import GeometryToolValidator
@@ -190,7 +191,8 @@ async def _run_compliance_operation(
         "Детерминированно проверяет полный набор целевых объектов относительно исходной "
         "или буферной геометрии. Возвращает отдельные корзины violated/passed/unchecked, "
         "coverage и evidence по object_ref."
-    ),
+    )
+    + NORM_LAYER,
     tags={"geometry", "compliance"},
 )
 async def check_distance_from_source(
@@ -231,7 +233,8 @@ async def check_distance_from_source(
     description=(
         "Строит индивидуальный буфер источника по разрешённому атрибуту и таблице "
         "непересекающихся диапазонов; неизвестные значения остаются непроверенными."
-    ),
+    )
+    + NORM_LAYER,
     tags={"geometry", "compliance"},
 )
 async def check_distance_table(
@@ -273,7 +276,8 @@ async def check_distance_table(
         "Выполняет полный spatial left/anti join и возвращает каждый применимый объект "
         "ровно один раз, включая доказательство отсутствия соседа. Минимальное число "
         "соседей проверяется отдельно для каждого обязательного слоя."
-    ),
+    )
+    + NORM_LAYER,
     tags={"geometry", "compliance"},
 )
 async def check_presence_within(
@@ -287,10 +291,12 @@ async def check_presence_within(
     template_version: int = 1,
     provenance: dict[str, Any] | None = None,
     input_revision: str | None = None,
+    predicate: Literal["intersects", "within"] = "intersects",
     tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
 ) -> dict[str, Any]:
     return await _run_compliance_operation(
         tools.presence_within,
+        predicate=predicate,
         objects_layer=objects_layer,
         required_neighbor_layers=required_neighbor_layers,
         distance_m=distance_m,
@@ -310,7 +316,10 @@ async def check_presence_within(
     description=(
         "Сопоставляет объекты зонам и проверяет атрибут по константе или разрешённому "
         "атрибуту зоны с политикой strictest_threshold."
-    ),
+        " Для norm_layer каждая зона проверяется по своему порогу и обрезается "
+        "по project_layer (по умолчанию project_territory, если он передан в layers)."
+    )
+    + NORM_LAYER,
     tags={"geometry", "compliance"},
 )
 async def check_zonal_attribute_threshold(
@@ -327,10 +336,14 @@ async def check_zonal_attribute_threshold(
     template_version: int = 1,
     provenance: dict[str, Any] | None = None,
     input_revision: str | None = None,
+    unit: str | None = None,
+    project_layer: str | None = None,
     tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
 ) -> dict[str, Any]:
     return await _run_compliance_operation(
         tools.zonal_attribute_threshold,
+        unit=unit,
+        project_layer=project_layer,
         objects_layer=objects_layer,
         zones_layer=zones_layer,
         object_attribute=object_attribute,
@@ -366,7 +379,13 @@ async def check_zonal_attribute_threshold(
     каждая зона (restriction_title, restriction_description, zone_kind, provenance, …).
 
     Выход: {layer_name: FeatureCollection} в WGS84; meta содержит число исходных
-    объектов, построенных зон и пропущенных объектов.""",
+    объектов, построенных зон и пропущенных объектов.
+    Дополнительный ключ результата norm_layer — FeatureCollection только зон,
+    status=not_checked, status_ru=«не проверялось», без нарушений и объектов.
+    properties.template, properties.object_attribute и properties.provenance
+    (document_name, clause_number, extraction_text) задают тип и полный текст нормы;
+    properties.restriction_id задаёт norm_id. Общие поля перечислены в
+    norm_layer.meta.group_properties; группировка по norm_id.""",
     annotations={"title": "Build norm zones", "readOnlyHint": True},
     tags={"geometry", "compliance"},
 )
@@ -383,6 +402,8 @@ async def create_restriction_zones(
     clip_layer: str | None = None,
     tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
 ) -> dict[str, Any]:
+    if layer_name == "norm_layer":
+        raise ToolError("Имя слоя norm_layer зарезервировано для результата нормы")
     zones = await _run_compliance_operation(
         tools.restriction_zones,
         geometry_mode=geometry_mode,
@@ -395,7 +416,8 @@ async def create_restriction_zones(
         threshold_field=threshold_field,
         clip_layer=clip_layer,
     )
-    return {layer_name: zones}
+    norm_layer = zones.pop("norm_layer")
+    return {layer_name: zones, "norm_layer": norm_layer}
 
 
 @geometry_mcp.tool(
@@ -404,7 +426,9 @@ async def create_restriction_zones(
     description=(
         "В локальной метрической CRS обрезает числитель границей зоны, объединяет "
         "перекрытия и сравнивает процент с нормативным порогом."
-    ),
+        " norm_layer использует зоны в границах project_layer (либо project_territory)."
+    )
+    + NORM_LAYER,
     tags={"geometry", "compliance"},
 )
 async def check_zonal_ratio(
@@ -419,10 +443,12 @@ async def check_zonal_ratio(
     template_version: int = 1,
     provenance: dict[str, Any] | None = None,
     input_revision: str | None = None,
+    project_layer: str | None = None,
     tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
 ) -> dict[str, Any]:
     return await _run_compliance_operation(
         tools.zonal_ratio,
+        project_layer=project_layer,
         timeout_seconds=180,
         zones_layer=zones_layer,
         numerator_layer=numerator_layer,
@@ -445,7 +471,10 @@ async def check_zonal_ratio(
         "Сравнивает числовой атрибут каждого объекта слоя (этажность, высота, площадь) "
         "с нормативным порогом. Объекты без значения остаются непроверенными. "
         "Возвращает корзины violated/passed/unchecked, coverage и evidence."
-    ),
+        " Зона norm_layer — project_layer (по умолчанию project_territory); "
+        "при отсутствии территории norm_layer имеет partial с явной причиной."
+    )
+    + NORM_LAYER,
     tags={"geometry", "compliance"},
 )
 async def check_object_attribute_threshold(
@@ -460,10 +489,12 @@ async def check_object_attribute_threshold(
     template_version: int = 1,
     provenance: dict[str, Any] | None = None,
     input_revision: str | None = None,
+    project_layer: str | None = None,
     tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
 ) -> dict[str, Any]:
     return await _run_compliance_operation(
         tools.object_attribute_threshold,
+        project_layer=project_layer,
         objects_layer=objects_layer,
         object_attribute=object_attribute,
         operator=operator,
@@ -485,7 +516,8 @@ async def check_object_attribute_threshold(
         "Проверяет, что у каждого объекта в пределах нормативной доступности (минуты "
         "или длина пути) есть хотя бы minimum_neighbors объектов каждого слоя. "
         "Версия buffer_v1 заменяет маршрут буфером radius_m по прямой."
-    ),
+    )
+    + NORM_LAYER,
     tags={"geometry", "compliance"},
 )
 async def check_accessibility_within(
@@ -500,10 +532,12 @@ async def check_accessibility_within(
     template_version: int = 1,
     provenance: dict[str, Any] | None = None,
     input_revision: str | None = None,
+    predicate: Literal["intersects", "within"] = "intersects",
     tools: ComplianceGeometryTools = Depends(get_compliance_geometry_tools),
 ) -> dict[str, Any]:
     return await _run_compliance_operation(
         tools.accessibility_within,
+        predicate=predicate,
         objects_layer=objects_layer,
         required_neighbor_layers=required_neighbor_layers,
         radius_m=radius_m,

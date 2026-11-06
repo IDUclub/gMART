@@ -1,79 +1,197 @@
-"""One map layer of the objects a compliance run checked and found compliant.
+"""Per-norm output; geometry from Check* is authoritative."""
 
-Violations reach the map norm by norm; objects without any violation had no layer
-at all, so a run that found nothing left the user with an empty map. This layer
-closes that gap: every checked object that passed at least one norm and violated
-none, once, with the norms it passed (equivalent norms included).
-"""
+from copy import deepcopy
 
-from __future__ import annotations
+from src.agents.services.compilance.compliance_sources import source_reference
 
-import json
-from typing import Any
+STATUS_RU = {
+    "passed": "выполнено",
+    "violated": "не выполнено",
+    "partial": "частично",
+    "not_checked": "не проверялось",
+}
 
-from src.agents.services.compilance.compliance_sources import source_references
-from src.agents.services.service_entities.compliance import ComplianceResult
-
-PASSED_OBJECTS_LAYER = "Объекты без нарушений"
-
-# Per-norm verdict fields of a result feature; the merged object has its own.
-_PER_NORM_FIELDS = frozenset(
-    {
-        "compliance_evidence",
-        "compliance_status",
-        "restriction_evidence",
-        "restriction_id",
-        "verification_status",
-    }
-)
+CHECK_TYPES = {
+    "distance_from_source": ("distance", "расстояние"),
+    "distance_table": ("distance", "расстояние"),
+    "presence_within": ("presence", "наличие"),
+    "zonal_attribute_threshold": ("attribute_threshold", "пороговое значение"),
+    "object_attribute_threshold": ("attribute_threshold", "пороговое значение"),
+    "zonal_ratio": ("area_ratio", "доля площади"),
+    "accessibility_within": ("accessibility", "доступность"),
+    "service_provision": ("provision", "обеспеченность"),
+}
 
 
-def _object_key(feature: dict[str, Any]) -> str:
-    properties = feature.get("properties") or {}
-    ref = properties.get("object_ref")
-    if isinstance(ref, dict) and ref.get("id"):
-        return str(ref["id"])
-    return json.dumps(feature.get("geometry"), sort_keys=True)
+def result_status(result):
+    if result.compliance_status == "violated":
+        return "violated"
+    if result.verification_status == "complete":
+        return "passed"
+    return "partial"
 
 
-def passed_objects_layer(results: list[ComplianceResult]) -> dict[str, Any] | None:
-    """Merge every norm's passed objects minus any object violated anywhere.
-
-    Returns a FeatureCollection, or ``None`` when no checked object is compliant.
-    """
-    violated = {
-        _object_key(feature)
-        for result in results
-        for feature in (result.violated_features or {}).get("features") or []
-    }
-    merged: dict[str, dict[str, Any]] = {}
-    for result in results:
-        if result.compliance_status not in {"passed", "violated"}:
-            continue
-        references = source_references(result.source)
-        for feature in (result.passed_features or {}).get("features") or []:
-            key = _object_key(feature)
-            if key in violated:
-                continue
-            if key not in merged:
-                properties = {
-                    name: value
-                    for name, value in (feature.get("properties") or {}).items()
-                    if name not in _PER_NORM_FIELDS
-                }
-                merged[key] = {
-                    "type": "Feature",
-                    "geometry": feature.get("geometry"),
-                    "properties": {
-                        **properties,
-                        "compliance_status": "passed",
-                        "passed_norms": [],
-                    },
-                }
-            norms = merged[key]["properties"]["passed_norms"]
-            for reference in references:
-                if reference not in norms:
-                    norms.append(reference)
-    if not merged:
+def norm_layer(execution, zone=None):
+    """Consume MCP output; assemble equivalent output for ObjectEffects only."""
+    result = execution.result
+    layer = deepcopy(execution.norm_layer)
+    status = result_status(result)
+    reason = None
+    if status == "violated":
+        reason = f"Нарушений: {result.summary.violated_objects}."
+    elif status == "partial":
+        reason = (
+            "; ".join(result.missing_requirements + result.warnings)
+            or f"Не проверено объектов: {result.coverage.unchecked_objects}."
+        )
+    if layer is None and (
+        result.verification_status == "complete" or execution.effects_tool_calls
+    ):
+        layer = deepcopy(getattr(zone, "norm_layer", None)) or {
+            "type": "FeatureCollection",
+            "features": [],
+            "meta": {},
+        }
+        if execution.effects_tool_calls:
+            zone_features = list(layer["features"])
+            zone_refs = [
+                item.get("properties", {}).get("zone_ref") for item in zone_features
+            ]
+            zone_refs = [ref for ref in zone_refs if ref is not None]
+            for kind, collection in (
+                ("violation", result.violated_features),
+                ("object", result.passed_features),
+            ):
+                for feature in (collection or {}).get("features", []):
+                    item = deepcopy(feature)
+                    evidence = (item.get("properties") or {}).get(
+                        "compliance_evidence"
+                    ) or []
+                    measured = evidence[0].get("measured_value") if evidence else None
+                    required = evidence[0].get("threshold") if evidence else None
+                    item.setdefault("properties", {}).update(
+                        feature_kind="object",
+                        zone_refs=zone_refs,
+                        object_name=(item.get("properties") or {}).get("name"),
+                        measured_value=measured,
+                        required_value=required,
+                        deficit=(
+                            max(0, required - measured)
+                            if measured is not None and required is not None
+                            else None
+                        ),
+                        unit="share",
+                        violation_geometry_mode="zone",
+                        explanation_ru=f"Обеспеченность: {measured}; требуется ≥ {required}.",
+                    )
+                    layer["features"].append(item)
+                    if kind == "violation":
+                        for area in zone_features:
+                            layer["features"].append(
+                                {
+                                    "type": "Feature",
+                                    "geometry": area["geometry"],
+                                    "properties": {
+                                        **item["properties"],
+                                        "feature_kind": "violation",
+                                        "zone_ref": (area.get("properties") or {}).get(
+                                            "zone_ref"
+                                        ),
+                                    },
+                                }
+                            )
+    if layer is None:
+        result.status, result.status_reason = status, reason
         return None
-    return {"type": "FeatureCollection", "features": list(merged.values())}
+    meta = layer.setdefault("meta", {})
+    scope_unknown = any(
+        warning.startswith("scope:without_value=")
+        and warning != "scope:without_value=0"
+        for warning in result.warnings
+    )
+    if execution.norm_layer is not None:
+        status = meta.get("norm_status", status)
+        reason = meta.get("norm_status_reason", reason)
+        if status == "passed" and result.coverage.unchecked_objects:
+            status, reason = (
+                "partial",
+                f"Не проверено объектов: {result.coverage.unchecked_objects}.",
+            )
+        if scope_unknown:
+            reason = " ".join(
+                filter(
+                    None,
+                    [
+                        reason,
+                        f"Не проверено объектов с неизвестным условием применения: {result.coverage.unchecked_objects}.",
+                    ],
+                )
+            )
+    source = result.source
+    first = next(iter(layer.get("features", [])), {}).get("properties", {})
+    check_en, check_ru = CHECK_TYPES.get(
+        result.template, (result.template, result.template)
+    )
+    common = {
+        "norm_id": result.restriction_id,
+        "norm_status": status,
+        "norm_status_ru": STATUS_RU[status],
+        "norm_status_reason": reason,
+        "norm_reference": source_reference(source),
+        "document_name": source.get("document_name"),
+        "clause_number": source.get("clause_number"),
+        "norm_text": source.get("extraction_text"),
+        "check_type_en": first.get(
+            "check_type_en", meta.get("check_type_en", check_en)
+        ),
+        "check_type_ru": first.get(
+            "check_type_ru", meta.get("check_type_ru", check_ru)
+        ),
+    }
+    result.check_type_en = common["check_type_en"]
+    result.check_type_ru = common["check_type_ru"]
+    meta.update(
+        group_by="norm_id",
+        group_properties=list(common),
+        check_type_en=result.check_type_en,
+        check_type_ru=result.check_type_ru,
+        **{
+            key: common[key]
+            for key in (
+                "norm_id",
+                "norm_status",
+                "norm_status_ru",
+                "norm_status_reason",
+            )
+        },
+    )
+    features = []
+
+    def append(feature, geometry):
+        if not geometry:
+            return
+        if geometry.get("type") == "GeometryCollection":
+            for child in geometry.get("geometries", []):
+                append(feature, child)
+        else:
+            features.append({**feature, "geometry": geometry})
+
+    for feature in layer.get("features", []):
+        properties = feature.setdefault("properties", {})
+        properties.update(common)
+        if execution.norm_layer is None and properties.get("feature_kind") == "zone":
+            properties.update(
+                status=status, status_ru=STATUS_RU[status], status_reason=reason
+            )
+        elif (
+            scope_unknown
+            and properties.get("feature_kind") == "zone"
+            and properties.get("status") == "passed"
+        ):
+            properties.update(
+                status="partial", status_ru=STATUS_RU["partial"], status_reason=reason
+            )
+        append(feature, feature.get("geometry"))
+    layer["features"] = features
+    result.status, result.status_reason = status, reason
+    return layer

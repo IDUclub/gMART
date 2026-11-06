@@ -104,6 +104,7 @@ async def test_drafting_and_comparison_prompts_match_dev_without_figures(
     assert_dev_prompt("comparison_base", COMPARISON_PROMPT)
 
 
+@pytest.mark.usefixtures("legacy_critic_quotes")
 @pytest.mark.parametrize("figure", [False, True])
 async def test_critic_prompt_and_audit_budget_use_only_visible_figures(
     fake_llm, monkeypatch, figure

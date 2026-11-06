@@ -134,6 +134,7 @@ class ProvisionPlanBuilder:
             schema["properties"][key]["items"]["enum"] = services_catalog
         for attempt in range(_retries + 1):
             response = await self.llm_client.chat(
+                request_kind="provision.plan",
                 model=model,
                 options={"temperature": 0, "num_predict": 1024},
                 think=False,

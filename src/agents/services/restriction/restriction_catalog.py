@@ -38,6 +38,25 @@ def parse_catalog_prompt(prompt: str) -> list[str]:
     return [item.strip() for item in prompt.split(",") if item.strip()]
 
 
+def _llm_plan_schema() -> dict[str, Any]:
+    schema = RestrictionPlan.model_json_schema()
+    for name in ("BufferRule", "RestrictionRule"):
+        schema["$defs"][name]["properties"].pop("provenance", None)
+    schema["$defs"].pop("RestrictionProvenance", None)
+    return schema
+
+
+def _plan_prompt_json(plan: RestrictionPlan) -> str:
+    # Repair the plan without asking the model to rewrite system-grounded data.
+    return plan.model_dump_json(
+        ensure_ascii=False,
+        exclude={
+            "buffer_rules": {"__all__": {"provenance"}},
+            "restriction_rules": {"__all__": {"provenance"}},
+        },
+    )
+
+
 class RestrictionPlanBuilder:
     def __init__(self, llm_client):
         self.llm_client = llm_client
@@ -252,9 +271,10 @@ class RestrictionPlanBuilder:
             if user_query:
                 messages.append({"role": "user", "content": user_query})
         response = await self.llm_client.chat(
+            request_kind="restriction.plan",
             model=model,
             think=False,
-            format=RestrictionPlan.model_json_schema(),
+            format=_llm_plan_schema(),
             options={
                 "temperature": 0,
                 "num_predict": 4096,
@@ -332,7 +352,6 @@ class RestrictionPlanBuilder:
                     "title": "string",
                     "origin": "normgraph | user",
                     "restriction_id": "string | null",
-                    "provenance": "object | null",
                 }
             ],
             "restriction_rules": [
@@ -343,7 +362,6 @@ class RestrictionPlanBuilder:
                     "description": "string",
                     "origin": "normgraph | user",
                     "restriction_id": "string | null",
-                    "provenance": "object | null",
                 }
             ],
             "selection_reasons": [
@@ -399,11 +417,11 @@ class RestrictionPlanBuilder:
         - confidence укажи от 0 до 1.
         - Если релевантное ограничение NormGraph однозначно соответствует слоям каталогов,
           используй subject как источник буфера, object как целевой слой, value.number как
-          радиус в метрах. Скопируй id в restriction_id, укажи origin = "normgraph" и
-          скопируй provenance. Текст extraction_text также включи в provenance.
+          радиус в метрах. Скопируй id в restriction_id, укажи origin = "normgraph".
+          Данные документа система заполнит по restriction_id.
         - Не изменяй расстояние из NormGraph и не приписывай ему другие источники или цели.
         - Если пользователь явно задал собственное расстояние в текущем запросе, можно создать
-          временное правило с origin = "user", restriction_id = null и provenance = null.
+          временное правило с origin = "user", restriction_id = null.
         - Если пользователь сослался на СП, СНиП, ГОСТ, СанПиН, пункт документа или прямо
           попросил каноническое правило и оно присутствует в списке NormGraph, обязательно
           используй origin = "normgraph" и точный restriction_id. Повторённое пользователем
@@ -442,7 +460,7 @@ class RestrictionPlanBuilder:
         {user_query}
 
         Текущий план:
-        {plan.model_dump_json(ensure_ascii=False)}
+        {_plan_prompt_json(plan)}
 
         Обнаруженные противоречия:
         {issues}
@@ -464,7 +482,7 @@ class RestrictionPlanBuilder:
         буфер строй вокруг объекта, от границы которого измеряется расстояние. Для запроса
         «проверь жилые дома у леса» source = «лес», target = «жилой дом».
         Для пользовательского временного правила используй origin = "user",
-        restriction_id = null и provenance = null.
+        restriction_id = null.
         """
 
     @staticmethod
@@ -532,7 +550,7 @@ class RestrictionPlanBuilder:
         {user_query}
 
         Текущий план:
-        {plan.model_dump_json(ensure_ascii=False)}
+        {_plan_prompt_json(plan)}
 
         В текущем плане есть имена, которых нет в доступных списках:
         {unresolved_names}
@@ -553,7 +571,7 @@ class RestrictionPlanBuilder:
         - Для каждого source entity должна быть отдельная buffer_rule с тем же радиусом, типом буфера и названием.
         - Для restriction_rules замени обобщающие source_name и target_names на конкретные доступные имена.
         - Обнови selection_reasons так, чтобы они объясняли уже исправленный выбор простым языком.
-        - Для правил NormGraph сохрани точные origin, restriction_id, provenance и value.number
+        - Для правил NormGraph сохрани точные origin, restriction_id и value.number
           из приведённого ограничения; не подменяй их значениями из памяти.
 
         Строгие правила соответствия объектов:

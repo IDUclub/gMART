@@ -478,6 +478,7 @@ class UrbanReadWorkflow:
                     read_messages(query, tools, selected, project_id),
                     UrbanReadPlan,
                     "urban read plan",
+                    request_kind="scenario.mapping",
                     post_validate=lambda p: validate_read_plan(
                         p, tools, query, selected, project_id
                     ),

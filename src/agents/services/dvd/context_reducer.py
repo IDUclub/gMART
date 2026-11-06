@@ -451,6 +451,7 @@ class DvdContextReducer:
         if available < 256:
             raise SummaryError("context_budget_exhausted")
         response = await self.llm_client.chat(
+            request_kind="dvd.context_reducer",
             model=model,
             think=False,
             format=schema,
@@ -550,6 +551,7 @@ class DvdContextReducer:
         if available < 256:
             raise SummaryError("context_budget_exhausted")
         response = await self.llm_client.chat(
+            request_kind="dvd.context_reducer",
             model=model,
             think=False,
             format=schema,

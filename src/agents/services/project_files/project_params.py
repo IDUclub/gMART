@@ -10,11 +10,15 @@ from __future__ import annotations
 import re
 import statistics
 from collections import Counter
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from loguru import logger
 from pydantic import BaseModel
+from pyproj import Geod
 from shapely.geometry import shape
+from shapely.geometry.polygon import orient
+from shapely.ops import unary_union
 
 from src.agents.services.compilance.compliance_entity_mapping import (
     EntityTarget,
@@ -23,7 +27,7 @@ from src.agents.services.compilance.compliance_entity_mapping import (
     signature_of,
 )
 from src.agents.services.compilance.compliance_scope import normalized
-from src.agents.services.compilance.compliance_uploads import UserFiles
+from src.agents.services.compilance.compliance_uploads import UploadedLayer, UserFiles
 from src.agents.services.normgraph.normgraph_reasoning import _request_json
 from src.agents.services.project_files.project_types import (
     CreationSpec,
@@ -40,6 +44,14 @@ EXISTING_TITLES: dict[str, str] = {
 }
 _INDIVIDUAL = {"house", "detached", "semidetached_house", "bungalow"}
 MAX_NAME = 200
+BOUNDARY_ERROR = (
+    "Не удалось определить территорию проекта: загрузите хотя бы один файл с полигоном "
+    "границы территории."
+)
+BOUNDARY_QUESTION = (
+    "Не удалось однозначно определить файл с границей территории проекта. "
+    "Какой слой считать границей?"
+)
 _HOUSE = EntityTarget("Жилой дом", "physical_object")
 
 _YES = re.compile(
@@ -47,6 +59,95 @@ _YES = re.compile(
     r"используй|использовать|повтори|повторить|продолжай|да, используй|да, повтори)$"
 )
 _NO = re.compile(r"^(?:нет|не надо|не нужно|отмена|отменить|не используй|стоп)$")
+
+
+@dataclass
+class BoundaryDecision:
+    layer: UploadedLayer | None = None
+    hull: bool = False
+    options: list[dict[str, str]] = field(default_factory=list)
+    error: bool = False
+
+
+def boundary_decision(files: UserFiles, choice: str | None = None) -> BoundaryDecision:
+    """Choose a territory or offer candidates without changing uploaded roles."""
+    if choice is not None:
+        if choice == "hull":
+            return BoundaryDecision(hull=True)
+        layer = next((layer for layer in files.layers if layer.name == choice), None)
+        return BoundaryDecision(layer=layer, error=layer is None)
+    if any(
+        (feature.get("geometry") or {}).get("type") in {"Polygon", "MultiPolygon"}
+        for layer in files.by_role("border")
+        for feature in layer.features
+    ):
+        return BoundaryDecision()
+
+    def polygonal(layer: UploadedLayer) -> bool:
+        return bool(layer.features) and all(
+            (feature.get("geometry") or {}).get("type") in {"Polygon", "MultiPolygon"}
+            for feature in layer.features
+        )
+
+    def tagged(layer: UploadedLayer) -> bool:
+        return any(
+            feature_tags(feature.get("properties") or {}, layer.name)
+            for feature in layer.features
+        )
+
+    def ask(
+        candidates: list[UploadedLayer], allow_hull: bool = False
+    ) -> BoundaryDecision:
+        options = []
+        for layer in candidates:
+            if any(option["value"] == layer.name for option in options):
+                continue
+            label = f"«{layer.name}» — объектов: {len(layer.features)}"
+            try:
+                geometry = unary_union(
+                    [shape(item["geometry"]) for item in layer.features]
+                )
+                polygons = (
+                    [geometry] if geometry.geom_type == "Polygon" else geometry.geoms
+                )
+                area = sum(
+                    abs(Geod(ellps="WGS84").geometry_area_perimeter(orient(poly))[0])
+                    for poly in polygons
+                )
+                label += f", площадь ≈ {area / 10000:.2f} га"
+            except Exception:
+                pass
+            options.append({"value": layer.name, "label": label})
+        if allow_hull:
+            options.append(
+                {
+                    "value": "hull",
+                    "label": "Построить границу по охвату объектов файлов",
+                }
+            )
+        options.append(
+            {"value": "none", "label": "Подходящего нет, загружу другой файл"}
+        )
+        return BoundaryDecision(options=options)
+
+    project = files.by_role("project")
+    untagged = [layer for layer in project if polygonal(layer) and not tagged(layer)]
+    singles = [layer for layer in untagged if len(layer.features) == 1]
+    has_tags = any(tagged(layer) for layer in project)
+    if len(singles) == 1:
+        return BoundaryDecision(layer=singles[0])
+    if singles:
+        return ask(singles, has_tags)
+    if untagged:
+        return ask(untagged, has_tags)
+    if sum(len(layer.features) for layer in project) == 1:
+        candidates = [layer for layer in project if polygonal(layer)]
+        if candidates:
+            return ask(candidates)
+    if files.has_project:
+        return BoundaryDecision(hull=True)
+    candidates = [layer for layer in files.by_role("context") if polygonal(layer)]
+    return ask(candidates) if candidates else BoundaryDecision(error=True)
 
 
 class ProjectIntent(BaseModel):
@@ -91,6 +192,7 @@ async def extract_intent(
                 {"role": "user", "content": query},
             ],
             ProjectIntent,
+            request_kind="project.inputs",
         )
     except Exception as exc:  # the defaults below still create the project
         logger.warning(f"Project intent extraction failed: {exc}")

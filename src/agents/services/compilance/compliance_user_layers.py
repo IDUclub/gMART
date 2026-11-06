@@ -67,6 +67,7 @@ class UserLayerSource:
     revision: str = "user"
     _scenario_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     _scenario_calls: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    project_territory: dict[str, Any] | None = None
 
     @property
     def overlay(self) -> bool:
@@ -136,6 +137,8 @@ class UserLayerSource:
                     ),
                 },
             }
+        if self.project_territory is not None:
+            result["project_territory"] = self.project_territory
         return result, calls
 
     def _project(self, requirement) -> list[dict[str, Any]]:

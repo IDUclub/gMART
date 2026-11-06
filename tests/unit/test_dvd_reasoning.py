@@ -5,10 +5,51 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import TypeAdapter, ValidationError
 
 from src.agents.services.dvd.dvd_reasoning import AnswerCritic, RetrievalPlanner
-from src.agents.services.service_entities.dvd_plan import SearchKind
+from src.agents.services.service_entities.dvd_plan import (
+    NameRetrievalPlan,
+    RetrievalPlan,
+    SearchKind,
+    SemanticRetrievalPlan,
+    StructureRetrievalPlan,
+    validate_retrieval_plan,
+)
 from tests.helpers import plan_json, verdict_json
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [SemanticRetrievalPlan, StructureRetrievalPlan, NameRetrievalPlan],
+)
+def test_retrieval_plan_schema_order_matches_prompt(variant):
+    prompt = RetrievalPlanner._prompt(None, None, None)
+    structure = json.loads(
+        next(line for line in prompt.splitlines() if line.startswith("{"))
+    )
+    schema = TypeAdapter(RetrievalPlan).json_schema()
+    properties = list(schema["$defs"][variant.__name__]["properties"])
+
+    assert properties[0] == "retrieval_mode"
+    assert properties == list(structure)
+
+
+@pytest.mark.parametrize(
+    "payload, variant",
+    [
+        ({"retrieval_mode": "semantic"}, SemanticRetrievalPlan),
+        ({"retrieval_mode": "structure", "pattern": "3.*"}, StructureRetrievalPlan),
+        ({"retrieval_mode": "name", "name_query": "Инсоляция"}, NameRetrievalPlan),
+    ],
+)
+def test_retrieval_plan_discriminator_selects_variant(payload, variant):
+    assert type(validate_retrieval_plan(payload)) is variant
+
+
+def test_retrieval_plan_requires_discriminator():
+    with pytest.raises(ValidationError, match="union_tag_not_found"):
+        validate_retrieval_plan({"search_query": "инсоляция"})
 
 
 async def test_planner_retries_out_of_bounds_plan(fake_llm):
@@ -39,6 +80,7 @@ async def test_planner_keeps_valid_filters(fake_llm):
     ]
     plan = await RetrievalPlanner(fake_llm).build_plan("m", "вопрос", history=[])
     assert plan.document_names == ["СП 42.13330"]  # empties dropped
+    assert fake_llm.chat_calls[-1].request_kind == "dvd.planner"
     assert plan.block == "amendment"  # lowercased
     assert plan.types == ["clause", "table"]  # lowercased
 

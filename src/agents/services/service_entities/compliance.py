@@ -458,6 +458,11 @@ class ComplianceEvidence(StrictModel):
 
 
 class ComplianceResult(StrictModel):
+    status: Literal["passed", "violated", "partial", "not_checked"] | None = None
+    check_type_en: str | None = None
+    check_type_ru: str | None = None
+    status_reason: str | None = None
+    archive_path: str | None = None
     restriction_id: str
     template: str
     template_version: int

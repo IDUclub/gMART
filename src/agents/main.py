@@ -10,6 +10,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import StaticFiles
 
 from src.agents.__version__ import APP_DESCRIPTION, APP_TITLE, APP_VERSION
+from src.agents.common.files.layer_cache import LayerCache
 from src.agents.common.files.temporary_file_store import (
     FILES_MOUNT_PATH,
     OwnedFilesApp,
@@ -29,6 +30,8 @@ from src.agents.routers.mcp_diagnostics_controller import mcp_diagnostics_router
 from src.agents.routers.norms_a2a_controller import norms_a2a_router
 from src.agents.routers.norms_controller import norms_router
 from src.agents.routers.orchestrator_controller import orchestrator_router
+from src.agents.routers.parks_a2a_controller import parks_a2a_router
+from src.agents.routers.parks_controller import parks_router
 from src.agents.routers.project_a2a_controller import project_a2a_router
 from src.agents.routers.project_controller import project_router
 from src.agents.routers.provision_a2a_controller import provision_a2a_router
@@ -53,6 +56,7 @@ FILES_PURGE_INTERVAL_SECONDS = 5 * 60
 async def purge_expired_files(file_store) -> None:
     """Delete generated files once their TTL is over, even if nobody asks for them."""
 
+    layer_cache = LayerCache()
     while True:
         await asyncio.sleep(FILES_PURGE_INTERVAL_SECONDS)
         try:
@@ -61,6 +65,12 @@ async def purge_expired_files(file_store) -> None:
                 logger.info(f"Removed expired generated files: {removed}")
         except OSError as exc:
             logger.warning(f"Could not purge generated files: {exc}")
+        try:
+            removed = await asyncio.to_thread(layer_cache.purge_expired)
+            if removed:
+                logger.info(f"Removed expired layer caches: {removed}")
+        except OSError as exc:
+            logger.warning(f"Could not purge layer caches: {exc}")
 
 
 @asynccontextmanager
@@ -80,6 +90,7 @@ async def lifespan(app: FastAPI):
             yield
         finally:
             purge_task.cancel()
+            await app_deps["parks_service"].close()
             if synapse_service is not None:
                 await synapse_service.close()
             for key in ("chat_storage_json_handler", "urban_api_json_handler"):
@@ -127,6 +138,8 @@ app.include_router(dvd_router)
 app.include_router(mcp_diagnostics_router)
 app.include_router(norms_router)
 app.include_router(pzz_router)
+app.include_router(parks_router)
+app.include_router(parks_a2a_router)
 app.include_router(pzz_a2a_router)
 app.include_router(project_router)
 app.include_router(project_a2a_router)

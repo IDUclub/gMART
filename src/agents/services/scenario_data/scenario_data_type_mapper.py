@@ -365,6 +365,7 @@ class UrbanTypeMapper:
             selection_messages(query, candidates),
             ScenarioEntitySelection,
             "scenario entity selection",
+            request_kind="scenario.mapping",
             post_validate=lambda selection: validate_selection(selection, candidates),
         )
 
@@ -411,6 +412,7 @@ class UrbanTypeMapper:
             entity_request_messages(query),
             ScenarioEntityRequest,
             "scenario entity request",
+            request_kind="scenario.mapping",
             post_validate=validate,
         )
 
@@ -422,13 +424,12 @@ class UrbanTypeMapper:
         requests: list[TypeMappingRequest],
     ) -> TypeSearchPlan:
         request_payload = [request.model_dump(mode="json") for request in requests]
-        prompt = f"""Сформируй локальные регулярные выражения для поиска названий типов
+        instructions = """Сформируй локальные регулярные выражения для поиска названий типов
 городских сущностей. Для каждого элемента requests верни ровно один pattern. Паттерн
 должен находить разумные лексические варианты, синонимы и уточнённые названия, которые
 потом будут оценены отдельной моделью. Не добавляй флаги, lookaround, backreference и
-исполняемый код. Не меняй requirement_id и requested_value.
-
-Запрос пользователя: {user_query}
+исполняемый код. Не меняй requirement_id и requested_value."""
+        payload = f"""Запрос пользователя: {user_query}
 Цель: {acquisition.objective}
 Requests: {json.dumps(request_payload, ensure_ascii=False)}"""
 
@@ -449,9 +450,13 @@ Requests: {json.dumps(request_payload, ensure_ascii=False)}"""
         try:
             return await self._request_json(
                 model,
-                [{"role": "system", "content": prompt}],
+                [
+                    {"role": "system", "content": instructions},
+                    {"role": "user", "content": payload},
+                ],
                 TypeSearchPlan,
                 "type search patterns",
+                request_kind="scenario.mapping",
                 post_validate=validate,
             )
         except ValueError as exc:
@@ -531,15 +536,14 @@ Requests: {json.dumps(request_payload, ensure_ascii=False)}"""
         candidate_payload = json.dumps(
             [item.prompt_entry() for item in candidates], ensure_ascii=False
         )
-        prompt = f"""Выбери из candidates типы, наиболее точно соответствующие запросу.
+        instructions = """Выбери из candidates типы, наиболее точно соответствующие запросу.
 Одновременно выбери правильный домен: physical_object_type или service_type. Возвращай
 только candidate_id из списка, ничего не придумывай. Можно выбрать несколько кандидатов:
 это обязательно, когда пользователь запросил несколько типов, и допустимо, когда одному
 понятию действительно соответствуют несколько справочных типов. Не выбирай лишь похожие
 по словам, но отличающиеся по смыслу записи. Пустой список означает, что подходящего типа
-среди кандидатов нет.
-
-Запрос пользователя: {user_query}
+среди кандидатов нет."""
+        payload = f"""Запрос пользователя: {user_query}
 Цель: {acquisition.objective}
 Candidates: {candidate_payload}"""
         available = {candidate.candidate_id for candidate in candidates}
@@ -554,9 +558,13 @@ Candidates: {candidate_payload}"""
 
         return await self._request_json(
             model,
-            [{"role": "system", "content": prompt}],
+            [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": payload},
+            ],
             TypeCandidateSelection,
             "type candidate selection",
+            request_kind="scenario.mapping",
             post_validate=validate,
         )
 
@@ -570,12 +578,11 @@ Candidates: {candidate_payload}"""
         selected_payload = json.dumps(
             [item.prompt_entry() for item in selected], ensure_ascii=False
         )
-        prompt = f"""Независимо проверь каждый выбранный справочный тип. accepted=true только
+        instructions = """Независимо проверь каждый выбранный справочный тип. accepted=true только
 если название и домен по смыслу соответствуют тому, что запросил пользователь. Совпадение
 отдельных слов недостаточно. Не заменяй выбор и не добавляй кандидатов. Верни assessment
-для каждого candidate_id ровно один раз.
-
-Запрос пользователя: {user_query}
+для каждого candidate_id ровно один раз."""
+        payload = f"""Запрос пользователя: {user_query}
 Цель: {acquisition.objective}
 Выбранные типы: {selected_payload}"""
         expected = {candidate.candidate_id for candidate in selected}
@@ -590,9 +597,13 @@ Candidates: {candidate_payload}"""
 
         return await self._request_json(
             model,
-            [{"role": "system", "content": prompt}],
+            [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": payload},
+            ],
             TypeSelectionAssessment,
             "type candidate assessment",
+            request_kind="scenario.mapping",
             post_validate=validate,
         )
 
@@ -603,6 +614,7 @@ Candidates: {candidate_payload}"""
         schema,
         label: str,
         *,
+        request_kind: str,
         post_validate=None,
     ):
         error = ""
@@ -626,7 +638,7 @@ Candidates: {candidate_payload}"""
                         "content": (f"Исправь JSON: {error}. Верни только JSON."),
                     }
                 ]
-            response = await self.llm_client.chat(**call)
+            response = await self.llm_client.chat(request_kind=request_kind, **call)
             raw = (response.get("message") or {}).get("content") or ""
             if not raw.strip():
                 done_reason = response.get("done_reason") or "unknown"

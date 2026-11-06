@@ -14,6 +14,7 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
@@ -24,6 +25,7 @@ from src.agents.common.exceptions.api_exceptions import DownstreamServiceError
 from src.agents.common.exceptions.base_exceptions import (
     AgentsBaseException,
     AgentsNotFound,
+    AgentsUnauthorizedException,
 )
 from src.agents.services.compilance.compliance_entity_mapping import (
     EntityTarget,
@@ -44,6 +46,19 @@ _HOUSE = EntityTarget("Жилой дом", "physical_object")
 _BATCH = 8
 # Urban API may answer 404 for a service on a just-created object for a moment.
 SERVICE_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0, 4.0)
+READINESS_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
+
+
+class _NotReady(Exception):
+    """A successful read whose data is not complete yet."""
+
+
+def _retryable_read(exc: Exception) -> bool:
+    if isinstance(exc, DownstreamServiceError):
+        return exc.downstream_status in (None, 408, 429) or (
+            exc.downstream_status is not None and exc.downstream_status >= 500
+        )
+    return isinstance(exc, (AgentsNotFound, _NotReady))
 
 
 @dataclass
@@ -178,7 +193,7 @@ def _created_ids(response: Any) -> tuple[int | None, int | None, int | None]:
 
 
 class ProjectCreator:
-    """Runs the Urban API calls of a creation; resumable from its run state."""
+    """Creates with service auth and an explicit owner; resumable from run state."""
 
     def __init__(self, urban_api, sleep=asyncio.sleep) -> None:
         self.urban_api = urban_api
@@ -191,8 +206,19 @@ class ProjectCreator:
         zones: list[CreationItem],
         objects: list[CreationItem],
         save: Callable[[], Awaitable[None]],
+        *,
+        owner: str,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Yield status events; ``run`` holds the plan and every created id."""
+        if run.get("owner") and run["owner"] != owner:
+            raise AgentsUnauthorizedException(
+                "Этот запуск создания проекта принадлежит другому пользователю, "
+                "продолжить его нельзя."
+            )
+        if not run.get("owner"):
+            run["owner"] = owner
+            await save()
+        owner = run["owner"]
         if not run.get("project_id"):
             yield _status("project", "Создаю проект в Urban API…")
             project = await self.urban_api.create_project(
@@ -211,11 +237,13 @@ class ProjectCreator:
                         "properties": {},
                     },
                 },
+                user_id=owner,
             )
             run["project_id"] = int(project["project_id"])
             base = project.get("base_scenario") or {}
             run["base_scenario_id"] = base.get("id") or base.get("scenario_id")
             await save()
+            self._check_owner(project, owner)
             yield {
                 "type": "project_created",
                 "content": {
@@ -225,9 +253,16 @@ class ProjectCreator:
                     "base_scenario_id": run["base_scenario_id"],
                 },
             }
-        if not run.get("base_scenario_id"):
-            run["base_scenario_id"] = await self._base_scenario(token, run)
-            await save()
+
+        async def project_readable():
+            project = await self.urban_api.get_project(token, run["project_id"])
+            self._check_owner(project, owner)
+            if not run.get("base_scenario_id"):
+                run["base_scenario_id"] = await self._base_scenario(token, run)
+                await save()
+
+        async for event in self._wait(project_readable, "доступность проекта"):
+            yield event
         if not run.get("scenario_id"):
             yield _status("scenario", "Создаю сценарий проекта…")
             scenario = await self.urban_api.copy_scenario(
@@ -251,6 +286,15 @@ class ProjectCreator:
                     "profile": run.get("profile_name"),
                 },
             }
+        if not run.get("scenario_visible"):
+
+            async def scenario_visible():
+                await self._scenario_visible(token, run)
+
+            async for event in self._wait(scenario_visible, "доступность сценария"):
+                yield event
+            run["scenario_visible"] = True
+            await save()
         cleanup = run.setdefault("cleanup", {})
         if not cleanup.get("done"):
             yield _status("cleanup", "Убираю существующие объекты внутри границы…")
@@ -258,6 +302,7 @@ class ProjectCreator:
             await save()
         zone_state = run.setdefault("zones", {})
         if zones and not zone_state.get("done"):
+            run.pop("ready", None)
             yield _status("zones", f"Загружаю функциональные зоны: {len(zones)}…")
             try:
                 await self.urban_api.add_scenario_functional_zones(
@@ -282,6 +327,8 @@ class ProjectCreator:
             await save()
         states = run.setdefault("objects", {})
         todo = [item for item in objects if not _object_done(item, states)]
+        if todo:
+            run.pop("ready", None)
         for start in range(0, len(todo), _BATCH):
             batch = todo[start : start + _BATCH]
             await asyncio.gather(
@@ -293,6 +340,80 @@ class ProjectCreator:
                 "objects", f"Сохранено объектов: {saved} из {len(objects)}", saved=saved
             )
 
+        if not (run.get("ready") or {}).get("done"):
+            ready = run["ready"] = {"done": False, "attempts": 0, "error": None}
+
+            async def confirm():
+                ready["attempts"] += 1
+                project = await self.urban_api.get_project(token, run["project_id"])
+                self._check_owner(project, owner)
+                territory = await self.urban_api.get_project_territory(
+                    token, run["project_id"]
+                )
+                if not territory or not territory.get("geometry"):
+                    raise _NotReady("Геометрия территории проекта ещё недоступна")
+                await self._scenario_visible(token, run)
+                collection = await self.urban_api.get_scenario_physical_objects(
+                    token, run["scenario_id"]
+                )
+                expected = {
+                    state["physical_object_id"]
+                    for state in states.values()
+                    if state.get("physical_object_id") is not None
+                }
+                visible = {
+                    (feature.get("properties") or {}).get("physical_object_id")
+                    for feature in (collection or {}).get("features") or []
+                }
+                missing = expected - visible
+                if missing:
+                    raise _NotReady(f"Объекты сценария ещё недоступны: {len(missing)}")
+                ready["objects_confirmed"] = len(expected)
+
+            try:
+                async for event in self._wait(confirm, "готовность проекта"):
+                    yield event
+                ready["done"] = True
+            except Exception as exc:
+                ready["error"] = describe_error(exc)
+            ready["checked_at"] = datetime.now(timezone.utc).isoformat()
+            await save()
+            if ready["done"]:
+                yield {
+                    "type": "project_ready",
+                    "content": {
+                        "project_id": run["project_id"],
+                        "scenario_id": run["scenario_id"],
+                        "base_scenario_id": run["base_scenario_id"],
+                        "objects_confirmed": ready["objects_confirmed"],
+                    },
+                }
+
+    @staticmethod
+    def _check_owner(project: dict[str, Any], owner: str) -> None:
+        if project.get("user_id") is not None and project["user_id"] != owner:
+            raise AgentsBaseException(
+                "Urban API вернул проект другого владельца. "
+                "Загрузка сценария и объектов остановлена."
+            )
+
+    async def _wait(self, check, label: str) -> AsyncGenerator[dict[str, Any], None]:
+        """Retry reads only; mutations must never be repeated here."""
+        for attempt in range(len(READINESS_RETRY_DELAYS) + 1):
+            yield _status("waiting", f"Проверяю {label}…", attempt=attempt + 1)
+            try:
+                await check()
+                return
+            except Exception as exc:
+                if not _retryable_read(exc) or attempt == len(READINESS_RETRY_DELAYS):
+                    raise
+                await self._sleep(READINESS_RETRY_DELAYS[attempt])
+
+    async def _scenario_visible(self, token: str, run: dict[str, Any]) -> None:
+        scenarios = await self.urban_api.get_project_scenarios(token, run["project_id"])
+        if not any(row.get("scenario_id") == run["scenario_id"] for row in scenarios):
+            raise _NotReady("Созданный сценарий ещё отсутствует в списке проекта")
+
     async def _base_scenario(self, token: str, run: dict[str, Any]) -> int:
         """The base scenario when the project response did not name it."""
         for scenario in await self.urban_api.get_project_scenarios(
@@ -300,7 +421,7 @@ class ProjectCreator:
         ):
             if scenario.get("is_based"):
                 return int(scenario["scenario_id"])
-        raise ValueError("Urban API не создал базовый сценарий проекта")
+        raise _NotReady("Базовый сценарий проекта ещё недоступен")
 
     async def _cleanup(
         self,
@@ -491,6 +612,8 @@ def creation_summary(
     failures = failed_objects(objects, run)
     return {
         "project_id": run.get("project_id"),
+        "ready": bool((run.get("ready") or {}).get("done")),
+        "ready_error": (run.get("ready") or {}).get("error"),
         "project_name": run.get("project_name"),
         "base_scenario_id": run.get("base_scenario_id"),
         "scenario_id": run.get("scenario_id"),

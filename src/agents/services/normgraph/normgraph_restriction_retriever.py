@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from src.agents.services.compilance.compliance_registry import (
@@ -40,6 +40,7 @@ class NormGraphRestrictionRetrieval:
     restrictions: list[dict[str, Any]]
     unsupported_count: int
     tool_call: dict[str, Any]
+    skipped_restrictions: list[dict[str, Any]] = field(default_factory=list)
 
 
 class NormGraphRestrictionRetriever:
@@ -218,6 +219,27 @@ class NormGraphRestrictionRetriever:
             restrictions=restrictions,
             unsupported_count=unsupported_count,
             tool_call={"function": {"name": tool_name, "arguments": arguments}},
+            skipped_restrictions=[
+                {
+                    "id": hit.get("id"),
+                    "status_reason": (
+                        "Нет исполнимого плана"
+                        if not isinstance(hit.get("check_plan"), dict)
+                        else (
+                            "План нормы не поддерживается"
+                            if hit["check_plan"].get("planner_status") == "unsupported"
+                            else "План проверки не прошёл валидацию"
+                        )
+                    ),
+                    "source": {
+                        "restriction_id": hit.get("id"),
+                        "document_name": (hit.get("provenance") or {}).get("name"),
+                        "clause_number": (hit.get("provenance") or {}).get("numbering"),
+                    },
+                }
+                for hit in hits
+                if require_check_plan and not cls.has_executable_plan(hit)
+            ],
         )
 
     @staticmethod

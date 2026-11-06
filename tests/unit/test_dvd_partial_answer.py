@@ -9,6 +9,8 @@ from src.agents.services.dvd.runs import stream_document_run
 from tests.helpers import FakeDvdMcpClient, answer_text, plan_json
 from tests.unit.test_dvd_rag_service import _run
 
+pytestmark = pytest.mark.usefixtures("legacy_critic_quotes")
+
 
 @pytest.fixture(autouse=True)
 def _strict_answers(monkeypatch):

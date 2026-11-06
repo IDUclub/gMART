@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Callable
 
 import aiohttp
 from fastmcp.exceptions import ToolError
@@ -19,6 +20,40 @@ _RETRYABLE_ERRORS = (
     asyncio.TimeoutError,
     ConnectionResetError,
 )
+
+
+class GeometryPayloadTooLarge(ToolError):
+    """A geometry query may retry lossless parts, never other validation errors."""
+
+
+def _is_size_error(status: int, body: str) -> bool:
+    if status == 413:
+        return True
+    message = body.casefold()
+    return status == 422 and any(
+        marker in message
+        for marker in (
+            "too large",
+            "too big",
+            "payload size",
+            "body size",
+            "request size",
+            "too many coordinates",
+            "too many points",
+            "too many vertices",
+            "too many geometries",
+            "too many items",
+            "max_items",
+            "geometry_too_large",
+            "geometry_too_complex",
+            "geometry size",
+            "max_length",
+            "too_long",
+            "слишком больш",
+            "размер геометрии",
+            "размер тела",
+        )
+    )
 
 
 class JsonApiHandler:
@@ -78,6 +113,10 @@ class JsonApiHandler:
                 f"Urban API ({self.base_url}) returned 500: {response_info}"
             )
         body = await response.text()
+        if _is_size_error(response.status, body):
+            raise GeometryPayloadTooLarge(
+                f"Urban API отклонил размер геометрии ({response.status}): {body}"
+            )
         raise ToolError(
             f"Urban API ({self.base_url}) returned status {response.status}: {body}"
         )
@@ -135,6 +174,7 @@ class JsonApiHandler:
         auth_token: str | None = None,
         headers: dict | None = None,
         params: dict | None = None,
+        on_attempt: Callable[[], None] | None = None,
     ) -> dict | list:
         """POST a JSON body with the same auth, retries and error mapping as ``get``.
 
@@ -144,7 +184,13 @@ class JsonApiHandler:
         headers = await self._auth_headers(auth_token, headers)
         async with aiohttp.ClientSession() as session:
             return await self._request(
-                endpoint, headers, params, session, method="POST", json_body=body
+                endpoint,
+                headers,
+                params,
+                session,
+                method="POST",
+                json_body=body,
+                on_attempt=on_attempt,
             )
 
     async def _auth_headers(
@@ -167,6 +213,7 @@ class JsonApiHandler:
         session: aiohttp.ClientSession,
         method: str = "GET",
         json_body: dict | list | None = None,
+        on_attempt: Callable[[], None] | None = None,
     ) -> dict | list:
         """
         Perform a request with bounded retries and exponential backoff.
@@ -189,6 +236,8 @@ class JsonApiHandler:
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
+                if on_attempt is not None:
+                    on_attempt()
                 call = (
                     session.get(url=url, headers=headers, params=params)
                     if method == "GET"

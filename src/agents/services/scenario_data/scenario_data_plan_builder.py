@@ -215,7 +215,7 @@ required_output перечисляет ожидаемые таблицы, сло
             execution_context=execution_context,
         )
         catalog = [tool.compact_prompt_entry() for tool in shortlist]
-        prompt = f"""Построй целиком исполнимый план read-only Urban MCP до начала выполнения.
+        instructions = f"""Построй целиком исполнимый план read-only Urban MCP до начала выполнения.
 Используй только точные group/tool_name и параметры из каталога. Шаги идут строго
 последовательно; depends_on может ссылаться только на предыдущие step_id. parallel_group
 можно заполнить для независимых шагов на будущее, но порядок списка остаётся безопасным.
@@ -233,9 +233,8 @@ physical_object_type.id — только как physical_object_type_id/physical
 только для собственных метаданных проекта или списка сценариев.
 Для запроса о расположении именованного типа сначала получи записи сценария этого домена,
 затем отфильтруй их по подтверждённому ID. Один справочник типов не доказывает расположение.
-{self._workspace_prompt(workspace_enabled)}
-
-Текущая реплика: {user_query}
+{self._workspace_prompt(workspace_enabled)}"""
+        payload = f"""Текущая реплика: {user_query}
 Задача, уже восстановленная по истории: {resolved_query}
 Логический план: {acquisition.model_dump_json()}
 Актуальные маппинги: {json.dumps(mappings, ensure_ascii=False)[:10000]}
@@ -375,7 +374,10 @@ physical_object_type.id — только как physical_object_type_id/physical
         try:
             return await self._structured_plan_call(
                 model,
-                [{"role": "system", "content": prompt}],
+                [
+                    {"role": "system", "content": instructions},
+                    {"role": "user", "content": payload},
+                ],
                 ExecutionPlanRevision,
                 "execution plan",
                 post_validate=validate_plan,
@@ -883,7 +885,7 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                 ]
             if attempt < MAX_PLANNER_RETRIES:
                 call["format"] = schema.model_json_schema()
-            response = await self.llm_client.chat(**call)
+            response = await self.llm_client.chat(request_kind="scenario.plan", **call)
             raw = (response.get("message") or {}).get("content") or ""
             if (
                 schema is ExecutionPlanRevision
@@ -1123,7 +1125,7 @@ Workspace-каталог: {json.dumps(WORKSPACE_TOOL_CATALOG, ensure_ascii=False
                     }
                 ]
                 call["messages"] = messages
-            response = await self.llm_client.chat(**call)
+            response = await self.llm_client.chat(request_kind="scenario.plan", **call)
             raw = response["message"]["content"]
             if not (raw or "").strip():
                 # Name the real cause. "Empty answer" on its own sent a reader looking for a

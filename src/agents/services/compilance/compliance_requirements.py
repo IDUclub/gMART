@@ -20,6 +20,16 @@ from src.agents.services.service_entities.compliance import (
 )
 
 
+def attribute_entities(requirements: DeclaredRequirements) -> set[str]:
+    """Physical entities needing full records, including optional/derived fields."""
+    roles = {attribute.on for attribute in requirements.attributes}
+    return {
+        item.entity
+        for item in requirements.layers
+        if item.entity_type.value == "physical_object" and item.role in roles
+    }
+
+
 def _nested_get(data: dict[str, Any], path: str) -> Any:
     current: Any = data
     for item in path.split("."):

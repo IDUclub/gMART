@@ -18,6 +18,7 @@ from src.agents.model_clients.llm_base import (
 )
 from src.agents.model_clients.ollama_adapter import OllamaAdapter
 from src.agents.model_clients.openai_adapter import OpenAiCompatAdapter
+from src.agents.model_clients.request_priority import _warn_once
 
 
 # --------------------------------------------------------------------------- #
@@ -74,6 +75,509 @@ def _adapter_with(result) -> tuple[OpenAiCompatAdapter, FakeCompletions]:
     completions = FakeCompletions(result)
     adapter.client.chat.completions = completions  # type: ignore[assignment]
     return adapter, completions
+
+
+@pytest.fixture(autouse=True)
+def _clear_request_priority(monkeypatch):
+    monkeypatch.delenv("OPENAI_REPETITION_DETECTION", raising=False)
+    monkeypatch.delenv("OPENAI_REQUEST_PRIORITY", raising=False)
+    monkeypatch.delenv("LLM_REQUEST_PRIORITIES", raising=False)
+    monkeypatch.delenv("LLM_REQUEST_PRIORITY_ENABLED", raising=False)
+    _warn_once.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("format", "stream", "expected"),
+    [("json", False, True), (None, False, False), ("json", True, False)],
+)
+@pytest.mark.asyncio
+async def test_repetition_detection_only_for_structured_non_stream(
+    monkeypatch, format, stream, expected
+):
+    monkeypatch.setenv(
+        "OPENAI_REPETITION_DETECTION",
+        '{"min_pattern_size": 1, "max_pattern_size": 8, "min_count": 32}',
+    )
+    result = _Completion([_Choice(message=_Delta("{}"), finish_reason="stop")])
+    adapter, completions = _adapter_with(_FakeStream([]) if stream else result)
+    response = await adapter.chat(
+        "m", [], format=format, stream=stream, extra_body={"custom": True}
+    )
+    if stream:
+        assert [part async for part in response]
+    body = completions.calls[0]["extra_body"]
+    assert body["custom"] is True
+    assert ("repetition_detection" in body) is expected
+    if expected:
+        assert body["repetition_detection"] == {
+            "min_pattern_size": 1,
+            "max_pattern_size": 8,
+            "min_count": 32,
+        }
+
+
+@pytest.mark.parametrize("configured", [None, "", "   "])
+@pytest.mark.asyncio
+async def test_repetition_detection_disabled_by_default(monkeypatch, configured):
+    if configured is not None:
+        monkeypatch.setenv("OPENAI_REPETITION_DETECTION", configured)
+    adapter, completions = _adapter_with(
+        _Completion([_Choice(message=_Delta("{}"), finish_reason="stop")])
+    )
+    await adapter.chat("m", [], format="json")
+    assert "repetition_detection" not in completions.calls[0].get("extra_body", {})
+
+
+@pytest.mark.parametrize("override", [{}, {"min_count": 64}])
+@pytest.mark.asyncio
+async def test_repetition_detection_constructor_overrides_environment(
+    monkeypatch, override
+):
+    monkeypatch.setenv("OPENAI_REPETITION_DETECTION", '{"min_count": 32}')
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1", repetition_detection=override)
+    assert adapter.repetition_detection == override
+    completions = FakeCompletions(
+        _Completion([_Choice(message=_Delta("{}"), finish_reason="stop")])
+    )
+    adapter.client.chat.completions = completions
+    await adapter.chat("m", [], format="json")
+    body = completions.calls[0].get("extra_body", {})
+    if override:
+        assert body["repetition_detection"] == override
+    else:
+        assert "repetition_detection" not in body
+
+
+@pytest.mark.parametrize("configured", ["{broken", "[]", "null", "32"])
+def test_invalid_repetition_detection_warns_once(monkeypatch, configured):
+    from src.agents.model_clients import openai_adapter
+
+    monkeypatch.setenv("OPENAI_REPETITION_DETECTION", configured)
+    monkeypatch.setattr(openai_adapter, "_warned", set())
+    warnings = []
+    sink = openai_adapter.logger.add(
+        lambda record: warnings.append(str(record)), level="WARNING"
+    )
+    try:
+        for _ in range(2):
+            adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+            assert adapter.repetition_detection is None
+    finally:
+        openai_adapter.logger.remove(sink)
+    assert sum("Invalid OPENAI_REPETITION_DETECTION" in w for w in warnings) == 1
+
+
+@pytest.mark.parametrize(
+    ("last_finish", "last_content", "reason"),
+    [
+        ("stop", '{"ok": true}', None),
+        ("repetition", " \r  ", "output_repetition"),
+        ("length", '{"partial":', "output_truncated"),
+        ("stop", "", "empty_completion"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_structured_repetition_retries_once_with_same_budget(
+    last_finish, last_content, reason
+):
+    from unittest.mock import AsyncMock
+
+    adapter, _ = _adapter_with(None)
+    create = AsyncMock(
+        side_effect=[
+            _Completion(
+                [_Choice(message=_Delta('{"broken":'), finish_reason="repetition")]
+            ),
+            _Completion(
+                [_Choice(message=_Delta(last_content), finish_reason=last_finish)]
+            ),
+        ]
+    )
+    adapter.client.chat.completions.create = create
+    kwargs = {
+        "format": "json",
+        "options": {"num_predict": 4096, "num_ctx": 4096},
+    }
+    if reason:
+        with pytest.raises(LlmResponseError) as exc:
+            await adapter.chat("m", [], **kwargs)
+        assert exc.value.reason == reason
+        assert exc.value.status_code == 502
+    else:
+        response = await adapter.chat("m", [], **kwargs)
+        assert response.message.content == last_content
+    assert create.await_count == 2
+    assert [call.kwargs["max_tokens"] for call in create.call_args_list] == [4096, 4096]
+
+
+@pytest.fixture
+def priority_client(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(
+                    return_value=_Completion(
+                        [_Choice(message=_Delta("{}"), finish_reason="stop")]
+                    )
+                )
+            )
+        ),
+        post=AsyncMock(return_value={"count": 73}),
+    )
+    monkeypatch.setattr(
+        "src.agents.model_clients.openai_adapter.AsyncOpenAI", lambda **kwargs: client
+    )
+    return client
+
+
+def _priority_error(message, status=400):
+    import httpx
+    from openai import APIStatusError
+
+    return APIStatusError(
+        message,
+        response=httpx.Response(
+            status,
+            request=httpx.Request("POST", "http://vllm:8000/v1/chat/completions"),
+        ),
+        body={"error": {"message": message}},
+    )
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "invalid", "1.5"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_request_priority_off_preserves_request(
+    monkeypatch, priority_client, value, stream
+):
+    from loguru import logger
+
+    if value is not None:
+        monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", value)
+    if stream:
+        priority_client.chat.completions.create.return_value = _FakeStream(
+            [_Completion([_Choice(delta=_Delta("ok"), finish_reason="stop")])]
+        )
+    warnings = []
+    sink = logger.add(lambda record: warnings.append(str(record)), level="WARNING")
+    try:
+        adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+        for _ in range(2):
+            response = await adapter.chat("m", [], stream=stream)
+            if stream:
+                assert [part async for part in response][-1].done
+    finally:
+        logger.remove(sink)
+
+    for call in priority_client.chat.completions.create.call_args_list:
+        assert call.kwargs == {"model": "m", "messages": [], "stream": stream}
+    assert len(warnings) == (1 if value in ("invalid", "1.5") else 0)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("think_mode", ["reasoning_effort", "chat_template"])
+@pytest.mark.asyncio
+async def test_request_priority_merges_with_think(
+    monkeypatch, priority_client, stream, think_mode
+):
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-10")
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1", think_mode=think_mode)
+    create = priority_client.chat.completions.create
+    if stream:
+        create.return_value = _FakeStream(
+            [_Completion([_Choice(delta=_Delta("ok"), finish_reason="stop")])]
+        )
+    extra_body = {"guided_regex": "[0-9]+"}
+
+    response = await adapter.chat(
+        "m", [], stream=stream, think=False, extra_body=extra_body
+    )
+    if stream:
+        assert [part async for part in response][-1].done
+
+    sent = create.call_args.kwargs
+    assert "priority" not in sent
+    assert sent["extra_body"]["priority"] == -10
+    assert sent["extra_body"]["guided_regex"] == "[0-9]+"
+    if think_mode == "chat_template":
+        assert sent["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert extra_body == {"guided_regex": "[0-9]+"}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"priority": -20}, -20),
+        ({"extra_body": {"priority": -30}}, -30),
+        ({"priority": -20, "extra_body": {"priority": -30}}, -30),
+        ({"priority": 0}, None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_per_call_priority_wins(monkeypatch, priority_client, kwargs, expected):
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-10")
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+
+    await adapter.chat("m", [], **kwargs)
+
+    sent = priority_client.chat.completions.create.call_args.kwargs
+    assert "priority" not in sent
+    assert (sent.get("extra_body") or {}).get("priority") == expected
+
+
+@pytest.mark.parametrize("configured", [-25, "-25", "", 0])
+@pytest.mark.asyncio
+async def test_constructor_priority_overrides_environment(
+    monkeypatch, priority_client, configured
+):
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-10")
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1", request_priority=configured)
+
+    await adapter.chat("m", [])
+
+    sent = priority_client.chat.completions.create.call_args.kwargs
+    assert (sent.get("extra_body") or {}).get("priority") == (
+        -25 if configured in (-25, "-25") else None
+    )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "message", ["Priority scheduling is not enabled", "Request priority not supported"]
+)
+@pytest.mark.asyncio
+async def test_unsupported_priority_retries_and_disables_once(
+    monkeypatch, priority_client, stream, message
+):
+    from unittest.mock import Mock
+
+    from loguru import logger
+
+    from src.agents.model_clients.llm_pace import llm_pace
+
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-10")
+    monkeypatch.setattr(llm_pace, "started", Mock(side_effect=[1, 2, 3]))
+    monkeypatch.setattr(llm_pace, "finished", Mock())
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1", think_mode="chat_template")
+    create = priority_client.chat.completions.create
+    result = create.return_value
+    if stream:
+        result = _FakeStream(
+            [_Completion([_Choice(delta=_Delta("ok"), finish_reason="stop")])]
+        )
+    create.side_effect = [_priority_error(message), result, result]
+    warnings = []
+    sink = logger.add(lambda record: warnings.append(str(record)), level="WARNING")
+    extra_body = {"priority": -20, "guided_regex": "[0-9]+"}
+    try:
+        for _ in range(2):
+            response = await adapter.chat(
+                "m",
+                [],
+                stream=stream,
+                think=False,
+                extra_body=extra_body,
+                request_kind="dvd.critic",
+            )
+            if stream:
+                assert [part async for part in response][-1].done
+    finally:
+        logger.remove(sink)
+
+    calls = create.call_args_list
+    assert len(calls) == 3
+    assert calls[0].kwargs["extra_body"]["priority"] == -20
+    for call in calls[1:]:
+        assert call.kwargs["extra_body"] == {
+            "guided_regex": "[0-9]+",
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+    assert extra_body == {"priority": -20, "guided_regex": "[0-9]+"}
+    assert len(warnings) == 1
+    assert "disabling" in warnings[0]
+    assert llm_pace.started.call_count == llm_pace.finished.call_count == 3
+    assert llm_pace.finished.call_args_list[0].args == (1,)
+    assert llm_pace.finished.call_args_list[0].kwargs == {"completion_tokens": None}
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        (400, "Invalid response_format"),
+        (400, "priority must be an integer"),
+        (400, "priority=-10; response_format is not supported"),
+        (401, "Priority scheduling is not enabled"),
+    ],
+)
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_other_priority_errors_propagate_without_retry(
+    monkeypatch, priority_client, status, message, stream
+):
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-10")
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    create = priority_client.chat.completions.create
+    create.side_effect = _priority_error(message, status)
+
+    with pytest.raises(LlmResponseError) as error:
+        await adapter.chat("m", [], stream=stream)
+
+    assert error.value.status_code == status
+    assert create.call_count == 1
+    assert adapter._priority_disabled is False
+
+
+@pytest.mark.asyncio
+async def test_priority_fallback_is_bounded_and_removes_empty_extra_body(
+    monkeypatch, priority_client
+):
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-10")
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    create = priority_client.chat.completions.create
+    create.side_effect = [
+        _priority_error("Priority scheduling is not enabled"),
+        _priority_error("Priority scheduling is not enabled"),
+    ]
+
+    with pytest.raises(LlmResponseError) as error:
+        await adapter.chat("m", [])
+
+    assert error.value.status_code == 400
+    assert create.call_count == 2
+    assert create.call_args_list[0].kwargs["extra_body"] == {"priority": -10}
+    assert create.call_args_list[1].kwargs == {
+        "model": "m",
+        "messages": [],
+        "stream": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_structured_retry_and_direct_create_receive_priority(
+    monkeypatch, priority_client
+):
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-10")
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    create = priority_client.chat.completions.create
+    create.side_effect = [
+        _Completion([_Choice(message=_Delta(""), finish_reason="length")]),
+        create.return_value,
+        create.return_value,
+    ]
+
+    await adapter.chat("m", [], format="json", options={"num_predict": 1024})
+    await adapter._create({"model": "m", "messages": [], "stream": False})
+
+    assert create.call_count == 3
+    assert create.call_args_list[1].kwargs["max_tokens"] == 4096
+    for call in create.call_args_list:
+        assert call.kwargs["extra_body"] == {"priority": -10}
+
+
+@pytest.mark.asyncio
+async def test_priority_never_reaches_tokenizer(monkeypatch, priority_client):
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-10")
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1", think_mode="chat_template")
+    messages = [{"role": "user", "content": "вопрос"}]
+
+    assert await adapter._count_tokens("m", messages, "low") == 73
+
+    assert priority_client.post.call_args.kwargs["body"] == {
+        "model": "m",
+        "messages": messages,
+        "add_generation_prompt": True,
+        "reasoning_effort": "low",
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+@pytest.mark.asyncio
+async def test_ollama_ignores_request_priority(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-10")
+    adapter = OllamaAdapter("http://localhost:11434")
+    adapter.client.chat = AsyncMock(return_value=LlmChatResponse(done=True))
+
+    await adapter.chat("m", [], request_kind="dvd.critic")
+
+    adapter.client.chat.assert_awaited_once_with(model="m", messages=[], stream=False)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("dvd.critic", -100),
+        ("chat_title", -60),
+        ("context_summary", 20),
+        ("parks_planning", -60),
+        ("parks_analysis", -100),
+    ],
+)
+async def test_keyed_priority(monkeypatch, priority_client, stream, key, expected):
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-1")
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    if stream:
+        priority_client.chat.completions.create.return_value = _FakeStream(
+            [_Completion([_Choice(delta=_Delta("ok"), finish_reason="stop")])]
+        )
+    result = await adapter.chat("m", [], stream=stream, request_kind=key)
+    if stream:
+        assert [part async for part in result][-1].done
+    sent = priority_client.chat.completions.create.call_args.kwargs
+    assert "request_kind" not in sent
+    assert sent["extra_body"]["priority"] == expected
+
+
+async def test_keyed_override_is_read_after_adapter_creation(
+    monkeypatch, priority_client
+):
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    for value in (-60, 0, -100):
+        monkeypatch.setenv("LLM_REQUEST_PRIORITIES", f"dvd.critic={value}")
+        await adapter.chat("m", [], request_kind="dvd.critic")
+        body = (
+            priority_client.chat.completions.create.call_args.kwargs.get("extra_body")
+            or {}
+        )
+        assert body.get("priority") == (value or None)
+
+
+@pytest.mark.parametrize("enabled", ["true", "false"])
+async def test_zero_override_and_master_switch(monkeypatch, priority_client, enabled):
+    monkeypatch.setenv("OPENAI_REQUEST_PRIORITY", "-1")
+    monkeypatch.setenv("LLM_REQUEST_PRIORITIES", "dvd.critic=0")
+    monkeypatch.setenv("LLM_REQUEST_PRIORITY_ENABLED", enabled)
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    await adapter.chat("m", [], request_kind="dvd.critic")
+    if enabled == "false":
+        await adapter.chat("m", [], priority=-20, extra_body={"priority": -30})
+        await adapter.chat("m", [], request_kind="dvd.planner", stream=True)
+        await adapter.generate("m", "title", request_kind="chat_title")
+    for call in priority_client.chat.completions.create.call_args_list:
+        assert "priority" not in (call.kwargs.get("extra_body") or {})
+        assert "priority" not in call.kwargs
+        assert "request_kind" not in call.kwargs
+
+
+async def test_generate_passes_priority_and_ollama_ignores_key(priority_client):
+    from unittest.mock import AsyncMock
+
+    adapter = OpenAiCompatAdapter("http://vllm:8000/v1")
+    await adapter.generate("m", "title", request_kind="chat_title")
+    assert priority_client.chat.completions.create.call_args.kwargs["extra_body"] == {
+        "priority": -60
+    }
+    ollama = OllamaAdapter("http://localhost:11434")
+    ollama.client.generate = AsyncMock()
+    await ollama.generate("m", "title", request_kind="chat_title")
+    ollama.client.generate.assert_awaited_once_with(
+        model="m", prompt="title", stream=False
+    )
 
 
 # --------------------------------------------------------------------------- #

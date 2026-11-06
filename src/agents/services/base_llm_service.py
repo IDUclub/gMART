@@ -175,7 +175,7 @@ class BaseLlmService(BaseLlmClient):
 
         try:
             title = await self.llm_client.generate(
-                model=model_name, prompt=prompt, stream=False
+                request_kind="chat_title", model=model_name, prompt=prompt, stream=False
             )
         except LlmResponseError as exc:
             # Both backends answer 404 when the requested model is not served. Map
@@ -186,8 +186,9 @@ class BaseLlmService(BaseLlmClient):
                 raise ModelNotFound(model_name, await self.get_models()) from exc
             raise
         logger.debug(f"LLM chat title [{model_name}]: {title.response}")
-        if title.response not in existing_names:
-            return title.response
+        generated_title = title.response.strip()
+        if generated_title not in existing_names:
+            return generated_title
         return await self.generate_chat_title(
             model_name,
             user_query,

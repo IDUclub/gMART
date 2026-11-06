@@ -6,107 +6,249 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.agents.schema.restrictions_response import RestrictionsResponse
+from src.agents.services.compilance.compliance_executor import (
+    ComplianceTemplateExecutor,
+)
+from src.agents.services.compilance.compliance_retrieval import ScenarioComplianceSource
 from src.agents.services.compilance.compliance_scope import ScopeOutcome
 from src.agents.services.compilance.compliance_territory import TerritoryDocuments
 from src.agents.services.pipeline_state import PipelineStep
 from src.agents.services.restriction.restriction_parser_service import (
     RestrictionParserService,
 )
-from src.agents.services.service_entities.compliance import (
-    ComplianceResult,
-    ComplianceSummary,
-    VerificationCoverage,
-)
+from tests.unit.test_compliance_phase2 import IDS, Llm, Mcp
+from tests.unit.test_compliance_phase2 import plan as executable_plan
+from tests.unit.test_compliance_phase2 import run as run_checks
+from tests.unit.test_compliance_phase2 import service as compliance_service
 
 
 def _plan():
-    return {
-        "schema_version": "1.0",
-        "template": "distance_from_source",
-        "template_version": 1,
-        "params": {
-            "source_layer": "source",
-            "targets": ["targets"],
-            "geometry_mode": "buffered",
-            "distance_m": 50,
-            "predicate": "intersects",
-            "violation_when": "matched",
-            "result_mode": "both",
-        },
-        "declared_requirements": {"layers": [], "attributes": []},
-        "source": {"restriction_id": "r1"},
-        "planner_status": "auto",
-    }
+    return executable_plan(0, radius=50)
 
 
-async def test_pipeline_emits_and_checkpoints_structured_compliance_events():
-    service = object.__new__(RestrictionParserService)
-    service.state_store = SimpleNamespace(
-        buffer_event=AsyncMock(),
-        save_checkpoint=AsyncMock(),
-        set_status=AsyncMock(),
-    )
-    result = ComplianceResult(
-        restriction_id="r1",
-        template="distance_from_source",
-        template_version=1,
-        verification_status="complete",
-        compliance_status="passed",
-        coverage=VerificationCoverage(
-            applicable_objects=1,
-            checked_objects=1,
-            unchecked_objects=0,
-            fill_rate=1,
-        ),
-        summary=ComplianceSummary(violated_objects=0, passed_objects=1),
-        source={"restriction_id": "r1"},
-    )
-    service.compliance_executor = SimpleNamespace(
-        execute=AsyncMock(
-            return_value=SimpleNamespace(
-                result=result,
-                tool_calls=[
-                    {"function": {"name": "CheckDistanceFromSource", "arguments": {}}}
-                ],
-                effects_tool_calls=[],
-                timings_ms={"template_execution": 1.0},
-            )
-        )
-    )
-
-    events = [
-        event
-        async for event in service._run_executable_compliance(
-            mcp_client=object(),
-            request_id="request-1",
-            scenario_id=772,
-            restrictions=[{"id": "r1", "check_plan": _plan()}],
-            checkpoint={},
-        )
-    ]
-    await asyncio.sleep(0)
-    event_types = [event["type"] for event in events]
+async def test_pipeline_emits_and_checkpoints_structured_compliance_events(tmp_path):
+    service, checkpoints = compliance_service(tmp_path)
+    events = await run_checks(service, Mcp(), plans=[executable_plan(0)])
     for event in events:
         RestrictionsResponse.model_validate(event)
-    assert "check_plan" in event_types
-    assert "requirement_resolution" in event_types
-    assert "compliance_result" in event_types
-    assert event_types.count("compliance_progress") == 2
-    assert "compliance_summary" in event_types
+    event_types = [event["type"] for event in events]
+    assert {
+        "check_plan",
+        "requirement_resolution",
+        "compliance_result",
+        "compliance_summary",
+    } <= set(event_types)
     progress = [
         event["content"] for event in events if event["type"] == "compliance_progress"
     ]
     assert progress[0]["completed_norms"] == 0
     assert progress[-1]["completed_norms"] == progress[-1]["total_norms"] == 1
-    checkpoints = [
-        call.args[1] for call in service.state_store.save_checkpoint.await_args_list
-    ]
-    assert checkpoints == [
+    for step in (
         PipelineStep.CHECK_PLAN_VALIDATION,
         PipelineStep.REQUIREMENTS_RESOLUTION,
         PipelineStep.TEMPLATE_EXECUTION,
         PipelineStep.VERDICT_AGGREGATION,
+    ):
+        assert step in checkpoints
+    summary = next(
+        event["content"] for event in events if event["type"] == "compliance_summary"
+    )
+    assert summary == checkpoints[PipelineStep.VERDICT_AGGREGATION]
+    assert summary["total_norms"] == 1
+    assert summary["results"][0]["archive_path"].startswith("violated/")
+    assert not {"violated_features", "passed_features"} & summary["results"][0].keys()
+
+
+async def test_old_checkpoint_missing_and_unsupported_plans_never_reach_executor(
+    tmp_path, monkeypatch
+):
+    service, checkpoints = compliance_service(tmp_path)
+    service.compliance_executor.execute = AsyncMock(
+        side_effect=AssertionError("Неисполняемые планы не запускаются")
+    )
+    source_loading = AsyncMock(
+        side_effect=AssertionError("Источники не нужны без исполнимых норм")
+    )
+    monkeypatch.setattr(ScenarioComplianceSource, "load_sources", source_loading)
+    unsupported = executable_plan(0)
+    unsupported["planner_status"] = "unsupported"
+    invalid = executable_plan(1)
+    invalid["template_version"] = 999
+    hits = [
+        {"id": "without-plan"},
+        {"id": IDS[0], "check_plan": unsupported},
+        {"id": IDS[1], "check_plan": invalid},
     ]
+    old_checkpoint = {PipelineStep.NORMGRAPH: {"restrictions": hits}}
+    mcp = Mcp()
+    events = [
+        event
+        async for event in service._run_executable_compliance(
+            mcp_client=mcp,
+            request_id="old-checkpoint",
+            scenario_id=772,
+            restrictions=old_checkpoint[PipelineStep.NORMGRAPH]["restrictions"],
+            checkpoint=old_checkpoint,
+        )
+    ]
+    service.compliance_executor.execute.assert_not_awaited()
+    source_loading.assert_not_awaited()
+    assert mcp.calls == []
+    assert not any(
+        event["type"] == "status" and event["content"]["status"] == "source_layers"
+        for event in events
+    )
+    summary = next(
+        event["content"] for event in events if event["type"] == "compliance_summary"
+    )
+    assert summary["total_norms"] == 0
+    assert summary["skipped_without_plan"] == 3
+    assert summary["counts"]["not_checked"] == 3
+    assert summary == checkpoints[PipelineStep.VERDICT_AGGREGATION]
+
+
+async def test_one_norm_failure_does_not_prevent_the_next_plan(tmp_path):
+    class FirstCheckFails(Mcp):
+        async def execute_tool(self, name, arguments, meta=None):
+            if (
+                name == "CheckDistanceFromSource"
+                and arguments["restriction_id"] == IDS[0]
+            ):
+                raise RuntimeError("Первая проверка недоступна")
+            return await super().execute_tool(name, arguments, meta)
+
+    service, checkpoints = compliance_service(tmp_path)
+    events = await run_checks(service, FirstCheckFails())
+    results = [
+        event["content"] for event in events if event["type"] == "compliance_result"
+    ]
+    assert [result["restriction_id"] for result in results] == IDS
+    assert results[0]["verification_status"] == "unverifiable"
+    assert results[0]["status"] == "not_checked"
+    assert results[1]["status"] == "violated"
+    summary = next(
+        event["content"] for event in events if event["type"] == "compliance_summary"
+    )
+    assert summary["total_norms"] == 2 and summary["counts"] == {
+        "not_checked": 1,
+        "violated": 1,
+    }
+    assert len(checkpoints[PipelineStep.TEMPLATE_EXECUTION]) == 2
+    assert events[-1]["content"]["mime_type"] == "application/zip"
+
+
+async def test_source_metadata_reaches_layers_summary_and_checkpoint(tmp_path):
+    service, checkpoints = compliance_service(tmp_path)
+    raw = executable_plan(0)
+    raw["source"] = {"restriction_id": IDS[0]}
+    source = {
+        "document_name": "СП 42.13330.2016 Градостроительство",
+        "clause_number": "9.2",
+        "extraction_text": "Полный исходный текст: расстояние до школы не менее 100 м.",
+    }
+    hit = {
+        "id": IDS[0],
+        "check_plan": raw,
+        "provenance": {
+            "name": source["document_name"],
+            "numbering": source["clause_number"],
+        },
+        "extraction_text": source["extraction_text"],
+    }
+    mcp = Mcp()
+    events = [
+        event
+        async for event in service._run_executable_compliance(
+            mcp_client=mcp,
+            request_id="metadata",
+            scenario_id=772,
+            restrictions=[hit],
+            checkpoint={},
+            model="mock",
+        )
+    ]
+    summary = next(
+        event["content"] for event in events if event["type"] == "compliance_summary"
+    )
+    result = summary["results"][0]
+    assert {key: result["source"][key] for key in source} == source
+    assert summary == checkpoints[PipelineStep.VERDICT_AGGREGATION]
+    assert (
+        checkpoints[PipelineStep.CHECK_PLAN_VALIDATION][0]["source"]["extraction_text"]
+        == source["extraction_text"]
+    )
+    assert checkpoints[PipelineStep.TEMPLATE_EXECUTION][0]["source"] == result["source"]
+    layer = next(
+        event["content"] for event in events if event["type"] == "feature_collection"
+    )
+    assert layer["name"] == "Норма — СП 42.13330.2016, п. 9.2"
+    for feature in layer["feature_collection"]["features"]:
+        properties = feature["properties"]
+        assert properties["norm_id"] == IDS[0]
+        assert properties["norm_text"] == source["extraction_text"]
+        assert properties["document_name"] == source["document_name"]
+        assert properties["clause_number"] == source["clause_number"]
+    check_args = next(
+        args for name, args in mcp.calls if name == "CheckDistanceFromSource"
+    )
+    assert {key: check_args["provenance"][key] for key in source} == source
+
+
+@pytest.mark.parametrize("inventory", [False, True])
+async def test_empty_plans_do_not_load_sources_or_initialize_executor(
+    tmp_path, monkeypatch, inventory
+):
+    service, checkpoints = compliance_service(tmp_path)
+    del service.compliance_executor
+    del service.zone_builder
+    service.llm_client.chat = AsyncMock(
+        side_effect=AssertionError("Пустая проверка не требует LLM")
+    )
+    source_loading = AsyncMock(
+        side_effect=AssertionError("Нет планов для загрузки источников")
+    )
+    monkeypatch.setattr(ScenarioComplianceSource, "load_sources", source_loading)
+    mcp = Mcp()
+    method = (
+        service._run_restriction_inventory
+        if inventory
+        else service._run_executable_compliance
+    )
+    events = [
+        event
+        async for event in method(
+            mcp_client=mcp,
+            request_id="empty",
+            scenario_id=772,
+            restrictions=[],
+            checkpoint={},
+        )
+    ]
+    source_loading.assert_not_awaited()
+    service.llm_client.chat.assert_not_awaited()
+    assert not hasattr(service, "compliance_executor")
+    assert not hasattr(service, "zone_builder")
+    assert mcp.calls == []
+    summary_type = "restriction_inventory" if inventory else "compliance_summary"
+    summary = next(
+        event["content"] for event in events if event["type"] == summary_type
+    )
+    assert summary["total_norms"] == 0
+    assert checkpoints["compliance_completed"] is True
+
+
+async def test_execution_dependencies_are_initialized_lazily(tmp_path):
+    service, _ = compliance_service(tmp_path)
+    del service.compliance_executor
+    del service.zone_builder
+    events = await run_checks(service, Mcp(), plans=[executable_plan(0)])
+    assert isinstance(service.compliance_executor, ComplianceTemplateExecutor)
+    assert service.zone_builder.executor is service.compliance_executor
+    summary = next(
+        event["content"] for event in events if event["type"] == "compliance_summary"
+    )
+    assert summary["total_norms"] == 1
+    assert summary["results"][0]["status"] == "violated"
 
 
 async def test_completed_reconnect_does_not_reexecute_templates():
@@ -120,7 +262,7 @@ async def test_completed_reconnect_does_not_reexecute_templates():
             request_id="request-1",
             scenario_id=772,
             restrictions=[],
-            checkpoint={PipelineStep.VERDICT_AGGREGATION: {}},
+            checkpoint={"compliance_completed": True},
         )
     ]
     assert events == []
@@ -261,9 +403,10 @@ async def test_compliance_large_corpus_never_reaches_llm_and_executes_individual
         {"id": f"missing-{i}", "extraction_text": "discard-me" * 10000}
         for i in range(300)
     ]
-    for rid in ["r1", "r2"]:
+    for index, rid in enumerate(["r1", "r2"]):
         plan = deepcopy(_plan())
         plan["source"]["restriction_id"] = rid
+        plan["params"]["distance_m"] += index
         hits.append({"id": rid, "check_plan": plan})
     llm = SimpleNamespace(
         chat=AsyncMock(side_effect=AssertionError("No corpus in LLM"))
@@ -305,36 +448,26 @@ async def test_compliance_large_corpus_never_reaches_llm_and_executes_individual
         list_restrictions=AsyncMock(side_effect=lambda **args: page(**args))
     )
     seen = []
+    service.compliance_executor = ComplianceTemplateExecutor(
+        effects_client_factory=None
+    )
+    execute_template = service.compliance_executor.execute
 
     async def execute(_client, plan, scenario_id, *, user_id=None, layer_source=None):
         rid = plan["source"]["restriction_id"]
         if rid == "r2":
             assert "result:r1" in seen
         seen.append("execute:" + rid)
-        result = ComplianceResult(
-            restriction_id=rid,
-            template=plan["template"],
-            template_version=1,
-            verification_status="complete",
-            compliance_status="passed",
-            coverage=VerificationCoverage(
-                applicable_objects=1,
-                checked_objects=1,
-                unchecked_objects=0,
-                fill_rate=1,
-            ),
-            summary=ComplianceSummary(violated_objects=0, passed_objects=1),
-        )
-        return SimpleNamespace(
-            result=result, tool_calls=[], effects_tool_calls=[], timings_ms={}
+        return await execute_template(
+            _client, plan, scenario_id, user_id=user_id, layer_source=layer_source
         )
 
-    service.compliance_executor = SimpleNamespace(
-        execute=AsyncMock(side_effect=execute)
-    )
+    service.compliance_executor.execute = AsyncMock(side_effect=execute)
+    service.llm_client = Llm()
+    mcp = Mcp()
     events = []
     async for event in service._run_restriction_execution_pipline(
-        mcp_client=object(),
+        mcp_client=mcp,
         temperature=0,
         model="m",
         user_query=f"Проверь нормы с расстоянием {distance}",
@@ -357,43 +490,12 @@ async def test_compliance_large_corpus_never_reaches_llm_and_executes_individual
     assert [hit["id"] for hit in graph["restrictions"]] == ["r1", "r2"]
     assert graph["unsupported_count"] == 300
     assert "discard-me" not in json.dumps(graph)
+    assert "discard-me" not in json.dumps(service.llm_client.messages)
     summary = next(
         event["content"] for event in events if event["type"] == "compliance_summary"
     )
     assert summary["total_norms"] == 2
     assert any("Пропущено норм" in event["content"].get("text", "") for event in events)
-
-
-async def test_old_checkpoint_missing_and_unsupported_plans_never_reach_executor():
-    service = object.__new__(RestrictionParserService)
-    service.state_store = SimpleNamespace(
-        save_checkpoint=AsyncMock(), set_status=AsyncMock()
-    )
-    service._buf = AsyncMock(side_effect=lambda _id, event: event)
-    service.compliance_executor = SimpleNamespace(execute=AsyncMock())
-    unsupported = {**_plan(), "planner_status": "unsupported"}
-    events = [
-        event
-        async for event in service._run_executable_compliance(
-            mcp_client=object(),
-            request_id="old",
-            scenario_id=772,
-            restrictions=[
-                {"id": "absent"},
-                {"check_plan": {}},
-                {"check_plan": unsupported},
-            ],
-            checkpoint={},
-        )
-    ]
-    service.compliance_executor.execute.assert_not_awaited()
-    assert not any(
-        event["type"] in {"check_plan", "compliance_result"} for event in events
-    )
-    assert any(
-        "Пропущено норм без исполнимого плана: 3" in event["content"].get("text", "")
-        for event in events
-    )
 
 
 async def test_compliance_without_normgraph_does_not_fall_back_to_llm():
@@ -429,161 +531,6 @@ async def test_compliance_without_normgraph_does_not_fall_back_to_llm():
     )
 
 
-async def test_one_norm_failure_does_not_prevent_the_next_plan():
-    from copy import deepcopy
-
-    service = object.__new__(RestrictionParserService)
-    service.state_store = SimpleNamespace(
-        save_checkpoint=AsyncMock(), set_status=AsyncMock()
-    )
-    service._buf = AsyncMock(side_effect=lambda _id, event: event)
-    second = deepcopy(_plan())
-    second["source"]["restriction_id"] = "r2"
-    success = ComplianceResult(
-        restriction_id="r2",
-        template=second["template"],
-        template_version=1,
-        verification_status="complete",
-        compliance_status="passed",
-        coverage=VerificationCoverage(
-            applicable_objects=1, checked_objects=1, unchecked_objects=0, fill_rate=1
-        ),
-        summary=ComplianceSummary(violated_objects=0, passed_objects=1),
-    )
-    service.compliance_executor = SimpleNamespace(
-        execute=AsyncMock(
-            side_effect=[
-                RuntimeError("geometry unavailable"),
-                SimpleNamespace(
-                    result=success,
-                    tool_calls=[],
-                    effects_tool_calls=[],
-                    timings_ms={},
-                ),
-            ]
-        )
-    )
-    events = [
-        event
-        async for event in service._run_executable_compliance(
-            mcp_client=object(),
-            request_id="independent",
-            scenario_id=772,
-            restrictions=[{"check_plan": _plan()}, {"check_plan": second}],
-            checkpoint={},
-        )
-    ]
-    results = [
-        event["content"] for event in events if event["type"] == "compliance_result"
-    ]
-    assert [(r["restriction_id"], r["verification_status"]) for r in results] == [
-        ("r1", "unverifiable"),
-        ("r2", "complete"),
-    ]
-    assert service.compliance_executor.execute.await_count == 2
-
-
-@pytest.mark.parametrize(
-    "status,verification,violated_count,has_geometry,expected_layers",
-    [
-        ("violated", "complete", 2, True, 1),
-        ("violated", "partial", 2, True, 1),
-        ("violated", "complete", 2, False, 0),
-        ("passed", "complete", 0, True, 0),
-        ("passed", "partial", 0, True, 0),
-        ("unknown", "unverifiable", 0, False, 0),
-    ],
-)
-async def test_compliance_ui_only_emits_nonempty_violation_layers(
-    status, verification, violated_count, has_geometry, expected_layers
-):
-    service = object.__new__(RestrictionParserService)
-    service.state_store = SimpleNamespace(
-        buffer_event=AsyncMock(), save_checkpoint=AsyncMock(), set_status=AsyncMock()
-    )
-    geometry = {
-        "type": "FeatureCollection",
-        "features": (
-            [
-                {
-                    "type": "Feature",
-                    "properties": {"id": i},
-                    "geometry": {"type": "Point", "coordinates": [30, 60]},
-                }
-                for i in range(2)
-            ]
-            if has_geometry
-            else []
-        ),
-    }
-    result = ComplianceResult(
-        restriction_id="r1",
-        template="distance_from_source",
-        template_version=1,
-        verification_status=verification,
-        compliance_status=status,
-        coverage=VerificationCoverage(
-            applicable_objects=3,
-            checked_objects=2,
-            unchecked_objects=1,
-            fill_rate=2 / 3,
-        ),
-        summary=ComplianceSummary(
-            violated_objects=violated_count, passed_objects=2 - violated_count
-        ),
-        source={
-            "document_name": "Тесты Норм",
-            "clause_number": "2.1",
-            "extraction_text": "Расстояние должно составлять не менее 100 м.",
-        },
-        violated_features=geometry,
-        passed_features=geometry,
-    )
-    service.compliance_executor = SimpleNamespace(
-        execute=AsyncMock(
-            return_value=SimpleNamespace(
-                result=result, tool_calls=[], effects_tool_calls=[], timings_ms={}
-            )
-        )
-    )
-    events = [
-        event
-        async for event in service._run_executable_compliance(
-            mcp_client=object(),
-            request_id="ui",
-            scenario_id=772,
-            restrictions=[
-                {
-                    "check_plan": {
-                        **_plan(),
-                        "source": {"restriction_id": "r1", **result.source},
-                    }
-                }
-            ],
-            checkpoint={},
-        )
-    ]
-    layers = [e for e in events if e["type"] == "feature_collection"]
-    assert len(layers) == expected_layers
-    if layers:
-        assert layers[0]["content"]["name"] == "Нарушение нормы — Тесты Норм, п. 2.1"
-        assert layers[0]["content"]["feature_collection"] == geometry
-    for event in events:
-        if event["type"] != "feature_collection":
-            payload = json.dumps(event, ensure_ascii=False)
-            assert "FeatureCollection" not in payload
-            assert "violated_features" not in payload
-            assert "passed_features" not in payload
-    final_text = next(e["content"]["text"] for e in events if e["type"] == "chunk")
-    if status == "violated":
-        assert "Тесты Норм, п. 2.1: нарушений на объектах — 2" in final_text
-        assert "Расстояние должно составлять не менее 100 м." in final_text
-        if verification == "partial":
-            assert "Не проверено объектов: 1" in final_text
-    else:
-        assert "Нарушенные нормы:" not in final_text
-
-
 def test_compliance_summary_identifies_every_violated_norm_and_keeps_counts_separate():
     summary = dict(
         total_norms=3,
@@ -617,109 +564,3 @@ def test_compliance_summary_identifies_every_violated_norm_and_keeps_counts_sepa
     assert "Документ, п. 1.1: нарушений на объектах — 17" in text
     assert "Источник не указан: нарушений на объектах — 15" in text
     assert "(passed)" not in text
-
-
-@pytest.mark.parametrize(
-    "provenance, expected",
-    [
-        (
-            {"name": "СП 42.13330.2016 Градостроительство", "numbering": "7.1"},
-            "СП 42.13330.2016, п. 7.1",
-        ),
-        ({"name": "СП 42.13330.2016"}, "СП 42.13330.2016"),
-        ({"numbering": "7.1"}, "Источник не указан, п. 7.1"),
-        ({"name": "  \n ", "numbering": " "}, "Источник не указан"),
-    ],
-)
-async def test_source_metadata_reaches_layers_summary_and_checkpoint(
-    provenance, expected
-):
-    from copy import deepcopy
-
-    service = object.__new__(RestrictionParserService)
-    service.state_store = SimpleNamespace(
-        buffer_event=AsyncMock(), save_checkpoint=AsyncMock(), set_status=AsyncMock()
-    )
-    geometry = {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": {},
-                "geometry": {"type": "Point", "coordinates": [30, 60]},
-            }
-        ],
-    }
-
-    async def execute(_client, plan, scenario_id, *, user_id=None, layer_source=None):
-        result = ComplianceResult(
-            restriction_id=plan["source"]["restriction_id"],
-            template=plan["template"],
-            template_version=1,
-            verification_status="complete",
-            compliance_status="violated",
-            coverage=dict(
-                applicable_objects=1,
-                checked_objects=1,
-                unchecked_objects=0,
-                fill_rate=1,
-            ),
-            summary=dict(violated_objects=1, passed_objects=0),
-            source=plan["source"],
-            violated_features=geometry,
-        )
-        return SimpleNamespace(
-            result=result, tool_calls=[], effects_tool_calls=[], timings_ms={}
-        )
-
-    service.compliance_executor = SimpleNamespace(
-        execute=AsyncMock(side_effect=execute)
-    )
-    hits = []
-    for number in range(2):
-        plan = _plan()
-        plan["source"].update(restriction_id=f"norm-{number}", document_name=" ")
-        plan["params"]["distance_m"] += number
-        hits.append(
-            dict(
-                check_plan=plan,
-                provenance=provenance,
-                extraction_text="Минимальное расстояние",
-            )
-        )
-    original = deepcopy(hits)
-    events = [
-        event
-        async for event in service._run_executable_compliance(
-            mcp_client=object(),
-            request_id="sources",
-            scenario_id=772,
-            restrictions=hits,
-            checkpoint={},
-        )
-    ]
-    assert hits == original
-    names = [
-        event["content"]["name"]
-        for event in events
-        if event["type"] == "feature_collection"
-    ]
-    assert names == [
-        f"Нарушение нормы — {expected}",
-        f"Нарушение нормы — {expected} (2)",
-    ]
-    text = next(
-        event["content"]["text"] for event in events if event["type"] == "chunk"
-    )
-    assert expected in text and "Минимальное расстояние" in text
-    assert "norm-0" not in text and "norm-1" not in text
-    checkpoints = service.state_store.save_checkpoint.await_args_list
-    results = next(
-        call.args[2]
-        for call in checkpoints
-        if call.args[1] == PipelineStep.TEMPLATE_EXECUTION
-    )
-    assert [result["restriction_id"] for result in results] == ["norm-0", "norm-1"]
-    assert results[0]["source"].get("clause_number") == (
-        provenance["numbering"].strip() if "numbering" in provenance else None
-    )

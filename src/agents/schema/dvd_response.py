@@ -21,6 +21,15 @@ class DvdStatusResponse(BaseModel):
     text: str
 
 
+class DvdAnswerPreviewResponse(BaseModel):
+    """Replaceable, unverified draft snapshot; never part of the answer."""
+
+    status: Literal["answer_preview"]
+    text: str
+    preview: str
+    iteration: int
+
+
 class DvdTextResponse(BaseModel):
     """
     A streamed chunk of a drafted answer.
@@ -93,6 +102,7 @@ class DvdResponse(BaseModel):
     ]
     content: (
         DvdStatusResponse
+        | DvdAnswerPreviewResponse
         | DvdTextResponse
         | ToolCallContent
         | ServiceEvent

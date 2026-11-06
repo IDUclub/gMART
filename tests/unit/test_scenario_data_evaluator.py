@@ -11,6 +11,9 @@ import json
 import pytest
 
 from src.agents.services.scenario_data.scenario_data_evaluator import (
+    _JUDGE_CODE_DESCRIPTIONS,
+    _JUDGE_REASONS,
+    _JUDGE_SCHEMA,
     ScenarioDataEvaluator,
     Verdict,
     deterministic_checks,
@@ -119,6 +122,45 @@ class TestWantsLayers:
 
 
 class TestEvaluator:
+    def test_judge_codes_share_one_source_of_truth(self):
+        assert _JUDGE_SCHEMA["properties"]["missing_code"]["enum"] == list(
+            _JUDGE_CODE_DESCRIPTIONS
+        )
+        assert set(_JUDGE_CODE_DESCRIPTIONS) - {"none"} <= _JUDGE_REASONS.keys()
+
+    @pytest.mark.asyncio
+    async def test_the_judge_prompt_explains_codes_and_source_scopes(self):
+        llm = FakeLlm({"sufficient": True, "missing_code": "none", "details": ""})
+        evaluator = ScenarioDataEvaluator(llm)
+
+        await evaluator.evaluate(
+            "m", "Какие объекты?", WITH_AGGREGATE, "Всего 924 объекта."
+        )
+
+        system_prompt = llm.last_kwargs["messages"][0]["content"]
+        for code in _JUDGE_SCHEMA["properties"]["missing_code"]["enum"]:
+            assert (
+                f"- {code}: {_JUDGE_CODE_DESCRIPTIONS[code]}"
+                in system_prompt.splitlines()
+            )
+        assert "из JSON Schema" not in system_prompt
+        assert "При sufficient=true missing_code=none" in system_prompt
+        assert (
+            "при sufficient=false — один из остальных кодов, никогда не none."
+            in system_prompt
+        )
+        assert (
+            "source_scope «выбранный сценарий» — данные сценария; «окружение сценария» "
+            "— территория вокруг; «общие данные» — данные без привязки к сценарию."
+            in system_prompt
+        )
+        assert (
+            "Если вопрос о сценарии, а количество получено только из «общие данные» "
+            "или «окружение сценария», ответ недостаточен (wrong_scope)."
+            in system_prompt
+        )
+        assert "Отсутствие вызовов не означает отсутствие объектов." in system_prompt
+
     @pytest.mark.asyncio
     async def test_a_rule_rejection_skips_the_judge(self):
         llm = FakeLlm({"sufficient": True, "missing_code": "none", "details": ""})

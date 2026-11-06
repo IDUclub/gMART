@@ -405,6 +405,7 @@ class ComplianceScopeResolver:
                 },
             ],
             ChoiceAnswer,
+            request_kind="compliance.scope",
         )
         if not answer.is_choice:
             return ChoiceReply(kind="not_choice")
@@ -465,6 +466,7 @@ class ComplianceScopeResolver:
                 {"role": "user", "content": user_query},
             ],
             ScopeRequest,
+            request_kind="compliance.scope",
         )
         logger.info(f"Compliance scope request: {request.model_dump_json()}")
         return request
@@ -527,6 +529,7 @@ class ComplianceScopeResolver:
                 },
             ],
             EntitySelection,
+            request_kind="compliance.scope",
         )
         chosen = {item.topic: item.entities for item in selection.selections}
         by_topic: dict[str, list[str]] = {}
