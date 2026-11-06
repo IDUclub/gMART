@@ -70,8 +70,9 @@ class InMemoryIduMcp:
             assert "project_territory" in arguments["layers"]
             return {arguments["layer_name"]: _fc(30.0, service_id=1)}
         if name == "GetPhysicalObjectsByGeometry":
+            assert arguments["physical_objects_names"] == ["Жилой дом"]
             return {
-                "Жилой дом": {
+                arguments["layer_name"]: {
                     "type": "FeatureCollection",
                     "features": [
                         _feature(30.0001, physical_object_id=1),
