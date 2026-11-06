@@ -22,7 +22,7 @@
    При выборе документа или сопоставлении файлов возможен `clarification`: это остановка,
    а не успешное завершение проверки.
 3. `source_layers`, затем `zones_building` для норм,
-   затем `objects_by_geometry` с уведомлениями по завершённым типам сервисов.
+   затем `objects_by_geometry` с уведомлениями по завершённым типам сущностей.
 4. `requirements_resolution`; начальный `compliance_progress`.
 5. Для каждой нормы: `template_execution`, исполнение, `violation_geometry`, `cache`,
    `requirement_resolution`, `compliance_result`,
@@ -298,7 +298,7 @@ Feature `violation` может отсутствовать: нечего отда
 {"feature_kind":"object","physical_object_id":1,"name":"Дом","floors":6,"source_layer":"Жилой дом","object_ref":{"id":"physical_object/1","namespace":"physical_object","entity_id":1,"geometry_id":null,"layer":"Жилой дом","name":"Дом"},"object_name":"Дом","type":"Жилой дом","zone_refs":[{"id":"norm/00000000-0000-4000-8000-000000000001/zone/0"}]}
 ```
 
-## GetServicesByGeometry и двухфазная выборка
+## GetServicesByGeometry, GetPhysicalObjectsByGeometry и двухфазная выборка
 
 Публичная MCP-сигнатура (зависимости авторизации и клиента не передаются пользователем):
 
@@ -322,7 +322,38 @@ GetServicesByGeometry(
 Пустой слой допустим: HTTP выборки объектов не вызывается. Имена нормализуются
 `strip().capitalize()`, разрешаются в канонические service_type_id, повторения убираются.
 `physical_object_type_ids` принимается, но пока не передаётся в Urban API и не фильтрует
-результат: поддержки этого фильтра у by_geometry нет.
+результат: поддержки этого фильтра у services/by_geometry нет.
+
+Для физических объектов используется аналогичный инструмент:
+
+```text
+GetPhysicalObjectsByGeometry(
+  scenario_id: int,
+  physical_objects_names: list[str],
+  zones_layers: list[str],
+  layer_name: str,
+  layers: dict[str, dict],
+  buffer_m: float = 0,
+  intersection_type: "intersects" | "within" = "intersects"
+) -> dict[str, dict]
+```
+
+Требуется Urban API с методом
+`POST /api/v1/scenarios/{scenario_id}/physical_objects/by_geometry/geojson`:
+query `physical_object_type_id` и `intersection_type`, тело — геометрия EPSG:4326.
+Ошибки 403/404/422 обрабатываются так же, как для сервисов; автоматического
+отката на полный GET при отсутствии метода нет.
+Свойства ответа **компактные**: `physical_object_id`, `physical_object_type_id`,
+`physical_object_type_name`, `name`, `object_geometry_id`,
+`is_scenario_physical_object`, `is_scenario_geometry`, `is_locked`.
+Нет `building`, вложенного `properties`, адреса и прочих атрибутов полного GET.
+MCP добавляет при отсутствии `physical_object_type={"physical_object_type_id": id, "name": name}`
+и нормализует `object_ref` (`physical_object/<id>/geometry/<geometry_id>`).
+Сохраняются Polygon, MultiPolygon, LineString и Point; дедупликация по паре
+`(physical_object_id, object_geometry_id)` сохраняет несколько геометрий объекта.
+`per_type_counts` считает уникальные пары, revision содержит `physical_objects_by_geometry`.
+Split, точный предикат, пустая область без POST и ошибка неизвестного типа — как у сервисов;
+оба инструмента используют общий семафор и те же переменные окружения.
 
 ```json
 {"scenario_id":772,"services_names":["Театр"],"zones_layers":["Норма — СП 42.13330.2016, п. 7.1"],"layer_name":"Цели — Театр","layers":{"Норма — СП 42.13330.2016, п. 7.1":{"type":"FeatureCollection","features":[]}},"buffer_m":0,"intersection_type":"intersects","physical_object_type_ids":null}
@@ -348,9 +379,10 @@ ID для сервиса с геометрией: `service/17/geometry/25`, бе
 ### Один тип — одна общая выборка
 
 1. `GetProjectTerritory` → `project_territory`.
-2. Источники сервисов: по территории с максимальным радиусом всех норм этого типа,
+2. Источники сервисов и физических объектов без атрибутов: по территории с максимальным радиусом всех норм этого типа,
    включая источники вне проекта. Имена слоёв `Источники — <тип>`.
-   Физические объекты получают через `GetPhysicalObjects(centers_only=false)`,
+   Физические объекты с потребностью в атрибутах получают через
+   `GetPhysicalObjects(centers_only=false)` на весь запуск (источники и цели),
    функциональные зоны — через `GetFunctionalZones`.
 3. `CreateRestrictionZones` отдельно для каждой нормы; сохраняются стабильные ссылки слоёв.
 4. Для каждого типа целей объединяются зоны только тех норм, которым он нужен;
@@ -358,6 +390,19 @@ ID для сервиса с геометрией: `service/17/geometry/25`, бе
    запрос использует `within`; иначе `intersects`. Это уточнение реализации относительно
    спецификации, где для данной фазы всегда указан `intersects`.
 5. Check* проверяет точные геометрии локально относительно каждой зоны.
+
+Выбор для физической сущности делается один раз в `load_sources`: если хотя бы
+один канонический набор требований содержит `AttributeRequirement`, чей `on`
+разрешается в эту сущность, полный GET сохраняется для всех её норм. Это касается
+необязательных требований, object_attribute/порогов, табличных расстояний,
+зональных агрегатов и порогов зон, scope и всех производных значений (включая
+площадь по геометрии). Иначе источники и цели используют `GetPhysicalObjectsByGeometry`.
+Без общего layer_source выборка идёт по `project_territory` с `buffer_m` и
+`layer_name=entity`; явное решение запуска сохраняется при передаче одиночного
+layer requirement без attributes. Сценарный контекст режима user-files сохраняет
+прежний полный GET физических объектов. Пулы разделены по типу и имени сущности;
+при совпадении имён сервисов и физических объектов к именам пространственных
+слоёв добавляется тип в скобках. Выбор и пулы сохраняются в snapshot/restore.
 
 Предикат выводится из `params.predicate`, а для zonal_attribute_threshold — из
 `join_predicate` с fallback на predicate; только `within` преобразуется в `within`,
@@ -525,14 +570,18 @@ Inventory с файлами не строится: сервис поясняет
 Дескрипторы файлов сохраняются как `kind="file"`, без `role` и `download_url`:
 эта ветка сериализации выполняется до фильтра text_only. Ссылки живут только час;
 наличие части file в истории не продлевает доступность файла.
-Сценарная цепочка содержит `GetProjectTerritory → GetServicesByGeometry →
-CreateRestrictionZones → GetServicesByGeometry → Check*`.
-`GetServicesByGeometry` предоставляет слой по `layer_name` и читает ссылки `zones_layers`
+Сценарная цепочка содержит `GetProjectTerritory → GetServicesByGeometry / GetPhysicalObjectsByGeometry →
+CreateRestrictionZones → GetServicesByGeometry / GetPhysicalObjectsByGeometry → Check*`.
+Оба инструмента предоставляют слой по `layer_name` и читают ссылки `zones_layers`
 из накопленного `layers`. ChatStorage (с v0.7.0) строит по этим ссылкам цепочку
 зависимостей, при повторе передаёт накопленные слои в `layers` и MCP meta, а `layers`
 в историю не сохраняет. Если Check* возвращает `norm_layer`, результат шага содержит
 `{"norm_layer": FeatureCollection}`; для старых ответов без него формат прежний.
 Replay на изменившемся сценарии — новый расчёт, не исторический снимок; ZIP хранит снимок входов.
+Для `GetPhysicalObjectsByGeometry` ChatStorage требует соответствующей поддержки
+replay: разрешение zones_layers, предоставление layer_name и передача накопленных layers.
+Все by_geometry-вызовы записываются без `layers`, включая пустые ответы.
+`result.json/input_layers.origin` указывает фактический инструмент получения слоя.
 
 ## Ошибки, переменные окружения и TODO
 
@@ -564,8 +613,8 @@ AgentsInputException 400, AgentsNotFound 404, DownstreamServiceError 502;
 | CHAT_STORAGE | история сценарных вызовов и текста |
 
 TODO из §8 спецификации: изохроны ObjectNat вместо прямолинейного буфера
-accessibility_within; physical_object_type_ids фильтр и by_geometry физических
-объектов после поддержки Urban API; spatial_predicate в CheckPlan schema 1.1
+accessibility_within; physical_object_type_ids фильтр services/by_geometry
+после поддержки Urban API; spatial_predicate в CheckPlan schema 1.1
 после согласования NormGraph (`extra=forbid` сейчас); подробный LLM-комментарий
 к нарушению.
 

@@ -21,6 +21,7 @@ from src.agents.services.compilance.compliance_requirements import (
     ComplianceDataGate,
     RequirementsResolution,
     _nested_get,
+    attribute_entities,
 )
 from src.agents.services.restriction.restriction_tool_executor import (
     RestrictionToolExecutor,
@@ -126,7 +127,8 @@ def _has_features(*layers: Any) -> bool:
     Retrieval calls go to the chat history, and a client that reopens the chat
     replays them into map layers. A call that found nothing (a zone type absent
     from the scenario, an entity no catalogue name matches) would reappear as an
-    empty layer, so only calls that returned objects are recorded.
+    empty layer, so only calls that returned objects are recorded on the legacy
+    GET paths. Geometry queries are always recorded, including empty results.
     """
     return any(
         isinstance(layer, dict) and bool(layer.get("features")) for layer in layers
@@ -797,9 +799,20 @@ class ComplianceTemplateExecutor:
         *,
         project_territory: dict | None = None,
         buffer_m: float = 0,
+        full_physical_entities: set[str] | None = None,
+        preserve_physical_attributes: bool = False,
     ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
         layers: dict[str, dict[str, Any]] = {}
         calls: list[dict[str, Any]] = []
+        full_entities = attribute_entities(requirements) | (
+            full_physical_entities or set()
+        )
+        if preserve_physical_attributes:
+            full_entities.update(
+                item.entity
+                for item in requirements.layers
+                if item.entity_type.value == "physical_object"
+            )
         for entity_type, tool_name, argument_name in (
             ("physical_object", "GetPhysicalObjects", "physical_objects_names"),
         ):
@@ -808,6 +821,7 @@ class ComplianceTemplateExecutor:
                     item.entity
                     for item in requirements.layers
                     if item.entity_type.value == entity_type
+                    and item.entity in full_entities
                 )
             )
             if not names:
@@ -817,7 +831,6 @@ class ComplianceTemplateExecutor:
                 "scenario_id": scenario_id,
                 "centers_only": False,
             }
-            # TODO: by_geometry для физических объектов (пока нет в Urban API).
             response = await self.tools.execute_named_tool(
                 mcp_client, tool_name, arguments
             )
@@ -825,11 +838,15 @@ class ComplianceTemplateExecutor:
             if _has_features(*(response or {}).values()):
                 calls.append({"function": {"name": tool_name, "arguments": arguments}})
 
-        services = list(
+        spatial_entities = list(
             dict.fromkeys(
-                item.entity
+                (item.entity_type.value, item.entity)
                 for item in requirements.layers
                 if item.entity_type.value == "service"
+                or (
+                    item.entity_type.value == "physical_object"
+                    and item.entity not in full_entities
+                )
             )
         )
         if project_territory is None:
@@ -843,10 +860,20 @@ class ComplianceTemplateExecutor:
             )
         if project_territory is not None:
             layers["project_territory"] = project_territory
-        for entity in services:
+        for entity_type, entity in spatial_entities:
+            tool_name = (
+                "GetServicesByGeometry"
+                if entity_type == "service"
+                else "GetPhysicalObjectsByGeometry"
+            )
+            argument_name = (
+                "services_names"
+                if entity_type == "service"
+                else "physical_objects_names"
+            )
             arguments = {
                 "scenario_id": scenario_id,
-                "services_names": [entity],
+                argument_name: [entity],
                 "zones_layers": ["project_territory"],
                 "buffer_m": buffer_m,
                 "intersection_type": "intersects",
@@ -854,7 +881,7 @@ class ComplianceTemplateExecutor:
             }
             response = await self.tools.execute_named_tool(
                 mcp_client,
-                "GetServicesByGeometry",
+                tool_name,
                 {
                     **arguments,
                     "layers": {
@@ -863,9 +890,7 @@ class ComplianceTemplateExecutor:
                 },
             )
             layers.update(response or {})
-            calls.append(
-                {"function": {"name": "GetServicesByGeometry", "arguments": arguments}}
-            )
+            calls.append({"function": {"name": tool_name, "arguments": arguments}})
 
         for requirement in (
             item

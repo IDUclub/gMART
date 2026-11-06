@@ -589,8 +589,9 @@ A2A выдаёт `compliance-restriction_inventory`, `compliance-layer-N`,
 Полные результаты остаются доступны в SSE-потоке и Redis-журнале текущего запроса.
 
 Новая сценарная цепочка включает GetProjectTerritory, GetServicesByGeometry,
-CreateRestrictionZones и Check*. GetServicesByGeometry предоставляет layer_name
-и читает zones_layers из layers. ChatStorage повторяет эту цепочку и для Check*
+GetPhysicalObjectsByGeometry, CreateRestrictionZones и Check*. Оба by_geometry-инструмента предоставляют layer_name
+и читают zones_layers из layers. Для нового инструмента требуется соответствующая
+поддержка replay в ChatStorage. ChatStorage повторяет эту цепочку и для Check*
 показывает norm_layer.
 
 При восстановлении слоёв ChatStorage повторяет сохранённые стабильные MCP-вызовы и
@@ -719,7 +720,14 @@ SHA-256, общий layers.geojson; для запущенных проверок
 
 GetServicesByGeometry получает источники по территории с максимальным радиусом
 норм, затем цели по объединению нужных зон для каждого типа сервиса. Физические
-объекты — GetPhysicalObjects(centers_only=false), функциональные зоны — GetFunctionalZones.
+объекты без атрибутных требований — GetPhysicalObjectsByGeometry с той же двухфазной
+выборкой. Если хотя бы одна норма запуска требует атрибуты сущности (включая scope,
+зональные пороги и производные значения), она целиком остаётся на
+GetPhysicalObjects(centers_only=false), как источник и цель. Функциональные зоны — GetFunctionalZones.
+Ответ physical_objects/by_geometry компактный: нет building, вложенных properties
+и адреса; MCP добавляет physical_object_type и object_ref. Геометрии одного объекта
+различаются по object_geometry_id и сохраняются все. Нужен Urban API с новым методом
+и соответствующая replay-поддержка GetPhysicalObjectsByGeometry в ChatStorage.
 Provision использует ObjectEffects, пользовательские файлы — UserLayerSource.
 Точные свойства, split 413/размерных 422, checkpoint, ошибки и TODO —
 [compliance-status-contract.md](compliance-status-contract.md).

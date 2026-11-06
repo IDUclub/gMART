@@ -111,14 +111,21 @@ class Mcp:
         self.calls.append((name, deepcopy(arguments)))
         if name == "GetProjectTerritory":
             return {"project_territory": fc(feature())}
-        if name == "GetServicesByGeometry":
+        if name in {"GetServicesByGeometry", "GetPhysicalObjectsByGeometry"}:
             # An out-of-project source is retained by MCP's buffered query.
             return {
                 arguments["layer_name"]: fc(
                     feature(
                         {"type": "Point", "coordinates": [29.9999, 60]},
-                        service_id=1,
-                        name=arguments["services_names"][0],
+                        **(
+                            {"service_id": 1}
+                            if name == "GetServicesByGeometry"
+                            else {"physical_object_id": 1}
+                        ),
+                        name=(
+                            arguments.get("services_names")
+                            or arguments["physical_objects_names"]
+                        )[0],
                     ),
                     complete=True,
                 )

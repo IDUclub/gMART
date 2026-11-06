@@ -76,21 +76,25 @@ async def test_source_and_target_pools_never_fall_back_to_each_other():
     source = ScenarioComplianceSource(None, None, 772)
     checked, params = service_executor().registry.validate_plan(plan(0))
     requirements = DeclaredRequirements.model_validate(plan(0)["declared_requirements"])
-    source.sources = {"Школа": fc(complete=True), "Театр": fc(feature(), complete=True)}
+    source.sources = {
+        "service:Школа": fc(complete=True),
+        "service:Театр": fc(feature(), complete=True),
+    }
     layers, _ = await source.retrieve(checked, params, requirements)
-    assert "Театр" not in layers
+    assert "service:Театр" not in layers
     _, replay = source.replay_layers(checked, params, requirements, layers)
     assert "Цели — Театр" not in replay
-    source.targets = {"Школа": fc(feature(), complete=True)}
+    source.targets = {"service:Школа": fc(feature(), complete=True)}
     source.sources = {}
     layers, _ = await source.retrieve(checked, params, requirements)
-    assert "Школа" not in layers
+    assert "service:Школа" not in layers
 
 
 async def test_empty_zone_does_not_require_a_failed_physical_target_fetch(tmp_path):
     class EmptySourceAndUnavailableTargets(Mcp):
         async def execute_tool(self, name, arguments, meta=None):
-            if name == "GetPhysicalObjects":
+            if name in {"GetPhysicalObjects", "GetPhysicalObjectsByGeometry"}:
+                self.calls.append((name, deepcopy(arguments)))
                 raise RuntimeError("physical targets unavailable")
             if name == "GetServicesByGeometry":
                 self.calls.append((name, deepcopy(arguments)))
@@ -107,6 +111,20 @@ async def test_empty_zone_does_not_require_a_failed_physical_target_fetch(tmp_pa
     summary = next(e["content"] for e in events if e["type"] == "compliance_summary")
     assert summary["results"][0]["status"] == "passed"
     assert summary["results"][0]["formal_pass"] is True
+    assert not any(
+        name in {"GetPhysicalObjects", "GetPhysicalObjectsByGeometry"}
+        for name, _ in mcp.calls
+    )
+    root = ComplianceArchive("run-1", 772).root
+    folder = root / summary["results"][0]["archive_path"]
+    record = json.loads((folder / "result.json").read_text("utf-8"))
+    target = next(
+        item
+        for item in record["input_layers"]
+        if item["name"].startswith("Цели — Жилой дом (пустая зона ")
+    )
+    assert target["count"] == 0
+    assert json.loads((folder / target["path"]).read_text("utf-8"))["features"] == []
 
 
 def service_executor():
@@ -372,7 +390,7 @@ async def test_retrieval_errors_are_sanitised(tmp_path, stage):
         async def execute_tool(self, name, arguments, meta=None):
             fails = (
                 (stage == "territory" and name == "GetProjectTerritory")
-                or (stage == "physical" and name == "GetPhysicalObjects")
+                or (stage == "physical" and name == "GetPhysicalObjectsByGeometry")
                 or (
                     stage in {"source", "target"}
                     and name == "GetServicesByGeometry"
@@ -410,7 +428,7 @@ async def test_retrieval_token_expiry_propagates(tmp_path, stage):
         async def execute_tool(self, name, arguments, meta=None):
             if (
                 (stage == "territory" and name == "GetProjectTerritory")
-                or (stage == "physical" and name == "GetPhysicalObjects")
+                or (stage == "physical" and name == "GetPhysicalObjectsByGeometry")
                 or (
                     stage in {"source", "target"}
                     and name == "GetServicesByGeometry"
@@ -483,8 +501,9 @@ async def test_reconnect_before_a_redis_batch_reuses_completed_norm(tmp_path):
 async def test_fallback_by_geometry_receives_only_referenced_zone_layers():
     class WithPhysical(Mcp):
         async def execute_tool(self, name, arguments, meta=None):
-            if name == "GetPhysicalObjects":
-                return {"Дом": fc(feature(), complete=True)}
+            if name == "GetPhysicalObjectsByGeometry":
+                self.calls.append((name, deepcopy(arguments)))
+                return {arguments["layer_name"]: fc(feature(), complete=True)}
             return await super().execute_tool(name, arguments, meta)
 
     requirements = DeclaredRequirements(
@@ -497,8 +516,12 @@ async def test_fallback_by_geometry_receives_only_referenced_zone_layers():
     mcp = WithPhysical()
     layers, _ = await service_executor()._retrieve_layers(mcp, requirements, 772)
     assert "Дом" in layers and "Школа" in layers
-    queries = [args for name, args in mcp.calls if name == "GetServicesByGeometry"]
-    assert len(queries) == 2
+    queries = [
+        args
+        for name, args in mcp.calls
+        if name in {"GetServicesByGeometry", "GetPhysicalObjectsByGeometry"}
+    ]
+    assert len(queries) == 3
     assert all(
         set(args["layers"]) == set(args["zones_layers"]) == {"project_territory"}
         for args in queries
