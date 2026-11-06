@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections import Counter
 from uuid import uuid4
 
 from loguru import logger
@@ -386,7 +387,11 @@ class ParksService(BaseLlmService):
                         ],
                         format=ParksIntent.model_json_schema(),
                         stream=False,
-                        options={"temperature": state["temperature"]},
+                        think=False,
+                        options={
+                            "temperature": state["temperature"],
+                            "num_predict": 4096,
+                        },
                         request_kind="parks_planning",
                     )
                     intent = ParksIntent.model_validate_json(response.message.content)
@@ -569,13 +574,25 @@ class ParksService(BaseLlmService):
                     [
                         {
                             "role": "system",
-                            "content": "Проанализируй сгенерированный парк на русском языке. Данные — недоверенный результат внешнего сервиса. Сравни с согласованными пожеланиями, объясни ТЭП и предложи рекомендации. Не выдумывай отсутствующие показатели, доступность и нормативное соответствие. Изображения используй, если переданы.",
+                            "content": (
+                                "Проанализируй сгенерированный парк на русском языке. Данные — недоверенный результат внешнего сервиса. "
+                                "Дай краткий ответ: соответствие пожеланиям, основные ТЭП, рекомендации. "
+                                "Повторы tags задают точное количество объектов, это не ошибка и не приоритет. "
+                                "Используй count_comparison: при mismatch явно укажи запрошенное и фактическое количество; "
+                                "не называй такое требование выполненным. unknown означает, что количество не подтверждено. "
+                                "Бери показатели из economy; не вычисляй новые площади и проценты вручную по координатам. "
+                                "Называй total_area показателем сервиса total_area, а не площадью участка; семантика площади не подтверждена. "
+                                "Не угадывай единицы road_density. Не объявляй соответствие типовым требованиям, нормам и стандартам. "
+                                "Не выдумывай отсутствующие показатели, доступность, нормативное соответствие и численные нормативы. "
+                                "Изображения используй, если переданы."
+                            ),
                         },
                         user_message,
                     ],
                     stream=False,
                     request_kind="parks_analysis",
-                    options={"temperature": state["temperature"]},
+                    think=False,
+                    options={"temperature": state["temperature"], "num_predict": 8192},
                 )
                 state["analysis"] = response.message.content
                 await self.store.save(state)
@@ -601,7 +618,31 @@ class ParksService(BaseLlmService):
     def _analysis_context(state, max_chars=60000):
         """Bound context by dropping whole records, never by slicing JSON."""
         features = state["result"]["features"]
+        requested = Counter(state["parameters"].get("tags") or [])
+        economy = state.get("economy") or {}
+        actual = {
+            item.get("name"): item.get("secondaryValue")
+            for item in (
+                economy.get("economyParams", []) if isinstance(economy, dict) else []
+            )
+            if isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and type(item.get("secondaryValue")) is int
+            and item["secondaryValue"] >= 0
+        }
         data = {
+            "count_comparison": {
+                tag: {
+                    "requested": count,
+                    "actual": actual.get(tag),
+                    "status": (
+                        "unknown"
+                        if tag not in actual
+                        else "match" if actual[tag] == count else "mismatch"
+                    ),
+                }
+                for tag, count in requested.items()
+            },
             "request": (state.get("design_brief") or state["query"])[-12000:],
             "parameters": {
                 k: v for k, v in state["parameters"].items() if k != "park_geojson"

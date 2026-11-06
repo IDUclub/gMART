@@ -51,6 +51,12 @@ async def main():
     parser.add_argument("--redis-url", default="redis://localhost:16385/0")
     parser.add_argument("--model")
     parser.add_argument(
+        "--think-mode", choices=["reasoning_effort", "chat_template", "off"]
+    )
+    parser.add_argument(
+        "--think-effort", choices=["none", "minimal", "low", "medium", "high"]
+    )
+    parser.add_argument(
         "--base-url", help="Override the configured vision-model endpoint"
     )
     parser.add_argument("--out", type=Path, required=True)
@@ -68,6 +74,10 @@ async def main():
     load_dotenv(".env.agents")
     if args.base_url:
         os.environ["OPENAI_BASE_URL"] = args.base_url
+    if args.think_effort:
+        os.environ["OPENAI_THINK_EFFORT"] = args.think_effort
+    if args.think_mode:
+        os.environ["OPENAI_THINK_MODE"] = args.think_mode
     logger.remove()  # Never log credential-bearing stack locals in a live report.
     args.out.mkdir(parents=True, exist_ok=True)
     redis = Redis.from_url(args.redis_url, decode_responses=True)

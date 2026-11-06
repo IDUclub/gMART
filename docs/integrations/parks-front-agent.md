@@ -37,6 +37,11 @@ env-файл или переопределить окружение контей
 `LLM_REQUEST_PRIORITIES=parks_planning=-60,parks_analysis=-100`.
 `LLM_REQUEST_PRIORITY_ENABLED=false` отключает приоритеты целиком; по умолчанию
 они включены, поэтому добавлять эти переменные специально для парков не нужно.
+LLM-вызовы парков используют `think=False` и явный бюджет ответа: 4096 токенов
+для разбора параметров, 8192 для анализа. То, как `think=False` передаётся серверу,
+задают общие `OPENAI_THINK_MODE` и `OPENAI_THINK_EFFORT`; production Compose
+по умолчанию использует `reasoning_effort` и `low`. Это сокращает reasoning,
+но не гарантирует его полного отключения на любой модели.
 
 Отдельные переменные для A2A, heartbeat и polling не нужны. Парки используют
 общие `LLM_BACKEND`, `OPENAI_BASE_URL`, `DEFAULT_LLM_MODEL`, `CHAT_STORAGE`,
@@ -46,7 +51,9 @@ env-файл или переопределить окружение контей
 
 На 2026-11-06 в GitHub environment `production` уже заданы
 `OPENAI_BASE_URL=http://10.32.11.27:8002/v1` и `DEFAULT_LLM_MODEL=qwen3.8-27b`.
-Старый локальный endpoint с портом 8001 к этому деплою не относится. При смене
+Также задан `OPENAI_THINK_MODE=chat_template`: с `think=False` адаптер
+передаёт `chat_template_kwargs.enable_thinking=false`. Старые локальные
+настройки с портом 8001 и `reasoning_effort` этому деплою не соответствуют. При смене
 модели обновляйте общие настройки, а не добавляйте отдельные `PARKS_MODEL`.
 
 Production Compose использует внешний Redis из секрета `REDIS_URL`, а не Redis

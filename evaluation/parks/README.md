@@ -11,6 +11,10 @@ docker run --detach --name gmart-parks-live-redis --publish 127.0.0.1:16385:6379
 .venv/Scripts/python.exe -m evaluation.parks.run_live --out tmp/parks-live/full --model YOUR_VISION_MODEL --base-url http://YOUR_MODEL_SERVER/v1 --chat-storage
 ```
 
+Use `--think-mode chat_template --think-effort low` to match the production
+settings verified on 2026-11-06 when the local `.env.agents` still uses
+`reasoning_effort`. These overrides only apply to the evaluation process.
+
 The evaluation invokes the real gMART service pipeline in process. It checks
 drafting, a natural-language edit, absence of generation before confirmation,
 one submission after confirmation, GeoJSON delivery, ChatStorage structured
