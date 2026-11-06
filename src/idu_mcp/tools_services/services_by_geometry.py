@@ -61,42 +61,47 @@ def _polygon_parts(geometry):
     return [part for child in geometry.geoms for part in _polygon_parts(child)]
 
 
-class ServicesByGeometry:
-    def __init__(self, client):
+class ByGeometry:
+    """Shared lossless retrieval core for services and physical objects."""
+
+    entity = "service"
+    plural = "services"
+    label = "сервисов"
+    object_label = "сервис"
+
+    def __init__(self, client, *, semaphore=None):
         self.client = client
         self.concurrency = positive_env_int("COMPLIANCE_BY_GEOMETRY_CONCURRENCY", 8)
         self.max_split_depth = positive_env_int(
             "COMPLIANCE_BY_GEOMETRY_MAX_SPLIT_DEPTH", 6
         )
         # Shared by calls on this tool instance, including concurrent MCP requests.
-        self.semaphore = asyncio.Semaphore(self.concurrency)
+        self.semaphore = (
+            semaphore if semaphore is not None else asyncio.Semaphore(self.concurrency)
+        )
 
     async def query(
         self,
         *,
         scenario_id: int,
-        services_names: list[str],
+        names: list[str],
         zones_layers: list[str],
         layer_name: str,
         layers: dict,
         token: str,
         buffer_m: float = 0,
         intersection_type: str = "intersects",
-        physical_object_type_ids=None,
     ) -> dict:
         if intersection_type not in {"intersects", "within"}:
             raise ValueError("intersection_type: ожидается intersects или within")
-        if not services_names or not layer_name.strip():
-            raise ValueError("Нужны services_names и непустое layer_name")
-        # TODO: Urban API by_geometry has no physical_object_type_ids filter yet.
+        if not names or not layer_name.strip():
+            raise ValueError(f"Нужны {self.plural}_names и непустое layer_name")
         area = await asyncio.to_thread(search_area, zones_layers, layers, buffer_m)
-        names = list(
-            dict.fromkeys(name.strip().capitalize() for name in services_names)
-        )
-        resolved = await self.client.get_service_name_id(names, token)
+        names = list(dict.fromkeys(name.strip().capitalize() for name in names))
+        resolved = await getattr(self.client, self.resolver)(names, token)
         missing = [name for name in names if name not in resolved]
         if missing:
-            raise ToolError(f"Типы сервисов не найдены: {', '.join(missing)}")
+            raise ToolError(f"Типы {self.label} не найдены: {', '.join(missing)}")
         types = list(dict.fromkeys(resolved.values()))
         components = _polygon_parts(area)
         stats = {
@@ -113,7 +118,8 @@ class ServicesByGeometry:
         async def request(type_id, geometry, *, predicate, depth=0):
             try:
                 async with self.semaphore:
-                    response = await self.client.get_services_by_geometry(
+                    post = getattr(self.client, f"get_{self.plural}_by_geometry")
+                    response = await post(
                         scenario_id,
                         type_id,
                         mapping(geometry),
@@ -127,7 +133,7 @@ class ServicesByGeometry:
                     or not isinstance(response.get("features"), list)
                 ):
                     raise ToolError(
-                        "Urban API вернул некорректный FeatureCollection сервисов"
+                        f"Urban API вернул некорректный FeatureCollection {self.label}"
                     )
                 stats["part_count"] += 1
                 return response["features"]
@@ -184,10 +190,10 @@ class ServicesByGeometry:
             accepted = set()
             for feature in features:
                 properties = dict(feature.get("properties") or {})
-                service_id = properties.get("service_id")
-                if service_id is None or not feature.get("geometry"):
+                entity_id = properties.get(f"{self.entity}_id")
+                if entity_id is None or not feature.get("geometry"):
                     raise ToolError(
-                        "Urban API вернул сервис без service_id или геометрии"
+                        f"Urban API вернул {self.object_label} без {self.entity}_id или геометрии"
                     )
                 geometry = shape(feature["geometry"])
                 if geometry.geom_type == "GeometryCollection":
@@ -196,29 +202,30 @@ class ServicesByGeometry:
                     )
                 if not exact_spatial_predicate(geometry, area, intersection_type):
                     continue
-                properties.setdefault("service_type_id", type_id)
+                properties.setdefault(f"{self.entity}_type_id", type_id)
                 properties.setdefault(
-                    "service_type_name",
+                    f"{self.entity}_type_name",
                     next(name for name, value in resolved.items() if value == type_id),
                 )
                 properties.setdefault(
-                    "service_type",
+                    f"{self.entity}_type",
                     {
-                        "id": properties["service_type_id"],
-                        "name": properties["service_type_name"],
+                        self.nested_type_id: properties[f"{self.entity}_type_id"],
+                        "name": properties[f"{self.entity}_type_name"],
                     },
                 )
                 properties["object_ref"] = GeometryTools._object_ref(
                     pd.Series(properties), layer_name, len(unique)
                 )
+                key = self.feature_key(entity_id, properties)
                 unique.setdefault(
-                    str(service_id),
+                    key,
                     {
                         **feature,
                         "properties": properties,
                     },
                 )
-                accepted.add(str(service_id))
+                accepted.add(key)
             per_type_counts[str(type_id)] = len(accepted)
         revision = hashlib.sha256(area.wkb).hexdigest()
         return {
@@ -230,8 +237,58 @@ class ServicesByGeometry:
                     "per_type_counts": per_type_counts,
                     "complete": True,
                     "truncated": False,
-                    "revision": f"scenario:{scenario_id}:services_by_geometry:{revision}:"
+                    "revision": f"scenario:{scenario_id}:{self.plural}_by_geometry:{revision}:"
                     f"{','.join(map(str, types))}:{intersection_type}",
                 },
             }
         }
+
+
+class ServicesByGeometry(ByGeometry):
+    resolver = "get_service_name_id"
+    nested_type_id = "id"
+
+    @staticmethod
+    def feature_key(entity_id, properties):
+        return str(entity_id)
+
+    async def query(
+        self,
+        *,
+        scenario_id: int,
+        services_names: list[str],
+        zones_layers: list[str],
+        layer_name: str,
+        layers: dict,
+        token: str,
+        buffer_m: float = 0,
+        intersection_type: str = "intersects",
+        physical_object_type_ids=None,
+    ) -> dict:
+        # Reserved: services/by_geometry has no physical_object_type_ids filter.
+        return await super().query(
+            scenario_id=scenario_id,
+            names=services_names,
+            zones_layers=zones_layers,
+            layer_name=layer_name,
+            layers=layers,
+            token=token,
+            buffer_m=buffer_m,
+            intersection_type=intersection_type,
+        )
+
+
+class PhysicalObjectsByGeometry(ByGeometry):
+    entity = "physical_object"
+    plural = "physical_objects"
+    label = "физических объектов"
+    object_label = "физический объект"
+    resolver = "get_physical_objects_name_id"
+    nested_type_id = "physical_object_type_id"
+
+    @staticmethod
+    def feature_key(entity_id, properties):
+        return str(entity_id), str(properties.get("object_geometry_id"))
+
+    async def query(self, *, physical_objects_names, **kwargs):
+        return await super().query(names=physical_objects_names, **kwargs)

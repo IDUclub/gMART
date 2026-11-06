@@ -160,6 +160,28 @@ class UrbanApiClient:
             on_attempt=on_attempt,
         )
 
+    async def get_physical_objects_by_geometry(
+        self,
+        scenario_id: int,
+        physical_object_type_id: int,
+        geometry: dict,
+        token: str,
+        *,
+        intersection_type: str = "intersects",
+        on_attempt: Callable[[], None] | None = None,
+    ) -> dict:
+        """Compact objects with full geometries in an EPSG:4326 search area."""
+        return await self.json_handler.post(
+            f"v1/scenarios/{scenario_id}/physical_objects/by_geometry/geojson",
+            geometry,
+            auth_token=token,
+            params={
+                "physical_object_type_id": physical_object_type_id,
+                "intersection_type": intersection_type,
+            },
+            on_attempt=on_attempt,
+        )
+
     async def get_available_scenario_services(
         self, scenario_id: int, token: str
     ) -> list[str]:

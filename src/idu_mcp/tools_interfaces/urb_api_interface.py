@@ -8,6 +8,7 @@ from geojson_pydantic import FeatureCollection
 from src.idu_mcp.dependencies.auth_dependencies import extract_user_id
 from src.idu_mcp.dependencies.dependencies import get_urban_api_tools
 from src.idu_mcp.tools_descriptions.compliance_tools_desc import (
+    GET_PHYSICAL_OBJECTS_BY_GEOMETRY,
     GET_SERVICES_BY_GEOMETRY,
 )
 from src.idu_mcp.tools_services.entites.object_type_enum import ObjectTypeEnum
@@ -51,6 +52,42 @@ async def get_services_by_geometry(
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ToolError(f"Некорректные данные поиска сервисов: {exc}") from exc
+
+
+@urban_api_mcp.tool(
+    name="GetPhysicalObjectsByGeometry",
+    title="Получить физические объекты по геометрии зон",
+    description=GET_PHYSICAL_OBJECTS_BY_GEOMETRY,
+    tags=tools_tags,
+    annotations={"title": "Physical objects by exact geometry", "readOnlyHint": True},
+    meta={"author": "ICII"},
+)
+async def get_physical_objects_by_geometry(
+    scenario_id: int,
+    physical_objects_names: list[str],
+    zones_layers: list[str],
+    layer_name: str,
+    layers: dict[str, dict],
+    buffer_m: float = 0,
+    intersection_type: Literal["intersects", "within"] = "intersects",
+    user_id: str = Depends(extract_user_id),
+    urban_api_tools: UrbanApiTool = Depends(get_urban_api_tools),
+) -> dict[str, dict]:
+    try:
+        return await urban_api_tools.get_physical_objects_by_geometry(
+            scenario_id=scenario_id,
+            physical_objects_names=physical_objects_names,
+            zones_layers=zones_layers,
+            layer_name=layer_name,
+            layers=layers,
+            buffer_m=buffer_m,
+            intersection_type=intersection_type,
+            token=user_id,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ToolError(
+            f"Некорректные данные поиска физических объектов: {exc}"
+        ) from exc
 
 
 @urban_api_mcp.tool(
