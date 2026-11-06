@@ -1,3 +1,9 @@
+## v0.37.0 (2026-11-06)
+
+[feat/ICII-227-urban-planning-analysis](https://github.com/IDUclub/gMART/pull/277) (#277)
+
+- feat(agents): добавить в оркестратор режим градостроительного анализа сценария
+
 ## v0.36.0 (2026-11-06)
 
 [feat/ICII-239-physical-objects-in-compilance](https://github.com/IDUclub/gMART/pull/276) (#276)
