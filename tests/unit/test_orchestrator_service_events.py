@@ -795,3 +795,116 @@ async def test_new_request_drops_a_pending_document_choice(
     assert await state_store.get_compliance_choice("chat-1") is None
     assert pipeline.calls[0]["user_query"] == "Проверь нормы по детским садам"
     assert pipeline.calls[0]["conversation_key"] == "chat-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("successful", [True, False])
+async def test_urban_mode_buffers_events_and_persists_full_report_and_file(
+    orchestrator, fake_llm, state_store, monkeypatch, successful
+):
+    from src.agents.services.pipeline_state import PipelineStatus
+    from src.agents.services.urban_analysis.urban_analysis_service import (
+        UrbanAnalysisService,
+    )
+
+    fake_llm.json_responses = [orchestration_plan_json(mode="urban_analysis")]
+    report = "Общий отчёт с числами и рекомендациями. " * 200
+    fake_llm.answer_texts = [report]
+    events = (
+        RESTRICTION_EVENTS
+        if successful
+        else [{"type": "error", "content": {"text": "Сервис не отвечает"}}]
+    )
+    checks = FakePipeline(events)
+    orchestrator.restriction_service.run_compliance_pipeline = checks
+    orchestrator.provision_service.run_provision_pipeline = checks
+    orchestrator.urban_analysis_service = UrbanAnalysisService(
+        orchestrator.restriction_service,
+        orchestrator.provision_service,
+        None,
+        orchestrator.urban_api_client,
+        state_store,
+        llm_client=fake_llm,
+    )
+    descriptor = {
+        "name": "urban_analysis_report",
+        "title": "Отчёт",
+        "role": "result",
+        "url": "/files/urban_analysis_report/file-id",
+        "download_url": "/files/urban_analysis_report/file-id?download=1",
+        "filename": "urban-analysis-scenario-772.md",
+        "mime_type": "text/markdown",
+        "source_service": "gmart",
+    }
+    monkeypatch.setattr(
+        "src.agents.services.urban_analysis.urban_analysis_service.report_file_event",
+        AsyncMock(return_value={"type": "file", "content": descriptor}),
+    )
+    # Capture persistence synchronously; its scheduling policy is tested separately.
+    orchestrator._schedule_persist_parts = Mock()
+    emitted = await run_pipeline(orchestrator)
+    [start] = events_of_type(emitted, "pipeline_started")
+    request_id = start["content"]["request_id"]
+    assert await state_store.get_buffered_events(request_id) == emitted
+    state = await state_store.get_state(request_id)
+    assert state["status"] == (
+        PipelineStatus.DONE if successful else PipelineStatus.FAILED
+    )
+    [final] = events_of_type(emitted, "orchestrator_final")
+    assert len(final["content"]["steps"]) == 4
+    full_text = final["content"]["steps"][3]["summary"]
+    assert full_text
+    if successful:
+        assert len(full_text) > 1500
+        assert full_text == report.strip()
+    assert (
+        events_of_type(emitted, "step_finished")[3]["content"]["summary"] == full_text
+    )
+    assert emitted[-1]["type"] == "file"
+    parts = orchestrator._schedule_persist_parts.call_args.args[2]
+    assert any(part.kind == "text" and full_text in part.payload.text for part in parts)
+    assert any(
+        part.kind == "file" and part.payload["url"] == descriptor["url"]
+        for part in parts
+    )
+
+
+@pytest.mark.asyncio
+async def test_urban_mode_persists_tables_of_completed_checks(
+    orchestrator, fake_llm, state_store
+):
+    from src.agents.services.urban_analysis.urban_analysis_service import (
+        UrbanAnalysisService,
+    )
+
+    fake_llm.json_responses = [orchestration_plan_json(mode="urban_analysis")]
+    table = {
+        "type": "table",
+        "content": {
+            "name": "comparison",
+            "title": "Сравнение",
+            "columns": [
+                {"key": "service", "label": "Сервис"},
+                {"key": "before", "label": "До"},
+                {"key": "after", "label": "После"},
+            ],
+            "rows": [{"service": "Школы", "before": 70, "after": 80}],
+        },
+    }
+    checks = FakePipeline([table, *RESTRICTION_EVENTS])
+    orchestrator.restriction_service.run_compliance_pipeline = checks
+    orchestrator.provision_service.run_provision_pipeline = FakePipeline(
+        RESTRICTION_EVENTS
+    )
+    orchestrator.urban_analysis_service = UrbanAnalysisService(
+        orchestrator.restriction_service,
+        orchestrator.provision_service,
+        None,
+        orchestrator.urban_api_client,
+        state_store,
+        llm_client=fake_llm,
+    )
+    orchestrator._schedule_persist_parts = Mock()
+    await run_pipeline(orchestrator)
+    parts = orchestrator._schedule_persist_parts.call_args.args[2]
+    assert len([p for p in parts if p.kind == "table"]) == 1

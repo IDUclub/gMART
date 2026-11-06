@@ -555,6 +555,12 @@ class PzzService(BaseLlmService):
             }
         return json.dumps(evidence, ensure_ascii=False)
 
+    async def resolve_inputs(self, model, query, scenario_id, inputs, history=None):
+        """Resolve missing PZZ intent fields without changing trusted API inputs."""
+        return await self._resolve_inputs(
+            model, query, scenario_id, inputs, history or []
+        )
+
     async def _resolve_inputs(self, model, query, scenario_id, inputs, history):
         updates = {}
         if inputs.mode is None:

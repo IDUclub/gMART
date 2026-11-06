@@ -8,6 +8,7 @@ import pytest
 
 from src.agents.services.orchestrator.orchestrator_catalog import AGENT_CATALOG
 from src.agents.services.orchestrator.orchestrator_plan_builder import (
+    URBAN_SCENARIO_QUESTION,
     OrchestratorPlanBuilder,
 )
 from src.agents.services.service_entities.orchestrator_plan import (
@@ -283,3 +284,222 @@ async def test_regulation_completion_leaves_other_plans_alone(
     ]
     plan = await builder.build_plan("m", query, agents)
     assert [step.agent for step in plan.steps] == [OrchestratorAgent.DOCUMENTS]
+
+
+@pytest.mark.asyncio
+async def test_urban_mode_clears_model_steps(builder, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            [{"agent": "compliance", "task": "Проверка"}], mode="urban_analysis"
+        )
+    ]
+    plan = await builder.build_plan(
+        "m", "Анализ проекта", ALL_AGENTS, scenario_id=17, urban_analysis_available=True
+    )
+    assert plan.mode == OrchestratorPlanMode.URBAN_ANALYSIS
+    assert plan.steps == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Проведи градостроительный анализ проекта",
+        "сделай градоанализ сценария",
+        "нужен град анализ",
+        "Хочу провести градостроительный анализ",
+        "Проведите градостроительный анализ проекта",
+        "Градостроительный анализ проекта нужен сейчас",
+    ],
+)
+@pytest.mark.parametrize("mode", ["execute", "needs_clarification"])
+async def test_urban_fallback_promotes_inconsistent_routing(
+    builder, fake_llm, query, mode
+):
+    steps = [{"agent": "norms", "task": "Нормы"}] if mode == "execute" else []
+    fake_llm.json_responses = [orchestration_plan_json(steps, mode=mode)]
+    plan = await builder.build_plan(
+        "m", query, ALL_AGENTS, scenario_id=17, urban_analysis_available=True
+    )
+    assert plan.mode == OrchestratorPlanMode.URBAN_ANALYSIS
+    assert not plan.steps
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query,agent,promoted",
+    [
+        ("Какие нормы нужны для градостроительного анализа?", "norms", False),
+        ("Как провести градостроительный анализ?", None, False),
+        ("Что нужно для градостроительного анализа?", "norms", False),
+        ("Не нужно делать градоанализ, проверь только нормы", "compliance", False),
+        ("Сделай граданализ проекта", "compliance", True),
+        ("Нужно провести град. анализ сценария", None, True),
+        ("Не надо делать градоанализ", "compliance", False),
+        ("Не делай градоанализ", "compliance", False),
+        ("Не проводи градостроительный анализ", "compliance", False),
+        ("Не запускай градостроительный анализ", "compliance", False),
+        ("Для проекта не нужно делать градоанализ", "compliance", False),
+        ("Сделай град.анализ проекта", "compliance", True),
+    ],
+)
+async def test_urban_fallback_questions_negations_and_abbreviations(
+    builder, fake_llm, query, agent, promoted
+):
+    mode = "execute" if agent else "needs_clarification"
+    steps = [{"agent": agent, "task": query}] if agent else []
+    fake_llm.json_responses = [orchestration_plan_json(steps, mode=mode)]
+    plan = await builder.build_plan(
+        "m", query, ALL_AGENTS, scenario_id=17, urban_analysis_available=True
+    )
+    assert plan.mode == (OrchestratorPlanMode.URBAN_ANALYSIS if promoted else mode)
+    if promoted:
+        assert not plan.steps
+    elif agent:
+        assert plan.steps[0].agent == agent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario,available,question",
+    [
+        (
+            None,
+            True,
+            "Градостроительный анализ выполняется только для выбранного сценария. Выберите сценарий и повторите запрос.",
+        ),
+        (
+            None,
+            False,
+            "Градостроительный анализ выполняется только для выбранного сценария. Выберите сценарий и повторите запрос.",
+        ),
+        (17, False, "Сервис градостроительного анализа не настроен."),
+    ],
+)
+async def test_urban_prerequisites(builder, fake_llm, scenario, available, question):
+    fake_llm.json_responses = [orchestration_plan_json(mode="urban_analysis")]
+    plan = await builder.build_plan(
+        "m",
+        "Проведи градоанализ",
+        ALL_AGENTS,
+        scenario_id=scenario,
+        urban_analysis_available=available,
+    )
+    assert plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION
+    assert plan.clarification_question == question
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query,agent",
+    [
+        ("Что такое градостроительный анализ?", "documents"),
+        ("Хочу узнать, что такое градостроительный анализ", "norms"),
+        ("Построй буфер 100 метров от рек", "restriction"),
+    ],
+)
+async def test_urban_fallback_preserves_other_work(builder, fake_llm, query, agent):
+    fake_llm.json_responses = [
+        orchestration_plan_json([{"agent": agent, "task": query}])
+    ]
+    plan = await builder.build_plan(
+        "m", query, ALL_AGENTS, scenario_id=17, urban_analysis_available=True
+    )
+    assert plan.mode == OrchestratorPlanMode.EXECUTE
+    assert plan.steps[0].agent == agent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("llm_mode", ["urban_analysis", "execute"])
+@pytest.mark.parametrize(
+    "scenario_id,question",
+    [
+        (
+            17,
+            "Градостроительный анализ запускается отдельным запросом. "
+            "Отправьте анализ и остальные задачи отдельными сообщениями.",
+        ),
+        (None, URBAN_SCENARIO_QUESTION),
+    ],
+)
+async def test_urban_fallback_clarifies_mixed_request(
+    builder, fake_llm, scenario_id, question, llm_mode
+):
+    query = "Проведи градостроительный анализ и построй буфер 100 метров от рек"
+    steps = [{"agent": "restriction", "task": query}] if llm_mode == "execute" else []
+    fake_llm.json_responses = [orchestration_plan_json(steps, mode=llm_mode)]
+    plan = await builder.build_plan(
+        "m",
+        query,
+        ALL_AGENTS,
+        scenario_id=scenario_id,
+        urban_analysis_available=True,
+    )
+    assert plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION
+    assert plan.clarification_question == question
+    assert not plan.steps
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query,llm_agent,expected_mode",
+    [
+        (
+            "Проведи градостроительный анализ и построй буфер 100 метров от рек",
+            None,
+            "needs_clarification",
+        ),
+        (
+            "Проведи градостроительный анализ и построй буфер 100 метров от рек",
+            "restriction",
+            "needs_clarification",
+        ),
+        (
+            "Сделай градоанализ. Затем посчитай школы",
+            None,
+            "needs_clarification",
+        ),
+        ("Сделай градоанализ и покажи результат", None, "urban_analysis"),
+        (
+            "Проведи градостроительный анализ и проверь нормы",
+            None,
+            "urban_analysis",
+        ),
+        ("Проведи градостроительный анализ проекта", None, "urban_analysis"),
+    ],
+)
+async def test_urban_extra_task_independent_of_llm_routing(
+    builder, fake_llm, query, llm_agent, expected_mode
+):
+    steps = [{"agent": llm_agent, "task": query}] if llm_agent else []
+    fake_llm.json_responses = [
+        orchestration_plan_json(
+            steps, mode="execute" if llm_agent else "urban_analysis"
+        )
+    ]
+    plan = await builder.build_plan(
+        "m", query, ALL_AGENTS, scenario_id=17, urban_analysis_available=True
+    )
+    assert plan.mode == expected_mode
+    assert not plan.steps
+    if expected_mode == "needs_clarification":
+        assert plan.clarification_question == (
+            "Градостроительный анализ запускается отдельным запросом. "
+            "Отправьте анализ и остальные задачи отдельными сообщениями."
+        )
+
+
+@pytest.mark.asyncio
+async def test_report_agent_is_not_available_to_planner(builder, fake_llm):
+    fake_llm.json_responses = [
+        orchestration_plan_json([{"agent": "urban_analysis_report", "task": "Отчёт"}])
+    ]
+    plan = await builder.build_plan(
+        "m",
+        "Проведи градостроительный анализ",
+        ALL_AGENTS,
+        scenario_id=17,
+        urban_analysis_available=True,
+    )
+    assert plan.mode == OrchestratorPlanMode.NEEDS_CLARIFICATION
+    assert OrchestratorAgent.URBAN_ANALYSIS_REPORT not in AGENT_CATALOG
